@@ -18,9 +18,7 @@
   --ranking-v2-ink-4: #a1a1aa;
   --ranking-v2-line: #e4e4e7;
   --ranking-v2-line-soft: #f4f4f5;
-  --ranking-v2-paper: #fafaf8;
   --ranking-v2-orange: #ea580c;
-  --ranking-v2-orange-dark: #c2410c;
   --ranking-v2-orange-ink: #9a3412;
   --ranking-v2-orange-soft: #fff7ed;
   --ranking-v2-green: #16845b;
@@ -938,18 +936,6 @@
 .ranking-detail-v2 [data-ranking-row].is-current-user,
 .ranking-detail-v2 [data-ranking-row][data-ranking-current-user="true"] {
   background: var(--ranking-v2-orange-soft);
-}
-
-.ranking-detail-v2 [data-ranking-row].is-current-user .lb-score-fill,
-.ranking-detail-v2 [data-ranking-row][data-ranking-current-user="true"] .lb-score-fill,
-.ranking-detail-v2 [data-ranking-row].is-current-user .final-score-track > i,
-.ranking-detail-v2 [data-ranking-row][data-ranking-current-user="true"] .final-score-track > i {
-  background: var(--ranking-v2-orange) !important;
-}
-
-.ranking-detail-v2 [data-ranking-row]:not(.is-current-user):not([data-ranking-current-user="true"]) .lb-score-fill,
-.ranking-detail-v2 [data-ranking-row]:not(.is-current-user):not([data-ranking-current-user="true"]) .final-score-track > i {
-  background: var(--ranking-v2-ink) !important;
 }
 
 .ranking-rank-delta {

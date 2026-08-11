@@ -3,19 +3,8 @@
   width: 150px !important;
 }
 
-.layout-navbar.layout-nav-compact .navbar-brand,
-.layout-navbar.layout-nav-compact .nav-link,
-.layout-navbar.layout-nav-compact .nav-link.disabled,
 .layout-offcanvas-nav.layout-nav-compact .nav-link {
   font-size: 0.92rem;
-}
-
-.layout-navbar {
-  position: sticky;
-  top: 0;
-  z-index: 1030;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
 }
 
 /* 账户与班级弹窗：UI-v2 的低噪声工具面板。 */
@@ -1472,7 +1461,6 @@
 
   .numoj-content .card,
   .numoj-content .list-group,
-  .numoj-content .accordion-item,
   .numoj-content .modal-content,
   .modal-content {
     border-color: var(--numoj-line);
@@ -1523,9 +1511,7 @@
   }
 
   .numoj-content .form-control,
-  .numoj-content .form-select,
-  .modal .form-control,
-  .modal .form-select {
+  .modal .form-control {
     border-color: var(--numoj-line);
     border-radius: 7px;
     background-color: #fff;
@@ -1534,9 +1520,7 @@
   }
 
   .numoj-content .form-control:focus,
-  .numoj-content .form-select:focus,
-  .modal .form-control:focus,
-  .modal .form-select:focus {
+  .modal .form-control:focus {
     border-color: var(--numoj-brand);
     box-shadow: 0 0 0 4px var(--numoj-brand-soft);
   }
@@ -1584,30 +1568,6 @@
     color: #fff;
   }
 
-  .numoj-content .nav-tabs {
-    gap: 4px;
-    border-bottom-color: var(--numoj-line);
-  }
-
-  .numoj-content .nav-tabs .nav-link {
-    border: 0;
-    border-radius: 6px 6px 0 0;
-    color: var(--numoj-ink-3);
-    font-size: 0.82rem;
-  }
-
-  .numoj-content .nav-tabs .nav-link:hover {
-    background: var(--numoj-line-soft);
-    color: var(--numoj-ink);
-  }
-
-  .numoj-content .nav-tabs .nav-link.active {
-    border-bottom: 2px solid var(--numoj-brand);
-    background: transparent;
-    color: var(--numoj-ink);
-    font-weight: 650;
-  }
-
   .numoj-content .pagination {
     --bs-pagination-color: var(--numoj-ink-2);
     --bs-pagination-border-color: var(--numoj-line);
@@ -1642,8 +1602,7 @@
   }
 
   .numoj-content code,
-  .numoj-content pre,
-  .numoj-content .font-monospace {
+  .numoj-content pre {
     font-family: var(--numoj-mono) !important;
   }
 

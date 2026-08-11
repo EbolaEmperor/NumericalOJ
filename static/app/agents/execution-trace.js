@@ -196,7 +196,6 @@
 
     function shellHtml(trace, context) {
       var messages = trace.trace_messages || [];
-      var runningText = esc(option(context, trace, 'runningText', 'AI 正在作答'));
       var pendingText = esc(option(context, trace, 'pendingText', '等待 Agent 开始执行'));
       var emptyText = esc(option(context, trace, 'emptyText', '暂无可展示轨迹'));
       var html = trace.error_message

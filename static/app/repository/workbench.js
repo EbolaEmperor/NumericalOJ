@@ -41,7 +41,6 @@
     upload: document.getElementById('repositoryUpload'),
     dropTarget: document.getElementById('repositoryDropTarget'),
     editorTextarea: document.getElementById('repositoryCodeEditor'),
-    editorStage: document.getElementById('repositoryEditorStage'),
     monacoHost: document.getElementById('repositoryMonacoContainer'),
     codeMirrorHost: document.getElementById('repositoryCodeMirrorContainer'),
     emptyEditor: document.getElementById('repositoryEmptyEditor'),

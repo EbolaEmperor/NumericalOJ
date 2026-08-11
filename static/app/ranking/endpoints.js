@@ -8,7 +8,6 @@
   var editHarness = document.getElementById('ajeEditHarness');
   var editSourceModeWrap = document.getElementById('ajeEditSourceModeWrap');
   var editSourceMode = document.getElementById('ajeEditSourceMode');
-  var editProtocolWrap = document.getElementById('ajeEditProtocolWrap');
   var editProtocol = document.getElementById('ajeEditProtocol');
   var editGlobalEndpointWrap = document.getElementById('ajeEditGlobalEndpointWrap');
   var editGlobalEndpoint = document.getElementById('ajeEditGlobalEndpoint');
@@ -31,7 +30,6 @@
   var orchPickerCtrl = null;
   var sourceModePickerCtrl = null;
   var protocolPickerCtrl = null;
-  var globalEndpointPickerCtrl = null;
   var DEFAULT_CONTEXT_WINDOW_TOKENS = 1000000;
   var DEFAULT_MAX_OUTPUT_TOKENS = 384000;
   var DEFAULT_THINKING_COMPATIBILITY = true;
@@ -356,7 +354,7 @@
         model:endpoint.model || ''
       });
     });
-    globalEndpointPickerCtrl = window.ChoicePicker.configure(
+    window.ChoicePicker.configure(
       'ajeEditGlobalEndpointPicker', entries, selected
     );
   }
@@ -649,7 +647,7 @@
   });
   sourceModePickerCtrl = createStandardChoice(editSourceMode);
   protocolPickerCtrl = createStandardChoice(editProtocol);
-  globalEndpointPickerCtrl = createStandardChoice(editGlobalEndpoint);
+  createStandardChoice(editGlobalEndpoint);
   harnessPickerCtrl = createChoicePicker({
     inputId:'ajeEditHarness', pickerId:'ajeHarnessPicker', triggerId:'ajeHarnessTrigger',
     menuId:'ajeHarnessMenu', labelId:'ajeHarnessLabel', iconId:'ajeHarnessIcon',
@@ -714,7 +712,7 @@
   });
   var qualityEnabled = document.getElementById('qgeEnabled');
   var qualityPrompt = document.getElementById('qgePrompt');
-  var qualityManager = createPoolManager({
+  createPoolManager({
     rootId:'qualityGateConfigCard', source:'quality-gate',
     editorId:'qgeEditor', addId:'qgeAddBtn', saveId:'qgeSaveBtn', hintId:'qgeHint',
     countId:'qgeCountLabel', totalId:'qgeTotalValue', endpointName:'质量门禁端点',
@@ -739,6 +737,4 @@
       if (qualityPrompt && typeof data.prompt === 'string') qualityPrompt.value = data.prompt;
     }
   });
-  void primaryManager;
-  void qualityManager;
 })();
