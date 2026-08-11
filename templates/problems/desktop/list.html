@@ -1,7 +1,7 @@
 {% from 'components/problem_macros.html' import language_label %}
 {% from 'components/layout/class_logo.html' import class_logo %}
 {% from 'problems/desktop/macros.html' import submission_metric %}
-<section class="numoj-problem-dashboard d-none d-lg-block" aria-labelledby="problem-dashboard-title">
+<section class="numoj-problem-dashboard" aria-labelledby="problem-dashboard-title">
   {% set is_library = view_mode == 'admin_library' %}
   <header class="numoj-page-header">
     <div>
@@ -68,12 +68,12 @@
         <div class="numoj-assignment-list">
           {% if is_library %}
             {% for p in problems %}
-              <article class="numoj-assignment-row">
+              <article class="numoj-assignment-row numoj-assignment-row-library" data-numoj-assignment-kind="library">
                 <div class="numoj-row-state neutral" aria-hidden="true"></div>
                 <div class="numoj-row-identity">
                   <div class="numoj-row-title-line">
                     <span class="numoj-row-id">P{{ '%04d'|format(p.id) }}</span>
-                    <a href="{{ url_for('problem_core.problem_detail', problem_id=p.id, source='library') }}">{{ p.title }}</a>
+                    <a class="numoj-row-title-link" href="{{ url_for('problem_core.problem_detail', problem_id=p.id, source='library') }}">{{ p.title }}</a>
                   </div>
                   <div class="numoj-row-tags">
                     <span>{{ '编程题' if p.type == 1 else '书面题' }}</span>
@@ -91,7 +91,7 @@
             {% endfor %}
           {% else %}
             {% for hw in selected_homeworks or [] %}
-              <article class="numoj-assignment-row">
+              <article class="numoj-assignment-row numoj-assignment-row-homework" data-numoj-assignment-kind="homework">
                 {% if user.is_admin != 1 %}
                   {% if hw.plagiarism_notice %}
                     <button type="button" class="numoj-row-state warning" onclick='showPlagiarismNotice({{ hw.plagiarism_notice|tojson }})' aria-label="查看抄袭记录" title="查看抄袭记录">!</button>
@@ -109,9 +109,9 @@
                   <div class="numoj-row-title-line">
                     <span class="numoj-row-id">H{{ '%04d'|format(hw.id) }}</span>
                     {% if hw.kind == 'ranking' %}
-                      <a href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}">{{ hw.problem_title }}</a>
+                      <a class="numoj-row-title-link" href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}">{{ hw.problem_title }}</a>
                     {% else %}
-                      <a href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id, class_en=selected_class_en) }}">{{ hw.problem_title }}</a>
+                      <a class="numoj-row-title-link" href="{{ url_for('problem_core.problem_detail', problem_id=hw.problem_id, class_en=selected_class_en) }}">{{ hw.problem_title }}</a>
                     {% endif %}
                   </div>
                   <div class="numoj-row-tags">
@@ -123,12 +123,12 @@
                 <div class="numoj-row-deadline">
                   {% if hw.ddl %}
                     {% set remaining = (hw.ddl - now).total_seconds() %}
-                    <strong>{{ hw.ddl.strftime('%m-%d %H:%M') }}</strong>
-                    {% if remaining < 0 %}<span class="expired">已截止</span>
-                    {% elif remaining < 86400 %}<span class="urgent">剩 {{ (remaining / 3600)|round(0, 'ceil')|int }} 小时</span>
-                    {% else %}<span>剩 {{ (remaining / 86400)|round(0, 'ceil')|int }} 天</span>{% endif %}
+                    <strong class="numoj-row-deadline-absolute">{{ hw.ddl.strftime('%m-%d %H:%M') }}</strong>
+                    {% if remaining < 0 %}<span class="numoj-row-deadline-relative expired">已截止</span>
+                    {% elif remaining < 86400 %}<span class="numoj-row-deadline-relative urgent">剩 {{ (remaining / 3600)|round(0, 'ceil')|int }} 小时</span>
+                    {% else %}<span class="numoj-row-deadline-relative">剩 {{ (remaining / 86400)|round(0, 'ceil')|int }} 天</span>{% endif %}
                   {% else %}
-                    <span>无截止时间</span>
+                    <span class="numoj-row-deadline-relative numoj-row-deadline-empty">无截止时间</span>
                   {% endif %}
                 </div>
                 {% if hw.kind == 'ranking' %}

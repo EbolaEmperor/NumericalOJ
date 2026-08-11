@@ -1,5 +1,6 @@
 """全局布局的静态资产边界契约。"""
 
+import re
 from pathlib import Path
 
 
@@ -61,6 +62,21 @@ AUTH_ROUTES = (
 CLASS_MANAGEMENT_ROUTES = (
     ROOT / "oj_modules" / "routes" / "class_management_routes.py"
 ).read_text(encoding="utf-8")
+
+
+def _braced_block(source, marker):
+    """返回 marker 后首个花括号块，避免依赖整份 CSS 的固定顺序。"""
+    marker_start = source.index(marker)
+    block_start = source.index("{", marker_start)
+    depth = 0
+    for index in range(block_start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[block_start + 1:index]
+    raise AssertionError(f"{marker} 缺少闭合花括号")
 
 
 def test_layout_loads_shared_static_assets_instead_of_inline_app_code():
@@ -137,6 +153,9 @@ def test_layout_passes_server_values_to_javascript_through_data_attributes():
 def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
     for selector in (
         ".layout-offcanvas-nav.layout-nav-compact",
+        ".layout-navbar",
+        ".numoj-mobile-topbar",
+        ".numoj-mobile-sidebar",
         ".numoj-account-modal",
         ".numoj-membership-row",
         ".numoj-class-select",
@@ -152,9 +171,49 @@ def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
         assert initializer in LAYOUT_JS
 
 
+def test_mobile_navigation_uses_compact_v2_topbar_and_shared_left_drawer():
+    assert '<header class="numoj-mobile-topbar d-lg-none"' in NAVIGATION
+    assert 'class="numoj-mobile-topbar-logo"' in NAVIGATION
+    assert 'class="numoj-mobile-topbar-title">NumOJ</strong>' in NAVIGATION
+    assert 'class="numoj-mobile-menu-toggle"' in NAVIGATION
+    assert 'data-bs-target="#offcanvasNavbar"' in NAVIGATION
+    menu_start = NAVIGATION.index('<button class="numoj-mobile-menu-toggle"')
+    menu_end = NAVIGATION.index("</button>", menu_start)
+    assert "aria-expanded" not in NAVIGATION[menu_start:menu_end]
+
+    assert "offcanvas offcanvas-start d-lg-none" in NAVIGATION
+    assert "offcanvas-end" not in NAVIGATION
+    assert "data-numoj-mobile-sidebar" in NAVIGATION
+    assert 'data-bs-dismiss="offcanvas"' in NAVIGATION
+
+    assert "{% macro navigation_groups(" in NAVIGATION
+    assert "navigation_groups('numoj-nav'," in NAVIGATION
+    assert "navigation_groups('numoj-mobile-nav'," in NAVIGATION
+    assert "{% macro sidebar_footer(" in NAVIGATION
+    assert "sidebar_footer(navigation_user)" in NAVIGATION
+    assert "sidebar_footer(navigation_user, true)" in NAVIGATION
+    assert "url_for('forum.forum_index')" in NAVIGATION
+    assert "const sidebars = document.querySelectorAll(" in LAYOUT_JS
+    assert "'[data-numoj-sidebar], [data-numoj-mobile-sidebar]'" in LAYOUT_JS
+    assert "sidebars.forEach((sidebar) =>" in LAYOUT_JS
+
+    mobile_rules = _braced_block(LAYOUT_CSS, "@media (max-width: 991.98px)")
+    topbar_rule = _braced_block(mobile_rules, "\n  .numoj-mobile-topbar {")
+    sidebar_rule = _braced_block(
+        mobile_rules,
+        "\n  .numoj-mobile-sidebar.offcanvas {",
+    )
+    assert re.search(r"(?:^|;)\s*height:\s*48px\s*;", topbar_rule)
+    assert re.search(
+        r"(?:^|;)\s*(?:--bs-offcanvas-width|width):\s*150px(?:\s*!important)?\s*;",
+        sidebar_rule,
+    )
+
+
 def test_sidebar_avatar_reuses_the_forum_username_identicon_renderer():
     assert "data-numoj-user-avatar" in NAVIGATION
-    assert 'data-avatar-seed="{{ user.username }}"' in NAVIGATION
+    assert 'data-avatar-seed="{{ current_user.username }}"' in NAVIGATION
+    assert "document.querySelectorAll('[data-numoj-user-avatar]')" in LAYOUT_JS
     assert "identicon.cellsForSeed(seed)" in LAYOUT_JS
     assert "identicon.paint(" in LAYOUT_JS
     assert "new TextEncoder()" in IDENTICON_JS

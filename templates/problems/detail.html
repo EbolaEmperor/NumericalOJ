@@ -40,7 +40,7 @@
 } %}
 
 <div class="problem-detail-page">
-<nav class="numoj-breadcrumb d-none d-lg-flex" aria-label="面包屑导航">
+<nav class="numoj-breadcrumb d-flex" aria-label="面包屑导航">
   {% if request.args.get('source') == 'library' and user.is_admin == 1 %}
     <a href="{{ url_for('problem_core.problem_library') }}">总题库</a>
   {% else %}
@@ -57,7 +57,7 @@
     <div class="problem-header mb-3">
       <div class="problem-heading-layout{% if last_submissions and last_submissions|length > 0 %} has-recent-submissions{% endif %}">
         <div class="problem-heading-info">
-          <div class="numoj-problem-kickers d-none d-lg-flex">
+          <div class="numoj-problem-kickers d-flex">
             <span>{{ '编程题' if problem.type == 1 else '书面题' }}</span>
             {% if problem.lang %}<span>{{ lang_label }}</span>{% endif %}
             {% if homework and homework.ddl %}<span class="deadline">DDL {{ homework.ddl.strftime('%m-%d %H:%M') }}</span>{% endif %}
@@ -102,7 +102,7 @@
           {% endif %}
         </div>
         {% if last_submissions and last_submissions|length > 0 %}
-        <aside class="recent-submissions-card d-none d-lg-block" aria-label="最近提交">
+        <aside class="recent-submissions-card" aria-label="最近提交">
           <ul>
             {% for sub in last_submissions %}
               {% set normalized_status = sub.status | lower | replace(' ', '-') %}
@@ -225,7 +225,6 @@
         <div class="card problem-editor-card">
           <div class="card-body p-0">
             <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
-            <div id="codeMirrorContainer"></div>
             <div
               id="desktopEditorShell"
               class="problem-editor-desktop-shell"
@@ -303,40 +302,6 @@
       </form>
     {% endif %}
 
-    <section class="recent-submissions-panel d-lg-none" aria-label="最近提交">
-    {% if last_submissions and last_submissions|length > 0 %}
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h5 class="mb-0"><i class="fas fa-history me-2"></i> 最近提交记录</h5>
-        <a href="{{ url_for('problem_core.all_submissions', problem_id=problem.id) }}" class="btn btn-sm btn-outline-secondary">
-          <i class="fas fa-chart-pie me-2"></i> 全部提交
-        </a>
-      </div>
-      <ul class="list-group">
-        {% for sub in last_submissions %}
-          {% set normalized_status = sub.status | lower | replace(' ', '-') %}
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <div>
-              <span class="badge submission-status {{ normalized_status }}" title="{{ sub.status }}">
-                {{ status_abbreviations.get(sub.status, 'UN') }}
-              </span>
-              <span class="ms-2"><i class="fas fa-trophy"></i> {{ sub.score }}</span>
-            </div>
-            <a href="{{ url_for('submission.submission_detail', submission_id=sub.id) }}" class="btn btn-sm btn-outline-secondary">
-              查看详情 &rarr;
-            </a>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <!-- 如果没有提交记录，也要显示提交记录按钮 -->
-      <div class="d-flex justify-content-between align-items-center mb-3">
-        <h5 class="mb-0 text-muted"><i class="fas fa-history me-2"></i> 暂无提交记录</h5>
-        <a href="{{ url_for('problem_core.all_submissions', problem_id=problem.id) }}" class="btn btn-sm btn-outline-secondary">
-          <i class="fas fa-chart-pie me-2"></i> 全部提交
-        </a>
-      </div>
-    {% endif %}
-    </section>
   </div>
 </div>
 </div>
@@ -764,13 +729,8 @@
       gap: 12px;
     }
   }
-  @media (max-width: 768px) { #codeMirrorContainer .CodeMirror { height: 300px; } }
-  @media (min-width: 769px) { #codeMirrorContainer .CodeMirror { height: 460px; } }
   .problem-col-right .card {
     border-color: #e1e4e8;
-    border-radius: 6px;
-  }
-  .problem-col-right .card .CodeMirror {
     border-radius: 6px;
   }
   #monacoEditorContainer {
@@ -784,19 +744,6 @@
     border: 0;
     resize: vertical;
     font: 12.5px/20px "SFMono-Regular", Consolas, monospace;
-  }
-
-  /* ===== 最近提交列表 ===== */
-  .problem-col-right .list-group-item {
-    border-color: #e1e4e8;
-  }
-  .problem-col-right .list-group-item:first-child {
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-  }
-  .problem-col-right .list-group-item:last-child {
-    border-bottom-left-radius: 6px;
-    border-bottom-right-radius: 6px;
   }
 
   /* ===== 学生端代码动作按钮（移动端贴满）===== */
@@ -817,8 +764,7 @@
 </style>
 
 {% if problem.type == 1 and programming_mode != 3 %}
-{% set codemirror_mobile_only = true %}
-{% include 'components/editor/codemirror.html' %}
+{% set monaco_all_breakpoints = true %}
 {% include 'components/editor/monaco.html' %}
 <script defer src="{{ url_for('static', filename='app/problem-editor.js') }}"></script>
 {% endif %}
