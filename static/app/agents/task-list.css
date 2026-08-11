@@ -64,15 +64,7 @@
   box-shadow:
     0 1px 1px rgb(35 31 24 / 4%),
     0 14px 42px rgb(72 57 35 / 8%);
-  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
-}
-
-.agent-composer:focus-within {
-  border-color: #b9aa97;
-  box-shadow:
-    0 1px 1px rgb(35 31 24 / 4%),
-    0 18px 52px rgb(72 57 35 / 11%);
-  transform: translateY(-1px);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .agent-composer.is-dragging {
