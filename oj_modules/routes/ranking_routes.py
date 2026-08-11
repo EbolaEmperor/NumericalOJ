@@ -23,7 +23,7 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 
-import config as _cfg
+from oj_modules import config as _cfg
 from oj_modules.db_services import (
     get_all_classes, get_user_by_username, get_users_in_classes,
 )

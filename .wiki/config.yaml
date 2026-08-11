@@ -5,7 +5,7 @@
   paths:
     - README.md
     - oj.py
-    - config.py
+    - oj_modules/config.py
     - deploy/supervisor/celery.conf
     - deploy/supervisor/web.conf
 - name: Web应用与数据层
@@ -69,7 +69,7 @@
   chapters: []
   paths:
     - README.md
-    - config.py
+    - oj_modules/config.py
     - deploy/supervisor/celery.conf
     - deploy/supervisor/web.conf
     - tests/

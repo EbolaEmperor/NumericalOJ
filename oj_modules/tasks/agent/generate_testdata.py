@@ -10,7 +10,7 @@ import re
 import tempfile
 import time
 
-from config import AGENT_WORKSPACE_ROOT
+from oj_modules.config import AGENT_WORKSPACE_ROOT
 from oj_modules.db_services import get_problem, get_user_by_username
 from oj_modules.problems.agent_launch import (
     AGENT_ACCESS_ROLE_USER,

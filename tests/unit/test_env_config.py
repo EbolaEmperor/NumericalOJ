@@ -10,6 +10,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CONFIG_PATH = ROOT / "oj_modules" / "config.py"
 
 
 def _template_keys():
@@ -22,7 +23,7 @@ def _template_keys():
 
 
 def _code_default_keys():
-    tree = ast.parse((ROOT / "config.py").read_text(encoding="utf-8"))
+    tree = ast.parse(CONFIG_PATH.read_text(encoding="utf-8"))
     for node in tree.body:
         if (
             isinstance(node, ast.AnnAssign)
@@ -30,7 +31,7 @@ def _code_default_keys():
             and node.target.id == "_CODE_DEFAULTS"
         ):
             return set(ast.literal_eval(node.value))
-    raise AssertionError("config.py 缺少 _CODE_DEFAULTS")
+    raise AssertionError("oj_modules/config.py 缺少 _CODE_DEFAULTS")
 
 
 def test_runtime_configuration_documents_every_advanced_default():
@@ -53,7 +54,14 @@ def _run_config_import(
     process_overrides=None,
     expression="None",
 ):
-    shutil.copy2(ROOT / "config.py", tmp_path / "config.py")
+    package_root = tmp_path / "oj_modules"
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copy2(CONFIG_PATH, package_root / "config.py")
+    shutil.copy2(
+        ROOT / "oj_modules" / "project_paths.py",
+        package_root / "project_paths.py",
+    )
     shutil.copy2(ROOT / ".env.tmpl", tmp_path / ".env.tmpl")
     if env_source is not None:
         (tmp_path / ".env").write_text(env_source, encoding="utf-8")
@@ -65,10 +73,16 @@ def _run_config_import(
     environment = os.environ.copy()
     for key in _template_keys() | _code_default_keys():
         environment.pop(key, None)
+    environment.pop("NUMOJ_ENVIRONMENT", None)
     environment.update(process_overrides or {})
     environment["PYTHONPATH"] = str(tmp_path)
     return subprocess.run(
-        [sys.executable, "-B", "-c", f"import config; print({expression})"],
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            f"from oj_modules import config; print({expression})",
+        ],
         cwd=tmp_path,
         env=environment,
         capture_output=True,
@@ -89,6 +103,40 @@ def test_config_imports_code_defaults_without_private_env(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "('oj', False, 'int', False)"
+
+
+def test_development_vibehub_defaults_remain_local_daemon_compatible(tmp_path):
+    result = _run_config_import(
+        tmp_path,
+        process_overrides={"NUMOJ_ENVIRONMENT": "development"},
+        expression=(
+            "(config.VIBEHUB_OCI_RUNTIME, config.VIBEHUB_BUILD_BUILDER, "
+            "config.VIBEHUB_REQUIRE_DEDICATED_BUILDER, "
+            "config.VIBEHUB_BASE_OCI_LAYOUT_ROOT)"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "('', '', False, '.deploy/vibehub-base-oci')"
+
+
+def test_production_vibehub_defaults_do_not_require_private_env_entries(tmp_path):
+    result = _run_config_import(
+        tmp_path,
+        process_overrides={"NUMOJ_ENVIRONMENT": "production"},
+        expression=(
+            "(config.VIBEHUB_OCI_RUNTIME, config.VIBEHUB_BUILD_BUILDER, "
+            "config.VIBEHUB_REQUIRE_DEDICATED_BUILDER, "
+            "config.VIBEHUB_BASE_OCI_LAYOUT_ROOT, "
+            "sorted(key for key in config.ENV_FILE_KEYS "
+            "if key.startswith('VIBEHUB_')))"
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "('runsc', 'numoj-vibehub', True, '.deploy/vibehub-base-oci', [])"
+    )
 
 
 def test_logging_code_defaults_are_strictly_typed(tmp_path):
@@ -234,7 +282,7 @@ def test_logging_process_environment_has_priority_over_env_file(tmp_path):
     ),
 )
 def test_env_str_list_accepts_only_string_arrays(monkeypatch, raw_value):
-    import config
+    from oj_modules import config
 
     monkeypatch.setitem(config._config_values, "TEST_LOG_CIDRS", raw_value)
 
@@ -243,7 +291,7 @@ def test_env_str_list_accepts_only_string_arrays(monkeypatch, raw_value):
 
 @pytest.mark.parametrize("raw_value", ('"10.0.0.0/8"', '["10.0.0.0/8", 7]', '{}'))
 def test_env_str_list_rejects_non_string_arrays(monkeypatch, raw_value):
-    import config
+    from oj_modules import config
 
     monkeypatch.setitem(config._config_values, "TEST_LOG_CIDRS", raw_value)
 
@@ -322,8 +370,7 @@ def test_legacy_config_local_is_not_executed(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "oj"
-    pycache = tmp_path / "__pycache__"
-    assert not list(pycache.glob("config_local*.pyc"))
+    assert not list(tmp_path.rglob("config_local*.pyc"))
 
 
 def test_template_contains_exactly_the_nine_deployment_keys():
@@ -341,7 +388,7 @@ def test_template_contains_exactly_the_nine_deployment_keys():
 
 
 def test_every_typed_config_key_is_declared():
-    source = (ROOT / "config.py").read_text(encoding="utf-8")
+    source = CONFIG_PATH.read_text(encoding="utf-8")
     helper_names = {
         "_env_str",
         "_env_optional_str",

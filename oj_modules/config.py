@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import re
 
+from oj_modules.project_paths import PROJECT_ROOT
 
-_ROOT = Path(__file__).resolve().parent
+
+_ROOT = PROJECT_ROOT
 _ENV_TEMPLATE_PATH = _ROOT / ".env.tmpl"
 _ENV_PATH = _ROOT / ".env"
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -273,6 +275,17 @@ _CODE_DEFAULTS: dict[str, str] = {
     "REVERSE_TRACE_MAX_ATTEMPTS": "8",
     "REVERSE_TRACE_MIN_DELETE_AGE_SECONDS": "21600",
 }
+
+# 本地开发保持对普通 Docker Desktop / daemon 的兼容；正式部署由 deploy.sh
+# 固定 NUMOJ_ENVIRONMENT=production，从这里取得无需写入 .env 的安全默认值。
+if os.environ.get("NUMOJ_ENVIRONMENT", "development").strip().lower() == "production":
+    _CODE_DEFAULTS.update(
+        {
+            "VIBEHUB_OCI_RUNTIME": '"runsc"',
+            "VIBEHUB_BUILD_BUILDER": '"numoj-vibehub"',
+            "VIBEHUB_REQUIRE_DEDICATED_BUILDER": "true",
+        }
+    )
 
 _template_values = _read_env_file(_ENV_TEMPLATE_PATH, required=True)
 if frozenset(_template_values) != _REQUIRED_ENV_KEYS:

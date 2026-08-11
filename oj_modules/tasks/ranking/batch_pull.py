@@ -25,7 +25,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import config as _cfg
+from oj_modules import config as _cfg
 from oj_modules.db_services import get_users_in_classes
 from oj_modules.infrastructure.redis import create_optional_redis_client
 from oj_modules.ranking.batch import (
@@ -48,7 +48,7 @@ from oj_modules.ranking.db import (
 PROBE_TASK_NAME = 'oj.ranking_batch_probe'
 RUN_TASK_NAME = 'oj.ranking_batch_run'
 
-# 配置（getattr 回退，远端 config.py 无需改动）
+# 配置（getattr 回退，远端 oj_modules/config.py 无需改动）
 PROBE_CONCURRENCY = max(1, int(getattr(_cfg, 'RANKING_BATCH_PROBE_CONCURRENCY', 12)))
 PROBE_MAX_USERS = int(getattr(_cfg, 'RANKING_BATCH_PROBE_MAX_USERS', 1000))
 CLONE_ZIP_MAX_BYTES = int(getattr(_cfg, 'RANKING_BATCH_CLONE_ZIP_MAX_BYTES', 128 * 1024 * 1024))

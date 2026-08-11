@@ -402,6 +402,7 @@ def test_deploy_fails_closed_without_private_production_config():
     database_backup = script.index("phase='创建并验证数据库回滚点'")
     assert config_check < dependency_install < image_build < backup_plan
     assert backup_plan < database_backup
+    assert "export NUMOJ_ENVIRONMENT=production" in script
     assert 'ENV_FILE="$ROOT_DIR/.env"' in script
     assert 'deploy/preflight.py validate-config "$ENV_FILE"' in script
     assert "VIBEHUB_OCI_RUNTIME" in preflight

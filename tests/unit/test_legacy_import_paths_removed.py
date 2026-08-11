@@ -1,5 +1,6 @@
 """旧目录布局不再提供 Python 导入兼容层。"""
 
+import ast
 import importlib
 import importlib.util
 from pathlib import Path
@@ -87,7 +88,32 @@ def test_oj_modules_root_only_keeps_explicit_transition_seams():
         path.name
         for path in (ROOT / "oj_modules").glob("*.py")
     }
-    assert root_modules == {"__init__.py", "db_services.py", "project_paths.py"}
+    assert root_modules == {
+        "__init__.py",
+        "config.py",
+        "db_services.py",
+        "project_paths.py",
+    }
+    assert not (ROOT / "config.py").exists()
+
+
+def test_python_sources_use_the_packaged_config_module():
+    candidates = [ROOT / "oj.py"]
+    for directory in ("oj_modules", "deploy", "scripts", "tests"):
+        candidates.extend((ROOT / directory).rglob("*.py"))
+
+    legacy_imports = []
+    for path in candidates:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(
+                alias.name == "config" for alias in node.names
+            ):
+                legacy_imports.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+            if isinstance(node, ast.ImportFrom) and node.module == "config":
+                legacy_imports.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+
+    assert legacy_imports == []
 
 
 def test_packages_do_not_reexport_former_compatibility_symbols():

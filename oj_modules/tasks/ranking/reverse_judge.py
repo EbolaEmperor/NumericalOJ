@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     class Retry(Exception):
         pass
 
-import config as _cfg
+from oj_modules import config as _cfg
 from oj_modules.shared.archive import (
     ArchiveExtractionError,
     ZipExtractionPolicy,

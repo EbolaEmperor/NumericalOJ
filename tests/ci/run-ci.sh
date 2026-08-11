@@ -25,7 +25,7 @@ mkdir -p \
   logs/supervisor logs/services
 
 # CI 镜像的 .dockerignore 禁止复制本地 .env。GitHub Actions 与 Compose 分别
-# 通过环境变量注入各自网络拓扑，所有模块始终读取同一份 tracked config.py。
+# 通过环境变量注入各自网络拓扑，所有模块始终读取同一份 tracked oj_modules/config.py。
 # 真实 AI 链路默认 skip；不要把生产密钥挂进 CI。
 export OJ_LIVE_AI=0
 echo ">>> CI 使用占位符 AI 配置，AI live 测试将 skip (OJ_LIVE_AI=0)"

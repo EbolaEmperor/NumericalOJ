@@ -19,7 +19,7 @@ import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
 
-from config import (
+from oj_modules.config import (
     AGENT_CONTAINER_SITE_URL,
     AGENT_JUDGE_CPU_LIMIT,
     AGENT_JUDGE_DOCKER_IMAGE,
