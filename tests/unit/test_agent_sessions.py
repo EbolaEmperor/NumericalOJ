@@ -59,7 +59,11 @@ def test_only_one_continuation_can_claim_a_terminal_session(monkeypatch):
     """第一次续聊把状态切回 Pending 后，竞争者必须在行锁内被拒绝。"""
 
     winner = _ScriptedConnection(
-        one_values=[{"status": "Completed", "turn_count": 1}],
+        one_values=[{
+            "status": "Completed",
+            "turn_count": 1,
+            "requested_by": "admin",
+        }],
     )
     loser = _ScriptedConnection(
         one_values=[{"status": "Pending", "turn_count": 2}],
@@ -116,7 +120,7 @@ def test_create_session_persists_the_first_turn_runtime_base(monkeypatch):
     )
 
     calls = connection.cursor_instance.calls
-    assert len(calls) == 2
+    assert len(calls) == 3
     query, params = calls[1]
     assert "base_runtime_checkpoint_id" in query
     assert "base_native_session_id" in query
@@ -128,6 +132,8 @@ def test_create_session_persists_the_first_turn_runtime_base(monkeypatch):
         "checkpoint-initial",
         "native-initial",
     )
+    assert "INSERT INTO agent_session_messages" in calls[2][0]
+    assert "'turn', 'dispatching'" in calls[2][0]
     assert connection.commits == 1
 
 
@@ -255,9 +261,25 @@ def test_retry_clones_current_turn_and_rolls_back_to_recorded_base(
         "base_native_session_id": "native-before-failure",
         "retry_of_task_id": "turn-failed",
         "replaced_task_id": "turn-failed",
+        "agent_message": {
+            "message_id": "turn-retry",
+            "session_id": "session-retry",
+            "created_by": "admin",
+            "user_message": "请修复最后一个问题",
+            "attachments": [{"name": "case.txt"}],
+            "delivery_mode": "turn",
+            "status": "dispatching",
+            "target_task_id": "turn-retry",
+            "final_task_id": "turn-retry",
+            "queue_position": 0,
+            "error_message": "",
+            "delivered_at": None,
+            "created_at": None,
+            "updated_at": None,
+        },
     }
     calls = connection.cursor_instance.calls
-    assert len(calls) == 5
+    assert len(calls) == 7
     assert "FROM agent_sessions" in calls[0][0]
     assert "FOR UPDATE" in calls[0][0]
     assert "FROM agent_session_turns" in calls[1][0]
@@ -279,8 +301,13 @@ def test_retry_clones_current_turn_and_rolls_back_to_recorded_base(
         "native-before-failure",
         "turn-failed",
     )
-    assert "native_session_id=NULLIF(%s, '')" in calls[4][0]
-    assert calls[4][1] == (
+    assert "MAX(queue_position)" in calls[4][0]
+    assert "INSERT INTO agent_session_messages" in calls[5][0]
+    assert calls[5][1][0] == "turn-retry"
+    assert calls[5][1][1] == "session-retry"
+    assert calls[5][1][6:8] == ("turn-retry", "turn-retry")
+    assert "native_session_id=NULLIF(%s, '')" in calls[6][0]
+    assert calls[6][1] == (
         "turn-retry",
         "native-before-failure",
         5,
@@ -377,6 +404,7 @@ def test_retry_legacy_first_turn_uses_fallback_and_empty_native(monkeypatch):
             "current_task_id": "legacy-first",
             "status": "Completed",
             "turn_count": 1,
+            "requested_by": "admin",
         },
         {
             "task_id": "legacy-first",
@@ -404,7 +432,7 @@ def test_retry_legacy_first_turn_uses_fallback_and_empty_native(monkeypatch):
     )
     assert claim["base_native_session_id"] == ""
     assert claim["native_session_id"] == ""
-    assert connection.cursor_instance.calls[4][1][1] == ""
+    assert connection.cursor_instance.calls[6][1][1] == ""
 
 
 def test_retry_rejects_unknown_nonfirst_legacy_base(monkeypatch):
@@ -468,6 +496,34 @@ def test_retry_rejects_stale_expected_task_under_session_lock(monkeypatch):
     assert connection.rollbacks == 1
 
 
+def test_retry_cannot_overtake_a_persistent_queue(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{
+        "current_task_id": "turn-failed",
+        "status": "Failed",
+        "turn_count": 2,
+        "has_pending_queue": 1,
+    }])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="已有排队消息",
+    ):
+        sessions.begin_agent_session_retry(
+            "session-with-queue",
+            "turn-retry",
+            "turn-failed",
+            "checkpoint-fallback",
+        )
+
+    assert len(connection.cursor_instance.calls) == 1
+    assert "agent_session_messages AS queued_message" in (
+        connection.cursor_instance.calls[0][0]
+    )
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
 def test_retry_rejects_cleanup_failed_session_before_reading_turn(monkeypatch):
     connection = _ScriptedConnection(one_values=[{
         "current_task_id": "turn-cleanup-failed",
@@ -492,6 +548,31 @@ def test_retry_rejects_cleanup_failed_session_before_reading_turn(monkeypatch):
     assert connection.rollbacks == 1
 
 
+def test_retry_runtime_restore_failure_closes_outbox_and_pauses_queue(monkeypatch):
+    connection = _ScriptedConnection()
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    sessions.mark_agent_turn_runtime_restore_failed(
+        "session-retry",
+        "turn-retry",
+        "runtime checkpoint 损坏",
+    )
+
+    calls = connection.cursor_instance.calls
+    assert len(calls) == 3
+    assert "UPDATE agent_session_turns" in calls[0][0]
+    assert "queue_paused=1" in calls[1][0]
+    assert calls[1][1] == (
+        "runtime checkpoint 损坏",
+        "runtime checkpoint 损坏",
+        "session-retry",
+        "turn-retry",
+    )
+    assert "UPDATE agent_session_messages" in calls[2][0]
+    assert "status='failed'" in calls[2][0]
+    assert connection.commits == 1
+
+
 def test_cleanup_failed_is_nonterminal_and_blocks_resume(monkeypatch):
     connection = _ScriptedConnection(
         one_values=[{"status": "CleanupFailed", "turn_count": 3}],
@@ -512,6 +593,32 @@ def test_cleanup_failed_is_nonterminal_and_blocks_resume(monkeypatch):
     assert connection.rollbacks == 1
 
 
+def test_direct_turn_cannot_overtake_persistent_queue(monkeypatch):
+    connection = _ScriptedConnection(
+        one_values=[{
+            "status": "Completed",
+            "turn_count": 1,
+            "has_pending_queue": 1,
+        }],
+    )
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        sessions.AgentSessionBusyError,
+        match="已有排队消息",
+    ):
+        sessions.begin_agent_session_turn(
+            "session-with-queue",
+            task_id="turn-overtake",
+            user_message="不能越过队首",
+        )
+
+    assert len(connection.cursor_instance.calls) == 1
+    assert "agent_session_messages AS queued_message" in connection.cursor_instance.calls[0][0]
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
 def test_unchanged_empty_turn_attachments_confirm_the_current_cas_row(monkeypatch):
     """MySQL 的 changed-rows=0 不应把 [] -> [] 误报为换轮竞态。"""
 
@@ -528,13 +635,15 @@ def test_unchanged_empty_turn_attachments_confirm_the_current_cas_row(monkeypatc
     ) is True
 
     calls = connection.cursor_instance.calls
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert "UPDATE agent_session_turns AS t" in calls[0][0]
     assert calls[0][1] == ("[]", "session-empty", "turn-empty", "turn-empty")
     assert "SELECT t.attachments_json" in calls[1][0]
     assert "s.current_task_id=%s AND LOWER(s.status)='pending'" in calls[1][0]
     assert "FOR UPDATE" in calls[1][0]
     assert calls[1][1] == ("session-empty", "turn-empty", "turn-empty")
+    assert "UPDATE agent_session_messages" in calls[2][0]
+    assert calls[2][1] == ("[]", "session-empty", "turn-empty")
     assert connection.commits == 1
     assert connection.rollbacks == 0
     assert connection.closed is True
@@ -649,10 +758,13 @@ def test_cleanup_failure_can_escalate_a_canceled_session(monkeypatch):
 
     assert changed is True
     queries = [query for query, _params in connection.cursor_instance.calls]
-    assert len(queries) == 3
+    assert len(queries) == 6
     assert "FOR UPDATE" in queries[0]
     assert "UPDATE agent_sessions" in queries[1]
     assert "UPDATE agent_session_turns" in queries[2]
+    assert "UPDATE agent_session_messages" in queries[3]
+    assert "delivery_mode='steer'" in queries[4]
+    assert "delivery_mode='steer'" in queries[5]
     assert connection.commits == 1
 
 

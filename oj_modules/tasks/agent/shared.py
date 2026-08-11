@@ -23,6 +23,7 @@ AGENT_GENERATE_TESTDATA_TASK_NAME = "oj.agent.generate_testdata"
 AGENT_RUN_TURN_TASK_NAME = "oj.agent.run_turn"
 _agent_progress_rds = None
 _agent_progress_blocking_rds = None
+_agent_queue_dispatch_task = None
 _AGENT_PROGRESS_TTL_SECONDS = int(SUBMISSION_SNAPSHOT_TTL_SECONDS)
 _STICKY_AGENT_RUN_STATUSES = frozenset({
     "completed",
@@ -72,6 +73,29 @@ def init_agent_progress_cache(redis_client, ttl_seconds=None, blocking_client=No
             _AGENT_PROGRESS_TTL_SECONDS = max(300, int(ttl_seconds))
         except Exception:
             pass
+
+
+def init_agent_queue_dispatcher(dispatch_task):
+    """注入会话 FIFO 调度任务，避免执行任务反向导入应用组合根。"""
+
+    global _agent_queue_dispatch_task
+    _agent_queue_dispatch_task = dispatch_task
+
+
+def _dispatch_completed_agent_session(state):
+    if _agent_queue_dispatch_task is None or not isinstance(state, dict):
+        return
+    if str(state.get("status") or "").strip().lower() != "completed":
+        return
+    session_id = str(state.get("session_id") or "").strip()
+    if not session_id:
+        return
+    try:
+        _agent_queue_dispatch_task.apply_async(args=(session_id,))
+    except Exception:
+        # MySQL 中 queued/dispatching 消息仍是事实来源；周期恢复会以固定
+        # task_id 重投，不把一次 broker 瞬时故障改写为业务失败。
+        pass
 
 
 def _ensure_agent_progress_redis():
@@ -271,6 +295,7 @@ def _persist_agent_state(state):
     # 带 session_id 的状态已由 upsert_agent_run_snapshot 在同一 MySQL 事务
     # 原子投影；旧任务没有 session_id，继续只写兼容表。
     _publish_agent_snapshot(state)
+    _dispatch_completed_agent_session(state)
 
 
 def _update_agent_state(state, message=None, **updates):
@@ -364,6 +389,85 @@ def existing_agent_terminal_result(task_id):
     }
 
 
+def finalize_unhandled_agent_failure(
+    state,
+    exc,
+    *,
+    task_label="Agent",
+    update_state=None,
+    terminal_result_reader=None,
+    cancellation_check=None,
+    canceled_result_factory=None,
+):
+    """尽最大努力把 Celery 入口未处理异常投影为会话失败终态。"""
+
+    state = state if isinstance(state, dict) else {}
+    task_id = str(state.get("task_id") or "")
+    read_terminal = terminal_result_reader or existing_agent_terminal_result
+    is_canceled = cancellation_check or agent_run_is_canceled
+    canceled_result = canceled_result_factory or canceled_agent_task_result
+    persist = update_state or _update_agent_state
+
+    try:
+        existing = read_terminal(task_id)
+    except Exception:
+        existing = None
+    if existing is not None:
+        return existing
+    try:
+        if is_canceled(task_id):
+            return canceled_result(task_id)
+    except Exception:
+        pass
+
+    detail = str(exc).strip() or exc.__class__.__name__
+    message = f"{str(task_label or 'Agent')} worker 异常：{detail[:800]}"
+    conclusion = str(state.get("conclusion") or "")
+    for _attempt in range(2):
+        try:
+            persist(
+                state,
+                message,
+                status="Failed",
+                stage="finished",
+                harness_status="error",
+                conclusion=conclusion,
+            )
+        except Exception:
+            continue
+        try:
+            existing = read_terminal(task_id)
+        except Exception:
+            existing = None
+        if existing is not None:
+            return existing
+        return {
+            "success": False,
+            "message": message,
+            "task_id": task_id,
+        }
+
+    # 快照表持续不可写时仍独立尝试会话 CAS，避免当前轮永久保持 Running。
+    state.update({
+        "status": "Failed",
+        "message": message,
+        "stage": "finished",
+        "harness_status": "error",
+        "conclusion": conclusion,
+    })
+    try:
+        from oj_modules.agents.sessions import sync_agent_session_state
+
+        sync_agent_session_state(state)
+    except Exception:
+        pass
+    return {
+        "success": False,
+        "message": message,
+        "task_id": task_id,
+    }
+
+
 def cancel_agent_run(task_id, message="任务已由管理员终止"):
     """先持久化终止标记，再将终态原子发布到 Redis/SSE。"""
 
@@ -403,10 +507,12 @@ __all__ = [
     "AGENT_SOLVE_TASK_NAME",
     "AGENT_GENERATE_TESTDATA_TASK_NAME",
     "init_agent_progress_cache",
+    "init_agent_queue_dispatcher",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
     "agent_run_is_canceled",
     "canceled_agent_task_result",
     "existing_agent_terminal_result",
+    "finalize_unhandled_agent_failure",
     "cancel_agent_run",
 ]

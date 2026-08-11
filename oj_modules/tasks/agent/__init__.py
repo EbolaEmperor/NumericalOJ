@@ -5,26 +5,34 @@ from importlib import import_module
 
 __all__ = [
     "AGENT_GENERATE_TESTDATA_TASK_NAME",
+    "AGENT_QUEUE_DISPATCH_TASK_NAME",
+    "AGENT_QUEUE_RECOVERY_TASK_NAME",
     "AGENT_RUN_TURN_TASK_NAME",
     "AGENT_SOLVE_TASK_NAME",
     "build_agent_run_terminator",
     "get_agent_run_snapshot",
     "init_agent_progress_cache",
+    "init_agent_queue_dispatcher",
     "register_agent_generate_testdata_task",
     "register_agent_run_turn_task",
+    "register_agent_queue_tasks",
     "register_agent_solve_problem_task",
     "subscribe_agent_run_events",
 ]
 
 _REGISTRY_EXPORTS = {
     "AGENT_GENERATE_TESTDATA_TASK_NAME": "AGENT_GENERATE_TESTDATA_TASK_NAME",
+    "AGENT_QUEUE_DISPATCH_TASK_NAME": "AGENT_QUEUE_DISPATCH_TASK_NAME",
+    "AGENT_QUEUE_RECOVERY_TASK_NAME": "AGENT_QUEUE_RECOVERY_TASK_NAME",
     "AGENT_RUN_TURN_TASK_NAME": "AGENT_RUN_TURN_TASK_NAME",
     "AGENT_SOLVE_TASK_NAME": "AGENT_SOLVE_TASK_NAME",
     "build_agent_run_terminator": "build_agent_run_terminator",
     "get_agent_run_snapshot": "get_agent_run_snapshot",
     "init_agent_progress_cache": "init_agent_progress_cache",
+    "init_agent_queue_dispatcher": "init_agent_queue_dispatcher",
     "register_agent_generate_testdata_task": "register_agent_generate_testdata_task",
     "register_agent_run_turn_task": "register_agent_run_turn_task",
+    "register_agent_queue_tasks": "register_agent_queue_tasks",
     "register_agent_solve_problem_task": "register_agent_solve_problem_task",
     "subscribe_agent_run_events": "subscribe_agent_run_events",
 }

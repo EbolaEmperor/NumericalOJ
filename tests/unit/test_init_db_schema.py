@@ -243,6 +243,41 @@ def test_agent_session_turn_schema_declares_retry_lineage_and_runtime_base():
     assert "idx_agent_turns_superseded_by" in turns.indexes
 
 
+def test_agent_session_queue_schema_is_additive_and_indexed():
+    from scripts import init_db_schema
+
+    specs = init_db_schema._load_schema_specs()
+    sessions = specs["agent_sessions"]
+    messages = specs["agent_session_messages"]
+
+    assert sessions.columns["queue_paused"].lower() == (
+        "tinyint(1) not null default '0'"
+    )
+    assert sessions.columns["queue_pause_reason"].lower() == "text"
+    assert sessions.columns["fresh_native_session_pending"].lower() == (
+        "tinyint(1) not null default '0'"
+    )
+    assert messages.columns["delivery_mode"].lower() == "varchar(16) not null"
+    assert messages.columns["status"].lower() == (
+        "varchar(16) not null default 'queued'"
+    )
+    assert messages.columns["dispatch_payload_json"].lower() == "longtext"
+    assert messages.columns["dispatch_attempt_id"].lower() == (
+        "varchar(64) default null"
+    )
+    assert messages.columns["dispatch_attempted_at"].lower() == (
+        "datetime default null"
+    )
+    assert messages.columns["broker_enqueued_at"].lower() == (
+        "datetime default null"
+    )
+    assert "uniq_agent_message_id" in messages.indexes
+    assert "uniq_agent_message_final_task" in messages.indexes
+    assert "idx_agent_messages_session_queue" in messages.indexes
+    assert "idx_agent_messages_delivery_status" in messages.indexes
+    assert "idx_agent_messages_dispatch_recovery" in messages.indexes
+
+
 def test_empty_database_dry_run_plans_full_schema_without_connecting_to_it(monkeypatch):
     from scripts import init_db_schema
 

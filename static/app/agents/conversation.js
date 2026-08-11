@@ -16,8 +16,16 @@
   var pollingTimer = null;
   var workspaceTimer = null;
   var currentState = readJson('[data-agent-current-state-json]', {});
-  var blocked = root.dataset.blocked === 'true'
+  var messageState = readJson('[data-agent-message-state-json]', {});
+  var messageStream = null;
+  var messagePollingTimer = null;
+  var messagePollingDueAt = 0;
+  var queuePaused = root.dataset.queuePaused === 'true';
+  var hardBlocked = !canResume || legacySession
     || isBlockedStatus(currentState && currentState.status);
+  var blocked = root.dataset.blocked === 'true' || hardBlocked;
+  var steerSupported = root.dataset.steerSupported !== 'false';
+  var steerUnavailableReason = asText(root.dataset.steerUnavailableReason).trim();
 
   var conversationScroll = root.querySelector('[data-agent-conversation-scroll]');
   var turnsRoot = root.querySelector('[data-agent-turns]');
@@ -39,8 +47,16 @@
   var resumeFile = root.querySelector('[data-agent-resume-file]');
   var resumeAttachments = root.querySelector('[data-agent-resume-attachments]');
   var resumeSend = root.querySelector('[data-agent-resume-send]');
+  var steerButton = root.querySelector('[data-agent-resume-steer]');
   var stopButton = root.querySelector('[data-agent-stop]');
   var resumeFeedback = root.querySelector('[data-agent-resume-feedback]');
+  var queuePanel = root.querySelector('[data-agent-queue-panel]');
+  var queueList = root.querySelector('[data-agent-queue-list]');
+  var queueCount = root.querySelector('[data-agent-queue-count]');
+  var queuePausedBanner = root.querySelector('[data-agent-queue-paused-banner]');
+  var queuePauseReason = root.querySelector('[data-agent-queue-pause-reason]');
+  var queueResumeButton = root.querySelector('[data-agent-queue-resume]');
+  var liveSteers = root.querySelector('[data-agent-live-steers]');
   var workspacePane = root.querySelector('[data-agent-workspace]');
   var workspaceTree = root.querySelector('[data-agent-workspace-tree]');
   var workspaceSync = root.querySelector('[data-agent-workspace-sync]');
@@ -54,7 +70,18 @@
 
   var resumeFiles = [];
   var resumePending = false;
+  var resumeMessageId = '';
+  var resumeMessageFingerprint = '';
+  var resumeDeliveryMode = '';
+  var resumeExpectedTaskId = '';
+  var retryMessageId = '';
+  var retryExpectedTaskId = '';
   var stopPending = false;
+  var queueMutationPending = false;
+  var draggedQueueMessageId = '';
+  var queueSignature = '';
+  var taskTransitionProbePending = false;
+  var steerSignature = '';
   var traceSignature = '';
   var treeSignature = '';
   var workspaceFetchGeneration = 0;
@@ -238,6 +265,545 @@
     resumeFeedback.classList.toggle('is-error', isError === true);
   }
 
+  function messageUrl(template, messageId) {
+    return asText(template).split('__MESSAGE_ID__').join(encodeURIComponent(messageId));
+  }
+
+  function newClientMessageId(prefix) {
+    if (global.crypto && typeof global.crypto.randomUUID === 'function') {
+      return global.crypto.randomUUID().replace(/-/g, '');
+    }
+    return asText(prefix || 'msg') + Date.now().toString(36)
+      + Math.random().toString(36).slice(2);
+  }
+
+  function messageIdentifier(message) {
+    return asText(message && (message.message_id || message.id)).trim();
+  }
+
+  function messageDeliveryMode(message) {
+    return statusKey(message && (message.delivery_mode || message.mode) || '');
+  }
+
+  function messageDeliveryStatus(message) {
+    return statusKey(message && message.status || 'queued');
+  }
+
+  function messageCopy(message) {
+    return asText(message && (
+      message.user_message != null ? message.user_message
+        : message.message != null ? message.message
+          : message.text
+    ));
+  }
+
+  function messageAttachments(message) {
+    return Array.isArray(message && message.attachments) ? message.attachments : [];
+  }
+
+  function uniqueMessages(messages) {
+    var seen = new Set();
+    return (Array.isArray(messages) ? messages : []).filter(function (message) {
+      var id = messageIdentifier(message);
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }
+
+  function stateMessages(state) {
+    state = state && typeof state === 'object' ? state : {};
+    var messages = Array.isArray(state.messages) ? state.messages.slice() : [];
+    ['queued_messages', 'steer_messages'].forEach(function (key) {
+      if (Array.isArray(state[key])) messages = messages.concat(state[key]);
+    });
+    return uniqueMessages(messages);
+  }
+
+  function queuedMessages(state) {
+    var source = Array.isArray(state && state.queued_messages)
+      ? state.queued_messages : stateMessages(state).filter(function (message) {
+        return messageDeliveryMode(message) === 'queue';
+      });
+    return uniqueMessages(source).filter(function (message) {
+      var status = messageDeliveryStatus(message);
+      return status === 'queued' || status === 'dispatching';
+    }).sort(function (left, right) {
+      var leftPosition = Number(left.queue_position);
+      var rightPosition = Number(right.queue_position);
+      if (Number.isFinite(leftPosition) && Number.isFinite(rightPosition) && leftPosition !== rightPosition) {
+        return leftPosition - rightPosition;
+      }
+      return asText(left.created_at).localeCompare(asText(right.created_at));
+    });
+  }
+
+  function steerMessages(state) {
+    var source = Array.isArray(state && state.steer_messages)
+      ? state.steer_messages : stateMessages(state).filter(function (message) {
+        return messageDeliveryMode(message) === 'steer';
+      });
+    return uniqueMessages(source).filter(function (message) {
+      var targetTaskId = asText(message.target_task_id || message.final_task_id).trim();
+      return !targetTaskId || !currentTaskId || targetTaskId === currentTaskId;
+    });
+  }
+
+  function attachmentName(attachment) {
+    var path = asText(attachment && (attachment.path || attachment.workspace_path));
+    return asText(attachment && (attachment.name || attachment.filename))
+      || path.split('/').pop() || '附件';
+  }
+
+  function attachmentPath(attachment) {
+    return asText(attachment && (attachment.path || attachment.workspace_path));
+  }
+
+  function queueStatusLabel(message) {
+    var status = messageDeliveryStatus(message);
+    if (status === 'dispatching') return '准备发送';
+    return messageAttachments(message).length
+      ? messageAttachments(message).length + ' 个附件' : '等待上一轮结束';
+  }
+
+  function setQueueItemPending(item, value) {
+    if (item) item.classList.toggle('is-pending', value === true);
+  }
+
+  function mutationResponse(response, fallbackMessage) {
+    return response.json().catch(function () { return {}; }).then(function (payload) {
+      if (!response.ok || !payload || payload.success === false) {
+        throw new Error(asText(payload && payload.message) || fallbackMessage);
+      }
+      return payload;
+    });
+  }
+
+  function responseMessageState(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    return payload.session_state || payload.session || payload.state || null;
+  }
+
+  function replaceMessageInLocalState(message) {
+    if (!message || typeof message !== 'object') return;
+    var id = messageIdentifier(message);
+    if (!id) return;
+    var messages = stateMessages(messageState).filter(function (candidate) {
+      return messageIdentifier(candidate) !== id;
+    });
+    messages.push(message);
+    var queued = queuedMessages(messageState).filter(function (candidate) {
+      return messageIdentifier(candidate) !== id;
+    });
+    var steers = steerMessages(messageState).filter(function (candidate) {
+      return messageIdentifier(candidate) !== id;
+    });
+    if (messageDeliveryMode(message) === 'queue') queued.push(message);
+    if (messageDeliveryMode(message) === 'steer') steers.push(message);
+    messageState = Object.assign({}, messageState, {
+      messages: messages,
+      queued_messages: queued,
+      steer_messages: steers
+    });
+  }
+
+  function removeMessageFromLocalState(messageId) {
+    messageState = Object.assign({}, messageState, {
+      messages: stateMessages(messageState).filter(function (message) {
+        return messageIdentifier(message) !== messageId;
+      }),
+      queued_messages: queuedMessages(messageState).filter(function (message) {
+        return messageIdentifier(message) !== messageId;
+      }),
+      steer_messages: steerMessages(messageState).filter(function (message) {
+        return messageIdentifier(message) !== messageId;
+      })
+    });
+  }
+
+  function queueActionButton(className, iconClass, label) {
+    var button = createElement('button', className);
+    button.type = 'button';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.innerHTML = '<i class="' + iconClass + '" aria-hidden="true"></i>';
+    return button;
+  }
+
+  function queueEditor(item, message) {
+    if (hardBlocked || !item || item.querySelector('[data-agent-queue-editor]')) return;
+    var editor = createElement('form', 'agent-queue-editor');
+    editor.setAttribute('data-agent-queue-editor', '');
+    var textarea = document.createElement('textarea');
+    textarea.name = 'message';
+    textarea.maxLength = 100000;
+    textarea.required = true;
+    textarea.value = messageCopy(message);
+    textarea.setAttribute('aria-label', '编辑排队消息');
+    editor.appendChild(textarea);
+
+    var removedPaths = new Set();
+    var attachments = messageAttachments(message);
+    if (attachments.length) {
+      var attachmentRoot = createElement('div', 'agent-queue-editor-attachments');
+      attachments.forEach(function (attachment) {
+        var path = attachmentPath(attachment);
+        var chip = createElement('span', 'agent-queue-edit-attachment');
+        var name = createElement('span', '', attachmentName(attachment));
+        name.title = attachmentName(attachment);
+        var remove = queueActionButton('', 'fas fa-times', '移除附件 ' + attachmentName(attachment));
+        remove.addEventListener('click', function () {
+          var removed = !removedPaths.has(path);
+          if (removed) removedPaths.add(path);
+          else removedPaths.delete(path);
+          chip.classList.toggle('is-removed', removed);
+          remove.setAttribute('aria-label', (removed ? '恢复附件 ' : '移除附件 ') + attachmentName(attachment));
+        });
+        chip.append(name, remove);
+        attachmentRoot.appendChild(chip);
+      });
+      editor.appendChild(attachmentRoot);
+    }
+
+    var footer = createElement('div', 'agent-queue-editor-footer');
+    var addLabel = document.createElement('label');
+    var addInput = document.createElement('input');
+    addInput.type = 'file';
+    addInput.name = 'attachments';
+    addInput.multiple = true;
+    addInput.className = 'visually-hidden';
+    addLabel.innerHTML = '<i class="fas fa-paperclip" aria-hidden="true"></i><span>添加附件</span>';
+    addLabel.appendChild(addInput);
+    addInput.addEventListener('change', function () {
+      var count = addInput.files ? addInput.files.length : 0;
+      var label = addLabel.querySelector('span');
+      if (label) label.textContent = count ? '新增 ' + count + ' 个附件' : '添加附件';
+    });
+    var buttons = document.createElement('div');
+    var cancel = createElement('button', '', '取消');
+    cancel.type = 'button';
+    var save = createElement('button', '', '保存');
+    save.type = 'submit';
+    buttons.append(cancel, save);
+    footer.append(addLabel, buttons);
+    editor.appendChild(footer);
+
+    var summary = item.querySelector('[data-agent-queue-summary]');
+    var actions = item.querySelector('[data-agent-queue-actions]');
+    if (summary) summary.hidden = true;
+    if (actions) actions.hidden = true;
+    item.classList.add('is-editing');
+    item.appendChild(editor);
+    global.requestAnimationFrame(function () { textarea.focus(); });
+
+    function closeEditor() {
+      editor.remove();
+      item.classList.remove('is-editing');
+      if (summary) summary.hidden = false;
+      if (actions) actions.hidden = false;
+    }
+
+    cancel.addEventListener('click', closeEditor);
+    editor.addEventListener('submit', function (event) {
+      event.preventDefault();
+      if (hardBlocked) return;
+      var value = textarea.value.trim();
+      var endpoint = messageUrl(root.dataset.queueUpdateUrlTemplate, messageIdentifier(message));
+      if (!endpoint || !value) return;
+      var body = new FormData();
+      body.append('message', value);
+      removedPaths.forEach(function (path) { body.append('remove_attachment', path); });
+      Array.prototype.forEach.call(addInput.files || [], function (file) {
+        body.append('attachments', file, file.name);
+      });
+      setQueueItemPending(item, true);
+      global.fetch(endpoint, {
+        method: 'POST', body: body, headers: {'Accept': 'application/json'},
+        credentials: 'same-origin', mathCurveLoader: false
+      }).then(function (response) {
+        return mutationResponse(response, '保存排队消息失败');
+      }).then(function (payload) {
+        var state = responseMessageState(payload);
+        if (state) applyMessageState(state);
+        else {
+          replaceMessageInLocalState(payload.agent_message || payload.message_record || payload.message);
+          renderMessageQueue(messageState);
+        }
+      }).catch(function (error) {
+        setQueueItemPending(item, false);
+        setResumeFeedback(error.message || '保存排队消息失败。', true);
+      });
+    });
+  }
+
+  function deleteQueueMessage(item, message) {
+    if (hardBlocked) return;
+    var id = messageIdentifier(message);
+    var endpoint = messageUrl(root.dataset.queueDeleteUrlTemplate, id);
+    if (!endpoint || !id) return;
+    setQueueItemPending(item, true);
+    global.fetch(endpoint, {
+      method: 'POST', body: new FormData(), headers: {'Accept': 'application/json'},
+      credentials: 'same-origin', mathCurveLoader: false
+    }).then(function (response) {
+      return mutationResponse(response, '删除排队消息失败');
+    }).then(function (payload) {
+      var state = responseMessageState(payload);
+      if (state) applyMessageState(state);
+      else {
+        removeMessageFromLocalState(id);
+        renderMessageQueue(messageState);
+      }
+    }).catch(function (error) {
+      setQueueItemPending(item, false);
+      setResumeFeedback(error.message || '删除排队消息失败。', true);
+    });
+  }
+
+  function queueItem(message, index, movableIndex, movableTotal) {
+    var id = messageIdentifier(message);
+    var deliveryStatus = messageDeliveryStatus(message);
+    var movable = deliveryStatus === 'queued';
+    var item = createElement('li', 'agent-queue-item');
+    item.dataset.messageId = id;
+    item.dataset.deliveryStatus = deliveryStatus;
+    item.dataset.agentQueueItem = '';
+
+    var drag = queueActionButton('agent-queue-drag', 'fas fa-grip-vertical', '拖动调整顺序');
+    drag.draggable = true;
+    drag.dataset.agentQueueDrag = '';
+    drag.addEventListener('dragstart', function (event) {
+      if (hardBlocked || !movable || queueMutationPending) {
+        event.preventDefault();
+        return;
+      }
+      draggedQueueMessageId = id;
+      item.classList.add('is-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', id);
+      }
+    });
+    drag.addEventListener('dragend', function () {
+      draggedQueueMessageId = '';
+      queueList.querySelectorAll('.is-dragging, .is-drop-target').forEach(function (node) {
+        node.classList.remove('is-dragging', 'is-drop-target');
+      });
+    });
+
+    var body = createElement('div', 'agent-queue-body');
+    body.setAttribute('data-agent-queue-summary', '');
+    var copy = createElement('div', 'agent-queue-copy');
+    copy.append(createElement('span', 'agent-queue-position', String(index + 1).padStart(2, '0')), document.createTextNode(messageCopy(message)));
+    var meta = createElement('div', 'agent-queue-meta');
+    meta.appendChild(createElement('span', '', queueStatusLabel(message)));
+    if (message.error_message) {
+      var error = createElement('span', '', asText(message.error_message));
+      error.title = asText(message.error_message);
+      meta.appendChild(error);
+    }
+    body.append(copy, meta);
+
+    var actions = createElement('div', 'agent-queue-actions');
+    actions.setAttribute('data-agent-queue-actions', '');
+    var up = queueActionButton('agent-queue-mobile-move', 'fas fa-chevron-up', '向前移动');
+    var down = queueActionButton('agent-queue-mobile-move', 'fas fa-chevron-down', '向后移动');
+    up.disabled = !movable || movableIndex === 0;
+    down.disabled = !movable || movableIndex === movableTotal - 1;
+    up.addEventListener('click', function () { moveQueueMessage(id, -1); });
+    down.addEventListener('click', function () { moveQueueMessage(id, 1); });
+    var edit = queueActionButton('agent-queue-action', 'fas fa-pen', '编辑排队消息');
+    var remove = queueActionButton('agent-queue-action agent-queue-action--danger', 'fas fa-trash-alt', '删除排队消息');
+    edit.addEventListener('click', function () { queueEditor(item, message); });
+    remove.addEventListener('click', function () { deleteQueueMessage(item, message); });
+    if (hardBlocked || !movable) {
+      drag.disabled = up.disabled = down.disabled = edit.disabled = remove.disabled = true;
+    }
+    actions.append(up, down, edit, remove);
+    item.append(drag, body, actions);
+
+    item.addEventListener('dragover', function (event) {
+      if (hardBlocked || !movable || queueMutationPending
+          || !draggedQueueMessageId || draggedQueueMessageId === id) return;
+      event.preventDefault();
+      item.classList.add('is-drop-target');
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+    item.addEventListener('dragleave', function () { item.classList.remove('is-drop-target'); });
+    item.addEventListener('drop', function (event) {
+      event.preventDefault();
+      item.classList.remove('is-drop-target');
+      if (hardBlocked || !movable || queueMutationPending) return;
+      reorderQueueDom(draggedQueueMessageId, id, event.clientY > item.getBoundingClientRect().top + item.offsetHeight / 2);
+    });
+    return item;
+  }
+
+  function renderMessageQueue(state) {
+    if (!queuePanel || !queueList) return;
+    var messages = queuedMessages(state);
+    var signature = JSON.stringify([
+      hardBlocked,
+      queuePaused,
+      asText(state && state.queue_pause_reason),
+      messages.map(function (message) {
+        return [
+          messageIdentifier(message), messageDeliveryStatus(message),
+          message.queue_position, messageCopy(message), message.error_message,
+          messageAttachments(message)
+        ];
+      })
+    ]);
+    if (signature === queueSignature) return;
+    queueSignature = signature;
+    var movableIds = messages.filter(function (message) {
+      return messageDeliveryStatus(message) === 'queued';
+    }).map(messageIdentifier);
+    queueList.replaceChildren();
+    messages.forEach(function (message, index) {
+      queueList.appendChild(queueItem(
+        message,
+        index,
+        movableIds.indexOf(messageIdentifier(message)),
+        movableIds.length
+      ));
+    });
+    if (queueCount) queueCount.textContent = String(messages.length);
+    if (queuePausedBanner) queuePausedBanner.hidden = !queuePaused;
+    if (queuePauseReason) queuePauseReason.textContent = asText(
+      state && state.queue_pause_reason || '上一轮没有正常结束，队列已暂停'
+    );
+    if (queueResumeButton) {
+      queueResumeButton.hidden = !queuePaused || !messages.length;
+      queueResumeButton.disabled = hardBlocked || resumePending;
+    }
+    queuePanel.hidden = !messages.length && !queuePaused;
+  }
+
+  function queueOrderFromDom() {
+    if (!queueList) return [];
+    return Array.prototype.map.call(
+      queueList.querySelectorAll(
+        '[data-agent-queue-item][data-delivery-status="queued"]'
+      ),
+      function (item) { return item.dataset.messageId; }
+    ).filter(Boolean);
+  }
+
+  function queueDomItem(messageId) {
+    if (!queueList) return null;
+    return Array.prototype.find.call(
+      queueList.querySelectorAll('[data-agent-queue-item]'),
+      function (item) { return item.dataset.messageId === messageId; }
+    ) || null;
+  }
+
+  function persistQueueOrder(messageIds) {
+    var endpoint = asText(root.dataset.queueReorderUrl).trim();
+    if (hardBlocked || !endpoint || queueMutationPending) return;
+    queueMutationPending = true;
+    updateSendState();
+    var body = new FormData();
+    messageIds.forEach(function (id) { body.append('message_ids', id); });
+    global.fetch(endpoint, {
+      method: 'POST', body: body, headers: {'Accept': 'application/json'},
+      credentials: 'same-origin', mathCurveLoader: false
+    }).then(function (response) {
+      return mutationResponse(response, '调整队列顺序失败');
+    }).then(function (payload) {
+      queueMutationPending = false;
+      updateSendState();
+      var state = responseMessageState(payload);
+      if (state) applyMessageState(state);
+      else refreshMessageState();
+    }).catch(function (error) {
+      queueMutationPending = false;
+      queueSignature = '';
+      updateSendState();
+      setResumeFeedback(error.message || '调整队列顺序失败。', true);
+      refreshMessageState().catch(function () {});
+    });
+  }
+
+  function reorderQueueDom(sourceId, targetId, after) {
+    if (hardBlocked || !queueList || queueMutationPending
+        || !sourceId || !targetId || sourceId === targetId) return;
+    var source = queueDomItem(sourceId);
+    var target = queueDomItem(targetId);
+    if (!source || !target
+        || source.dataset.deliveryStatus !== 'queued'
+        || target.dataset.deliveryStatus !== 'queued') return;
+    queueList.insertBefore(source, after ? target.nextSibling : target);
+    persistQueueOrder(queueOrderFromDom());
+  }
+
+  function moveQueueMessage(messageId, direction) {
+    if (hardBlocked || !queueList || queueMutationPending) return;
+    var order = queueOrderFromDom();
+    var index = order.indexOf(messageId);
+    var next = index + direction;
+    if (index < 0 || next < 0 || next >= order.length) return;
+    var swap = order[next];
+    order[next] = order[index];
+    order[index] = swap;
+    order.forEach(function (id) {
+      var item = queueDomItem(id);
+      if (item) queueList.appendChild(item);
+    });
+    persistQueueOrder(order);
+  }
+
+  function steerStatusLabel(status) {
+    return {
+      queued: '等待投递', dispatching: '等待投递', sent: '已发送', delivered: '已发送',
+      failed: '失败', unknown: '状态未知', canceled: '已取消'
+    }[status] || status;
+  }
+
+  function renderSteerMessages(state) {
+    if (!liveSteers) return;
+    var messages = steerMessages(state).filter(function (message) {
+      return asText(message && (message.target_task_id || message.task_id)) === currentTaskId;
+    });
+    var signature = JSON.stringify(messages.map(function (message) {
+      return [messageIdentifier(message), messageDeliveryStatus(message), messageCopy(message), message.error_message, messageAttachments(message)];
+    }));
+    if (signature === steerSignature) return;
+    steerSignature = signature;
+    liveSteers.replaceChildren();
+    messages.forEach(function (message) {
+      var status = messageDeliveryStatus(message);
+      var row = createElement('section', 'agent-steer-message agent-steer-message--' + status);
+      row.dataset.agentSteerMessage = '';
+      row.dataset.messageId = messageIdentifier(message);
+      var bubble = createElement('div', 'agent-user-bubble');
+      if (message.user_message_html || message.message_html) {
+        setServerHtml(bubble, message.user_message_html || message.message_html);
+      } else {
+        bubble.appendChild(createElement('p', '', messageCopy(message)));
+      }
+      row.appendChild(bubble);
+      var attachments = messageAttachments(message);
+      if (attachments.length) {
+        var attachmentSummary = createElement('div', 'agent-message-attachments');
+        attachments.forEach(function (attachment) {
+          var chip = createElement('span', 'agent-message-attachment');
+          chip.innerHTML = '<i class="fas fa-paperclip" aria-hidden="true"></i>';
+          chip.appendChild(createElement('span', '', attachmentName(attachment)));
+          attachmentSummary.appendChild(chip);
+        });
+        row.appendChild(attachmentSummary);
+      }
+      var delivery = createElement('span', 'agent-steer-status', steerStatusLabel(status));
+      delivery.setAttribute('role', 'status');
+      delivery.prepend(createElement('i'));
+      if (message.error_message) delivery.title = asText(message.error_message);
+      row.appendChild(delivery);
+      liveSteers.appendChild(row);
+    });
+    enhanceMarkdown(liveSteers);
+  }
+
   function setStatus(value) {
     var key = statusKey(value);
     var item = STATUS[key] || {label: asText(value || '状态未知'), className: key || 'completed'};
@@ -253,7 +819,32 @@
 
   function updateSendState() {
     if (!resumeSend || !resumeMessage) return;
-    resumeSend.disabled = running || blocked || resumePending || !resumeMessage.value.trim();
+    var hasMessage = !!resumeMessage.value.trim();
+    var queueMode = running || queuePaused || queuedMessages(messageState).length > 0;
+    // 缺少原生恢复点只会阻止普通空闲续聊。暂停或待发送队列能够从新的
+    // native session 起步，因此仍允许追加、编辑并继续队列。
+    blocked = hardBlocked || (!running && !nativeSessionId && !queueMode);
+    root.dataset.blocked = blocked ? 'true' : 'false';
+    if (resumeForm) resumeForm.classList.toggle('is-blocked', blocked);
+    resumeMessage.disabled = blocked || resumePending;
+    if (resumeFile) resumeFile.disabled = blocked || resumePending;
+    resumeSend.disabled = blocked || resumePending || !hasMessage;
+    resumeSend.classList.toggle('is-queue-mode', queueMode);
+    resumeSend.title = queueMode ? '加入队列' : '发送';
+    resumeSend.setAttribute('aria-label', queueMode ? '加入队列' : '发送消息');
+    resumeMessage.placeholder = running
+      ? '安排下一条消息，或使用插话…'
+      : (queuePaused ? '队列已暂停，消息仍可排队…' : '继续这项任务…');
+    if (steerButton) {
+      steerButton.hidden = !running;
+      steerButton.disabled = !running || blocked || resumePending || !hasMessage || !steerSupported;
+      steerButton.title = steerSupported
+        ? '中途插话：在当前动作结束后转向'
+        : (steerUnavailableReason || '当前 Harness 暂不支持中途插话');
+    }
+    if (queueResumeButton) {
+      queueResumeButton.disabled = hardBlocked || resumePending || queueMutationPending;
+    }
   }
 
   function updateRetryState() {
@@ -276,22 +867,162 @@
       root.dataset.nativeSessionId = nativeSessionId;
     }
     if (stateStatus) {
-      blocked = isBlockedStatus(stateStatus)
+      var nextHardBlocked = isBlockedStatus(stateStatus)
         || !canResume
-        || legacySession
-        || (!running && !nativeSessionId);
+        || legacySession;
+      if (nextHardBlocked !== hardBlocked) {
+        hardBlocked = nextHardBlocked;
+        queueSignature = '';
+        renderMessageQueue(messageState);
+      }
     }
     root.dataset.running = running ? 'true' : 'false';
-    root.dataset.blocked = blocked ? 'true' : 'false';
     if (resumeForm) resumeForm.classList.toggle('is-running', running);
-    if (resumeForm) resumeForm.classList.toggle('is-blocked', blocked);
-    if (resumeMessage) resumeMessage.disabled = running || blocked || resumePending;
-    if (resumeFile) resumeFile.disabled = running || blocked || resumePending;
     if (stopButton) stopButton.hidden = !running;
     if (liveMark) liveMark.hidden = !running;
     if (stateStatus) setStatus(stateStatus);
     updateSendState();
     updateRetryState();
+  }
+
+  function activeMessageForTask(state, taskId) {
+    var active = state && state.active_message;
+    if (active && asText(active.final_task_id || active.task_id) === taskId) return active;
+    return stateMessages(state).find(function (message) {
+      return asText(message.final_task_id || message.task_id) === taskId
+        && messageDeliveryMode(message) !== 'steer';
+    }) || null;
+  }
+
+  function transitionToTask(taskId, state) {
+    taskId = asText(taskId).trim();
+    if (!taskId || taskId === currentTaskId) return;
+    if (currentState && isRunningStatus(currentState.status)) {
+      if (!taskTransitionProbePending && currentTaskId) {
+        taskTransitionProbePending = true;
+        var previousTaskId = currentTaskId;
+        var generation = liveGeneration;
+        fetchState(previousTaskId, generation).catch(function () {}).finally(function () {
+          taskTransitionProbePending = false;
+          scheduleMessageStateRefresh(450);
+        });
+      } else {
+        scheduleMessageStateRefresh(450);
+      }
+      return;
+    }
+    archiveLiveResponse();
+    var message = activeMessageForTask(state, taskId);
+    if (message) {
+      appendOptimisticUserMessage(
+        messageCopy(message),
+        [],
+        message.user_message_html || message.message_html,
+        messageAttachments(message),
+        taskId,
+        messageIdentifier(message)
+      );
+    }
+    resetLiveResponse();
+    startStream(taskId);
+    renderSteerMessages(state);
+    scrollToLatest('smooth');
+  }
+
+  function applyMessageState(state) {
+    if (!state || typeof state !== 'object') return;
+    messageState = state;
+    if (typeof state.queue_paused === 'boolean') queuePaused = state.queue_paused;
+    if (typeof state.steer_supported === 'boolean') steerSupported = state.steer_supported;
+    steerUnavailableReason = asText(
+      state.steer_unavailable_reason != null
+        ? state.steer_unavailable_reason : steerUnavailableReason
+    ).trim();
+    root.dataset.queuePaused = queuePaused ? 'true' : 'false';
+    root.dataset.steerSupported = steerSupported ? 'true' : 'false';
+    root.dataset.steerUnavailableReason = steerUnavailableReason;
+    renderMessageQueue(state);
+    renderSteerMessages(state);
+    if (state.session_token_usage) renderHeaderTokenUsage(state.session_token_usage);
+    updateSendState();
+
+    var taskId = asText(state.current_task_id).trim();
+    if (taskId && taskId !== currentTaskId) {
+      transitionToTask(taskId, state);
+    }
+  }
+
+  function parseMessageStatePayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    return payload.session_state || payload.session || payload.state || payload;
+  }
+
+  function refreshMessageState() {
+    var endpoint = asText(root.dataset.sessionStateUrl).trim();
+    if (!endpoint) return Promise.resolve(messageState);
+    return global.fetch(endpoint, {
+      headers: {'Accept': 'application/json'},
+      credentials: 'same-origin',
+      cache: 'no-store',
+      mathCurveLoader: false
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (payload) {
+        if (!response.ok || payload.success === false) {
+          throw new Error(asText(payload.message) || '无法同步消息队列');
+        }
+        return parseMessageStatePayload(payload);
+      });
+    }).then(function (state) {
+      applyMessageState(state);
+      return state;
+    });
+  }
+
+  function scheduleMessageStateRefresh(delay) {
+    if (!root.dataset.sessionStateUrl) return;
+    var normalizedDelay = Math.max(0, Number(delay) || 0);
+    var dueAt = Date.now() + normalizedDelay;
+    if (messagePollingTimer) {
+      if (dueAt >= messagePollingDueAt) return;
+      global.clearTimeout(messagePollingTimer);
+      messagePollingTimer = null;
+    }
+    messagePollingDueAt = dueAt;
+    messagePollingTimer = global.setTimeout(function poll() {
+      messagePollingTimer = null;
+      messagePollingDueAt = 0;
+      refreshMessageState().catch(function () {}).finally(function () {
+        var hasQueue = queuedMessages(messageState).length > 0;
+        if (running || hasQueue || queuePaused || !messageStream) {
+          scheduleMessageStateRefresh(running || hasQueue ? 2400 : 6000);
+        }
+      });
+    }, normalizedDelay);
+  }
+
+  function parseMessageStreamEvent(event) {
+    try {
+      var payload = JSON.parse(event.data);
+      applyMessageState(parseMessageStatePayload(payload));
+    } catch (_error) {
+      scheduleMessageStateRefresh(0);
+    }
+  }
+
+  function startMessageStream() {
+    var endpoint = asText(root.dataset.sessionStreamUrl).trim();
+    if (!endpoint || !global.EventSource) {
+      scheduleMessageStateRefresh(0);
+      return;
+    }
+    messageStream = new global.EventSource(endpoint);
+    ['session', 'message', 'queue', 'status'].forEach(function (eventName) {
+      messageStream.addEventListener(eventName, parseMessageStreamEvent);
+    });
+    messageStream.onmessage = parseMessageStreamEvent;
+    messageStream.addEventListener('error', function () {
+      scheduleMessageStateRefresh(500);
+    });
   }
 
   function traceMessages(state) {
@@ -461,6 +1192,11 @@
       break;
     }
     if (!target || directResponse(target)) return false;
+    if (liveSteers && liveSteers.children.length) {
+      var archivedSteers = createElement('div', 'agent-steer-messages agent-steer-messages--historical');
+      while (liveSteers.firstChild) archivedSteers.appendChild(liveSteers.firstChild);
+      target.appendChild(archivedSteers);
+    }
     target.appendChild(historicalResponse(currentState));
     target.dataset.agentResponseArchived = 'true';
     liveTurn.hidden = true;
@@ -470,6 +1206,8 @@
 
   function resetLiveResponse() {
     traceSignature = '';
+    steerSignature = '';
+    if (liveSteers) liveSteers.replaceChildren();
     if (liveTrace) liveTrace.replaceChildren(mathLoader('Agent 正在工作', 'sm'));
     if (liveConclusion) {
       if (global.NumericalOJMarkdownRenderer) {
@@ -510,6 +1248,10 @@
       if (liveDetails) liveDetails.open = false;
       renderConclusion(state);
       stopLiveUpdates();
+      scheduleMessageStateRefresh(0);
+    }
+    if (state.session_state || state.session_messages || state.queued_messages || state.steer_messages) {
+      applyMessageState(state.session_state || state);
     }
     scheduleWorkspaceRefresh(stateIsRunning ? 1800 : 0);
   }
@@ -566,8 +1308,18 @@
   function startStream(taskId) {
     taskId = asText(taskId).trim();
     if (!taskId) return;
+    var previousTaskId = currentTaskId;
     currentTaskId = taskId;
     root.dataset.currentTaskId = taskId;
+    if (previousTaskId !== taskId || !isRunningStatus(currentState && currentState.status)) {
+      currentState = {
+        task_id: taskId,
+        session_id: sessionId,
+        status: 'Pending',
+        message: '任务排队中',
+        execution_trace: {}
+      };
+    }
     liveGeneration += 1;
     var generation = liveGeneration;
     stopLiveUpdates();
@@ -614,12 +1366,17 @@
   }
 
   function appendOptimisticUserMessage(
-    message, files, messageHtml, savedAttachments, taskId
+    message, files, messageHtml, savedAttachments, taskId, messageId
   ) {
     if (!turnsRoot) return;
+    messageId = asText(messageId).trim();
+    if (messageId && Array.prototype.some.call(turnsRoot.querySelectorAll('[data-message-id]'), function (node) {
+      return node.dataset.messageId === messageId;
+    })) return;
     var turn = createElement('article', 'agent-turn');
     turn.setAttribute('data-agent-turn', '');
     turn.dataset.agentTaskId = asText(taskId).trim();
+    if (messageId) turn.dataset.messageId = messageId;
     var user = createElement('section', 'agent-user-message');
     var messageRow = createElement('div', 'agent-user-message-row');
     var bubble = createElement('div', 'agent-user-bubble');
@@ -628,7 +1385,7 @@
     messageRow.append(createRetryButton(taskId), bubble);
     user.appendChild(messageRow);
     var attachmentItems = Array.isArray(savedAttachments) && savedAttachments.length
-      ? savedAttachments : files;
+      ? savedAttachments : (Array.isArray(files) ? files : []);
     if (attachmentItems.length) {
       var attachments = createElement('div', 'agent-message-attachments');
       attachmentItems.forEach(function (file) {
@@ -704,15 +1461,20 @@
     resumeMessage.style.height = Math.min(180, Math.max(48, resumeMessage.scrollHeight)) + 'px';
   }
 
-  function setResumePending(value) {
+  function setResumePending(value, mode) {
     resumePending = value === true;
     if (resumeForm) resumeForm.classList.toggle('is-submitting', resumePending);
-    if (resumeMessage) resumeMessage.disabled = running || blocked || resumePending;
-    if (resumeFile) resumeFile.disabled = running || blocked || resumePending;
+    if (resumeMessage) resumeMessage.disabled = blocked || resumePending;
+    if (resumeFile) resumeFile.disabled = blocked || resumePending;
     if (resumeSend) {
-      resumeSend.innerHTML = resumePending
+      resumeSend.innerHTML = resumePending && mode !== 'steer'
         ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
         : '<i class="fas fa-arrow-up" aria-hidden="true"></i>';
+    }
+    if (steerButton) {
+      steerButton.innerHTML = resumePending && mode === 'steer'
+        ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
+        : '<i class="fas fa-comment-dots" aria-hidden="true"></i>';
     }
     updateSendState();
     updateRetryState();
@@ -728,8 +1490,9 @@
 
   function dispatchAgentTurn(options) {
     var retrying = options.retrying === true;
+    var requestedMode = asText(options.deliveryMode || 'turn').trim().toLowerCase();
     setResumeFeedback('', false);
-    setResumePending(true);
+    setResumePending(true, requestedMode);
     global.fetch(resumeForm.action, {
       method: 'POST',
       body: options.body,
@@ -743,6 +1506,7 @@
             asText(payload && payload.message) || '发送失败（HTTP ' + response.status + '）'
           );
           error.detailUrl = asText(payload && payload.detail_url).trim();
+          error.definitive = response.status >= 400 && response.status < 500;
           throw error;
         }
         return payload;
@@ -750,6 +1514,31 @@
     }).then(function (payload) {
       if (payload.detail_url) {
         global.location.assign(payload.detail_url);
+        return;
+      }
+      var record = payload.agent_message || payload.message_record
+        || (payload.message && typeof payload.message === 'object' ? payload.message : null);
+      var actualMode = messageDeliveryMode(record)
+        || asText(payload.delivery_mode || requestedMode).trim().toLowerCase();
+      var nextMessageState = responseMessageState(payload);
+      if (!retrying && (actualMode === 'queue' || actualMode === 'steer')) {
+        if (nextMessageState) applyMessageState(nextMessageState);
+        else if (record) {
+          replaceMessageInLocalState(record);
+          renderMessageQueue(messageState);
+          renderSteerMessages(messageState);
+        } else {
+          scheduleMessageStateRefresh(0);
+        }
+        clearResumeComposer();
+        setResumePending(false, actualMode);
+        setResumeFeedback(
+          actualMode === 'steer'
+            ? '插话已接收，将在当前动作结束后生效。'
+            : '消息已加入队列。',
+          false
+        );
+        if (actualMode === 'steer') scrollToLatest('smooth');
         return;
       }
       var taskId = asText(payload.task_id || payload.current_task_id).trim();
@@ -762,6 +1551,8 @@
         removeTurnByTaskId(
           asText(payload.replaced_task_id || options.expectedTaskId).trim()
         );
+        retryMessageId = '';
+        retryExpectedTaskId = '';
       }
       retryAvailable = true;
       root.dataset.canRetry = 'true';
@@ -770,21 +1561,20 @@
         options.files || [],
         payload.user_message_html,
         payload.attachments,
-        taskId
+        taskId,
+        messageIdentifier(record) || asText(options.messageId || taskId).trim()
       );
       if (!retrying) {
-        resumeMessage.value = '';
-        resumeFiles = [];
-        renderResumeFiles();
-        resizeResumeMessage();
+        clearResumeComposer();
       }
-      setResumePending(false);
+      setResumePending(false, requestedMode);
       resetLiveResponse();
       startStream(taskId);
       if (payload.state) applyState(payload.state, taskId, liveGeneration);
       scrollToLatest('smooth');
     }).catch(function (error) {
-      setResumePending(false);
+      setResumePending(false, requestedMode);
+      if (!retrying && error && error.definitive) resetResumeAttempt();
       if (error && error.detailUrl) {
         global.location.assign(error.detailUrl);
         return;
@@ -794,6 +1584,21 @@
         true
       );
     });
+  }
+
+  function resetResumeAttempt() {
+    resumeMessageId = '';
+    resumeMessageFingerprint = '';
+    resumeDeliveryMode = '';
+    resumeExpectedTaskId = '';
+  }
+
+  function clearResumeComposer() {
+    resumeMessage.value = '';
+    resumeFiles = [];
+    resetResumeAttempt();
+    renderResumeFiles();
+    resizeResumeMessage();
   }
 
   function bindResumeComposer() {
@@ -816,7 +1621,7 @@
 
     ['dragenter', 'dragover'].forEach(function (eventName) {
       resumeForm.addEventListener(eventName, function (event) {
-        if (running || blocked || !event.dataTransfer || Array.prototype.indexOf.call(event.dataTransfer.types, 'Files') < 0) return;
+        if (blocked || !event.dataTransfer || Array.prototype.indexOf.call(event.dataTransfer.types, 'Files') < 0) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'copy';
         resumeForm.classList.add('is-dragging');
@@ -829,15 +1634,43 @@
       });
     });
     resumeForm.addEventListener('drop', function (event) {
-      if (!running && !blocked && event.dataTransfer) addResumeFiles(event.dataTransfer.files);
+      if (!blocked && event.dataTransfer) addResumeFiles(event.dataTransfer.files);
     });
 
     resumeForm.addEventListener('submit', function (event) {
       event.preventDefault();
-      if (running || blocked || resumePending || !resumeMessage.value.trim()) return;
+      if (blocked || resumePending || !resumeMessage.value.trim()) return;
+      var submitter = event.submitter;
+      var submitIntent = submitter === steerButton || (submitter && submitter.value === 'steer')
+        ? 'steer' : 'send';
+      var computedDeliveryMode = submitIntent === 'steer'
+        ? 'steer' : ((running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn');
+      if (computedDeliveryMode === 'steer' && !steerSupported) {
+        setResumeFeedback(steerUnavailableReason || '当前 Harness 暂不支持中途插话。', true);
+        return;
+      }
       var message = resumeMessage.value.trim();
       var submittedFiles = resumeFiles.slice();
+      var fingerprint = JSON.stringify([
+        submitIntent,
+        message,
+        submittedFiles.map(function (file) {
+          return [file.name, file.size, file.lastModified];
+        })
+      ]);
+      if (!resumeMessageId || resumeMessageFingerprint !== fingerprint) {
+        resumeMessageId = newClientMessageId('msg');
+        resumeMessageFingerprint = fingerprint;
+        resumeDeliveryMode = computedDeliveryMode;
+        resumeExpectedTaskId = computedDeliveryMode === 'steer' ? currentTaskId : '';
+      }
+      var deliveryMode = resumeDeliveryMode || computedDeliveryMode;
       var body = new FormData(resumeForm);
+      body.set('delivery_mode', deliveryMode);
+      body.set('message_id', resumeMessageId);
+      if (deliveryMode === 'steer' && resumeExpectedTaskId) {
+        body.set('expected_task_id', resumeExpectedTaskId);
+      }
       body.delete(resumeFile.name);
       submittedFiles.forEach(function (file) {
         body.append(resumeFile.name, file, file.name);
@@ -846,7 +1679,9 @@
         body: body,
         message: message,
         files: submittedFiles,
-        retrying: false
+        retrying: false,
+        deliveryMode: deliveryMode,
+        messageId: resumeMessageId
       });
     });
     resizeResumeMessage();
@@ -866,6 +1701,11 @@
       var body = new FormData();
       body.append('retry_last', '1');
       body.append('expected_task_id', expectedTaskId);
+      if (!retryMessageId || retryExpectedTaskId !== expectedTaskId) {
+        retryMessageId = newClientMessageId('retry');
+        retryExpectedTaskId = expectedTaskId;
+      }
+      body.append('message_id', retryMessageId);
       dispatchAgentTurn({
         body: body,
         message: '',
@@ -911,6 +1751,36 @@
         stopButton.disabled = false;
         stopButton.innerHTML = '<i class="fas fa-stop" aria-hidden="true"></i><span>停止</span>';
         setResumeFeedback(error && error.message ? error.message : '停止任务失败。', true);
+      });
+    });
+  }
+
+  function bindQueueControls() {
+    if (!queueResumeButton) return;
+    queueResumeButton.addEventListener('click', function () {
+      var endpoint = asText(root.dataset.queueResumeUrl).trim();
+      if (!endpoint || queueResumeButton.disabled) return;
+      queueResumeButton.disabled = true;
+      queueResumeButton.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span>继续中</span>';
+      global.fetch(endpoint, {
+        method: 'POST', body: new FormData(), headers: {'Accept': 'application/json'},
+        credentials: 'same-origin', mathCurveLoader: false
+      }).then(function (response) {
+        return mutationResponse(response, '继续消息队列失败');
+      }).then(function (payload) {
+        queueResumeButton.disabled = hardBlocked || resumePending;
+        queueResumeButton.innerHTML = '<i class="fas fa-play" aria-hidden="true"></i><span>继续队列</span>';
+        var state = responseMessageState(payload);
+        if (state) applyMessageState(state);
+        else {
+          queuePaused = false;
+          renderMessageQueue(messageState);
+          scheduleMessageStateRefresh(0);
+        }
+      }).catch(function (error) {
+        queueResumeButton.disabled = hardBlocked || resumePending;
+        queueResumeButton.innerHTML = '<i class="fas fa-play" aria-hidden="true"></i><span>继续队列</span>';
+        setResumeFeedback(error.message || '继续消息队列失败。', true);
       });
     });
   }
@@ -1640,9 +2510,21 @@
   bindResumeComposer();
   bindRetryButton();
   bindStopButton();
+  bindQueueControls();
   bindWorkspaceAndFiles();
   paintSessionAvatars();
   renderHeaderTokenUsage(currentState && currentState.session_token_usage);
+  messageState = Object.assign({
+    current_task_id: currentTaskId,
+    status: currentState.status || root.dataset.status,
+    running: running,
+    queue_paused: queuePaused,
+    steer_supported: steerSupported,
+    steer_unavailable_reason: steerUnavailableReason,
+    messages: []
+  }, messageState || {});
+  applyMessageState(messageState);
+  startMessageStream();
   enhanceMarkdown(root);
   var initialWorkspace = readJson('[data-agent-initial-workspace-json]', []);
   if (Array.isArray(initialWorkspace) && initialWorkspace.length) {
@@ -1661,6 +2543,8 @@
 
   global.addEventListener('beforeunload', function () {
     stopLiveUpdates();
+    if (messageStream) messageStream.close();
+    if (messagePollingTimer) global.clearTimeout(messagePollingTimer);
     if (workspaceTimer) global.clearTimeout(workspaceTimer);
     disposeFilePreview();
   });

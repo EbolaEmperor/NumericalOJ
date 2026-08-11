@@ -3,8 +3,6 @@
 #   docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker
 FROM node:24-bookworm-slim
 
-ARG CLAUDE_CODE_VERSION=2.1.197
-
 ENV DEBIAN_FRONTEND=noninteractive
 # 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
@@ -48,16 +46,23 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         openai anthropic dashscope google-genai httpx tenacity python-dotenv
 
 # 轻量版缩减的是系统工具链，不缩减启动弹窗提供的 Harness 集合。
+ARG CLAUDE_CODE_VERSION=2.1.205
 ARG CODEX_CLI_VERSION=0.144.5
 ARG OPENCODE_VERSION=1.18.3
+ARG PI_CODING_AGENT_VERSION=0.82.1
 RUN npm install -g \
         @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
         @openai/codex@${CODEX_CLI_VERSION} \
         opencode-ai@${OPENCODE_VERSION} \
         --registry=https://registry.npmmirror.com
 RUN npm install -g --ignore-scripts \
-        @earendil-works/pi-coding-agent \
+        @earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION} \
         --registry=https://registry.npmmirror.com
+
+# Codex 0.144.5 的 app-server 即使使用 danger-full-access 也会探测并启动
+# bubblewrap。按镜像缓存约束追加在 Harness 安装层之后，不改动前面的系统包层。
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
 
 # report / run_harness 与原版镜像复用同一份脚本。
 COPY agent_judge/report /usr/local/bin/report

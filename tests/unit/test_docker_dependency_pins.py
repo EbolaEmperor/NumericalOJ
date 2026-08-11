@@ -24,20 +24,34 @@ def test_agent_judge_harness_dependencies_are_explicitly_versioned():
         assert f'{package}@${{{build_arg}}}' in dockerfile
 
 
-def test_lite_agent_judge_uses_same_claude_pin_and_unpinned_pi():
+def test_lite_agent_judge_uses_same_claude_and_pi_pins():
     full = _dockerfile('docker/agent_judge/Dockerfile')
     lite = _dockerfile('docker/agent_judge-lite/Dockerfile')
     version_pattern = re.compile(r'^ARG CLAUDE_CODE_VERSION=(\S+)$', re.MULTILINE)
     assert version_pattern.search(full).group(1) == version_pattern.search(lite).group(1)
     assert '@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}' in lite
-    assert 'PI_CODING_AGENT_VERSION' not in full
-    assert 'PI_CODING_AGENT_VERSION' not in lite
-    assert '@earendil-works/pi-coding-agent@' not in full
-    assert '@earendil-works/pi-coding-agent@' not in lite
-    assert '@earendil-works/pi-coding-agent' in full
-    assert '@earendil-works/pi-coding-agent' in lite
+    pi_version_pattern = re.compile(
+        r'^ARG PI_CODING_AGENT_VERSION=(\S+)$', re.MULTILINE
+    )
+    assert pi_version_pattern.search(full).group(1) == '0.82.1'
+    assert pi_version_pattern.search(lite).group(1) == '0.82.1'
+    assert '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' in full
+    assert '@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}' in lite
     assert 'npm install -g --ignore-scripts' in full
     assert 'npm install -g --ignore-scripts' in lite
+
+
+def test_codex_bubblewrap_is_appended_after_harness_dependency_layers():
+    for relative_path in (
+        'docker/agent_judge/Dockerfile',
+        'docker/agent_judge-lite/Dockerfile',
+    ):
+        dockerfile = _dockerfile(relative_path)
+        harness_layer = dockerfile.index('npm install -g --ignore-scripts')
+        bubblewrap_layer = dockerfile.index(
+            'apt-get install -y --no-install-recommends bubblewrap'
+        )
+        assert bubblewrap_layer > harness_layer
 
 
 def test_lite_agent_judge_contains_every_selectable_harness():

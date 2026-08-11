@@ -595,6 +595,7 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
         return None, False
 
     ensure_agent_runs_table()
+    cancel_message = str(message or "任务已由管理员终止")[:1000]
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -605,7 +606,7 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                 WHERE task_id=%s
                   AND LOWER(status) IN ('pending', 'running')
                 """,
-                (str(message or "任务已由管理员终止")[:1000], normalized_task_id),
+                (cancel_message, normalized_task_id),
             )
             changed = cursor.rowcount > 0
             cursor.execute(
@@ -624,6 +625,100 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                 (normalized_task_id,),
             )
             row = cursor.fetchone()
+            if row is None:
+                # create/begin/queue claim 会先原子提交 session、turn 与 outbox，
+                # 再建立兼容的 agent_task_runs 快照。停止请求若恰好落在这个
+                # 窗口，不能把“不存在 run 行”误判成“不存在任务”，否则后续
+                # dispatcher 仍会投递。先从当前非终态会话读取冻结元数据，再
+                # 用 sticky upsert 抢占 task_id；迟到的 Pending/Running 快照
+                # 会被现有 upsert 终态规则挡住。
+                cursor.execute(
+                    """
+                    SELECT s.session_id, s.problem_id, s.problem_title,
+                           s.requested_by, s.harness, s.endpoint_id,
+                           s.endpoint_model
+                    FROM agent_sessions AS s
+                    JOIN agent_session_turns AS t
+                      ON t.session_id=s.session_id
+                     AND t.task_id=s.current_task_id
+                    WHERE t.task_id=%s
+                      AND LOWER(s.status) IN ('pending', 'running')
+                    LIMIT 1
+                    """,
+                    (normalized_task_id,),
+                )
+                pending_session = cursor.fetchone()
+                if pending_session:
+                    # message 必须先于 status 赋值；MySQL 按书写顺序计算
+                    # ON DUPLICATE KEY UPDATE，二者都需要看写入前状态。
+                    cursor.execute(
+                        """
+                        INSERT INTO agent_task_runs (
+                            task_id, problem_id, problem_title, requested_by,
+                            harness, endpoint_id, endpoint_model, status,
+                            message, best_score, attempts_json
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s,
+                            'Canceled', %s, 0, '[]'
+                        )
+                        ON DUPLICATE KEY UPDATE
+                            message=IF(
+                                LOWER(status) IN ('pending', 'running'),
+                                VALUES(message),
+                                message
+                            ),
+                            status=IF(
+                                LOWER(status) IN ('pending', 'running'),
+                                VALUES(status),
+                                status
+                            )
+                        """,
+                        (
+                            normalized_task_id,
+                            pending_session.get("problem_id"),
+                            pending_session.get("problem_title"),
+                            pending_session.get("requested_by"),
+                            pending_session.get("harness"),
+                            pending_session.get("endpoint_id"),
+                            pending_session.get("endpoint_model"),
+                            cancel_message,
+                        ),
+                    )
+                    changed = cursor.rowcount > 0
+                    cursor.execute(
+                        """
+                        SELECT r.task_id, t.session_id, r.problem_id,
+                               r.problem_title, r.requested_by, r.harness,
+                               r.endpoint_id, r.endpoint_model, r.status,
+                               r.message, r.best_score,
+                               r.final_submission_id,
+                               r.latest_submission_id, r.attempts_json,
+                               r.created_at, r.updated_at
+                        FROM agent_task_runs AS r
+                        LEFT JOIN agent_session_turns AS t
+                          ON t.task_id=r.task_id
+                        WHERE r.task_id=%s
+                        LIMIT 1
+                        """,
+                        (normalized_task_id,),
+                    )
+                    row = cursor.fetchone()
+            if changed and row and str(row.get("session_id") or "").strip():
+                # 取消 run、当前 turn、会话终态和 FIFO 暂停必须共享一次提交。
+                # 后续协议级 interrupt/容器清理仍可把 Canceled 升级成
+                # CleanupFailed，但 Web 进程不能在这两个阶段之间留下永久
+                # Running 会话。
+                from oj_modules.agents.sessions import (
+                    sync_agent_session_state_in_transaction,
+                )
+
+                sync_agent_session_state_in_transaction(cursor, {
+                    "task_id": normalized_task_id,
+                    "session_id": row.get("session_id"),
+                    "status": "Canceled",
+                    "message": row.get("message") or "任务已由管理员终止",
+                    "_preserve_conclusion": True,
+                })
         conn.commit()
     finally:
         conn.close()

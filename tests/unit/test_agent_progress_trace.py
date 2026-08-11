@@ -20,6 +20,7 @@ class _FakeRedis:
 
 
 def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
+    projected = []
     class Cursor:
         rowcount = 1
 
@@ -65,6 +66,11 @@ def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
         "get_db_connection",
         lambda: connection,
     )
+    monkeypatch.setattr(
+        agent_sessions,
+        "sync_agent_session_state_in_transaction",
+        lambda cursor, state: projected.append((cursor, dict(state))) or True,
+    )
 
     state, changed = db_services.cancel_agent_run_snapshot("turn-2")
 
@@ -74,6 +80,102 @@ def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
     assert "LEFT JOIN agent_session_turns AS t ON t.task_id=r.task_id" in select_query
     assert "WHERE r.task_id=%s" in select_query
     assert select_params == ("turn-2",)
+    assert projected == [(
+        connection.cursor_instance,
+        {
+            "task_id": "turn-2",
+            "session_id": "session-1",
+            "status": "Canceled",
+            "message": "任务已由管理员终止",
+            "_preserve_conclusion": True,
+        },
+    )]
+    assert connection.commits == 1
+    assert connection.closed is True
+
+
+def test_cancel_snapshot_claims_current_session_before_run_snapshot_exists(
+    monkeypatch,
+):
+    """session/turn outbox 已提交时，停止必须抢在 dispatcher 前写入 sticky 终态。"""
+
+    projected = []
+
+    class Cursor:
+        def __init__(self):
+            self.calls = []
+            self.values = iter([
+                None,
+                {
+                    "session_id": "session-before-run",
+                    "problem_id": None,
+                    "problem_title": "通用 Agent",
+                    "requested_by": "admin",
+                    "harness": "codex",
+                    "endpoint_id": 17,
+                    "endpoint_model": "gpt-test",
+                },
+                {
+                    "task_id": "turn-before-run",
+                    "session_id": "session-before-run",
+                    "requested_by": "admin",
+                    "harness": "codex",
+                    "endpoint_id": 17,
+                    "endpoint_model": "gpt-test",
+                    "status": "Canceled",
+                    "message": "任务已由管理员终止",
+                    "attempts_json": "[]",
+                },
+            ])
+            self.rowcount = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params):
+            normalized = " ".join(query.split())
+            self.calls.append((normalized, params))
+            self.rowcount = 1 if "INSERT INTO agent_task_runs" in normalized else 0
+
+        def fetchone(self):
+            return next(self.values)
+
+    class Connection:
+        def __init__(self):
+            self.cursor_instance = Cursor()
+            self.commits = 0
+            self.closed = False
+
+        def cursor(self):
+            return self.cursor_instance
+
+        def commit(self):
+            self.commits += 1
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(db_services, "get_db_connection", lambda: connection)
+    monkeypatch.setattr(
+        agent_sessions,
+        "sync_agent_session_state_in_transaction",
+        lambda cursor, state: projected.append((cursor, dict(state))) or True,
+    )
+
+    state, changed = db_services.cancel_agent_run_snapshot("turn-before-run")
+
+    assert changed is True
+    assert state["status"] == "Canceled"
+    queries = [query for query, _params in connection.cursor_instance.calls]
+    assert "LOWER(s.status) IN ('pending', 'running')" in queries[2]
+    assert "INSERT INTO agent_task_runs" in queries[3]
+    assert "ON DUPLICATE KEY UPDATE" in queries[3]
+    assert projected[0][1]["session_id"] == "session-before-run"
+    assert projected[0][1]["status"] == "Canceled"
     assert connection.commits == 1
     assert connection.closed is True
 
@@ -238,6 +340,65 @@ def test_session_projection_failure_does_not_mask_legacy_state_or_publish(
 
     assert state["status"] == "Running"
     assert json.loads(redis.values[-1][2])["task_id"] == "task-sync-failure"
+
+
+def test_completed_session_wakes_persistent_fifo_after_state_commit(monkeypatch):
+    redis = _FakeRedis()
+    dispatched = []
+    monkeypatch.setattr(shared, "_agent_progress_rds", redis)
+    monkeypatch.setattr(
+        shared,
+        "upsert_agent_run_snapshot",
+        lambda state: {"status": state["status"], "message": state.get("message")},
+    )
+    monkeypatch.setattr(shared, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        shared,
+        "_agent_queue_dispatch_task",
+        type("Dispatch", (), {
+            "apply_async": staticmethod(
+                lambda *, args: dispatched.append(args)
+            ),
+        })(),
+    )
+
+    shared._persist_agent_state({
+        "task_id": "task-2",
+        "session_id": "session-1",
+        "status": "Completed",
+        "message": "done",
+        "attempts": [],
+    })
+
+    assert dispatched == [("session-1",)]
+
+
+def test_failed_session_does_not_automatically_continue_fifo(monkeypatch):
+    redis = _FakeRedis()
+    monkeypatch.setattr(shared, "_agent_progress_rds", redis)
+    monkeypatch.setattr(
+        shared,
+        "upsert_agent_run_snapshot",
+        lambda state: {"status": state["status"], "message": state.get("message")},
+    )
+    monkeypatch.setattr(shared, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        shared,
+        "_agent_queue_dispatch_task",
+        type("Dispatch", (), {
+            "apply_async": staticmethod(
+                lambda **_kwargs: pytest.fail("失败后队列必须暂停")
+            ),
+        })(),
+    )
+
+    shared._persist_agent_state({
+        "task_id": "task-2",
+        "session_id": "session-1",
+        "status": "Failed",
+        "message": "failed",
+        "attempts": [],
+    })
 
 
 def test_cancel_agent_run_publishes_terminal_snapshot_and_marker(monkeypatch):

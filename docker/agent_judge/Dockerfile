@@ -90,12 +90,13 @@ RUN pip3 install --no-cache-dir --break-system-packages playwright \
 RUN pip3 install --no-cache-dir --break-system-packages --force-reinstall "numpy<2"
 
 # 预装 Agent Harness CLI（关键：不放进评测关键路径）
-# Agent Harness 属于判题协议的一部分。Claude/Codex/OpenCode 保持现有显式版本；
-# Pi 按产品口径信任上游 latest，不人为锁定。ARG 紧邻唯一使用它们的步骤，避免版本
+# Agent Harness 属于判题协议的一部分。四套 CLI 都固定到已经验证控制协议的版本；
+# ARG 紧邻唯一使用它们的步骤，避免版本
 # 更新使前面的 30GB 工具链缓存全部失效。
-ARG CLAUDE_CODE_VERSION=2.1.197
+ARG CLAUDE_CODE_VERSION=2.1.205
 ARG CODEX_CLI_VERSION=0.144.5
 ARG OPENCODE_VERSION=1.18.3
+ARG PI_CODING_AGENT_VERSION=0.82.1
 ARG AI_SDK_OPENAI_COMPATIBLE_VERSION=2.0.51
 ARG AI_SDK_ANTHROPIC_VERSION=3.0.85
 RUN npm install -g \
@@ -106,8 +107,13 @@ RUN npm install -g \
         @ai-sdk/anthropic@${AI_SDK_ANTHROPIC_VERSION} \
         --registry=https://registry.npmmirror.com
 RUN npm install -g --ignore-scripts \
-        @earendil-works/pi-coding-agent \
+        @earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION} \
         --registry=https://registry.npmmirror.com
+
+# Codex 0.144.5 的 app-server 即使使用 danger-full-access 也会探测并启动
+# bubblewrap。按镜像缓存约束追加在 Harness 安装层之后，不改动前面的系统包层。
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
 
 # report 上报命令
 COPY report /usr/local/bin/report

@@ -77,11 +77,14 @@ from oj_modules.tasks.registry import (
     build_agent_run_terminator,
     get_agent_run_snapshot,
     init_agent_progress_cache,
+    init_agent_queue_dispatcher,
     build_homework_task_operations,
     register_agent_generate_testdata_task,
     register_agent_run_turn_task,
+    register_agent_queue_tasks,
     register_repository_index_build_task,
     register_agent_solve_problem_task,
+    read_agent_steer_capability,
     register_evaluate_submission_task,
     register_homework_admin_tasks,
     register_promptly_generate_submission_task,
@@ -305,6 +308,7 @@ celery.conf.task_routes = {
     'oj.agent.solve_problem': {'queue': 'agent'},
     'oj.agent.generate_testdata': {'queue': 'agent'},
     'oj.agent.run_turn': {'queue': 'agent'},
+    'oj.agent.dispatch_session_queue': {'queue': 'agent'},
     'oj.promptly.generate_submission': {'queue': 'agent'},
     'oj.ranking_agent_judge': {'queue': 'judge'},
     'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
@@ -334,6 +338,13 @@ promptly_generate_submission = register_promptly_generate_submission_task(celery
 agent_solve_problem = register_agent_solve_problem_task(celery)
 agent_generate_testdata = register_agent_generate_testdata_task(celery)
 agent_run_turn = register_agent_run_turn_task(celery)
+agent_queue_dispatch, agent_queue_recovery = register_agent_queue_tasks(
+    celery,
+    agent_run_turn,
+    agent_solve_problem_task=agent_solve_problem,
+    agent_generate_testdata_task=agent_generate_testdata,
+)
+init_agent_queue_dispatcher(agent_queue_dispatch)
 terminate_agent_run = build_agent_run_terminator(celery)
 build_repository_index = register_repository_index_build_task(celery)
 detect_single_submission, detect_batch_for_problem, detect_batch_for_user, detect_filtered_submissions = register_ai_detection_tasks(celery)
@@ -366,6 +377,7 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     elo_initial_burst_task=ranking_elo_initial_burst,
     agent_judge_task=evaluate_ranking_agent_judge,
     reverse_judge_task=evaluate_ranking_reverse_judge,
+    agent_session_recovery_task=agent_queue_recovery,
 )
 
 # 初始化重测模块（依赖 Redis 与已注册的分派任务）
@@ -389,6 +401,8 @@ init_problem_core_module(
     get_agent_run_snapshot,
     subscribe_agent_run_events,
     terminate_agent_run,
+    agent_queue_dispatch,
+    read_agent_steer_capability,
 )
 # 初始化代码仓库结构化整理模块（依赖 Celery 任务）
 init_repository_index_module(build_repository_index)
@@ -472,6 +486,7 @@ def recover_pending_after_all_workers_stopped():
         elo_initial_burst_task=ranking_elo_initial_burst,
         agent_judge_task=evaluate_ranking_agent_judge,
         reverse_judge_task=evaluate_ranking_reverse_judge,
+        agent_session_recovery_task=agent_queue_recovery,
     )
     seed_elo_matchmaker_tick(
         rds,

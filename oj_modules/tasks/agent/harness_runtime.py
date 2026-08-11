@@ -47,6 +47,9 @@ from oj_modules.tasks.agent.traces import (
 
 _CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024
 _STDOUT_MIRROR_LIMIT_BYTES = 8 * 1024 * 1024
+_CANONICAL_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
+_CANONICAL_JOURNAL_RECORD_MAX_BYTES = 16 * 1024 * 1024
+_CANONICAL_JOURNAL_TAIL_RESERVE_BYTES = 17 * 1024 * 1024
 _AGENT_CONTEXT_WINDOW_TOKENS = 128_000
 _AGENT_MAX_OUTPUT_TOKENS = 16_384
 _IDENTITY_CONFIG_PATH = "/workspace/.numoj-agent/identity.json"
@@ -324,9 +327,8 @@ def _secret_relay_context(*args, **kwargs):
         raise AgentHarnessCleanupError(str(exc)) from exc
 
 
-def _read_native_session_id(workspace, harness):
-    """容器停止后以 no-follow + inode 复核读取原生 session 摘要。"""
-
+def _read_native_session_state(workspace, harness):
+    """以 no-follow + inode 复核读取原生 session 摘要。"""
     state_path = Path(workspace) / _SESSION_STATE_RELATIVE_PATH
     try:
         before = state_path.lstat()
@@ -359,6 +361,13 @@ def _read_native_session_id(workspace, harness):
         raise ValueError("Agent 原生会话状态无效")
     if str(state.get("harness") or "").strip().lower() != str(harness):
         raise ValueError("Agent 原生会话状态与 harness 不一致")
+    return state
+
+
+def _read_native_session_id(workspace, harness):
+    state = _read_native_session_state(workspace, harness)
+    if not state:
+        return ""
     return normalize_native_session_id(state.get("session_id"), harness)
 
 
@@ -368,6 +377,23 @@ def read_agent_native_session_id(session_id, harness):
     normalized_harness = normalize_launch_harness(harness)
     workspace = _ensure_stable_workspace(session_id)
     return _read_native_session_id(workspace, normalized_harness)
+
+
+def read_agent_steer_capability(session_id, harness):
+    """返回会话当前原生 harness 是否支持同轮软插话及原因。"""
+
+    normalized_harness = normalize_launch_harness(harness)
+    workspace = _ensure_stable_workspace(session_id)
+    state = _read_native_session_state(workspace, normalized_harness)
+    if isinstance(state, dict) and "interactive_supported" in state:
+        supported = bool(state.get("interactive_supported"))
+        reason = str(state.get("interactive_unsupported_reason") or "").strip()
+        return supported, "" if supported else (
+            reason or "当前原生会话不能使用中途插话"
+        )
+    if normalized_harness == "opencode" and state:
+        return False, "旧 OpenCode 会话需要在下一轮完成兼容探测后才能使用中途插话"
+    return True, ""
 
 
 class _BoundedStdoutMirror:
@@ -455,6 +481,7 @@ def _tail_reader(
     limit,
     *,
     mirror_stream=None,
+    block_observer=None,
 ):
     try:
         while True:
@@ -468,6 +495,13 @@ def _tail_reader(
                     # 轨迹落盘失败不能阻断 stdout drain，否则 harness 可能因
                     # pipe 写满而卡死；任务结果仍保留有界尾部。
                     mirror_stream = None
+            if callable(block_observer):
+                try:
+                    block_observer(block)
+                except Exception:
+                    # 控制回执旁路不能阻断 stdout drain；进程结束后仍会把
+                    # 未确认命令收口为 unknown。
+                    pass
             chunks.append(block)
             size_state[key] += len(block)
             while chunks and size_state[key] > limit:
@@ -479,6 +513,256 @@ def _tail_reader(
                     size_state[key] -= overflow
     finally:
         stream.close()
+
+
+class _ControlEventObserver:
+    """从 harness stdout 中提取 NumOJ 控制回执，不消费轨迹字节。"""
+
+    def __init__(self, callback):
+        self._callback = callback
+        self._buffer = bytearray()
+        self._lock = threading.Lock()
+
+    def feed(self, block):
+        if not callable(self._callback):
+            return
+        with self._lock:
+            self._buffer.extend(bytes(block or b""))
+            while True:
+                newline = self._buffer.find(b"\n")
+                if newline < 0:
+                    # 单条控制帧不应无限增长；超限内容是普通 harness 输出，
+                    # 丢弃观察缓冲不影响 stdout mirror 中的真实轨迹。
+                    if len(self._buffer) > 1024 * 1024:
+                        self._buffer.clear()
+                    return
+                raw = bytes(self._buffer[:newline])
+                del self._buffer[:newline + 1]
+                try:
+                    event = json.loads(raw.decode("utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "numoj_control":
+                    continue
+                command_id = str(event.get("id") or "").strip()
+                status = str(event.get("status") or "").strip().lower()
+                if not command_id or status not in {"accepted", "rejected", "unknown"}:
+                    continue
+                self._callback(
+                    command_id,
+                    status,
+                    str(event.get("error") or ""),
+                )
+
+
+class _CanonicalJournalObserver:
+    """把 adapter stdout 中的规范事件追加为完整、已脱敏的 journal。"""
+
+    _EVENT_TYPES = frozenset({"numoj_trace", "numoj_usage"})
+
+    def __init__(
+        self,
+        path,
+        *,
+        secrets=(),
+        max_bytes=_CANONICAL_JOURNAL_MAX_BYTES,
+    ):
+        self._path = os.fspath(path)
+        self._patterns = tuple(
+            sorted(
+                {
+                    str(value)
+                    for value in secrets or ()
+                    if str(value or "")
+                },
+                key=len,
+                reverse=True,
+            )
+        )
+        self._max_bytes = max(1, int(max_bytes))
+        self._tail_reserve_bytes = min(
+            self._max_bytes,
+            _CANONICAL_JOURNAL_TAIL_RESERVE_BYTES,
+        )
+        self._direct_limit = self._max_bytes - self._tail_reserve_bytes
+        self._written = 0
+        self._tail_records = deque()
+        self._tail_bytes = 0
+        self._tail_mode = False
+        self._buffer = bytearray()
+        self._discarding_record = False
+        self._closed = False
+        self._lock = threading.Lock()
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        self._fd = os.open(self._path, flags, 0o600)
+        opened = os.fstat(self._fd)
+        if not stat.S_ISREG(opened.st_mode):
+            os.close(self._fd)
+            self._closed = True
+            raise OSError("Agent 规范轨迹临时文件不是普通文件")
+
+    def _redact(self, value):
+        if isinstance(value, str):
+            result = value
+            for secret in self._patterns:
+                result = result.replace(secret, "[REDACTED]")
+            return result
+        if isinstance(value, list):
+            return [self._redact(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                self._redact(str(key)): self._redact(item)
+                for key, item in value.items()
+            }
+        return value
+
+    def _write_payload(self, payload):
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(self._fd, payload[offset:])
+        self._written += len(payload)
+
+    def _append_record(self, raw):
+        try:
+            event = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        if (
+            not isinstance(event, dict)
+            or event.get("type") not in self._EVENT_TYPES
+            or event.get("version") != 1
+        ):
+            return
+        payload = (
+            json.dumps(
+                self._redact(event),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        if len(payload) > self._max_bytes:
+            return
+        if (
+            not self._tail_mode
+            and self._written + len(payload) <= self._direct_limit
+        ):
+            # 文件头保留最早的 usage/事件；剩余固定容量作为滚动尾部，
+            # 确保再多中间工具输出也不会挤掉最终 assistant 与尾随 usage。
+            self._write_payload(payload)
+            return
+        self._tail_mode = True
+        self._tail_records.append(payload)
+        self._tail_bytes += len(payload)
+        while (
+            self._tail_records
+            and self._tail_bytes > self._tail_reserve_bytes
+        ):
+            self._tail_bytes -= len(self._tail_records.popleft())
+
+    def feed(self, block):
+        payload = bytes(block or b"")
+        if not payload:
+            return
+        with self._lock:
+            if self._closed:
+                return
+            self._buffer.extend(payload)
+            while True:
+                newline = self._buffer.find(b"\n")
+                if newline < 0:
+                    if len(self._buffer) > _CANONICAL_JOURNAL_RECORD_MAX_BYTES:
+                        self._buffer.clear()
+                        self._discarding_record = True
+                    return
+                raw = bytes(self._buffer[:newline])
+                del self._buffer[: newline + 1]
+                if self._discarding_record:
+                    self._discarding_record = False
+                    continue
+                if len(raw) > _CANONICAL_JOURNAL_RECORD_MAX_BYTES:
+                    continue
+                self._append_record(raw)
+                if self._closed:
+                    return
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                return
+            for payload in self._tail_records:
+                if self._written + len(payload) > self._max_bytes:
+                    break
+                self._write_payload(payload)
+            self._tail_records.clear()
+            self._tail_bytes = 0
+            self._closed = True
+            os.close(self._fd)
+
+
+class _CompositeBlockObserver:
+    def __init__(self, *observers):
+        self._observers = tuple(item for item in observers if item is not None)
+
+    def feed(self, block):
+        for observer in self._observers:
+            try:
+                observer.feed(block)
+            except Exception:
+                continue
+
+
+def _iter_control_commands(control_source):
+    if not callable(control_source):
+        return ()
+    try:
+        commands = control_source()
+    except Exception:
+        # 控制队列暂时不可读不能中断正在执行的 Agent；下一轮轮询重试。
+        return ()
+    if commands is None:
+        return ()
+    if isinstance(commands, dict):
+        return (commands,)
+    try:
+        return tuple(commands)
+    except TypeError:
+        return ()
+
+
+def _normalize_control_command(command):
+    if not isinstance(command, dict):
+        raise ValueError("Agent 控制命令必须是对象")
+    command_id = str(command.get("id") or "").strip()
+    command_type = str(command.get("type") or "").strip().lower()
+    if not command_id:
+        raise ValueError("Agent 控制命令缺少 id")
+    if command_type not in {"steer", "interrupt"}:
+        raise ValueError("Agent 控制命令类型无效")
+    normalized = {
+        "type": command_type,
+        "id": command_id,
+    }
+    if command_type == "steer":
+        message = str(command.get("message") or "")
+        if not message.strip():
+            raise ValueError("Agent 插话消息不能为空")
+        normalized["message"] = message
+        attachments = command.get("attachments")
+        if isinstance(attachments, list):
+            normalized["attachments"] = [
+                item for item in attachments if isinstance(item, dict)
+            ]
+    target_task_id = str(command.get("target_task_id") or "").strip()
+    if target_task_id:
+        normalized["target_task_id"] = target_task_id
+    return normalized
 
 
 def _run_with_bounded_output(
@@ -493,7 +777,14 @@ def _run_with_bounded_output(
     cancel_check_interval=1.0,
     quota_check=None,
     quota_check_interval=AGENT_WORKSPACE_QUOTA_CHECK_INTERVAL_SECONDS,
+    control_source=None,
+    control_callback=None,
+    control_target_task_id="",
+    interrupt_grace_seconds=10.0,
+    canonical_journal_path=None,
+    canonical_journal_secrets=(),
 ):
+    interactive = callable(control_source)
     stdout_mirror = (
         _BoundedStdoutMirror(
             stdout_capture_path,
@@ -501,7 +792,13 @@ def _run_with_bounded_output(
         )
         if stdout_capture_path else None
     )
+    canonical_observer = None
     try:
+        if interactive and canonical_journal_path:
+            canonical_observer = _CanonicalJournalObserver(
+                canonical_journal_path,
+                secrets=canonical_journal_secrets,
+            )
         proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
@@ -512,15 +809,43 @@ def _run_with_bounded_output(
     except BaseException:
         if stdout_mirror is not None:
             stdout_mirror.close()
+        if canonical_observer is not None:
+            canonical_observer.close()
         raise
     stdout_chunks = deque()
     stderr_chunks = deque()
     sizes = {"stdout": 0, "stderr": 0}
+    pending_control_ids = set()
+    seen_control_ids = set()
+    interrupt_control_ids = set()
+    interrupt_sent_at = None
+    control_lock = threading.Lock()
+
+    def publish_control(command_id, status, error=""):
+        nonlocal interrupt_sent_at
+        with control_lock:
+            pending_control_ids.discard(command_id)
+            if (
+                status == "rejected"
+                and command_id != "__cancel__"
+                and command_id in interrupt_control_ids
+            ):
+                interrupt_control_ids.discard(command_id)
+                if not interrupt_control_ids:
+                    interrupt_sent_at = None
+        if callable(control_callback):
+            control_callback(command_id, status, error)
+
+    control_observer = _ControlEventObserver(publish_control) if interactive else None
+    observer = _CompositeBlockObserver(control_observer, canonical_observer)
     threads = [
         threading.Thread(
             target=_tail_reader,
             args=(proc.stdout, stdout_chunks, sizes, "stdout", _CAPTURE_LIMIT_BYTES),
-            kwargs={"mirror_stream": stdout_mirror},
+            kwargs={
+                "mirror_stream": stdout_mirror,
+                "block_observer": observer.feed if observer is not None else None,
+            },
             daemon=True,
         ),
         threading.Thread(
@@ -532,15 +857,31 @@ def _run_with_bounded_output(
     for thread in threads:
         thread.start()
     try:
-        try:
-            proc.stdin.write(str(prompt or "").encode("utf-8"))
-        except BrokenPipeError:
-            pass
-        finally:
+        if interactive:
+            start_frame = {
+                "type": "start",
+                "id": "__start__",
+                "message": str(prompt or ""),
+            }
+            if str(control_target_task_id or "").strip():
+                start_frame["target_task_id"] = str(control_target_task_id).strip()
             try:
-                proc.stdin.close()
-            except Exception:
+                proc.stdin.write(
+                    (json.dumps(start_frame, ensure_ascii=False) + "\n").encode("utf-8")
+                )
+                proc.stdin.flush()
+            except BrokenPipeError:
                 pass
+        else:
+            try:
+                proc.stdin.write(str(prompt or "").encode("utf-8"))
+            except BrokenPipeError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
         # 与 Reverse Judge 一致：进入执行循环后立即做第一次同步，后续再按
         # 固定间隔同步，避免前端必须空等完整的 tick 周期。
         last_tick = 0.0
@@ -552,6 +893,41 @@ def _run_with_bounded_output(
                 break
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
+                if interactive:
+                    for raw_command in _iter_control_commands(control_source):
+                        try:
+                            command = _normalize_control_command(raw_command)
+                            target = str(command.get("target_task_id") or "")
+                            expected = str(control_target_task_id or "")
+                            if target and expected and target != expected:
+                                raise ValueError("Agent 控制命令目标任务已变化")
+                            with control_lock:
+                                if command["id"] in seen_control_ids:
+                                    raise ValueError("Agent 控制命令 id 已处理")
+                                seen_control_ids.add(command["id"])
+                                pending_control_ids.add(command["id"])
+                                if command["type"] == "interrupt":
+                                    interrupt_control_ids.add(command["id"])
+                                    interrupt_sent_at = now
+                            payload = (
+                                json.dumps(command, ensure_ascii=False) + "\n"
+                            ).encode("utf-8")
+                            proc.stdin.write(payload)
+                            proc.stdin.flush()
+                        except (BrokenPipeError, OSError) as exc:
+                            command_id = str(
+                                raw_command.get("id")
+                                if isinstance(raw_command, dict) else ""
+                            ).strip()
+                            if command_id:
+                                publish_control(command_id, "unknown", str(exc))
+                        except ValueError as exc:
+                            command_id = str(
+                                raw_command.get("id")
+                                if isinstance(raw_command, dict) else ""
+                            ).strip()
+                            if command_id:
+                                publish_control(command_id, "rejected", str(exc))
                 if (
                     callable(quota_check)
                     and (
@@ -578,13 +954,42 @@ def _run_with_bounded_output(
                     except Exception:
                         canceled = False
                     if canceled:
-                        proc.terminate()
-                        try:
-                            returncode = proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            returncode = proc.wait()
-                        break
+                        if interactive and interrupt_sent_at is None:
+                            interrupt_frame = {
+                                "type": "interrupt",
+                                "id": "__cancel__",
+                            }
+                            try:
+                                with control_lock:
+                                    pending_control_ids.add("__cancel__")
+                                    interrupt_control_ids.add("__cancel__")
+                                proc.stdin.write(
+                                    (json.dumps(interrupt_frame) + "\n").encode("utf-8")
+                                )
+                                proc.stdin.flush()
+                                interrupt_sent_at = now
+                            except (BrokenPipeError, OSError):
+                                interrupt_sent_at = now - float(interrupt_grace_seconds)
+                        elif not interactive:
+                            proc.terminate()
+                            try:
+                                returncode = proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                returncode = proc.wait()
+                            break
+                if (
+                    interactive
+                    and interrupt_sent_at is not None
+                    and now - interrupt_sent_at >= max(0.5, float(interrupt_grace_seconds))
+                ):
+                    proc.terminate()
+                    try:
+                        returncode = proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        returncode = proc.wait()
+                    break
                 if (
                     callable(on_tick)
                     and now - last_tick >= max(0.5, float(tick_interval))
@@ -604,8 +1009,25 @@ def _run_with_bounded_output(
             pass
         raise
     finally:
+        if interactive:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
         for thread in threads:
             thread.join()
+        if canonical_observer is not None:
+            canonical_observer.close()
+        with control_lock:
+            unresolved = tuple(pending_control_ids)
+            pending_control_ids.clear()
+        for command_id in unresolved:
+            if callable(control_callback):
+                control_callback(
+                    command_id,
+                    "unknown",
+                    "harness 已结束，但没有确认控制命令",
+                )
         if stdout_mirror is not None:
             stdout_mirror.publish()
         if callable(on_tick):
@@ -652,6 +1074,7 @@ def _runtime_env(
     access_role=AGENT_ACCESS_ROLE_USER,
     resume_session_id="",
     web_search_settings=None,
+    interactive=False,
 ):
     protocol = str(endpoint.get("protocol") or "").strip().lower()
     # 长期密钥和真实上游地址不得进入容器；这里只接受本轮宿主 relay
@@ -704,6 +1127,12 @@ def _runtime_env(
         # 真正的“继续会话”必须复用同一个原生 session；Claude Code 的
         # --fork-session 会创建分支，不能作为通用 Agent 的续聊语义。
         env["AJ_FORK_SESSION"] = "0"
+    if interactive:
+        # run_harness 在此模式消费 NumOJ NDJSON 控制帧；未设置时继续读取
+        # 原始 prompt stdin，保证 Reverse Judge 和旧调用方完全兼容。
+        env["AJ_CONTROL_PROTOCOL"] = "numoj-ndjson-v1"
+        env["AJ_INTERACTIVE_SUPPORTED"] = "1"
+        env.pop("AJ_PROMPT_STDIN", None)
     env.update(_web_search_mcp_env(web_search_settings))
     return env
 
@@ -852,6 +1281,9 @@ def run_agent_harness(
     trace_callback=None,
     cancel_check=None,
     reset_trace=True,
+    control_source=None,
+    control_callback=None,
+    control_target_task_id=None,
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
 
@@ -931,6 +1363,12 @@ def run_agent_harness(
         trace_dir,
         ".agent_harness.stdout.tmp",
     )
+    canonical_trace_path = None
+    if callable(control_source):
+        canonical_trace_path = _prepare_workspace_temp_path(
+            trace_dir,
+            ".agent_harness.canonical.tmp",
+        )
     _clear_current_session_state(workspace)
     try:
         with _identity_relay_context(
@@ -941,6 +1379,8 @@ def run_agent_harness(
             str(session_cookie or ""),
             requested_by=str(requested_by or ""),
             access_role=access_role,
+            session_id=normalized_session_id,
+            task_id=str(task_id or ""),
         ) as identity_relay:
             agent_task = {
                 "task_id": str(task_id or ""),
@@ -1001,6 +1441,7 @@ def run_agent_harness(
                     access_role=access_role,
                     resume_session_id=resume_session_id,
                     web_search_settings=relayed_web_search_settings,
+                    interactive=callable(control_source),
                 )
                 docker_args = _docker_args(
                     container_name=container_name,
@@ -1032,12 +1473,15 @@ def run_agent_harness(
                 )
 
                 def sync_trace(*, final=False):
+                    sync_kwargs = {"secrets": trace_secrets}
+                    if callable(control_source):
+                        sync_kwargs["canonical"] = True
                     sync_agent_trace(
                         container_name,
                         trace_dir,
                         harness,
-                        stdout_trace_path,
-                        secrets=trace_secrets,
+                        canonical_trace_path or stdout_trace_path,
+                        **sync_kwargs,
                     )
                     if callable(trace_callback):
                         try:
@@ -1062,16 +1506,29 @@ def run_agent_harness(
                         timeout=120,
                     )
                     sync_trace()
+                    run_kwargs = {
+                        "process_env": docker_process_env,
+                        "stdout_capture_path": stdout_trace_path,
+                        "on_tick": sync_trace,
+                        "tick_interval": AGENT_TRACE_SYNC_INTERVAL_SECONDS,
+                        "cancel_check": cancel_check,
+                        "quota_check": enforce_workspace_quota,
+                        "quota_check_interval": quota_check_interval,
+                    }
+                    if callable(control_source):
+                        run_kwargs.update({
+                            "control_source": control_source,
+                            "control_callback": control_callback,
+                            "control_target_task_id": str(
+                                control_target_task_id or task_id or ""
+                            ),
+                            "canonical_journal_path": canonical_trace_path,
+                            "canonical_journal_secrets": trace_secrets,
+                        })
                     result = _run_with_bounded_output(
                         _docker_exec_args(container_name),
                         prompt,
-                        process_env=docker_process_env,
-                        stdout_capture_path=stdout_trace_path,
-                        on_tick=sync_trace,
-                        tick_interval=AGENT_TRACE_SYNC_INTERVAL_SECONDS,
-                        cancel_check=cancel_check,
-                        quota_check=enforce_workspace_quota,
-                        quota_check_interval=quota_check_interval,
+                        **run_kwargs,
                     )
                     enforce_workspace_quota()
                     sync_trace()
@@ -1083,6 +1540,11 @@ def run_agent_harness(
                             stdout_trace_path.unlink()
                         except FileNotFoundError:
                             pass
+                        if canonical_trace_path is not None:
+                            try:
+                                canonical_trace_path.unlink()
+                            except FileNotFoundError:
+                                pass
             artifacts = _read_workspace_artifacts(workspace, artifact_files)
             native_session_id = (
                 _read_native_session_id(workspace, harness)
@@ -1109,5 +1571,6 @@ __all__ = [
     "HarnessRunResult",
     "normalize_native_session_id",
     "read_agent_native_session_id",
+    "read_agent_steer_capability",
     "run_agent_harness",
 ]

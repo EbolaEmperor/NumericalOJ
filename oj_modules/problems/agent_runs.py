@@ -99,6 +99,10 @@ def build_agent_execution_trace(state):
         trace_dir = agent_run_trace_dir(task_id)
     except ValueError:
         trace_dir = None
+    canonical_journal = bool(
+        trace_dir is not None
+        and (trace_dir / "numoj_trace_v1.jsonl").is_file()
+    )
     status = _execution_trace_status(state.get("status"))
     token_usage = collect_agent_token_usage(trace_dir)
     if token_usage is not None:
@@ -109,7 +113,7 @@ def build_agent_execution_trace(state):
         )
         if cost_rmb is not None:
             token_usage["cost_rmb"] = cost_rmb
-    return {
+    trace = {
         "trace_id": (
             hashlib.sha256(task_id.encode("utf-8", "replace")).hexdigest()[:16]
             if task_id else ""
@@ -125,6 +129,11 @@ def build_agent_execution_trace(state):
         "trace_messages": collect_agent_trace_messages(trace_dir),
         "token_usage": token_usage,
     }
+    if canonical_journal:
+        # trace 级口径不能依赖 usage 是否已经到达：运行中的 thinking/tool
+        # 事件也已经是当前任务增量，且有些上游不会返回 usage。
+        trace["incremental"] = True
+    return trace
 
 
 def _nonnegative_usage_counter(value):
@@ -158,10 +167,11 @@ def _decimal_text(value):
 def aggregate_agent_session_token_usage(task_usages):
     """按会话 resume 语义汇总唯一任务的 token 与成本。
 
-    Pi 与 Claude Code 在续聊轮次的轨迹中会再次包含父会话历史，因此它们的
-    ``token_usage`` 是累计快照：同一来源取各计数器最大值。Codex 与
-    OpenCode 的 stdout 轨迹是本轮增量，按唯一 ``task_id`` 相加。先用
-    ``task_id`` 去重可避免同一实时快照被历史与 current overlay 重复加入。
+    历史 Pi 与 Claude Code 轨迹在续聊轮次中会再次包含父会话历史，因此未
+    显式标记口径的 ``token_usage`` 仍按累计快照处理：同一来源取各计数器
+    最大值。规范 journal 会用 ``incremental=true`` 明确表示当前任务增量，
+    四种 harness 都按唯一 ``task_id`` 相加。先按 ``task_id`` 去重可避免同一
+    实时快照被历史与 current overlay 重复加入。
 
     只有每个存在 token usage 的任务都带有合法 ``cost_rmb`` 时才返回总成本；
     否则 ``cost_rmb`` 为 ``None``，避免把部分成本误报成整场会话成本。
@@ -198,7 +208,11 @@ def aggregate_agent_session_token_usage(task_usages):
         if cost is None:
             cost_complete = False
 
-        if source in _CUMULATIVE_RESUME_USAGE_SOURCES:
+        is_legacy_cumulative = (
+            source in _CUMULATIVE_RESUME_USAGE_SOURCES
+            and usage.get("incremental") is not True
+        )
+        if is_legacy_cumulative:
             source_totals = cumulative_totals_by_source.setdefault(
                 source,
                 {field: 0 for field in _SESSION_USAGE_COUNTER_FIELDS},

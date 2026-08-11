@@ -404,6 +404,39 @@ def test_relay_configuration_rejects_unsafe_origin_or_cookie(
         )
 
 
+def test_relay_allows_cookieless_identity_only_with_task_binding():
+    with pytest.raises(relay.IdentityRelayError):
+        relay._NumOJIdentityRelay(
+            "custom",
+            None,
+            "https://oj.example",
+            "session",
+            "",
+            "admin",
+            "admin",
+        )
+
+    instance = relay._NumOJIdentityRelay(
+        "custom",
+        None,
+        "https://oj.example",
+        "session",
+        "",
+        "admin",
+        "admin",
+        "session-1",
+        "task-2",
+    )
+    forwarded = relay._upstream_headers(
+        _headers(Accept="application/json"),
+        instance.cookie_name,
+        instance.session_cookie,
+        instance.agent_identity_capability,
+    )
+    assert "Cookie" not in forwarded
+    assert forwarded[relay.AGENT_IDENTITY_HEADER]
+
+
 def test_relay_binds_loopback_on_docker_desktop(monkeypatch):
     monkeypatch.setattr(relay.platform, "system", lambda: "Darwin")
 

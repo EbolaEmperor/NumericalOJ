@@ -217,6 +217,26 @@ def test_testdata_redelivery_exits_before_creating_workspace(monkeypatch):
     assert result["canceled"] is True
 
 
+def test_testdata_unhandled_worker_error_projects_failed_session(
+    monkeypatch,
+    tmp_path,
+):
+    snapshots = _patch_common(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        data_task,
+        "get_user_by_username",
+        lambda _username: (_ for _ in ()).throw(RuntimeError("database offline")),
+    )
+
+    result = _invoke_task()
+
+    assert result["success"] is False
+    assert "worker 异常" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["stage"] == "finished"
+    assert snapshots[-1]["session_id"] == "testdata-harness-task"
+
+
 def test_testdata_cancellation_after_parse_prevents_publish(monkeypatch, tmp_path):
     _patch_common(monkeypatch, tmp_path)
     cancellation_checks = iter([False, False, True])
@@ -592,6 +612,26 @@ def test_solution_redelivery_exits_before_creating_workspace(monkeypatch):
 
     assert result["success"] is False
     assert result["canceled"] is True
+
+
+def test_solution_unhandled_worker_error_projects_failed_session(monkeypatch):
+    snapshots = _patch_harness_solution_task(monkeypatch, submissions=[])
+    monkeypatch.setattr(
+        solve_task,
+        "get_user_by_username",
+        lambda _username: (_ for _ in ()).throw(RuntimeError("database offline")),
+    )
+    task = solve_task.register_agent_solve_problem_task(_FakeCelery())
+
+    result = task(
+        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+    )
+
+    assert result["success"] is False
+    assert "worker 异常" in result["message"]
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["stage"] == "finished"
+    assert snapshots[-1]["session_id"] == "testdata-harness-task"
 
 
 def test_solution_task_uses_selected_endpoint(monkeypatch):
