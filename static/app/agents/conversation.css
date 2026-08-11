@@ -934,11 +934,6 @@
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
-.agent-resume-composer:focus-within {
-  border-color: #b8ab99;
-  box-shadow: 0 11px 36px rgb(54 46 34 / 12%);
-}
-
 .agent-resume-composer.is-dragging {
   border-color: var(--agent-accent);
   background: #fffaf3;
