@@ -14,15 +14,6 @@ python3 scripts/numoj_user.py init --base-url http://127.0.0.1:2025
 python3 scripts/numoj_user.py vibehub --help
 ```
 
-管理员使用 `skills/numoj-admin` 中的 CLI：
-
-```bash
-cd skills/numoj-admin
-python3 scripts/numoj_admin.py init --base-url http://127.0.0.1:2025
-python3 scripts/numoj_admin.py vibehub --help
-```
-
-命令示例以下均以用户 CLI 为准。管理员 CLI 支持相同的作品管理命令，并额外提供审核命令。
 需要离线保存当前服务器的手册时运行：
 
 ```bash
@@ -65,7 +56,7 @@ my-vibe/
 
 ### Dockerfile 与离线依赖
 
-作品镜像必须基于管理员预置的受信任基础镜像。最小 Dockerfile：
+作品镜像必须基于平台提供的受信任基础镜像。最小 Dockerfile：
 
 ```dockerfile
 FROM numericaloj-vibehub-runtime:1
@@ -160,8 +151,7 @@ python3 scripts/numoj_user.py vibehub submit-review <slug>
 ```
 
 `latest` 始终指向作者最新版本，`public` 始终指向审核通过的稳定版本。更新处于审核中时，其他用户
-仍会看到旧的公开版本。管理员通过 CLI 对自己拥有的作品执行 `submit-review` 时会直接发布；管理员
-不能修改或直接发布其他作者的草稿。
+仍会看到旧的公开版本。
 
 ### 申请精品
 
@@ -171,28 +161,9 @@ python3 scripts/numoj_user.py vibehub submit-review <slug>
 python3 scripts/numoj_user.py vibehub request-featured <slug>
 ```
 
-## 管理员审核 CLI
-
-管理员先列出待审版本，再明确批准或退回。拒绝时应通过 `--note` 说明修改要求：
-
-```bash
-python3 scripts/numoj_admin.py vibehub pending
-python3 scripts/numoj_admin.py vibehub detail <slug> --view review
-python3 scripts/numoj_admin.py vibehub review <slug> approve --note "审核通过"
-python3 scripts/numoj_admin.py vibehub review <slug> reject --note "请补充操作说明"
-```
-
-精品申请使用独立队列：
-
-```bash
-python3 scripts/numoj_admin.py vibehub featured-pending
-python3 scripts/numoj_admin.py vibehub featured-review <slug> approve
-python3 scripts/numoj_admin.py vibehub featured-review <slug> reject --note "资源需求不符合精品标准"
-```
-
 ## 版本、配额与运行资源
 
-- 普通用户同时最多拥有 2 个未获精品资格的作品；管理员不受作品数量限制。
+- 普通用户同时最多拥有 2 个未获精品资格的作品。
 - 每个用户的持久作品快照逻辑用量上限为 20 GiB；每个作品的版本数量也受站点配额限制。
 - 普通作品运行上限为 4 GiB 内存、2 CPU、256 PID、20 GiB 镜像和 4 GiB 可写根层。
 - 精品作品运行上限为 8 GiB 内存、4 CPU、512 PID、40 GiB 镜像和 8 GiB 可写根层。

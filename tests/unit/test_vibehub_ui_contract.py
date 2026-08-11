@@ -31,7 +31,6 @@ def test_vibehub_templates_parse_and_use_external_assets():
         _read(f"templates/vibehub/{name}")
         for name in (
             "index.html",
-            "admin_reviews.html",
             "guide.html",
             "player.html",
         )
@@ -48,8 +47,9 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     javascript = _read("static/app/vibehub.js")
 
     assert all(token in gallery for token in (
-        'data-vibe-filter="mine"', "<dialog", "data-vibe-project-modal",
+        'data-vibe-filter="mine"', 'data-vibe-filter="pending"', "<dialog", "data-vibe-project-modal",
         "data-vibe-approve-modal", "创建并提交审核", 'aria-label="创建作品"',
+        "data-admin-review-url-template",
     ))
     assert all(token not in gallery for token in (
         "NUMERICAL OJ", "PLAYABLE WORKS", "HOW IT WORKS", "我的工作台",
@@ -59,8 +59,12 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert all(token in card for token in (
         "project.play_url", "vibe-featured-mark", "fa-gem", "data-avatar-seed",
         "project.owner_username", "project.is_pending", "data-vibe-edit-project",
-        "data-vibe-approve-project",
+        "data-vibe-approve-project", "审核通过",
     ))
+    assert 'decision: "approve"' in javascript
+    assert "expected_version" in javascript
+    assert "initReviewDesk" not in javascript
+    assert 'data-vibe-view="review"' not in gallery
     assert "NumojIdenticon" in javascript
     assert all(token not in card for token in (
         "vibe-card-index", "project.summary", "project.tags",
@@ -70,7 +74,8 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
 def test_navigation_replaces_standalone_games_with_vibehub():
     navigation = _read("templates/components/layout/navigation.html")
     assert navigation.count(">VibeHub</span>") == 1
-    assert "VibeHub 审核" in navigation
+    assert "VibeHub 审核" not in navigation
+    assert "vibehub.admin_reviews" not in navigation
     assert ">围住小猫</span>" not in navigation
     assert ">ARC-AGI-3</span>" not in navigation
     assert "href=\"{{ url_for('vibehub.index') }}\"" in navigation
@@ -418,8 +423,8 @@ def test_heartbeat_capacity_error_maps_to_http_429_without_lease_payload(
     }
 
 
-def test_removed_workspace_and_detail_routes_redirect_to_gallery_or_play(monkeypatch):
-    for name in ("workspace.html", "detail.html"):
+def test_removed_auxiliary_pages_leave_gallery_and_play_routes(monkeypatch):
+    for name in ("workspace.html", "detail.html", "admin_reviews.html"):
         assert not (ROOT / "templates/vibehub" / name).exists()
     user = {"id": 7, "username": "alice", "is_admin": 0}
     seen = []
@@ -442,6 +447,7 @@ def test_removed_workspace_and_detail_routes_redirect_to_gallery_or_play(monkeyp
     gallery = client.get("/vibehub/?view=mine")
     assert seen == [user]
     assert gallery.headers["Cache-Control"] == "private, no-store"
+    assert client.get("/vibehub/admin/reviews").status_code == 404
 
     for path, destination in (
         ("/vibehub/workspace", "/vibehub/?view=mine"),

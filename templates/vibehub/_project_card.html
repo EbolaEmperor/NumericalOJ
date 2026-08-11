@@ -7,6 +7,7 @@
   data-vibe-title="{{ project.title }}"
   data-vibe-author="{{ owner_name }}"
   data-vibe-featured="{{ 'true' if project.is_featured else 'false' }}"
+  data-vibe-pending="{{ 'true' if project.can_approve else 'false' }}"
   data-vibe-mine="{{ 'true' if project.is_mine else 'false' }}"
 >
   <a class="vibe-card-link" href="{{ project.play_url or url_for('vibehub.play', slug=project.slug) }}" aria-label="打开 {{ project.title }}{% if project.is_pending %}，{{ pending_label }}{% endif %}">
@@ -56,7 +57,7 @@
       data-project-version="{{ project.submitted_version }}"
       aria-label="审核通过 {{ project.title }}"
       title="审核通过"
-    ><i class="fas fa-check" aria-hidden="true"></i></button>
+    ><i class="fas fa-check" aria-hidden="true"></i><span>审核通过</span></button>
     {% endif %}
   </span>
   {% endif %}

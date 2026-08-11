@@ -8,7 +8,6 @@ from flask import Blueprint, Response, current_app, jsonify, make_response, redi
 from flask import render_template, request, url_for
 
 from oj_modules.security.auth import (
-    admin_required,
     current_user,
     login_required,
 )
@@ -92,33 +91,6 @@ def guide():
 @login_required
 def workspace():
     return redirect(url_for("vibehub.index", view="mine"))
-
-
-@vibehub_bp.get("/admin/reviews")
-@admin_required
-def admin_reviews():
-    user = current_user()
-    failures = []
-    try:
-        review_projects = services.list_pending_reviews(user)
-    except Exception:
-        _log_page_failure("release_review_queue")
-        review_projects = []
-        failures.append("发布审核队列")
-    try:
-        featured_projects = services.list_pending_featured(user)
-    except Exception:
-        _log_page_failure("featured_review_queue")
-        featured_projects = []
-        failures.append("精品审核队列")
-    load_error = f"{'、'.join(failures)}暂时无法读取。" if failures else None
-    return render_template(
-        "vibehub/admin_reviews.html",
-        user=user,
-        review_projects=review_projects,
-        featured_projects=featured_projects,
-        load_error=load_error,
-    )
 
 
 @vibehub_bp.get("/<slug>")

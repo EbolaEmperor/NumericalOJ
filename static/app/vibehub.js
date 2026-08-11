@@ -105,6 +105,7 @@
         match = match && (
           activeFilter === "all"
           || (activeFilter === "featured" && card.dataset.vibeFeatured === "true")
+          || (activeFilter === "pending" && card.dataset.vibePending === "true")
           || (activeFilter === "mine" && card.dataset.vibeMine === "true")
         );
         card.hidden = !match;
@@ -291,51 +292,8 @@
     if (initialButton) openEditor(initialButton);
   }
 
-  function initReviewDesk(root) {
-    all("[data-vibe-review-tab]", root).forEach(function (button) {
-      button.addEventListener("click", function () {
-        all("[data-vibe-review-tab]", root).forEach(function (tab) {
-          tab.classList.toggle("is-active", tab === button);
-        });
-        all("[data-vibe-review-panel]", root).forEach(function (panel) {
-          panel.hidden = panel.dataset.vibeReviewPanel !== button.dataset.vibeReviewTab;
-        });
-      });
-    });
-
-    all("[data-review-card]", root).forEach(function (card) {
-      var form = one("[data-vibe-review-form]", card);
-      if (!form) return;
-      form.addEventListener("submit", async function (event) {
-        event.preventDefault();
-        var submitter = event.submitter;
-        var featured = card.dataset.reviewKind === "featured";
-        var template = featured ? root.dataset.featuredUrlTemplate : root.dataset.reviewUrlTemplate;
-        var status = one("[data-vibe-review-status]", form);
-        setBusy(submitter, true, submitter.value === "approve" ? "通过中…" : "退回中…");
-        try {
-          await apiRequest(projectUrl(template, card.dataset.projectSlug), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              decision: submitter.value,
-              note: form.elements.note.value,
-              expected_version: featured ? null : Number(card.dataset.projectVersion)
-            })
-          });
-          showMessage(status, submitter.value === "approve" ? "已通过。" : "已退回作者修改。");
-          setTimeout(function () { card.remove(); }, 350);
-        } catch (error) {
-          showMessage(status, error.message, true);
-          setBusy(submitter, false);
-        }
-      });
-    });
-  }
-
   initSharedVisuals();
   all("[data-vibehub-app]").forEach(function (root) {
     if (root.dataset.vibeView === "gallery") initGallery(root);
-    if (root.dataset.vibeView === "review") initReviewDesk(root);
   });
 }());

@@ -33,6 +33,7 @@
       <div class="vibe-filter-pills" aria-label="筛选作品">
         <button type="button" data-vibe-filter="all">全部</button>
         <button type="button" data-vibe-filter="featured"><i class="fas fa-gem" aria-hidden="true"></i>精品</button>
+        {% if user and user.is_admin == 1 %}<button type="button" data-vibe-filter="pending"><i class="fas fa-clock" aria-hidden="true"></i>待审核</button>{% endif %}
         {% if user %}<button type="button" data-vibe-filter="mine">我的</button>{% endif %}
       </div>
 

@@ -1,7 +1,7 @@
 /*
  * VibeHub 当前页面样式。
  *
- * 只覆盖作品列表、创建/编辑弹窗、审核台、CLI 手册、播放器与 404。
+ * 只覆盖作品列表、创建/编辑弹窗、CLI 手册、播放器与 404。
  * 已删除的首页宣传区、工作台、作品详情和旧版手册不在这里保留兼容规则。
  */
 
@@ -18,22 +18,13 @@
 .vibehub-page input { font: inherit; }
 
 .vibe-gallery,
-.vibe-review-desk,
 .vibe-guide { width: min(100%, 1600px); min-height: 100vh; margin: 0 auto; }
 
 .vibe-load-notice { position: relative; z-index: 30; display: flex; min-height: 39px; align-items: center; justify-content: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid #ddbb73; background: #fbefcc; color: #735312; font-size: .65rem; }
 
-.vibe-load-notice--dark { border-color: #764b35; background: #633922; color: #ffe1c6; }
-
-.vibe-eyebrow,
 .vibe-section-number { margin: 0; color: var(--vibe-muted); font-family: var(--vibe-mono); font-size: .67rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
 
-.vibe-eyebrow span,
 .vibe-section-number { color: var(--vibe-orange-dark); }
-
-.vibe-back-link { display: inline-flex; align-items: center; gap: 7px; color: var(--vibe-muted); font-size: .67rem; font-weight: 700; }
-
-.vibe-back-link:hover { color: var(--vibe-orange-dark); }
 
 .vibe-button { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; gap: 8px; padding: 9px 16px; border: 1px solid var(--vibe-ink); border-radius: 8px; font-size: .78rem; font-weight: 700; transition: transform 150ms ease, box-shadow 150ms ease; }
 
@@ -117,7 +108,7 @@
 
 .vibe-card-actions { position: absolute; z-index: 7; right: 10px; bottom: 10px; display: flex; gap: 6px; }
 
-.vibe-card-actions button { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid rgb(255 255 255 / 28%); border-radius: 8px; background: rgb(24 24 27 / 76%); box-shadow: 0 4px 14px rgb(0 0 0 / 18%); color: #fff; font-size: .72rem; backdrop-filter: blur(8px); transition: background-color 150ms ease, transform 150ms ease; }
+.vibe-card-actions button { display: flex; min-width: 34px; height: 34px; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; border: 1px solid rgb(255 255 255 / 28%); border-radius: 8px; background: rgb(24 24 27 / 76%); box-shadow: 0 4px 14px rgb(0 0 0 / 18%); color: #fff; font-size: .68rem; font-weight: 650; backdrop-filter: blur(8px); transition: background-color 150ms ease, transform 150ms ease; }
 
 .vibe-card-actions button:hover { background: #18181b; transform: translateY(-1px); }
 
@@ -220,121 +211,6 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-modal-panel--confirm > p:not(.vibe-form-status) { margin: 9px 0 18px; color: #71717a; font-size: .72rem; line-height: 1.65; }
 
 .vibe-modal-panel--confirm footer { margin-top: 18px; }
-
-/* 管理员审核台 */
-.vibe-review-header { display: flex; min-height: 260px; align-items: center; justify-content: space-between; gap: 35px; padding: 45px clamp(25px, 5vw, 82px); background: var(--vibe-ink); color: var(--vibe-white); }
-
-.vibe-review-header .vibe-back-link { margin-bottom: 35px; color: #bcb4a7; }
-
-.vibe-review-header h1 { margin: 7px 0 10px; color: var(--vibe-white) !important; font-family: var(--vibe-serif); font-size: clamp(2.7rem, 5vw, 4.7rem); font-weight: 600; letter-spacing: -.06em; }
-
-.vibe-review-header > div > p:last-child { max-width: 650px; margin: 0; color: #bcb4a7; font-size: .82rem; line-height: 1.8; }
-
-.vibe-review-header .vibe-eyebrow { color: #a69d90; }
-
-.vibe-review-header .vibe-eyebrow span { color: #e89968; }
-
-.vibe-review-count { display: grid; min-width: 115px; place-items: center; padding: 17px; border: 1px solid #625b51; }
-
-.vibe-review-count strong { color: #f0bd5b; font-family: var(--vibe-serif); font-size: 2.7rem; font-weight: 500; line-height: 1; }
-
-.vibe-review-count span { margin-top: 5px; color: #bcb4a7; font-size: .61rem; }
-
-.vibe-review-tabs { display: flex; padding: 0 clamp(25px, 5vw, 82px); border-bottom: 1px solid var(--vibe-line); background: rgb(255 250 240 / 65%); }
-
-.vibe-review-tabs button { display: flex; min-height: 58px; align-items: center; gap: 8px; padding: 0 22px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: var(--vibe-muted); font-size: .72rem; font-weight: 700; }
-
-.vibe-review-tabs button span { display: grid; min-width: 20px; height: 20px; place-items: center; border-radius: 50%; background: var(--vibe-paper-deep); font-family: var(--vibe-mono); font-size: .52rem; }
-
-.vibe-review-tabs button.is-active { border-bottom-color: var(--vibe-orange); color: var(--vibe-ink); }
-
-.vibe-review-tabs button.is-active span { background: var(--vibe-ink); color: var(--vibe-white); }
-
-.vibe-review-queue { display: grid; gap: 18px; padding: 38px clamp(25px, 5vw, 82px) 70px; }
-
-.vibe-review-queue[hidden] { display: none; }
-
-.vibe-review-card { border: 1px solid var(--vibe-line); background: rgb(255 250 240 / 70%); box-shadow: 0 8px 24px rgb(73 56 33 / 6%); }
-
-.vibe-review-card-head { display: grid; grid-template-columns: 55px minmax(0, 1fr) auto; align-items: center; gap: 15px; padding: 17px 21px; border-bottom: 1px solid var(--vibe-line); }
-
-.vibe-review-serial { display: grid; width: 48px; height: 45px; place-items: center; border: 1px solid var(--vibe-line); background: var(--vibe-paper); color: var(--vibe-orange-dark); font-family: var(--vibe-mono); font-size: .57rem; font-weight: 800; }
-
-.vibe-review-card-head > div p { margin: 0 0 2px; color: var(--vibe-orange-dark); font-family: var(--vibe-mono); font-size: .54rem; font-weight: 700; letter-spacing: .06em; }
-
-.vibe-review-card-head h2 { margin: 0; font-family: var(--vibe-serif); font-size: 1.18rem; font-weight: 650; }
-
-.vibe-review-card-head > div > span { color: var(--vibe-muted); font-size: .58rem; }
-
-.vibe-update-badge,
-.vibe-new-badge,
-.vibe-featured-badge { padding: 6px 9px; border: 1px solid currentColor; color: var(--vibe-blue); font-family: var(--vibe-mono); font-size: .53rem; }
-
-.vibe-new-badge { color: var(--vibe-green); }
-
-.vibe-featured-badge { color: #865e12; background: #f7e5ac; }
-
-.vibe-review-card-body { display: grid; grid-template-columns: 190px minmax(250px, 1fr) minmax(300px, .85fr); min-height: 200px; }
-
-.vibe-review-preview { position: relative; display: grid; min-height: 200px; place-items: center; overflow: hidden; background: var(--vibe-green); color: var(--vibe-sheet); }
-
-.vibe-review-preview > i { font-size: 2rem; }
-
-.vibe-review-preview img { width: 100%; height: 100%; object-fit: cover; }
-
-.vibe-review-preview a { position: absolute; right: 10px; bottom: 10px; left: 10px; display: flex; min-height: 35px; align-items: center; justify-content: center; gap: 7px; background: rgb(41 37 31 / 90%); color: var(--vibe-white); font-size: .6rem; font-weight: 700; }
-
-.vibe-review-preview a:hover { background: var(--vibe-orange-dark); }
-
-.vibe-review-copy { padding: 24px; border-right: 1px solid var(--vibe-line); }
-
-.vibe-review-copy > p { margin: 0; color: var(--vibe-ink-soft); font-size: .72rem; line-height: 1.75; }
-
-.vibe-review-copy > div { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-
-.vibe-review-copy > div span { color: var(--vibe-muted); font-size: .58rem; }
-
-.vibe-review-copy dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 20px 0 0; border-top: 1px dashed var(--vibe-line); }
-
-.vibe-review-copy dl div { padding: 10px 0; border-bottom: 1px dashed var(--vibe-line); }
-
-.vibe-review-copy dt { color: var(--vibe-muted); font-size: .55rem; font-weight: 500; }
-
-.vibe-review-copy dd { margin: 3px 0 0; font-family: var(--vibe-mono); font-size: .62rem; font-weight: 700; }
-
-.vibe-review-form { display: flex; flex-direction: column; padding: 21px; }
-
-.vibe-review-form label { display: grid; gap: 7px; color: var(--vibe-ink-soft); font-size: .6rem; }
-
-.vibe-review-form textarea { width: 100%; padding: 10px 11px; border: 1px solid var(--vibe-line); outline: 0; background: rgb(255 253 248 / 74%); color: var(--vibe-ink); font-size: .72rem; line-height: 1.6; resize: vertical; }
-
-.vibe-review-form textarea:focus { border-color: var(--vibe-orange); box-shadow: 0 0 0 3px rgb(201 93 50 / 10%); }
-
-.vibe-review-form > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: auto; padding-top: 13px; }
-
-.vibe-review-form button { min-height: 38px; border: 1px solid currentColor; background: transparent; font-size: .65rem; font-weight: 700; }
-
-.vibe-review-reject { color: var(--vibe-red); }
-
-.vibe-review-reject:hover { background: var(--vibe-red); color: white; }
-
-.vibe-review-approve { color: var(--vibe-green); }
-
-.vibe-review-approve:hover { background: var(--vibe-green); color: white; }
-
-.vibe-review-form > p { min-height: 1em; margin: 8px 0 0; color: var(--vibe-green); font-size: .58rem; }
-
-.vibe-review-form > p.is-error { color: var(--vibe-red); }
-
-.vibe-review-card.is-complete { opacity: .45; pointer-events: none; transform: scale(.995); transition: opacity 250ms ease, transform 250ms ease; }
-
-.vibe-review-empty { display: grid; min-height: 260px; place-items: center; align-content: center; padding: 30px; border: 1px dashed var(--vibe-line); color: var(--vibe-muted); text-align: center; }
-
-.vibe-review-empty > i { margin-bottom: 13px; color: var(--vibe-orange); font-size: 1.8rem; }
-
-.vibe-review-empty h2 { margin: 0 0 6px; font-family: var(--vibe-serif); }
-
-.vibe-review-empty p { margin: 0; font-size: .7rem; }
 
 /* CLI 开发者手册 */
 .vibehub-page--guide { min-height: 100vh; overflow: visible; background: var(--numoj-bg, #f7f7f5); color: var(--numoj-ink, #18181b); }
@@ -481,14 +357,6 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-not-found > p:not(.vibe-section-number) { margin: 0 0 25px; color: var(--vibe-muted); font-size: .75rem; }
 
 /* 响应式 */
-@media (max-width: 1199.98px) {
-  .vibe-review-card-body { grid-template-columns: 160px minmax(220px, 1fr); }
-
-  .vibe-review-form { grid-column: 1 / -1; border-top: 1px solid var(--vibe-line); }
-
-  .vibe-review-form > div { margin-top: 12px; }
-}
-
 @media (max-width: 1099.98px) {
   .vibehub-page--gallery .vibe-gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
@@ -515,30 +383,6 @@ body.vibe-modal-open { overflow: hidden; }
   .vibehub-page--gallery .vibe-filter-pills button { flex: 1 0 auto; }
 
   .vibe-toolbar-actions { order: 2; }
-
-  .vibe-review-header { min-height: 290px; align-items: flex-start; flex-direction: column; justify-content: flex-end; padding: 52px 20px 30px; }
-
-  .vibe-review-header .vibe-back-link { margin-bottom: 22px; }
-
-  .vibe-review-count { min-width: 92px; }
-
-  .vibe-review-tabs { padding: 0 10px; }
-
-  .vibe-review-tabs button { flex: 1; justify-content: center; padding-inline: 8px; }
-
-  .vibe-review-queue { padding: 25px 12px 50px; }
-
-  .vibe-review-card-head { grid-template-columns: 48px minmax(0, 1fr); }
-
-  .vibe-review-card-head > b { grid-column: 2; justify-self: start; }
-
-  .vibe-review-card-body { grid-template-columns: 1fr; }
-
-  .vibe-review-preview { min-height: 220px; }
-
-  .vibe-review-copy { border-right: 0; border-bottom: 1px solid var(--vibe-line); }
-
-  .vibe-review-form { grid-column: auto; }
 
   .vibe-player-state span { display: none; }
 
@@ -572,11 +416,6 @@ body.vibe-modal-open { overflow: hidden; }
   .vibe-guide-markdown-body { padding: 22px 18px; }
 
   .vibe-guide-markdown-body h1 { font-size: 1.42rem; }
-
-  .vibe-review-header h1 { font-size: 2.3rem; }
-
-  .vibe-review-copy dl,
-  .vibe-review-form > div { grid-template-columns: 1fr; }
 
   .vibe-player-toolbar { top: 8px; left: 8px; max-width: calc(100% - 16px); }
 

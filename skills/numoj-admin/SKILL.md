@@ -73,6 +73,12 @@ For review work, use `vibehub pending` with `vibehub review`, or
 `vibehub featured-pending` with `vibehub featured-review`. Run each command's
 `--help` before applying a decision.
 
+Administrator-owned VibeHub versions publish directly when submitted for
+review, and administrators are not subject to the standard limit of two
+non-featured projects. These privileges apply only to the administrator's own
+projects: administrators cannot modify or directly publish another author's
+draft.
+
 ## Examples
 
 Check administrator login:

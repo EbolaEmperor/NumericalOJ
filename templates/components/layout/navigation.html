@@ -45,7 +45,7 @@
     <a class="numoj-nav-item{% if request.blueprint == 'ranking' %} active{% endif %}" href="{{ url_for('ranking.ranking_list') }}" title="打榜赛">
       {{ icon('ranking') }}<span class="numoj-nav-label">打榜赛</span>
     </a>
-    <a class="numoj-nav-item{% if request.blueprint == 'vibehub' and current_endpoint != 'vibehub.admin_reviews' %} active{% endif %}" href="{{ url_for('vibehub.index') }}" title="VibeHub">
+    <a class="numoj-nav-item{% if request.blueprint == 'vibehub' %} active{% endif %}" href="{{ url_for('vibehub.index') }}" title="VibeHub">
       {{ icon('vibehub') }}<span class="numoj-nav-label">VibeHub</span>
     </a>
   </section>
@@ -73,9 +73,6 @@
     </a>
     <a class="numoj-nav-item{% if request.blueprint == 'admin_dynamic_config' %} active{% endif %}" href="{{ url_for('admin_dynamic_config.site_config') }}" title="全站配置">
       {{ icon('site-config') }}<span class="numoj-nav-label">全站配置</span>
-    </a>
-    <a class="numoj-nav-item{% if current_endpoint == 'vibehub.admin_reviews' %} active{% endif %}" href="{{ url_for('vibehub.admin_reviews') }}" title="VibeHub 审核">
-      {{ icon('vibehub') }}<span class="numoj-nav-label">VibeHub 审核</span>
     </a>
   </section>
   {% endif %}
