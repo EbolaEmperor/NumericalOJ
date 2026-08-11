@@ -150,7 +150,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
     _assert_disposable_environment()
     _assert_port_free()
     secret = read_deepseek_api_key()
-    import config
+    from oj_modules import config
     if shutil.which("docker") is None:
         _fail("真实反向评测 E2E 需要本地 Docker CLI")
     _assert_local_test_docker_daemon()

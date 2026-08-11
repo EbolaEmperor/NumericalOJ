@@ -51,7 +51,7 @@ def _get_config():
     global _CONFIG
     if _CONFIG is None:
         try:
-            import config as _cfg
+            from oj_modules import config as _cfg
             _CONFIG = _cfg
         except ImportError:
             _CONFIG = object()

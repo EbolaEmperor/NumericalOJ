@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 
-import config as _cfg
+from oj_modules import config as _cfg
 from oj_modules.infrastructure.redis import create_optional_redis_client
 from oj_modules.ranking.db import (
     activate_elo_submission,

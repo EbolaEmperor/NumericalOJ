@@ -50,7 +50,7 @@ jobs:
           python-version: '3.12'
       - name: Compile all tracked Python entry points
         run: |
-          python -m compileall -q config.py oj.py oj_modules deploy scripts skills tests
+          python -m compileall -q oj.py oj_modules deploy scripts skills tests
           python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness
 
   unit:

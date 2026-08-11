@@ -41,7 +41,7 @@ RUN python3 -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
         -r requirements/production.txt -r requirements/test.txt
 
 # 复制仓库代码；运行拓扑由 Compose 通过环境变量注入，始终保留并测试
-# tracked config.py 的解析逻辑、代码默认值和文档契约。
+# tracked oj_modules/config.py 的解析逻辑、代码默认值和文档契约。
 COPY . /app/
 
 CMD ["bash", "tests/ci/run-ci.sh"]

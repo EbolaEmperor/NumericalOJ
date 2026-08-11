@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
     class Retry(Exception):
         pass
 
-import config as _cfg
+from oj_modules import config as _cfg
 from oj_modules.shared.archive import ZipExtractionPolicy, extract_zip
 from oj_modules.ranking.agent_judge import rules as aj
 from oj_modules.infrastructure.redis import (
@@ -50,8 +50,8 @@ from oj_modules.ranking.agent_judge.db import (
 RANKING_AGENT_JUDGE_TASK_NAME = 'oj.ranking_agent_judge'
 RANKING_AGENT_JUDGE_PAUSED_PROBE_TASK_NAME = 'oj.ranking_agent_judge_paused_probe'
 
-# 配置读取：环境变量优先，其次 config.py，最后内置默认。这样本机可用环境变量切 lite 镜像，
-# 生产 config.py 不设置时仍默认使用原版 numericaloj-agent-judge:latest。
+# 配置读取：环境变量优先，其次 oj_modules/config.py，最后内置默认。这样本机可用环境变量切 lite 镜像，
+# 生产 oj_modules/config.py 不设置时仍默认使用原版 numericaloj-agent-judge:latest。
 def _config_value(name, default):
     env_value = os.environ.get(name)
     if env_value is not None and str(env_value).strip() != '':

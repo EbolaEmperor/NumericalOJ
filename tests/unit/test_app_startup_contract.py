@@ -353,11 +353,14 @@ def test_logging_bootstrap_precedes_all_business_module_imports():
     first_business_import = next(
         node
         for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module
-        and node.module.startswith('oj_modules.')
-        and node.module != 'oj_modules.observability'
-    )
+            if isinstance(node, ast.ImportFrom)
+            and node.module
+            and node.module.startswith('oj_modules.')
+            and node.module not in {
+                'oj_modules.config',
+                'oj_modules.observability',
+            }
+        )
     bootstrap = _logging_bootstrap_statements()
 
     assert len(bootstrap) == 2

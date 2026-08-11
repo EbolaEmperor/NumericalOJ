@@ -8,9 +8,9 @@ from flask import Flask, jsonify, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException
 from celery import Celery
 
-# config.py
-from config import *
-import config as _cfg
+# oj_modules/config.py
+from oj_modules.config import *
+from oj_modules import config as _cfg
 from oj_modules.observability import (
     configure_logging,
     install_celery_observability,

@@ -6,7 +6,7 @@ import secrets
 
 from itsdangerous import BadData, SignatureExpired, URLSafeSerializer, URLSafeTimedSerializer
 
-from config import SECRET_KEY
+from oj_modules.config import SECRET_KEY
 
 
 AGENT_IDENTITY_HEADER = "X-NumOJ-Agent-Identity"

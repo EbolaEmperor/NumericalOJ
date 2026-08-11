@@ -23,7 +23,7 @@ from oj_modules.repository.settings import (
     DEFAULT_SEARCH_SCORE_THRESHOLD as _DEFAULT_SEARCH_SCORE_THRESHOLD,
     DEFAULT_SEARCH_TOP_K as _DEFAULT_SEARCH_TOP_K,
 )
-from config import (
+from oj_modules.config import (
     REPOSITORY_EMBEDDING_BATCH_SIZE,
     REPOSITORY_EMBEDDING_TIMEOUT,
     REPOSITORY_FAISS_INDEX_ROOT,

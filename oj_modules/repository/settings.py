@@ -1,6 +1,6 @@
 """代码仓库索引的共享默认配置。"""
 
-from config import AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, AGENT_REPOSITORY_KNN_TOP_K
+from oj_modules.config import AGENT_REPOSITORY_KNN_SCORE_THRESHOLD, AGENT_REPOSITORY_KNN_TOP_K
 
 
 try:

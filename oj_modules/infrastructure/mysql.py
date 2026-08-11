@@ -15,8 +15,8 @@ import time
 
 import pymysql
 
-import config as _config
-from config import (
+from oj_modules import config as _config
+from oj_modules.config import (
     MYSQL_CONNECT_TIMEOUT,
     MYSQL_PASSWORD,
     MYSQL_POOL_MAX_SIZE,
