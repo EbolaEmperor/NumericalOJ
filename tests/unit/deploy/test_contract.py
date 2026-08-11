@@ -18,6 +18,16 @@ def test_deploy_shell_is_syntactically_valid():
     subprocess.run(["bash", "-n", "deploy.sh"], cwd=ROOT, check=True)
 
 
+def test_vibehub_trusted_runtime_pins_the_upstream_base_digest():
+    dockerfile = _read("docker/vibehub-runtime/Dockerfile")
+    first_from = next(
+        line.strip() for line in dockerfile.splitlines() if line.startswith("FROM ")
+    )
+
+    assert first_from.startswith("FROM python:3.12-slim-bookworm@sha256:")
+    assert len(first_from.rsplit("@sha256:", 1)[1]) == 64
+
+
 def test_deploy_is_an_in_place_entry_without_environment_whitelists_or_tests():
     script = _read("deploy.sh")
 
@@ -47,6 +57,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     phases = [
         "phase='初始化日志目录'",
         "phase='准备 Python 运行环境'",
+        "phase='构建 VibeHub 受信基础候选镜像'",
         "phase='准备 ARC-AGI-3 公开游戏'",
         "phase='构建判题镜像'",
         "phase='准备判题器官方头文件工具链'",
@@ -72,11 +83,14 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "docker/agent_judge" in script
     )
     assert 'build_candidate_image' in script
-    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 1
+    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 2
     assert "numericaloj-judger:deploy-*" in script
     assert "numericaloj-agent-judge:deploy-*" in script
+    assert "numericaloj-vibehub-runtime:deploy-*" in script
     assert 'remove_stale_candidate_tags' in script
     assert 'docker image prune --force --filter "label=$MANAGED_IMAGE_LABEL"' in script
+    assert "VIBEHUB_MANAGED_IMAGE_LABEL='com.numericaloj.vibehub.image=1'" in script
+    assert '--filter "label=$VIBEHUB_MANAGED_IMAGE_LABEL"' in script
     assert "deploy/backup_database.py preflight" in script
     assert "deploy/backup_database.py backup" in script
     assert 'deploy/backup_database.py mark-success' in script
@@ -105,6 +119,30 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert script.index("phase='创建并验证数据库回滚点'") < arc_switch
     assert "--expected-count 25" in script
     assert 'ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"' in script
+    vibehub_sync = script.index("deploy/sync_vibehub_builtins.py")
+    assert arc_switch < vibehub_sync < script.index("scripts/init_db_schema.py")
+    assert '--source-root "$ROOT_DIR/vibehub_examples"' in script
+    assert '--upload-root "$ROOT_DIR/uploads/vibehub"' in script
+    assert '--arc-set "$ARC_CURRENT_SET"' in script
+    assert "docker/vibehub-runtime" in script
+    vibe_candidate_build = script.index('--tag "$VIBEHUB_RUNTIME_CANDIDATE"')
+    vibe_candidate_inspect = script.index(
+        "docker image inspect --format '{{.Id}}' \"$VIBEHUB_RUNTIME_CANDIDATE\""
+    )
+    stop_phase = script.index("phase='停止现有服务'")
+    vibe_stable_switch = script.index(
+        'docker tag "$VIBEHUB_RUNTIME_CANDIDATE" "$VIBEHUB_RUNTIME_STABLE"'
+    )
+    assert vibe_candidate_build < vibe_candidate_inspect < stop_phase
+    assert stop_phase < vibe_stable_switch < vibehub_sync
+    assert '--tag numericaloj-vibehub-runtime:1' not in script
+    assert (
+        'docker tag "$vibehub_runtime_previous_id" '
+        '"$VIBEHUB_RUNTIME_STABLE"' in script
+    )
+    mark_success = script.index("deploy/backup_database.py mark-success")
+    builtin_finalize = script.index("--finalize-only")
+    assert mark_success < builtin_finalize
     assert (
         'EDITOR_TOOLCHAIN_ROOT="$STATE_DIR/editor-toolchains"' in script
     )
@@ -124,7 +162,6 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert (
         'docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"' in script
     )
-    stop_phase = script.index("phase='停止现有服务'")
     celery_stop = script.index("  'Celery' celery", stop_phase)
     web_stop = script.index("  'Web' web", stop_phase)
     assert celery_stop < web_stop
@@ -158,6 +195,11 @@ def test_deploy_detects_and_uses_daemon_docker_build_cache():
     assert 'DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"' in script
     assert "JUDGER_STABLE='numericaloj-judger:latest'" in script
     assert "AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'" in script
+    assert "VIBEHUB_RUNTIME_STABLE='numericaloj-vibehub-runtime:1'" in script
+    assert (
+        'VIBEHUB_RUNTIME_CANDIDATE="numericaloj-vibehub-runtime:deploy-$RUN_ID"'
+        in script
+    )
     assert 'docker buildx inspect "$DOCKER_BUILDER"' in script
     assert "docker info --format '{{.DockerRootDir}}'" in script
     assert "docker buildx du" in script
@@ -366,12 +408,51 @@ def test_deploy_fails_closed_without_private_production_config():
     assert backup_plan < database_backup
     assert 'ENV_FILE="$ROOT_DIR/.env"' in script
     assert 'deploy/preflight.py validate-config "$ENV_FILE"' in script
+    assert "VIBEHUB_OCI_RUNTIME" in preflight
+    assert "REQUIRED_VIBEHUB_OCI_RUNTIME = \"runsc\"" in preflight
+    assert "deploy/preflight.py validate-vibehub-runtime" in script
+    service_stop = script.index("phase='停止现有服务'")
+    assert script.index("deploy/preflight.py validate-vibehub-runtime") < service_stop
+    assert "docker run --rm" not in script
     assert 'getattr(config, "ENV_FILE_LOADED", False)' in preflight
     assert 'getattr(config, "ENV_FILE_KEYS", ())' in preflight
     assert "metadata.st_uid != os.geteuid()" in preflight
     assert "mode not in (0o400, 0o600)" in preflight
     assert "PYTHONDONTWRITEBYTECODE=1" in script
     assert "source .env" not in script
+
+
+def test_vibehub_base_oci_is_exported_before_stop_and_switched_with_tag():
+    script = _read("deploy.sh")
+    exporter = _read("deploy/vibehub_base_oci.py")
+
+    config_check = script.index("deploy/preflight.py validate-config")
+    builder_check = script.index("deploy/preflight.py validate-vibehub-builder")
+    candidate_build = script.index("phase='构建 VibeHub 受信基础候选镜像'")
+    oci_export = script.index("phase='导出并核验 VibeHub 受信基础 OCI layout'")
+    service_stop = script.index("phase='停止现有服务'")
+    backup = script.index("phase='创建并验证数据库回滚点'")
+    stable_switch = script.index('docker tag "$VIBEHUB_RUNTIME_CANDIDATE"')
+    current_switch = script.index("deploy/vibehub_base_oci.py switch-current")
+
+    assert config_check < builder_check < candidate_build < oci_export
+    assert oci_export < service_stop < backup
+    assert backup < stable_switch < current_switch
+    assert "deploy/vibehub_base_oci.py restore-current" in script
+    assert script.index("deploy/vibehub_base_oci.py prune-releases") > script.index(
+        "deploy/backup_database.py mark-success"
+    )
+    assert 'VIBEHUB_BASE_OCI_LAYOUT_ROOT="$STATE_DIR/vibehub-base-oci"' in script
+    assert '["docker", "image", "save", "--output"' in exporter
+    assert "archive.extractall" not in exporter
+    assert "extractfile(member)" in exporter
+    assert "oci-layout://" in exporter
+    assert '"--network", "none"' in exporter
+    assert '"--pull=false"' in exporter
+    assert '"--load"' in exporter
+    assert exporter.count('"--resource"') >= 4
+    assert '"--max-used-space", "4294967296"' in exporter
+    assert "deploy/vibehub_base_oci.py probe" not in script
 
 
 def test_deploy_shell_contains_no_embedded_python():

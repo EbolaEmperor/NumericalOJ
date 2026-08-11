@@ -31,6 +31,7 @@ from numoj_admin_cli import (  # noqa: E402
     site_config,
     submission,
     user,
+    vibehub,
 )
 
 
@@ -216,6 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai.register(subparsers)
     ai_detection.register(subparsers)
     ranking.register(subparsers)
+    vibehub.register(subparsers)
 
     return parser
 

@@ -10,6 +10,7 @@ from flask import jsonify, redirect, request, url_for
 _PUBLIC_AUTH_ENDPOINTS = frozenset(
     {"auth.login", "auth.register", "auth.send_verification", "auth.forgot_password"}
 )
+_PUBLIC_CAPABILITY_ENDPOINTS = frozenset({"vibehub.runtime_proxy"})
 _PUBLIC_EXACT_PATHS = frozenset({"/favicon.ico", "/health/live", "/health/ready"})
 
 
@@ -61,6 +62,8 @@ def _original_request_target():
 
 def _is_public_request():
     if request.endpoint in _PUBLIC_AUTH_ENDPOINTS:
+        return True
+    if request.endpoint in _PUBLIC_CAPABILITY_ENDPOINTS:
         return True
     if request.path in _PUBLIC_EXACT_PATHS:
         return True

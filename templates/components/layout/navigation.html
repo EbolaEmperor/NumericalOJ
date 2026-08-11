@@ -37,11 +37,8 @@
       <a class="numoj-nav-item{% if request.blueprint == 'ranking' %} active{% endif %}" href="{{ url_for('ranking.ranking_list') }}" title="打榜赛">
         {{ icon('ranking') }}<span class="numoj-nav-label">打榜赛</span>
       </a>
-      <a class="numoj-nav-item{% if active_endpoint.startswith('game.circle_cat') %} active{% endif %}" href="{{ url_for('game.circle_cat') }}" title="围住小猫">
-        {{ icon('game') }}<span class="numoj-nav-label">围住小猫</span>
-      </a>
-      <a class="numoj-nav-item{% if active_endpoint.startswith('game.arc_agi_3') %} active{% endif %}" href="{{ url_for('game.arc_agi_3_index') }}" title="ARC-AGI-3">
-        {{ icon('arc-grid') }}<span class="numoj-nav-label">ARC-AGI-3</span>
+      <a class="numoj-nav-item{% if request.blueprint == 'vibehub' and active_endpoint != 'vibehub.admin_reviews' %} active{% endif %}" href="{{ url_for('vibehub.index') }}" title="VibeHub">
+        {{ icon('vibehub') }}<span class="numoj-nav-label">VibeHub</span>
       </a>
     </section>
 
@@ -68,6 +65,9 @@
       </a>
       <a class="numoj-nav-item{% if request.blueprint == 'admin_dynamic_config' %} active{% endif %}" href="{{ url_for('admin_dynamic_config.site_config') }}" title="全站配置">
         {{ icon('site-config') }}<span class="numoj-nav-label">全站配置</span>
+      </a>
+      <a class="numoj-nav-item{% if active_endpoint == 'vibehub.admin_reviews' %} active{% endif %}" href="{{ url_for('vibehub.admin_reviews') }}" title="VibeHub 审核">
+        {{ icon('vibehub') }}<span class="numoj-nav-label">VibeHub 审核</span>
       </a>
     </section>
     {% endif %}
@@ -160,15 +160,9 @@
         </a>
       </li>
       <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('game.circle_cat') }}">
-          <i class="fas fa-cat me-2"></i>
-          围住小猫
-        </a>
-      </li>
-      <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('game.arc_agi_3_index') }}">
-          <i class="fas fa-border-all me-2"></i>
-          ARC-AGI-3
+        <a class="nav-link" href="{{ url_for('vibehub.index') }}">
+          <i class="fas fa-wand-magic-sparkles me-2"></i>
+          VibeHub
         </a>
       </li>
       {% endif %}
@@ -201,6 +195,12 @@
           <a class="nav-link" href="{{ url_for('admin_dynamic_config.site_config') }}">
             <i class="fas fa-sliders-h me-2"></i>
             全站配置
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('vibehub.admin_reviews') }}">
+            <i class="fas fa-clipboard-check me-2"></i>
+            VibeHub 审核
           </a>
         </li>
       {% endif %}

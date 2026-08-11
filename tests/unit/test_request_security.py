@@ -14,6 +14,20 @@ def _make_client(trusted_origins=()):
     def write():
         return 'ok'
 
+    app.add_url_rule(
+        '/vibehub/runtime/<token>/<path:path>',
+        endpoint='vibehub.runtime_proxy',
+        view_func=lambda token, path: f'{token}:{path}',
+        methods=['POST'],
+    )
+
+    app.add_url_rule(
+        '/vibehub/runtime/<token>/heartbeat',
+        endpoint='vibehub.runtime_heartbeat',
+        view_func=lambda token: token,
+        methods=['POST'],
+    )
+
     return app.test_client()
 
 
@@ -58,6 +72,31 @@ def test_cross_origin_and_malformed_browser_writes_are_rejected():
         base_url='https://numoj.example',
         headers={'Origin': 'null'},
     ).status_code == 403
+
+
+def test_only_exact_vibehub_proxy_endpoint_accepts_sandbox_null_origin():
+    client = _make_client()
+
+    proxy = client.post(
+        '/vibehub/runtime/opaque-token/state/save',
+        base_url='https://numoj.example',
+        headers={'Origin': 'null'},
+    )
+    assert proxy.status_code == 200
+
+    heartbeat = client.post(
+        '/vibehub/runtime/opaque-token/heartbeat',
+        base_url='https://numoj.example',
+        headers={'Origin': 'null'},
+    )
+    assert heartbeat.status_code == 403
+
+    cross_origin_proxy = client.post(
+        '/vibehub/runtime/opaque-token/state/save',
+        base_url='https://numoj.example',
+        headers={'Origin': 'https://attacker.example'},
+    )
+    assert cross_origin_proxy.status_code == 403
 
 
 def test_cli_write_without_origin_or_referer_remains_compatible():

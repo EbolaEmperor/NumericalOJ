@@ -1954,6 +1954,7 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         cli.site,
         cli.submission,
         cli.user,
+        cli.vibehub,
     ):
         monkeypatch.setattr(module, "client_from_args", lambda _args, client=fake_client: client)
     monkeypatch.setattr(cli.site_config.common, "client_from_args", lambda _args: fake_client)
@@ -2146,6 +2147,19 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["ranking", "submit", "1", "--code-zip", str(fixture_zip)],
         ["ranking", "git", "1", "check"],
         ["ranking", "git", "1", "submit"],
+        ["vibehub", "guide"],
+        ["vibehub", "list"],
+        ["vibehub", "mine"],
+        ["vibehub", "detail", "demo-vibe"],
+        ["vibehub", "create", str(fixture_zip), "--title", "Demo"],
+        ["vibehub", "update", "demo-vibe", str(fixture_zip)],
+        ["vibehub", "edit", "demo-vibe", "--summary", "updated"],
+        ["vibehub", "submit-review", "demo-vibe"],
+        ["vibehub", "request-featured", "demo-vibe"],
+        ["vibehub", "pending"],
+        ["vibehub", "review", "demo-vibe", "approve", "--note", "ok"],
+        ["vibehub", "featured-pending"],
+        ["vibehub", "featured-review", "demo-vibe", "approve", "--note", "ok"],
     ]
 
     expected_paths = {" ".join(path) for path in _leaf_command_paths(parser)}

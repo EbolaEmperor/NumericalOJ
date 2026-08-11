@@ -55,6 +55,18 @@ def _guarded_app():
     app.add_url_rule('/health/ready', endpoint='health.ready', view_func=lambda: 'ready')
     app.add_url_rule('/private', endpoint='private', view_func=lambda: 'private')
     app.add_url_rule('/api/private', endpoint='api.private', view_func=lambda: {'ok': True})
+    app.add_url_rule(
+        '/vibehub/runtime/<token>/<path:path>',
+        endpoint='vibehub.runtime_proxy',
+        view_func=lambda token, path: f'{token}:{path}',
+        methods=['GET', 'POST'],
+    )
+    app.add_url_rule(
+        '/vibehub/runtime/<token>/heartbeat',
+        endpoint='vibehub.runtime_heartbeat',
+        view_func=lambda token: token,
+        methods=['POST'],
+    )
 
     install_global_login_guard(
         app,
@@ -116,6 +128,20 @@ def test_authenticated_request_reaches_routes_and_normal_404():
     assert client.get('/private').get_data(as_text=True) == 'private'
     assert client.get('/api/private').get_json() == {'ok': True}
     assert client.get('/does-not-exist').status_code == 404
+
+
+def test_only_exact_vibehub_capability_proxy_endpoint_is_public():
+    client = _guarded_app().test_client()
+
+    proxy = client.post('/vibehub/runtime/opaque-token/assets/state')
+    assert proxy.status_code == 200
+    assert proxy.get_data(as_text=True) == 'opaque-token:assets/state'
+
+    heartbeat = client.post('/vibehub/runtime/opaque-token/heartbeat')
+    assert heartbeat.status_code == 302
+    assert heartbeat.headers['Location'].endswith(
+        '/login?next=/vibehub/runtime/opaque-token/heartbeat'
+    )
 
 
 @pytest.mark.parametrize('path', ('/send_password_code', '/change_password', '/logout'))

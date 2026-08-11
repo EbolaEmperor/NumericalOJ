@@ -80,6 +80,16 @@ USER_COMMAND_PATHS = [
     ["ranking", "reverse-stream"],
     ["ranking", "appeal"],
     ["ranking", "appeal-status"],
+    ["vibehub"],
+    ["vibehub", "guide"],
+    ["vibehub", "list"],
+    ["vibehub", "mine"],
+    ["vibehub", "detail"],
+    ["vibehub", "create"],
+    ["vibehub", "update"],
+    ["vibehub", "edit"],
+    ["vibehub", "submit-review"],
+    ["vibehub", "request-featured"],
 ]
 
 
@@ -204,6 +214,10 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "delete-submission"],
     ["ranking", "submissions"],
     ["ranking", "submit-zip"],
+    ["vibehub", "pending"],
+    ["vibehub", "review"],
+    ["vibehub", "featured-pending"],
+    ["vibehub", "featured-review"],
 ]
 
 

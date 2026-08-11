@@ -8,6 +8,7 @@ from flask import abort, request
 
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+_NULL_ORIGIN_CAPABILITY_ENDPOINTS = frozenset({"vibehub.runtime_proxy"})
 
 
 def _origin_key(value):
@@ -48,6 +49,15 @@ def install_same_origin_protection(app, *, trusted_origins=()):
     @app.before_request
     def _reject_cross_origin_write():
         if request.method.upper() in _SAFE_METHODS:
+            return None
+
+        # 不可信作品位于没有 allow-same-origin 的 sandbox iframe 中，浏览器写请求
+        # 必然携带 Origin: null。仅短期 capability 代理 endpoint 接受该来源；启动、
+        # 上传、审核等其余 VibeHub 写入口仍走常规同源保护。
+        if (
+            request.endpoint in _NULL_ORIGIN_CAPABILITY_ENDPOINTS
+            and request.headers.get("Origin") == "null"
+        ):
             return None
 
         source = request.headers.get("Origin") or request.headers.get("Referer")

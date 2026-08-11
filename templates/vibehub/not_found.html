@@ -1,0 +1,16 @@
+{% extends "layouts/site.html" %}
+{% block title %}作品不可用 · VibeHub - {{ super() }}{% endblock %}
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/vibehub.css') }}">
+{% endblock %}
+{% block content_container_class %}container-fluid p-0 vibehub-page{% endblock %}
+{% block content %}
+<section class="vibe-not-found">
+  <span aria-hidden="true"><i></i><i></i><i></i></span>
+  <p class="vibe-section-number">404 / WORK NOT AVAILABLE</p>
+  <h1>这件作品暂时不在展台上。</h1>
+  <p>{{ message|default('它可能还没有发布，或者正在更新中。', true) }}</p>
+  <a class="vibe-button vibe-button--ink" href="{{ url_for('vibehub.index') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i>返回 VibeHub</a>
+</section>
+{% endblock %}

@@ -14,7 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from numoj_user_cli import ai, auth, common, forum, me, problem, ranking, repository, submission  # noqa: E402
+from numoj_user_cli import ai, auth, common, forum, me, problem, ranking, repository, submission, vibehub  # noqa: E402
 
 
 requests = common.requests
@@ -128,6 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     repository.register(subparsers)
     ai.register(subparsers)
     ranking.register(subparsers)
+    vibehub.register(subparsers)
 
     return parser
 

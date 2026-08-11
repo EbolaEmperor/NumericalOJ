@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "transport": "unix",
+  "socket_path": "/run/vibehub/app.sock",
+  "health_path": "/healthz",
+  "cover_image": "static/cover.jpg",
+  "title": "ARC-AGI-3 公开挑战",
+  "summary": "游玩 25 个本地公开环境，在没有文字规则的世界里探索和推理。",
+  "tags": ["推理", "探索", "ARC"]
+}

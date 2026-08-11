@@ -12,8 +12,6 @@ ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
     "frontend/markdown/code-highlighter.js",
-    "static/app/arc-agi-3-catalog.js",
-    "static/app/arc-agi-3.js",
     "static/app/auth.js",
     "static/app/class-select.js",
     "static/app/class-picker.js",
@@ -27,6 +25,8 @@ JAVASCRIPT_ASSETS = (
     "static/app/repository/workbench.js",
     "static/app/forum.js",
     "static/app/layout.js",
+    "static/app/vibehub.js",
+    "static/app/vibehub-player.js",
     "static/app/ranking/detail-v2.js",
     "static/app/ranking/endpoints.js",
     "static/app/ranking/rules-editor.js",

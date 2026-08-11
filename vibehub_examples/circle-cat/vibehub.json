@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "transport": "unix",
+  "socket_path": "/run/vibehub/app.sock",
+  "health_path": "/healthz",
+  "cover_image": "static/cover.jpg",
+  "title": "围住小猫",
+  "summary": "在离线蜂巢棋盘上封锁最短逃生分支，赶在小猫抵达边缘前围住它。",
+  "tags": ["策略", "小游戏", "六边形"]
+}

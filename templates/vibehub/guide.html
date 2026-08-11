@@ -1,0 +1,99 @@
+{% extends "layouts/site.html" %}
+{% block title %}开发者接入手册 · VibeHub - {{ super() }}{% endblock %}
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/vibehub.css') }}">
+{% endblock %}
+{% block content_container_class %}container-fluid p-0 vibehub-page{% endblock %}
+{% block content %}
+<div class="vibe-guide">
+  <header class="vibe-guide-hero">
+    <a class="vibe-back-link" href="{{ url_for('vibehub.index') }}"><i class="fas fa-arrow-left" aria-hidden="true"></i>VibeHub 展厅</a>
+    <p class="vibe-eyebrow"><span>DEVELOPER GUIDE</span> / SCHEMA v1</p>
+    <h1>把你的作品装进<br><em>一个离线容器</em></h1>
+    <p>VibeHub 接受包含前后端与 Dockerfile 的完整 ZIP 程序包。平台负责构建、隔离、按需启动和回收。</p>
+  </header>
+
+  <div class="vibe-guide-layout">
+    <nav class="vibe-guide-toc" aria-label="本页目录">
+      <p>ON THIS PAGE</p>
+      <a href="#package">01 · 程序包结构</a>
+      <a href="#manifest">02 · 作品清单</a>
+      <a href="#transport">03 · Unix Socket</a>
+      <a href="#base-path">04 · 基础路径</a>
+      <a href="#offline">05 · 离线边界</a>
+      <a href="#release">06 · 版本与发布</a>
+    </nav>
+
+    <main class="vibe-guide-content">
+      <section id="package">
+        <span class="vibe-guide-number">01</span>
+        <div><p class="vibe-section-number">PACKAGE</p><h2>程序包结构</h2><p>ZIP 解压后的根目录必须直接包含 <code>Dockerfile</code> 与 <code>vibehub.json</code>，不要再套一层文件夹。</p></div>
+        <pre><code>my-work.zip
+├── Dockerfile
+├── vibehub.json
+├── app/
+│   ├── server.py
+│   └── static/
+├── cover.jpg
+└── README.md</code></pre>
+      </section>
+
+      <section id="manifest">
+        <span class="vibe-guide-number">02</span>
+        <div><p class="vibe-section-number">MANIFEST</p><h2>作品清单</h2><p>第一版协议固定使用 Unix Domain Socket。字段名和路径必须完全一致。</p></div>
+        <pre><code>{
+  "schema_version": 1,
+  "transport": "unix",
+  "socket_path": "/run/vibehub/app.sock",
+  "health_path": "/healthz",
+  "cover_image": "cover.jpg"
+}</code></pre>
+        <aside><i class="fas fa-triangle-exclamation" aria-hidden="true"></i><p><code>cover_image</code> 必填且只接受包内真实 PNG/JPEG/WebP。平台会中心裁切并生成 1280×720、最多 400 KiB 的安全副本；原图不会被改写。不要声明 TCP 端口。</p></aside>
+      </section>
+
+      <section id="transport">
+        <span class="vibe-guide-number">03</span>
+        <div><p class="vibe-section-number">TRANSPORT</p><h2>在 Socket 上提供 HTTP/1.1</h2><p>容器启动命令需在 <code>/run/vibehub/app.sock</code> 监听 HTTP/1.1。平台会等待健康检查成功后才把作品交给玩家。</p></div>
+        <div class="vibe-guide-checks">
+          <span><i class="fas fa-check" aria-hidden="true"></i><b>GET /healthz</b><small>必须返回 HTTP 200</small></span>
+          <span><i class="fas fa-check" aria-hidden="true"></i><b>Content-Type</b><small>按实际内容正确设置</small></span>
+          <span><i class="fas fa-check" aria-hidden="true"></i><b>相对资源</b><small>静态文件不可假定站点根路径</small></span>
+        </div>
+      </section>
+
+      <section id="base-path">
+        <span class="vibe-guide-number">04</span>
+        <div><p class="vibe-section-number">ROUTING</p><h2>尊重基础路径</h2><p>代理请求会带上 <code>X-VibeHub-Base-Path</code>。页面中的链接、表单和资源地址应以该值为前缀，或全部使用相对 URL。</p></div>
+        <pre><code>base_path = request.headers.get(
+    "X-VibeHub-Base-Path", ""
+)
+# 推荐：HTML 中使用 ./assets/app.js
+# 或拼接 base_path + "/api/state"</code></pre>
+      </section>
+
+      <section id="offline">
+        <span class="vibe-guide-number">05</span>
+        <div><p class="vibe-section-number">SECURITY BOUNDARY</p><h2>作品必须完整离线运行</h2><p>构建与运行阶段都不应依赖互联网。把依赖、字体、前端资源和运行时需要的数据放进程序包或基础镜像允许的范围内。</p></div>
+        <ul class="vibe-guide-boundaries">
+          <li><i class="fas fa-ban" aria-hidden="true"></i><span><b>无外部网络</b>不能访问 API、CDN、包仓库或局域网服务。</span></li>
+          <li><i class="fas fa-key" aria-hidden="true"></i><span><b>不注入密钥</b>不要把 Token、密码或 Cookie 打进镜像。</span></li>
+          <li><i class="fas fa-folder-tree" aria-hidden="true"></i><span><b>最小文件视图</b>作品看不到 OJ 源码、上传目录或宿主系统文件。</span></li>
+          <li><i class="fas fa-window-restore" aria-hidden="true"></i><span><b>沙箱 iframe</b>作品无法读取 OJ 页面 DOM 或取得同源权限。</span></li>
+        </ul>
+      </section>
+
+      <section id="release">
+        <span class="vibe-guide-number">06</span>
+        <div><p class="vibe-section-number">RELEASE FLOW</p><h2>开发版与公开版</h2><p>上传会创建新的开发版本；作者可先试玩。提交审核并通过后，平台才会复制这一版作为新的公开版本。</p></div>
+        <ol class="vibe-release-flow">
+          <li><b>UPLOAD</b><span>上传 ZIP</span><small>生成开发版本</small></li>
+          <li><b>PLAYTEST</b><span>作者试玩</span><small>容器按需启动</small></li>
+          <li><b>REVIEW</b><span>管理员审核</span><small>检查内容与运行</small></li>
+          <li><b>PUBLIC</b><span>公开发布</span><small>稳定副本独立保存</small></li>
+        </ol>
+      </section>
+    </main>
+  </div>
+</div>
+{% endblock %}

@@ -7,9 +7,12 @@ import argparse
 from collections.abc import Callable, Sequence
 import hashlib
 import importlib
+import json
 import os
 from pathlib import Path
+import re
 import stat
+import subprocess
 import sys
 from types import ModuleType
 
@@ -28,8 +31,17 @@ REQUIRED_ENV_KEYS = REQUIRED_STRING_SETTINGS + (
     "MYSQL_PORT",
     "REDIS_PORT",
     "REDIS_DB",
+    "VIBEHUB_OCI_RUNTIME",
+    "VIBEHUB_BUILD_BUILDER",
+    "VIBEHUB_REQUIRE_DEDICATED_BUILDER",
+    "VIBEHUB_BASE_OCI_LAYOUT_ROOT",
 )
 SOURCE_DIGEST_DOMAIN = b"NumericalOJ Docker source v1\0"
+REQUIRED_VIBEHUB_OCI_RUNTIME = "runsc"
+REQUIRED_VIBEHUB_OCI_LAYOUT_ROOT = ROOT / ".deploy" / "vibehub-base-oci"
+BUILDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+BUILDER_NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+MAX_BUILDER_NODES = 16
 
 
 class PreflightError(RuntimeError):
@@ -85,6 +97,38 @@ def _validate_config_values(config: ModuleType) -> None:
     if not isinstance(redis_db, int) or isinstance(redis_db, bool) or redis_db < 0:
         raise PreflightError("生产 .env 的 REDIS_DB 无效")
 
+    if getattr(config, "VIBEHUB_OCI_RUNTIME", None) != REQUIRED_VIBEHUB_OCI_RUNTIME:
+        raise PreflightError(
+            "生产 VibeHub 必须在 .env 中显式配置 VIBEHUB_OCI_RUNTIME=runsc"
+        )
+
+    builder = getattr(config, "VIBEHUB_BUILD_BUILDER", None)
+    if not isinstance(builder, str) or BUILDER_NAME_RE.fullmatch(builder) is None:
+        raise PreflightError(
+            "生产 VibeHub 必须显式配置安全的 VIBEHUB_BUILD_BUILDER"
+        )
+    if getattr(config, "VIBEHUB_REQUIRE_DEDICATED_BUILDER", None) is not True:
+        raise PreflightError(
+            "生产 VibeHub 必须显式配置 "
+            "VIBEHUB_REQUIRE_DEDICATED_BUILDER=true"
+        )
+
+    layout_value = getattr(config, "VIBEHUB_BASE_OCI_LAYOUT_ROOT", None)
+    if not isinstance(layout_value, str) or not layout_value.strip():
+        raise PreflightError(
+            "生产 VibeHub 必须显式配置 VIBEHUB_BASE_OCI_LAYOUT_ROOT"
+        )
+    layout_path = Path(layout_value)
+    if ".." in layout_path.parts:
+        raise PreflightError("VIBEHUB_BASE_OCI_LAYOUT_ROOT 路径无效")
+    if not layout_path.is_absolute():
+        layout_path = ROOT / layout_path
+    if Path(os.path.abspath(layout_path)) != REQUIRED_VIBEHUB_OCI_LAYOUT_ROOT:
+        raise PreflightError(
+            "生产 VIBEHUB_BASE_OCI_LAYOUT_ROOT 必须指向项目内 "
+            ".deploy/vibehub-base-oci"
+        )
+
 
 def validate_production_config(
     env_file: str | os.PathLike[str],
@@ -132,6 +176,146 @@ def validate_production_config(
         _validate_config_values(config)
     finally:
         os.close(descriptor)
+
+
+def validate_vibehub_runtime(
+    *,
+    config_loader: Callable[[], ModuleType] | None = None,
+    command_runner=None,
+) -> None:
+    """确认生产配置选择的 gVisor runtime 已由 Docker 注册。"""
+
+    loader = config_loader or _load_project_config
+    config = loader()
+    runtime = getattr(config, "VIBEHUB_OCI_RUNTIME", None)
+    if runtime != REQUIRED_VIBEHUB_OCI_RUNTIME:
+        raise PreflightError(
+            "生产 VibeHub 必须使用已注册的 gVisor runsc runtime"
+        )
+    runner = command_runner or subprocess.run
+    try:
+        result = runner(
+            ["docker", "info", "--format", "{{json .Runtimes}}"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PreflightError("无法读取 Docker OCI runtime 清单") from exc
+    if result.returncode != 0:
+        raise PreflightError("Docker OCI runtime 清单读取失败")
+    try:
+        runtimes = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PreflightError("Docker OCI runtime 清单格式无效") from exc
+    if not isinstance(runtimes, dict) or runtime not in runtimes:
+        raise PreflightError("Docker 尚未注册生产必需的 gVisor runsc runtime")
+
+
+def _run_builder_inspect(command_runner, command: list[str]):
+    try:
+        result = command_runner(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PreflightError("无法读取 VibeHub 专属 builder 状态") from exc
+    if result.returncode != 0:
+        raise PreflightError("VibeHub 专属 builder 状态读取失败")
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PreflightError("VibeHub 专属 builder 状态格式无效") from exc
+    if not isinstance(payload, dict):
+        raise PreflightError("VibeHub 专属 builder 状态格式无效")
+    return payload
+
+
+def validate_vibehub_builder(
+    *,
+    config_loader: Callable[[], ModuleType] | None = None,
+    command_runner=None,
+) -> str:
+    """只读证明生产 Buildx builder 专属、可用且其所有节点完全断网。"""
+
+    loader = config_loader or _load_project_config
+    config = loader()
+    builder = getattr(config, "VIBEHUB_BUILD_BUILDER", None)
+    if not isinstance(builder, str) or BUILDER_NAME_RE.fullmatch(builder) is None:
+        raise PreflightError("生产 VibeHub 专属 builder 名称无效")
+    if getattr(config, "VIBEHUB_REQUIRE_DEDICATED_BUILDER", None) is not True:
+        raise PreflightError(
+            "生产 VibeHub 必须要求专属 docker-container builder"
+        )
+
+    runner = command_runner or subprocess.run
+    builder_payload = _run_builder_inspect(
+        runner,
+        [
+            "docker",
+            "buildx",
+            "inspect",
+            builder,
+            "--format",
+            "{{json .}}",
+        ],
+    )
+    if (
+        builder_payload.get("Name") != builder
+        or builder_payload.get("Driver") != "docker-container"
+    ):
+        raise PreflightError(
+            "生产 VibeHub builder 必须是同名 docker-container driver"
+        )
+    nodes = builder_payload.get("Nodes")
+    if not isinstance(nodes, list) or not 1 <= len(nodes) <= MAX_BUILDER_NODES:
+        raise PreflightError("VibeHub 专属 builder 节点清单无效")
+
+    seen_nodes: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise PreflightError("VibeHub 专属 builder 节点格式无效")
+        node_name = node.get("Name")
+        if (
+            not isinstance(node_name, str)
+            or BUILDER_NODE_NAME_RE.fullmatch(node_name) is None
+            or node_name in seen_nodes
+        ):
+            raise PreflightError("VibeHub 专属 builder 节点名称无效")
+        seen_nodes.add(node_name)
+        if str(node.get("Status", "")).lower() != "running":
+            raise PreflightError("VibeHub 专属 builder 存在未就绪节点")
+
+        container_name = f"buildx_buildkit_{node_name}"
+        container_payload = _run_builder_inspect(
+            runner,
+            [
+                "docker",
+                "container",
+                "inspect",
+                "--format",
+                "{{json .}}",
+                container_name,
+            ],
+        )
+        if container_payload.get("Name") != f"/{container_name}":
+            raise PreflightError("VibeHub builder 节点容器身份不匹配")
+        state = container_payload.get("State")
+        host_config = container_payload.get("HostConfig")
+        if not isinstance(state, dict) or state.get("Running") is not True:
+            raise PreflightError("VibeHub builder 节点容器未运行")
+        if (
+            not isinstance(host_config, dict)
+            or host_config.get("NetworkMode") != "none"
+        ):
+            raise PreflightError(
+                "VibeHub builder 节点容器必须使用 network=none"
+            )
+    return builder
 
 
 def docker_source_digest(
@@ -200,6 +384,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument("env_file", type=Path)
 
+    commands.add_parser(
+        "validate-vibehub-runtime",
+        description="Validate the production gVisor runtime registration.",
+    )
+
+    commands.add_parser(
+        "validate-vibehub-builder",
+        description="Validate the dedicated, network-isolated Buildx builder.",
+    )
+
     source_digest = commands.add_parser(
         "docker-source-digest",
         description="Fingerprint explicit Docker build inputs.",
@@ -214,6 +408,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "validate-config":
             validate_production_config(args.env_file)
+        elif args.command == "validate-vibehub-runtime":
+            validate_vibehub_runtime()
+        elif args.command == "validate-vibehub-builder":
+            print(validate_vibehub_builder())
         else:
             print(docker_source_digest(args.context, args.inputs))
     except (OSError, PreflightError, ValueError) as exc:

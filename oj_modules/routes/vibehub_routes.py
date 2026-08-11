@@ -1,0 +1,462 @@
+"""VibeHub 服务端页面适配层。"""
+
+from __future__ import annotations
+
+from urllib.parse import urlencode, urlsplit
+
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, url_for
+
+from oj_modules.security.auth import (
+    admin_required,
+    current_user,
+    login_required,
+)
+from oj_modules.security.origin_guard import is_same_origin
+from oj_modules.vibehub import services
+from oj_modules.vibehub.builtins import get_builtin_project, list_builtin_projects
+from oj_modules.vibehub.runtime import (
+    VibeHubCapacityError,
+    VibeHubLeaseError,
+    VibeHubRequestTooLarge,
+    VibeHubRuntimeError,
+    RUNTIME_CORS_METHODS,
+    RUNTIME_CORS_REQUEST_HEADERS,
+    get_runtime_manager,
+)
+
+
+vibehub_bp = Blueprint("vibehub", __name__, url_prefix="/vibehub")
+
+
+# 播放页自身只需要站内静态资源、运行租约 API 和同源作品 iframe。单独覆盖
+# 应用级兼容性 CSP，避免作品把自己的 iframe 导航到外部 HTTPS 页面后继续
+# 冒用 NumericalOJ 的播放外壳。frame-src 是现代浏览器的主约束，child-src
+# 同时保留为旧实现的兼容回退。
+_PLAYER_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; "
+    "media-src 'self' data: blob:; connect-src 'self'; "
+    "frame-src 'self'; child-src 'self'; worker-src 'self' blob:; "
+    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "frame-ancestors 'self'"
+)
+
+
+def _log_page_failure(operation):
+    current_app.logger.exception(
+        "VibeHub 页面数据加载失败",
+        extra={"operation": operation},
+    )
+
+
+def _can_manage(project, user):
+    if not user or project.get("project_kind") == "builtin":
+        return False
+    return str(project.get("owner_username") or "") == str(
+        user.get("username") or ""
+    )
+
+
+@vibehub_bp.get("")
+@vibehub_bp.get("/")
+def index():
+    user = current_user()
+    load_error = None
+    try:
+        projects = services.list_public_projects()
+    except Exception:
+        _log_page_failure("public_gallery")
+        projects = list_builtin_projects()
+        load_error = "社区作品暂时没有载入；内置示例仍可正常游玩。"
+    return render_template(
+        "vibehub/index.html",
+        user=user,
+        projects=projects,
+        load_error=load_error,
+    )
+
+
+@vibehub_bp.get("/guide")
+def guide():
+    return render_template("vibehub/guide.html", user=current_user())
+
+
+@vibehub_bp.get("/workspace")
+@login_required
+def workspace():
+    user = current_user()
+    load_error = None
+    try:
+        projects = services.list_user_projects(user)
+    except Exception:
+        _log_page_failure("creator_workspace")
+        projects = []
+        load_error = "作品列表暂时无法读取，请稍后刷新；已上传的数据不会受到影响。"
+    pending_count = sum(
+        1
+        for project in projects
+        if project.get("has_pending_review")
+        or project.get("review_status") in {"pending", "pending_review"}
+    )
+    return render_template(
+        "vibehub/workspace.html",
+        user=user,
+        projects=projects,
+        pending_count=pending_count,
+        load_error=load_error,
+    )
+
+
+@vibehub_bp.get("/admin/reviews")
+@admin_required
+def admin_reviews():
+    user = current_user()
+    failures = []
+    try:
+        review_projects = services.list_pending_reviews(user)
+    except Exception:
+        _log_page_failure("release_review_queue")
+        review_projects = []
+        failures.append("发布审核队列")
+    try:
+        featured_projects = services.list_pending_featured(user)
+    except Exception:
+        _log_page_failure("featured_review_queue")
+        featured_projects = []
+        failures.append("精品审核队列")
+    load_error = f"{'、'.join(failures)}暂时无法读取。" if failures else None
+    return render_template(
+        "vibehub/admin_reviews.html",
+        user=user,
+        review_projects=review_projects,
+        featured_projects=featured_projects,
+        load_error=load_error,
+    )
+
+
+@vibehub_bp.get("/<slug>")
+def detail(slug):
+    user = current_user()
+    try:
+        project = services.get_project(slug, actor=user, audience="public")
+    except services.VibeHubError as exc:
+        return render_template(
+            "vibehub/not_found.html",
+            user=user,
+            message=str(exc),
+        ), exc.status_code
+    except Exception:
+        _log_page_failure("project_detail")
+        return render_template(
+            "vibehub/not_found.html",
+            user=user,
+            message="作品信息暂时无法读取，请稍后再试。",
+        ), 503
+    can_manage = _can_manage(project, user)
+    can_request_featured = bool(
+        can_manage
+        and project.get("public_version")
+        and not project.get("is_featured")
+        and project.get("featured_status") not in {"pending", "pending_review"}
+    )
+    return render_template(
+        "vibehub/detail.html",
+        user=user,
+        project=project,
+        can_manage=can_manage,
+        can_request_featured=can_request_featured,
+    )
+
+
+@vibehub_bp.get("/<slug>/play")
+@login_required
+def play(slug):
+    user = current_user()
+    builtin = get_builtin_project(slug)
+    channel = str(request.args.get("channel") or "public").strip().lower()
+    if channel not in {"public", "latest", "review"}:
+        channel = "public"
+    if builtin:
+        channel = "public"
+    try:
+        project = builtin or services.get_project(
+            slug,
+            actor=user,
+            audience="public" if builtin else channel,
+        )
+    except services.VibeHubError as exc:
+        return render_template(
+            "vibehub/not_found.html",
+            user=user,
+            message=str(exc),
+        ), exc.status_code
+    except Exception:
+        _log_page_failure("project_player")
+        return render_template(
+            "vibehub/not_found.html",
+            user=user,
+            message="作品运行信息暂时无法读取，请稍后再试。",
+        ), 503
+
+    if builtin or channel == "public":
+        return_url = url_for("vibehub.detail", slug=project["slug"])
+        return_label = "作品详情"
+    elif channel == "review":
+        return_url = url_for("vibehub.admin_reviews")
+        return_label = "审核台"
+    else:
+        return_url = f"{url_for('vibehub.workspace')}#project-{project['slug']}"
+        return_label = "我的工作台"
+
+    response = render_template(
+        "vibehub/player.html",
+        user=user,
+        project=project,
+        embedded_url=None,
+        acquire_url=f"/vibehub/{project['slug']}/runtime/acquire?{urlencode({'channel': channel})}",
+        heartbeat_url_template="/vibehub/runtime/__TOKEN__/heartbeat",
+        release_url_template="/vibehub/runtime/__TOKEN__/release",
+        return_url=return_url,
+        return_label=return_label,
+    )
+    return response, 200, {
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": _PLAYER_CONTENT_SECURITY_POLICY,
+    }
+
+
+def _runtime_error_response(exc, *, status=503):
+    current_app.logger.warning(
+        "VibeHub 运行请求失败",
+        extra={"error_type": type(exc).__name__},
+    )
+    return jsonify(success=False, message="作品运行服务暂时不可用，请稍后重试。"), status
+
+
+def _runtime_capacity_response(exc):
+    current_app.logger.info(
+        "VibeHub 运行容量已满",
+        extra={"error_type": type(exc).__name__},
+    )
+    response = jsonify(success=False, message="运行资源繁忙，请稍后重试。")
+    response.status_code = 429
+    response.headers["Retry-After"] = "1"
+    return response
+
+
+@vibehub_bp.post("/<slug>/runtime/acquire")
+@login_required
+def runtime_acquire(slug):
+    user = current_user()
+    channel = str(request.args.get("channel") or "public").strip().lower()
+    if channel not in {"public", "latest", "review"}:
+        return jsonify(success=False, message="未知的作品版本通道。"), 400
+    try:
+        package = services.resolve_project_package(
+            slug,
+            audience=channel,
+            actor=user,
+            upload_root=current_app.config.get("VIBEHUB_UPLOAD_ROOT"),
+        )
+        project_key = f"{package['slug']}@v{package['version']}"
+        lease = get_runtime_manager().acquire(
+            project_key,
+            build_context=package["package_dir"],
+            featured=bool(package.get("featured")),
+            channel=channel,
+            base_path="/vibehub/runtime",
+        )
+    except services.VibeHubError as exc:
+        return jsonify(success=False, message=str(exc), code=exc.code), exc.status_code
+    except VibeHubCapacityError as exc:
+        return _runtime_capacity_response(exc)
+    except VibeHubRuntimeError as exc:
+        return _runtime_error_response(exc)
+    return jsonify(
+        success=True,
+        lease_token=lease.token,
+        proxy_url=lease.proxy_base_path,
+        heartbeat_url=f"/vibehub/runtime/{lease.token}/heartbeat",
+        release_url=f"/vibehub/runtime/{lease.token}/release",
+        expires_at=lease.expires_at,
+    )
+
+
+@vibehub_bp.post("/runtime/<token>/heartbeat")
+@login_required
+def runtime_heartbeat(token):
+    try:
+        lease = get_runtime_manager().heartbeat(token)
+    except VibeHubLeaseError as exc:
+        return _runtime_error_response(exc, status=404)
+    except VibeHubCapacityError as exc:
+        return _runtime_capacity_response(exc)
+    except VibeHubRuntimeError as exc:
+        return _runtime_error_response(exc)
+    return jsonify(success=True, expires_at=lease.expires_at)
+
+
+@vibehub_bp.post("/runtime/<token>/release")
+@login_required
+def runtime_release(token):
+    try:
+        released = get_runtime_manager().release(token)
+    except VibeHubLeaseError as exc:
+        return _runtime_error_response(exc, status=404)
+    except VibeHubRuntimeError as exc:
+        return _runtime_error_response(exc)
+    return jsonify(success=True, released=bool(released))
+
+
+def _proxy_target(path):
+    target = "/" + str(path or "").lstrip("/")
+    if request.query_string:
+        raw = request.query_string
+        safe = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=:/?@"
+        encoded = []
+        index = 0
+        while index < len(raw):
+            value = raw[index]
+            if (
+                value == 0x25
+                and index + 2 < len(raw)
+                and all(chr(item) in "0123456789abcdefABCDEF" for item in raw[index + 1:index + 3])
+            ):
+                encoded.append("%" + raw[index + 1:index + 3].decode("ascii").upper())
+                index += 3
+                continue
+            encoded.append(chr(value) if value in safe else f"%{value:02X}")
+            index += 1
+        target += "?" + "".join(encoded)
+    return target
+
+
+def _runtime_preflight_origin():
+    """返回可回显的严格 Origin；opaque sandbox 只会发送字面量 ``null``。"""
+
+    origin = request.headers.get("Origin")
+    if origin == "null":
+        return origin
+    if not origin or origin != origin.strip():
+        return None
+    try:
+        parsed = urlsplit(origin)
+        # Origin 是序列化后的源，不允许凭证、路径、查询或 fragment。调用
+        # ``port`` 同时让非法端口 fail closed。
+        parsed.port
+    except (TypeError, ValueError):
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    if not is_same_origin(origin, request.host_url):
+        return None
+    return origin
+
+
+def _runtime_preflight(manager, token):
+    origin = _runtime_preflight_origin()
+    requested_method = request.headers.get("Access-Control-Request-Method", "")
+    raw_headers = request.headers.get("Access-Control-Request-Headers")
+    allowed_headers = {
+        name.lower(): name for name in RUNTIME_CORS_REQUEST_HEADERS
+    }
+
+    if (
+        origin is None
+        or requested_method not in RUNTIME_CORS_METHODS
+        or request.content_length not in {None, 0}
+        or request.headers.get("Access-Control-Request-Private-Network") is not None
+    ):
+        return Response("CORS preflight rejected", status=403, content_type="text/plain")
+
+    requested_headers = []
+    if raw_headers is not None:
+        parts = [part.strip() for part in raw_headers.split(",")]
+        lowered = [part.lower() for part in parts]
+        if (
+            not parts
+            or any(not part for part in parts)
+            or len(set(lowered)) != len(lowered)
+            or any(name not in allowed_headers for name in lowered)
+        ):
+            return Response(
+                "CORS preflight rejected", status=403, content_type="text/plain"
+            )
+        requested_headers = [allowed_headers[name] for name in lowered]
+
+    try:
+        manager.validate_proxy_capability(token)
+    except VibeHubLeaseError:
+        return Response("runtime lease unavailable", status=404, content_type="text/plain")
+    except VibeHubRuntimeError:
+        current_app.logger.warning("VibeHub 代理预检失败")
+        return Response("runtime proxy unavailable", status=502, content_type="text/plain")
+
+    response = Response(status=204)
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Methods"] = requested_method
+    if requested_headers:
+        response.headers["Access-Control-Allow-Headers"] = ", ".join(
+            requested_headers
+        )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = (
+        "Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+    )
+    return response
+
+
+@vibehub_bp.route(
+    "/runtime/<token>/",
+    defaults={"path": ""},
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+@vibehub_bp.route(
+    "/runtime/<token>/<path:path>",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+def runtime_proxy(token, path):
+    """仅凭短期 capability token 代理作品请求，不依赖 OJ 会话 Cookie。"""
+
+    manager = get_runtime_manager()
+    if request.method == "OPTIONS":
+        return _runtime_preflight(manager, token)
+    content_length = request.content_length
+    if content_length is not None and content_length > manager.request_max_bytes:
+        return Response("request body too large", status=413, content_type="text/plain")
+    try:
+        proxied = manager.proxy_from_reader(
+            token,
+            request.method,
+            _proxy_target(path),
+            tuple(request.headers.items()),
+            request.stream.read,
+        )
+    except VibeHubRequestTooLarge:
+        return Response("request body too large", status=413, content_type="text/plain")
+    except VibeHubLeaseError:
+        return Response("runtime lease unavailable", status=404, content_type="text/plain")
+    except VibeHubCapacityError:
+        response = Response("runtime proxy busy", status=429, content_type="text/plain")
+        response.headers["Retry-After"] = "1"
+        return response
+    except VibeHubRuntimeError:
+        current_app.logger.warning("VibeHub 代理请求失败")
+        return Response("runtime proxy unavailable", status=502, content_type="text/plain")
+    return Response(
+        proxied.body,
+        status=proxied.status,
+        headers=list(proxied.headers),
+    )
+
+
+__all__ = ["vibehub_bp"]

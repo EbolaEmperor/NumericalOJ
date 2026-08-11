@@ -1,8 +1,10 @@
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import re
 import stat
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +32,10 @@ def _config(**overrides):
         "MYSQL_PORT": 3306,
         "REDIS_PORT": 6379,
         "REDIS_DB": 0,
+        "VIBEHUB_OCI_RUNTIME": "runsc",
+        "VIBEHUB_BUILD_BUILDER": "numoj-vibehub",
+        "VIBEHUB_REQUIRE_DEDICATED_BUILDER": True,
+        "VIBEHUB_BASE_OCI_LAYOUT_ROOT": ".deploy/vibehub-base-oci",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -107,6 +113,140 @@ def test_validate_config_checks_required_keys_and_decoded_types(tmp_path):
         preflight.validate_production_config(
             path,
             config_loader=lambda: _config(MYSQL_PORT=True),
+        )
+
+    with pytest.raises(preflight.PreflightError, match="VIBEHUB_OCI_RUNTIME=runsc"):
+        preflight.validate_production_config(
+            path,
+            config_loader=lambda: _config(VIBEHUB_OCI_RUNTIME=""),
+        )
+
+
+def test_validate_vibehub_runtime_requires_registered_runsc():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"runc":{"path":"runc"},"runsc":{"path":"runsc"}}',
+            stderr="",
+        )
+
+    preflight.validate_vibehub_runtime(
+        config_loader=_config,
+        command_runner=runner,
+    )
+
+    assert calls == [
+        (
+            ["docker", "info", "--format", "{{json .Runtimes}}"],
+            {
+                "capture_output": True,
+                "text": True,
+                "timeout": 20,
+                "check": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "config, result, message",
+    [
+        (_config(VIBEHUB_OCI_RUNTIME=""), None, "必须使用"),
+        (_config(), subprocess.CompletedProcess([], 1, "", "failed"), "读取失败"),
+        (
+            _config(),
+            subprocess.CompletedProcess([], 0, '{"runc":{}}', ""),
+            "尚未注册",
+        ),
+        (
+            _config(),
+            subprocess.CompletedProcess([], 0, "not-json", ""),
+            "格式无效",
+        ),
+    ],
+)
+def test_validate_vibehub_runtime_fails_closed(config, result, message):
+    def runner(*_args, **_kwargs):
+        assert result is not None
+        return result
+
+    with pytest.raises(preflight.PreflightError, match=message):
+        preflight.validate_vibehub_runtime(
+            config_loader=lambda: config,
+            command_runner=runner,
+        )
+
+
+def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
+    calls = []
+    builder = {
+        "Name": "numoj-vibehub",
+        "Driver": "docker-container",
+        "Nodes": [
+            {"Name": "numoj-vibehub0", "Status": "running"},
+            {"Name": "numoj-vibehub1", "Status": "running"},
+        ],
+    }
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[:3] == ["docker", "buildx", "inspect"]:
+            payload = builder
+        else:
+            name = command[-1]
+            payload = {
+                "Name": f"/{name}",
+                "State": {"Running": True},
+                "HostConfig": {"NetworkMode": "none"},
+            }
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    assert preflight.validate_vibehub_builder(
+        config_loader=_config, command_runner=runner
+    ) == "numoj-vibehub"
+    assert [call[0][-1] for call in calls[1:]] == [
+        "buildx_buildkit_numoj-vibehub0",
+        "buildx_buildkit_numoj-vibehub1",
+    ]
+    assert all(call[1]["timeout"] == 20 for call in calls)
+
+
+@pytest.mark.parametrize(
+    "builder_patch, container_patch, message",
+    [
+        ({"Driver": "docker"}, {}, "docker-container"),
+        ({"Nodes": [{"Name": "numoj-vibehub0", "Status": "stopped"}]}, {}, "未就绪"),
+        ({}, {"HostConfig": {"NetworkMode": "bridge"}}, "network=none"),
+        ({}, {"State": {"Running": False}}, "未运行"),
+    ],
+)
+def test_validate_vibehub_builder_fails_closed(
+    builder_patch, container_patch, message
+):
+    builder = {
+        "Name": "numoj-vibehub",
+        "Driver": "docker-container",
+        "Nodes": [{"Name": "numoj-vibehub0", "Status": "running"}],
+    }
+    builder.update(builder_patch)
+    container = {
+        "Name": "/buildx_buildkit_numoj-vibehub0",
+        "State": {"Running": True},
+        "HostConfig": {"NetworkMode": "none"},
+    }
+    container.update(container_patch)
+
+    def runner(command, **_kwargs):
+        payload = builder if command[:3] == ["docker", "buildx", "inspect"] else container
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    with pytest.raises(preflight.PreflightError, match=message):
+        preflight.validate_vibehub_builder(
+            config_loader=_config, command_runner=runner
         )
 
 
