@@ -47,6 +47,10 @@ def _private_env(tmp_path: Path) -> Path:
     return path
 
 
+def _buildx_list_output(*builders: dict) -> str:
+    return "\n".join(json.dumps(builder) for builder in builders)
+
+
 def test_validate_config_accepts_a_private_regular_file_and_cli_is_silent(
     monkeypatch, tmp_path, capsys
 ):
@@ -151,8 +155,16 @@ def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
 
     def runner(command, **kwargs):
         calls.append((command, kwargs))
-        if command[:3] == ["docker", "buildx", "inspect"]:
-            payload = builder
+        if command[:3] == ["docker", "buildx", "ls"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                _buildx_list_output(
+                    {"Name": "default", "Driver": "docker", "Nodes": []},
+                    builder,
+                ),
+                "",
+            )
         else:
             name = command[-1]
             payload = {
@@ -165,6 +177,7 @@ def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
     assert preflight.validate_vibehub_builder(
         config_loader=_config, command_runner=runner
     ) == "numoj-vibehub"
+    assert calls[0][0] == ["docker", "buildx", "ls", "--format", "json"]
     assert [call[0][-1] for call in calls[1:]] == [
         "buildx_buildkit_numoj-vibehub0",
         "buildx_buildkit_numoj-vibehub1",
@@ -198,10 +211,46 @@ def test_validate_vibehub_builder_fails_closed(
     container.update(container_patch)
 
     def runner(command, **_kwargs):
-        payload = builder if command[:3] == ["docker", "buildx", "inspect"] else container
+        if command[:3] == ["docker", "buildx", "ls"]:
+            return subprocess.CompletedProcess(
+                command, 0, _buildx_list_output(builder), ""
+            )
+        payload = container
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     with pytest.raises(preflight.PreflightError, match=message):
+        preflight.validate_vibehub_builder(
+            config_loader=_config, command_runner=runner
+        )
+
+
+def test_validate_vibehub_builder_reports_missing_builder():
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            _buildx_list_output(
+                {"Name": "default", "Driver": "docker", "Nodes": []}
+            ),
+            "",
+        )
+
+    with pytest.raises(preflight.PreflightError, match="未预置.*numoj-vibehub"):
+        preflight.validate_vibehub_builder(
+            config_loader=_config, command_runner=runner
+        )
+
+
+def test_validate_vibehub_builder_preserves_buildx_error():
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 125, "", "unknown flag: --format\n"
+        )
+
+    with pytest.raises(
+        preflight.PreflightError,
+        match="退出码：125.*unknown flag: --format",
+    ):
         preflight.validate_vibehub_builder(
             config_loader=_config, command_runner=runner
         )

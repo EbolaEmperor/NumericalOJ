@@ -211,6 +211,22 @@ Dockerfile、候选容器或动态 probe 破坏生产禁测边界。回滚点成
 stable tag 与 `.deploy/vibehub-base-oci/current` 才一起切到同一 engine ID；后续失败时退出
 清理同时恢复二者。部署成功后清理更旧 release，但始终保留 current 和上一代回滚现场。
 
+首次启用 VibeHub 前，由运维人员显式预置一次专属 builder；`deploy.sh` 只读核验，不会自动
+创建或替换这个 privileged 宿主容器：
+
+```bash
+docker buildx create default \
+  --name numoj-vibehub \
+  --node numoj-vibehub0 \
+  --driver docker-container \
+  --driver-opt 'image=moby/buildkit:v0.30.0@sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f' \
+  --driver-opt network=none \
+  --bootstrap
+```
+
+不得添加 `--use`，以免改变普通部署使用的 `default` builder。若同名 builder 已存在但校验
+失败，不得自动删除或重建，应先人工核对其节点和持久缓存。
+
 社区 VibeHub 作品及版本快照位于 Git 忽略的 `uploads/vibehub/`。数据库回滚点不会自动包含
 这些文件；运维必须用同一零写入窗口为该目录制作独立、可验证的快照，并把文件快照与数据库
 备份的 run-id 绑定。恢复时必须成对恢复，不能把新数据库与旧作品树（或反之）混用。

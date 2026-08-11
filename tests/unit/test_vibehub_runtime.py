@@ -118,17 +118,20 @@ def _write_base_oci_layout(
     return release, manifest_digest
 
 
-def _buildx_inspect_output(
+def _buildx_list_output(
     *,
     builder: str = "numoj-vibehub",
     driver: str = "docker-container",
     status: str = "running",
 ) -> str:
-    return json.dumps({
-        "Name": builder,
-        "Driver": driver,
-        "Nodes": [{"Name": f"{builder}0", "Status": status}],
-    })
+    return "\n".join(json.dumps(item) for item in (
+        {"Name": "default", "Driver": "docker", "Nodes": []},
+        {
+            "Name": builder,
+            "Driver": driver,
+            "Nodes": [{"Name": f"{builder}0", "Status": status}],
+        },
+    ))
 
 
 def _buildx_node_inspect_payload(
@@ -349,8 +352,8 @@ def test_dedicated_builder_uses_buildx_load_and_never_legacy_fallback(tmp_path):
     def runner(command, *, timeout, env=None):
         command = list(command)
         calls.append((command, None if env is None else env.get("DOCKER_BUILDKIT")))
-        if command[:3] == ["docker", "buildx", "inspect"]:
-            return runtime._CommandResult(0, _buildx_inspect_output(), "")
+        if command[:3] == ["docker", "buildx", "ls"]:
+            return runtime._CommandResult(0, _buildx_list_output(), "")
         if command[:3] == ["docker", "container", "inspect"]:
             return runtime._CommandResult(0, _buildx_node_inspect_payload(), "")
         assert command[:3] == ["docker", "buildx", "build"]
@@ -412,7 +415,7 @@ def test_dedicated_builder_fails_closed_when_oci_current_mismatches_base(tmp_pat
             return runtime._CommandResult(0, _buildx_node_inspect_payload(), "")
         return runtime._CommandResult(
             0,
-            _buildx_inspect_output(),
+            _buildx_list_output(),
             "",
         )
 
@@ -431,10 +434,7 @@ def test_dedicated_builder_fails_closed_when_oci_current_mismatches_base(tmp_pat
         )
 
     assert commands == [
-        [
-            "docker", "buildx", "inspect", "numoj-vibehub",
-            "--format", "{{json .}}",
-        ],
+        ["docker", "buildx", "ls", "--format", "json"],
         [
             "docker", "container", "inspect", "--format", "{{json .}}",
             "buildx_buildkit_numoj-vibehub0",
@@ -448,8 +448,8 @@ def test_cache_cleanup_is_scoped_to_managed_images_and_dedicated_builder():
     def runner(command, *, timeout, env=None):
         command = list(command)
         commands.append(command)
-        if command[:3] == ["docker", "buildx", "inspect"]:
-            return runtime._CommandResult(0, _buildx_inspect_output(), "")
+        if command[:3] == ["docker", "buildx", "ls"]:
+            return runtime._CommandResult(0, _buildx_list_output(), "")
         if command[:3] == ["docker", "container", "inspect"]:
             return runtime._CommandResult(0, _buildx_node_inspect_payload(), "")
         return runtime._CommandResult(0, "", "")
@@ -494,7 +494,7 @@ def test_dedicated_builder_rejects_shared_or_wrong_driver():
     def runner(command, *, timeout, env=None):
         return runtime._CommandResult(
             0,
-            _buildx_inspect_output(builder="default", driver="docker"),
+            _buildx_list_output(driver="docker"),
             "",
         )
 
@@ -505,11 +505,24 @@ def test_dedicated_builder_rejects_shared_or_wrong_driver():
         ).verify_dedicated_builder()
 
 
+def test_dedicated_builder_reports_missing_builder():
+    output = json.dumps({"Name": "default", "Driver": "docker", "Nodes": []})
+
+    def runner(command, *, timeout, env=None):
+        return runtime._CommandResult(0, output, "")
+
+    with pytest.raises(runtime.VibeHubImageError, match="未预置.*numoj-vibehub"):
+        runtime.DockerCLI(
+            command_runner=runner,
+            build_builder="numoj-vibehub",
+        ).verify_dedicated_builder()
+
+
 def test_dedicated_builder_rejects_networked_buildkit_node():
     def runner(command, *, timeout, env=None):
         command = list(command)
-        if command[:3] == ["docker", "buildx", "inspect"]:
-            return runtime._CommandResult(0, _buildx_inspect_output(), "")
+        if command[:3] == ["docker", "buildx", "ls"]:
+            return runtime._CommandResult(0, _buildx_list_output(), "")
         return runtime._CommandResult(
             0,
             _buildx_node_inspect_payload(network_mode="bridge"),
@@ -536,7 +549,7 @@ def test_dedicated_builder_verifies_every_running_node_is_networkless():
 
     def runner(command, *, timeout, env=None):
         command = list(command)
-        if command[:3] == ["docker", "buildx", "inspect"]:
+        if command[:3] == ["docker", "buildx", "ls"]:
             return runtime._CommandResult(0, output, "")
         name = command[-1]
         inspected_containers.append(name)

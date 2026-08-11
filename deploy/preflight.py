@@ -184,6 +184,41 @@ def _run_builder_inspect(command_runner, command: list[str]):
     return payload
 
 
+def _read_buildx_builder(command_runner, builder: str) -> dict:
+    try:
+        result = command_runner(
+            ["docker", "buildx", "ls", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PreflightError("无法读取 VibeHub 专属 builder 清单") from exc
+    if result.returncode != 0:
+        detail = " ".join(str(result.stderr or "").split())[:300]
+        suffix = f"：{detail}" if detail else ""
+        raise PreflightError(
+            f"VibeHub 专属 builder 清单读取失败（退出码：{result.returncode}）{suffix}"
+        )
+    try:
+        payloads = [
+            json.loads(line)
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise PreflightError("VibeHub 专属 builder 清单格式无效") from exc
+    if any(not isinstance(payload, dict) for payload in payloads):
+        raise PreflightError("VibeHub 专属 builder 清单格式无效")
+    matches = [payload for payload in payloads if payload.get("Name") == builder]
+    if not matches:
+        raise PreflightError(f"生产未预置 VibeHub 专属 builder：{builder}")
+    if len(matches) != 1:
+        raise PreflightError("VibeHub 专属 builder 清单存在同名重复项")
+    return matches[0]
+
+
 def validate_vibehub_builder(
     *,
     config_loader: Callable[[], ModuleType] | None = None,
@@ -202,17 +237,7 @@ def validate_vibehub_builder(
         )
 
     runner = command_runner or subprocess.run
-    builder_payload = _run_builder_inspect(
-        runner,
-        [
-            "docker",
-            "buildx",
-            "inspect",
-            builder,
-            "--format",
-            "{{json .}}",
-        ],
-    )
+    builder_payload = _read_buildx_builder(runner, builder)
     if (
         builder_payload.get("Name") != builder
         or builder_payload.get("Driver") != "docker-container"
