@@ -1160,11 +1160,14 @@ class DockerCLI:
             raise VibeHubImageError("VibeHub OCI index 未绑定 manifest")
         if (
             not isinstance(config_descriptor, dict)
-            or config_descriptor.get("digest") != image_id
+            or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}",
+                str(config_descriptor.get("digest") or ""),
+            )
             or not isinstance(layer_descriptors, list)
         ):
             raise VibeHubImageError(
-                "VibeHub OCI manifest 未绑定 daemon image config ID"
+                "VibeHub OCI manifest config descriptor 无效"
             )
         referenced = [config_descriptor, *layer_descriptors]
         for descriptor in referenced:
