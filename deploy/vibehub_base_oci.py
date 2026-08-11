@@ -1024,10 +1024,6 @@ def probe_builder(
             "--network", "none",
             "--pull=false",
             "--load",
-            "--resource", "memory=268435456",
-            "--resource", "memory-swap=268435456",
-            "--resource", "cpu-period=100000",
-            "--resource", "cpu-quota=50000",
             "--shm-size", "16m",
             "--ulimit", "nofile=1024:1024",
             "--label", label,
@@ -1037,7 +1033,14 @@ def probe_builder(
         ]
         result = _run(command_runner, command, timeout=180)
         if result.returncode != 0:
-            raise OCIExportError("VibeHub 专属 builder 离线 OCI probe 失败")
+            detail = " ".join(
+                f"{result.stdout or ''}\n{result.stderr or ''}".split()
+            )[:1000]
+            suffix = f"：{detail}" if detail else ""
+            raise OCIExportError(
+                "VibeHub 专属 builder 离线 OCI probe 失败"
+                f"（退出码：{result.returncode}）{suffix}"
+            )
         inspect_result = _run(
             command_runner,
             [

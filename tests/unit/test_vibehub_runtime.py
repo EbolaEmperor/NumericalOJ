@@ -385,17 +385,7 @@ def test_dedicated_builder_uses_buildx_load_and_never_legacy_fallback(tmp_path):
     assert "--pull=false" in build
     assert "--force-rm" not in build
     assert "--memory" not in build
-    resources = [
-        build[index + 1]
-        for index, value in enumerate(build)
-        if value == "--resource"
-    ]
-    assert resources == [
-        "memory=4g",
-        "memory-swap=4g",
-        "cpu-period=100000",
-        "cpu-quota=200000",
-    ]
+    assert "--resource" not in build
     assert calls[2][1] == "1"
 
 
@@ -631,6 +621,54 @@ def test_other_build_failure_never_uses_legacy_fallback(tmp_path):
             timeout=30,
         )
     assert calls == ["1"]
+
+
+def test_build_failure_keeps_only_a_safe_single_line_buildkit_diagnostic(tmp_path):
+    package = _write_package(tmp_path / "package")
+    source_canary = "uploaded-source-must-not-enter-logs"
+    secret_canary = "private-build-secret"
+    stderr = "\n".join((
+        "Dockerfile:3",
+        "--------------------",
+        f"3 | >>> ENV PRIVATE_KEY={source_canary}",
+        "--------------------",
+        (
+            "\x1b[31m#4 ERROR: failed to solve: "
+            f"Authorization: Bearer {secret_canary} while reading "
+            f'"{package}/private.txt"\x1b[0m'
+        ),
+    ))
+
+    def runner(_command, *, timeout, env=None):
+        return runtime._CommandResult(
+            1,
+            "",
+            stderr,
+            stdout_truncated=True,
+            stderr_truncated=True,
+        )
+
+    with pytest.raises(runtime.VibeHubImageError) as caught:
+        runtime.DockerCLI(command_runner=runner).build(
+            package,
+            "numoj-vibehub:test",
+            source_digest="a" * 64,
+            limits=runtime.limits_for(False),
+            timeout=30,
+        )
+
+    error = caught.value
+    assert str(error) == "VibeHub 镜像离线构建失败"
+    assert "ERROR: failed to solve" in error.buildkit_diagnostic
+    assert "<redacted>" in error.buildkit_diagnostic
+    assert source_canary not in error.buildkit_diagnostic
+    assert secret_canary not in error.buildkit_diagnostic
+    assert str(package) not in error.buildkit_diagnostic
+    assert all(character not in error.buildkit_diagnostic for character in "\r\n\x1b")
+    assert len(error.buildkit_diagnostic) <= 2_100
+    assert error.buildkit_returncode == 1
+    assert error.buildkit_stdout_truncated is True
+    assert error.buildkit_stderr_truncated is True
 
 
 @pytest.mark.parametrize("dockerfile", [

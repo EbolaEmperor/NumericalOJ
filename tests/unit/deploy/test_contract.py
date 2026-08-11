@@ -445,7 +445,7 @@ def test_vibehub_base_oci_is_exported_before_stop_and_switched_with_tag():
     assert '"--network", "none"' in exporter
     assert '"--pull=false"' in exporter
     assert '"--load"' in exporter
-    assert exporter.count('"--resource"') >= 4
+    assert '"--resource"' not in exporter
     assert '"--max-used-space", "4294967296"' in exporter
     assert "deploy/vibehub_base_oci.py probe" not in script
 

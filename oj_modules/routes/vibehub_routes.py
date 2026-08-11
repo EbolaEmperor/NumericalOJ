@@ -171,9 +171,22 @@ def play(slug):
 
 
 def _runtime_error_response(exc, *, status=503):
+    event_fields = {"error_type": type(exc).__name__}
+    buildkit_diagnostic = getattr(exc, "buildkit_diagnostic", "")
+    if buildkit_diagnostic:
+        event_fields["buildkit"] = {
+            "diagnostic": buildkit_diagnostic,
+            "returncode": getattr(exc, "buildkit_returncode", None),
+            "stdout_truncated": bool(
+                getattr(exc, "buildkit_stdout_truncated", False)
+            ),
+            "stderr_truncated": bool(
+                getattr(exc, "buildkit_stderr_truncated", False)
+            ),
+        }
     current_app.logger.warning(
         "VibeHub 运行请求失败",
-        extra={"error_type": type(exc).__name__},
+        extra={"event_fields": event_fields},
     )
     return jsonify(success=False, message="作品运行服务暂时不可用，请稍后重试。"), status
 

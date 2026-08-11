@@ -38,6 +38,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 import unicodedata
 from urllib.parse import quote, urljoin, urlsplit
 
+from oj_modules.observability import redact_text
 from oj_modules.project_paths import PROJECT_ROOT
 from oj_modules.vibehub import storage
 
@@ -88,6 +89,7 @@ BUILD_CONCURRENCY = 1
 PROXY_CONCURRENCY = 8
 HEALTH_PROBE_CONCURRENCY = 4
 _COMMAND_OUTPUT_LIMIT = 128 * 1024
+_BUILDKIT_DIAGNOSTIC_MAX_CHARS = 2_048
 _MAX_STATE_BYTES = 4 * 1024 * 1024
 _MAX_DOCKERFILE_BYTES = 256 * 1024
 _MAX_OCI_METADATA_BYTES = 1024 * 1024
@@ -103,6 +105,19 @@ _PROCESS_BUILD_SEMAPHORE = threading.BoundedSemaphore(BUILD_CONCURRENCY)
 _PROCESS_PROXY_SEMAPHORE = threading.BoundedSemaphore(PROXY_CONCURRENCY)
 _PROCESS_HEALTH_PROBE_SEMAPHORE = threading.BoundedSemaphore(
     HEALTH_PROBE_CONCURRENCY
+)
+
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+)
+_BUILDKIT_FAILURE_MARKER_RE = re.compile(
+    r"\b(?:error|failed|failure|invalid|unsupported|not supported|"
+    r"unknown (?:flag|option)|no such|not found|cannot|denied|forbidden|"
+    r"unavailable)\b",
+    re.IGNORECASE,
+)
+_QUOTED_DIAGNOSTIC_VALUE_RE = re.compile(
+    r'"[^"\r\n]*"|\'[^\'\r\n]*\'|`[^`\r\n]*`'
 )
 
 
@@ -220,6 +235,40 @@ _PROXY_CSP = (
 _logger = logging.getLogger(__name__)
 
 
+def _safe_buildkit_diagnostic(output: str, *, package_dir: Path) -> str:
+    """提取可记录的 BuildKit 根因，不保留 Dockerfile 源行或原始字面量。"""
+
+    package_path = str(package_dir.resolve(strict=False))
+    candidates: list[str] = []
+    for raw_line in str(output or "").splitlines():
+        line = _ANSI_ESCAPE_RE.sub("", raw_line)
+        line = re.sub(r"^#\d+(?:\s+\d+(?:\.\d+)?)?\s+", "", line)
+        line = "".join(
+            " " if ord(character) < 0x20 or ord(character) == 0x7F else character
+            for character in line
+        ).strip()
+        if not line or re.match(
+            r"^(?:Dockerfile:\d+|\d+\s*\||>{1,3}\s|[-=]{3,})",
+            line,
+            re.IGNORECASE,
+        ):
+            continue
+        if not _BUILDKIT_FAILURE_MARKER_RE.search(line):
+            continue
+        if package_path:
+            line = line.replace(package_path, "<package>")
+        # BuildKit 的摘要可能引用 Dockerfile 中的参数、路径或命令；保留错误
+        # 结构和类别即可诊断，原始引号内容不属于平台日志。
+        line = _QUOTED_DIAGNOSTIC_VALUE_RE.sub("<value>", line)
+        line = " ".join(line.split())
+        candidates.append(
+            redact_text(line, max_chars=_BUILDKIT_DIAGNOSTIC_MAX_CHARS)
+        )
+    if candidates:
+        return candidates[-1]
+    return "BuildKit 未提供可安全记录的错误摘要"
+
+
 class VibeHubRuntimeError(RuntimeError):
     """VibeHub 构建、容器或代理安全契约无法满足。"""
 
@@ -230,6 +279,21 @@ class VibeHubPackageError(VibeHubRuntimeError):
 
 class VibeHubImageError(VibeHubRuntimeError):
     """镜像不存在、来源不可信或超过资源预算。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        buildkit_diagnostic: str = "",
+        buildkit_returncode: int | None = None,
+        buildkit_stdout_truncated: bool = False,
+        buildkit_stderr_truncated: bool = False,
+    ):
+        super().__init__(message)
+        self.buildkit_diagnostic = str(buildkit_diagnostic or "")
+        self.buildkit_returncode = buildkit_returncode
+        self.buildkit_stdout_truncated = bool(buildkit_stdout_truncated)
+        self.buildkit_stderr_truncated = bool(buildkit_stderr_truncated)
 
 
 class VibeHubLeaseError(VibeHubRuntimeError):
@@ -1286,10 +1350,10 @@ class DockerCLI:
             command.extend([
                 "--network", "none",
                 "--pull=false",
-                "--resource", f"memory={limits.memory}",
-                "--resource", f"memory-swap={limits.memory}",
-                "--resource", "cpu-period=100000",
-                "--resource", f"cpu-quota={int(float(limits.cpus) * 100000)}",
+                # 当前生产 Buildx 不支持 build 子命令的 --resource；资源参数
+                # 只能用于 legacy docker build。作品 Dockerfile 禁止 RUN，且
+                # 专属 builder 由全局单构建槽串行使用，不能把未知参数传给
+                # Buildx 使构建在客户端解析阶段直接失败。
                 "--ulimit", "nofile=1024:1024",
                 "--shm-size", "64m",
             ])
@@ -1333,7 +1397,16 @@ class DockerCLI:
         detail = f"{result.stdout}\n{result.stderr}".strip()
         lowered = detail.lower()
         if result.returncode != 0:
-            raise VibeHubImageError(f"VibeHub 镜像离线构建失败：{detail[:1000]}")
+            raise VibeHubImageError(
+                "VibeHub 镜像离线构建失败",
+                buildkit_diagnostic=_safe_buildkit_diagnostic(
+                    f"{result.stdout}\n{result.stderr}",
+                    package_dir=package_dir,
+                ),
+                buildkit_returncode=result.returncode,
+                buildkit_stdout_truncated=result.stdout_truncated,
+                buildkit_stderr_truncated=result.stderr_truncated,
+            )
         if any(marker in lowered for marker in (
             "network mode \"host\" is not allowed",
             "security mode \"insecure\" is not allowed",

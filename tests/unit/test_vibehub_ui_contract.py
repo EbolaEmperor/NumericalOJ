@@ -1,15 +1,18 @@
 """VibeHub 页面、示例作品与嵌入式游玩安全契约。"""
 
+import logging
 from pathlib import Path
 
 import pytest
 from flask import Flask, request
 from jinja2 import Environment
 
+from oj_modules.observability.events import build_payload
 from oj_modules.routes import vibehub_routes
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.vibehub_routes import vibehub_bp
 from oj_modules.security import auth as auth_module
+from oj_modules.vibehub import runtime as vibehub_runtime
 from oj_modules.vibehub import guide as guide_module
 from oj_modules.vibehub.guide import render_developer_guide
 from oj_modules.vibehub.storage import validate_manifest
@@ -184,6 +187,44 @@ def test_runtime_proxy_is_the_only_capability_public_route_contract():
     assert rules["vibehub.runtime_acquire"].methods == {"OPTIONS", "POST"}
     assert rules["vibehub.runtime_heartbeat"].methods == {"OPTIONS", "POST"}
     assert rules["vibehub.runtime_release"].methods == {"OPTIONS", "POST"}
+
+
+def test_runtime_failure_logs_the_bounded_buildkit_cause_but_keeps_http_generic(
+    caplog,
+):
+    error = vibehub_runtime.VibeHubImageError(
+        "VibeHub 镜像离线构建失败",
+        buildkit_diagnostic="ERROR: buildkit returned a concrete failure",
+        buildkit_returncode=1,
+        buildkit_stderr_truncated=True,
+    )
+    app = Flask(__name__)
+
+    with app.test_request_context("/vibehub/example/runtime/acquire", method="POST"):
+        with caplog.at_level(logging.WARNING):
+            response, status = vibehub_routes._runtime_error_response(error)
+
+    assert status == 503
+    assert response.get_json() == {
+        "success": False,
+        "message": "作品运行服务暂时不可用，请稍后重试。",
+    }
+    record = next(
+        item for item in caplog.records if item.getMessage() == "VibeHub 运行请求失败"
+    )
+    assert record.exc_info is None
+    assert record.event_fields == {
+        "error_type": "VibeHubImageError",
+        "buildkit": {
+            "diagnostic": "ERROR: buildkit returned a concrete failure",
+            "returncode": 1,
+            "stdout_truncated": False,
+            "stderr_truncated": True,
+        },
+    }
+    payload = build_payload(record)
+    assert payload["buildkit"] == record.event_fields["buildkit"]
+    assert "buildkit" not in response.get_json()
 
 
 @pytest.mark.parametrize(
