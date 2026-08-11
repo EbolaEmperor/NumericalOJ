@@ -161,12 +161,8 @@ def _replace_math_outside_fences(raw, replacer):
     return "".join(output)
 
 
-def render_rich_markdown(text):
-    """渲染支持代码高亮、Mermaid 源码标记与 LaTeX 的安全 Markdown。"""
-    raw = str(text or "")
-    if not raw.strip():
-        return ""
-
+def _protect_rich_markdown_math(raw):
+    """把代码围栏外的公式替换为不可碰撞占位符。"""
     token_prefix = f"NUMOJMARKDOWNMATH{secrets.token_hex(8)}"
     protected = {}
 
@@ -175,15 +171,72 @@ def render_rich_markdown(text):
         protected[token] = html.escape(match.group(0), quote=False)
         return token
 
-    markdown_source = _replace_math_outside_fences(raw, protect_math)
+    return _replace_math_outside_fences(raw, protect_math), protected
+
+
+def _restore_rich_markdown_math(rendered, protected):
+    """恢复公式后再做最终清洗，保持所有 ``|safe`` 出口 fail-closed。"""
+    restored = str(rendered or "")
+    for token, formula in protected.items():
+        restored = restored.replace(token, formula)
+
+    # 占位符必须在最终一次 HTML 清洗之前恢复；否则公式若出现在链接属性中，
+    # 恢复出的引号可能绕过第一次清洗并重新形成事件属性。
+    return sanitize_html(restored)
+
+
+def render_rich_markdown(text):
+    """渲染支持代码高亮、Mermaid 源码标记与 LaTeX 的安全 Markdown。"""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+
+    markdown_source, protected = _protect_rich_markdown_math(raw)
     rendered = render_markdown(
         markdown_source,
         extensions=_RICH_MARKDOWN_EXTENSIONS,
         extension_configs=_RICH_MARKDOWN_EXTENSION_CONFIGS,
     )
-    for token, formula in protected.items():
-        rendered = rendered.replace(token, formula)
+    return _restore_rich_markdown_math(rendered, protected)
 
-    # 占位符必须在最终一次 HTML 清洗之前恢复；否则公式若出现在链接属性中，
-    # 恢复出的引号可能绕过第一次清洗并重新形成事件属性。
-    return sanitize_html(rendered)
+
+def render_rich_markdown_with_toc(text, *, toc_depth="2-3"):
+    """用题面同款富 Markdown 管线生成正文及同次解析得到的目录。"""
+
+    from markdown import Markdown
+    from markdown.extensions.toc import slugify_unicode
+
+    raw = str(text or "")
+    if not raw.strip():
+        return "", ""
+
+    markdown_source, protected = _protect_rich_markdown_math(raw)
+    extension_configs = {
+        name: dict(config)
+        for name, config in _RICH_MARKDOWN_EXTENSION_CONFIGS.items()
+    }
+
+    def slugify_with_restored_math(value, separator):
+        restored = str(value or "")
+        for token, formula in protected.items():
+            restored = restored.replace(token, html.unescape(formula))
+        return slugify_unicode(restored, separator)
+
+    extension_configs["toc"] = {
+        "toc_depth": str(toc_depth),
+        "slugify": slugify_with_restored_math,
+    }
+    try:
+        renderer = Markdown(
+            extensions=[*_RICH_MARKDOWN_EXTENSIONS, "toc"],
+            extension_configs=extension_configs,
+        )
+        rendered = renderer.convert(markdown_source)
+    except Exception:
+        # 正文仍沿用共享渲染器的安全降级；解析失败时不伪造可能错位的目录。
+        return render_rich_markdown(raw), ""
+
+    return (
+        _restore_rich_markdown_math(rendered, protected),
+        _restore_rich_markdown_math(renderer.toc, protected),
+    )

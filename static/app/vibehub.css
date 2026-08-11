@@ -384,12 +384,6 @@ body.vibe-modal-open { overflow: hidden; }
 
 .vibe-guide-markdown-body li + li { margin-top: 5px; }
 
-.vibe-guide-markdown-body code { padding: .12em .34em; border-radius: 4px; background: #f4f4f5; color: #9a3412; font-family: var(--vibe-mono); font-size: .9em; }
-
-.vibe-guide-markdown-body pre { overflow: auto; padding: 16px 18px; border: 0; border-radius: 8px; background: #18181b; color: #f4f4f5; line-height: 1.65; }
-
-.vibe-guide-markdown-body pre code { padding: 0; background: transparent; color: inherit; }
-
 .vibe-guide-markdown-body table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; }
 
 .vibe-guide-markdown-body th,

@@ -1362,6 +1362,8 @@ def test_api_serves_the_tracked_developer_guide():
     assert response.get_data() == guide
     assert b"/api/vibehub/" not in guide
     assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Cache-Control"] == "no-cache, max-age=0"
+    assert "vibehub-developer-guide.md" in response.headers["Content-Disposition"]
 
 
 def test_schema_contains_vibehub_project_and_immutable_version_tables():
