@@ -1674,8 +1674,8 @@
   }
 }
 
-/* 题目工作台：与设计稿一致的高密度桌面信息层，移动端完全不加载该结构。 */
-@media (min-width: 992px) {
+/* 题目工作台 V2：所有断点共用视觉规则，窄屏仅调整排版。 */
+@media screen {
   .numoj-problem-dashboard {
     width: min(100%, 1540px);
     margin: 0 auto;
@@ -2338,8 +2338,8 @@
   display: none;
 }
 
-/* 题目详情桌面壳；移动端继续沿用模板内原有的 Bootstrap/CodeMirror 样式。 */
-@media (min-width: 992px) {
+/* 题目详情 V2：桌面与移动端共用同一结构和视觉规则。 */
+@media screen {
   .numoj-content.problem-detail-content-shell,
   .numoj-content.container.problem-detail-content-shell {
     height: 100vh;
@@ -2811,42 +2811,6 @@
     line-height: 1.65;
   }
 
-  .problem-detail-page .recent-submissions-panel > .d-flex h5 {
-    font-size: 0.82rem;
-    font-weight: 680;
-  }
-
-  .problem-detail-page .recent-submissions-panel {
-    flex: 0 0 auto;
-    overflow: hidden;
-    border-top: 1px solid var(--numoj-line);
-    background: #fff;
-  }
-
-  .problem-detail-page .recent-submissions-panel > .d-flex {
-    min-height: 38px;
-    margin: 0 !important;
-    padding: 5px 12px;
-  }
-
-  .problem-detail-page .recent-submissions-panel .list-group {
-    max-height: 114px;
-    overflow-x: hidden;
-    overflow-y: auto;
-    border: 0;
-    border-radius: 0;
-  }
-
-  .problem-detail-page .recent-submissions-panel .list-group-item {
-    min-height: 38px;
-    padding: 5px 12px;
-    border-width: 0 0 1px;
-    border-color: var(--numoj-line);
-    font-family: var(--numoj-mono);
-    font-size: 0.68rem;
-  }
-
-  .problem-detail-page .recent-submissions-panel .submission-status,
   .problem-detail-page .recent-submissions-card .submission-status {
     display: inline-grid;
     width: 28px;
@@ -2862,17 +2826,11 @@
     line-height: 1;
   }
 
-  .problem-detail-page .recent-submissions-panel .submission-status.accepted,
   .problem-detail-page .recent-submissions-card .submission-status.accepted {
     background: var(--numoj-success-soft);
     color: var(--numoj-success);
   }
 
-  .problem-detail-page .recent-submissions-panel .submission-status.unaccepted,
-  .problem-detail-page .recent-submissions-panel .submission-status.wrong-answer,
-  .problem-detail-page .recent-submissions-panel .submission-status.runtime-error,
-  .problem-detail-page .recent-submissions-panel .submission-status.output-limit-exceeded,
-  .problem-detail-page .recent-submissions-panel .submission-status.error,
   .problem-detail-page .recent-submissions-card .submission-status.unaccepted,
   .problem-detail-page .recent-submissions-card .submission-status.wrong-answer,
   .problem-detail-page .recent-submissions-card .submission-status.runtime-error,
@@ -2882,10 +2840,6 @@
     color: var(--numoj-danger);
   }
 
-  .problem-detail-page .recent-submissions-panel .submission-status.compile-error,
-  .problem-detail-page .recent-submissions-panel .submission-status.forbidden,
-  .problem-detail-page .recent-submissions-panel .submission-status.no-output,
-  .problem-detail-page .recent-submissions-panel .submission-status.nonzero-exit-status,
   .problem-detail-page .recent-submissions-card .submission-status.compile-error,
   .problem-detail-page .recent-submissions-card .submission-status.forbidden,
   .problem-detail-page .recent-submissions-card .submission-status.no-output,
@@ -2894,12 +2848,6 @@
     color: var(--numoj-brand);
   }
 
-  .problem-detail-page .recent-submissions-panel .submission-status.pending,
-  .problem-detail-page .recent-submissions-panel .submission-status.waiting,
-  .problem-detail-page .recent-submissions-panel .submission-status.running,
-  .problem-detail-page .recent-submissions-panel .submission-status.generating,
-  .problem-detail-page .recent-submissions-panel .submission-status.time-limit-exceeded,
-  .problem-detail-page .recent-submissions-panel .submission-status.memory-limit-exceeded,
   .problem-detail-page .recent-submissions-card .submission-status.pending,
   .problem-detail-page .recent-submissions-card .submission-status.waiting,
   .problem-detail-page .recent-submissions-card .submission-status.running,
@@ -2910,10 +2858,6 @@
     color: var(--numoj-info);
   }
 
-  .problem-detail-page .recent-submissions-panel .btn-sm {
-    padding: 4px 8px;
-    font-size: 0.66rem;
-  }
 }
 
 @media (min-width: 992px) and (max-width: 1199.98px) {
@@ -2923,5 +2867,1132 @@
 
   .problem-detail-page .problem-content {
     padding-inline: 22px;
+  }
+}
+
+/* 移动端 V2：只适配桌面新版结构，不引入独立业务逻辑。 */
+@media (max-width: 991.98px) {
+  :root {
+    --numoj-bg: #f7f7f5;
+    --numoj-panel: #fff;
+    --numoj-ink: #18181b;
+    --numoj-ink-2: #3f3f46;
+    --numoj-ink-3: #71717a;
+    --numoj-ink-4: #a1a1aa;
+    --numoj-line: #e4e4e7;
+    --numoj-line-soft: #f4f4f5;
+    --numoj-brand: #ea580c;
+    --numoj-brand-hover: #c2410c;
+    --numoj-brand-ink: #9a3412;
+    --numoj-brand-soft: #fff7ed;
+    --numoj-success: #16a34a;
+    --numoj-success-soft: #f0fdf4;
+    --numoj-warning: #a16207;
+    --numoj-warning-soft: #fefce8;
+    --numoj-danger: #dc2626;
+    --numoj-danger-soft: #fef2f2;
+    --numoj-info: #0369a1;
+    --numoj-radius: 12px;
+    --numoj-radius-sm: 8px;
+    --numoj-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --numoj-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+
+  .numoj-site-main {
+    min-width: 0;
+  }
+
+  .numoj-problem-dashboard,
+  .problem-detail-page {
+    color: var(--numoj-ink);
+    font-family: var(--numoj-font);
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  .numoj-problems-content a,
+  .problem-detail-content-shell a {
+    color: var(--numoj-brand-ink);
+  }
+
+  .numoj-problems-content a:hover,
+  .problem-detail-content-shell a:hover {
+    color: var(--numoj-brand-hover);
+  }
+
+  .numoj-mobile-topbar :focus-visible,
+  .numoj-mobile-sidebar :focus-visible,
+  .numoj-problems-content :focus-visible,
+  .problem-detail-content-shell :focus-visible {
+    outline: 3px solid rgba(234, 88, 12, 0.28) !important;
+    outline-offset: 2px;
+  }
+
+  .numoj-problems-content h1,
+  .numoj-problems-content h2,
+  .numoj-problems-content h3,
+  .numoj-problems-content h4,
+  .numoj-problems-content h5,
+  .numoj-problems-content h6,
+  .problem-detail-content-shell h1,
+  .problem-detail-content-shell h2,
+  .problem-detail-content-shell h3,
+  .problem-detail-content-shell h4,
+  .problem-detail-content-shell h5,
+  .problem-detail-content-shell h6 {
+    color: var(--numoj-ink);
+    letter-spacing: -0.015em;
+  }
+
+  .numoj-problems-content .text-muted,
+  .numoj-problems-content .form-text,
+  .problem-detail-content-shell .text-muted,
+  .problem-detail-content-shell .form-text {
+    color: var(--numoj-ink-3) !important;
+  }
+
+  .numoj-problems-content .card,
+  .numoj-problems-content .list-group,
+  .numoj-problems-content .accordion-item,
+  .numoj-problems-content .modal-content,
+  .problem-detail-content-shell .card,
+  .problem-detail-content-shell .list-group,
+  .problem-detail-content-shell .accordion-item,
+  .problem-detail-content-shell .modal-content {
+    border-color: var(--numoj-line);
+    border-radius: var(--numoj-radius);
+    background: var(--numoj-panel);
+    box-shadow: 0 1px 2px rgba(24, 24, 27, 0.02);
+  }
+
+  .numoj-problems-content .card-header,
+  .numoj-problems-content .card-footer,
+  .numoj-problems-content .modal-header,
+  .numoj-problems-content .modal-footer,
+  .problem-detail-content-shell .card-header,
+  .problem-detail-content-shell .card-footer,
+  .problem-detail-content-shell .modal-header,
+  .problem-detail-content-shell .modal-footer {
+    border-color: var(--numoj-line);
+    background: transparent;
+  }
+
+  .numoj-problems-content .list-group-item,
+  .problem-detail-content-shell .list-group-item {
+    border-color: var(--numoj-line);
+    background: var(--numoj-panel);
+    color: var(--numoj-ink-2);
+  }
+
+  .numoj-problems-content a.list-group-item:hover,
+  .numoj-problems-content .list-group-item-action:hover,
+  .problem-detail-content-shell a.list-group-item:hover,
+  .problem-detail-content-shell .list-group-item-action:hover {
+    background: var(--numoj-line-soft);
+  }
+
+  .numoj-problems-content .table,
+  .problem-detail-content-shell .table {
+    --bs-table-color: var(--numoj-ink-2);
+    --bs-table-bg: transparent;
+    --bs-table-border-color: var(--numoj-line);
+    --bs-table-hover-bg: var(--numoj-line-soft);
+    margin-bottom: 0;
+    font-size: 0.84rem;
+  }
+
+  .numoj-problems-content .form-control,
+  .numoj-problems-content .form-select,
+  .numoj-problems-content .modal .form-control,
+  .numoj-problems-content .modal .form-select,
+  .problem-detail-content-shell .form-control,
+  .problem-detail-content-shell .form-select,
+  .problem-detail-content-shell .modal .form-control,
+  .problem-detail-content-shell .modal .form-select {
+    border-color: var(--numoj-line);
+    border-radius: 7px;
+    background-color: #fff;
+    color: var(--numoj-ink);
+    font-size: 0.875rem;
+  }
+
+  .numoj-problems-content .form-control:focus,
+  .numoj-problems-content .form-select:focus,
+  .numoj-problems-content .modal .form-control:focus,
+  .numoj-problems-content .modal .form-select:focus,
+  .problem-detail-content-shell .form-control:focus,
+  .problem-detail-content-shell .form-select:focus,
+  .problem-detail-content-shell .modal .form-control:focus,
+  .problem-detail-content-shell .modal .form-select:focus {
+    border-color: var(--numoj-brand);
+    box-shadow: 0 0 0 4px var(--numoj-brand-soft);
+  }
+
+  .numoj-problems-content .btn,
+  .numoj-problems-content .modal .btn,
+  .problem-detail-content-shell .btn,
+  .problem-detail-content-shell .modal .btn {
+    border-radius: 7px;
+    font-size: 0.79rem;
+    font-weight: 550;
+  }
+
+  .numoj-problems-content .btn-primary,
+  .numoj-problems-content .modal .btn-primary,
+  .problem-detail-content-shell .btn-primary,
+  .problem-detail-content-shell .modal .btn-primary {
+    border-color: var(--numoj-brand);
+    background: var(--numoj-brand);
+  }
+
+  .numoj-problems-content .btn-primary:hover,
+  .numoj-problems-content .modal .btn-primary:hover,
+  .problem-detail-content-shell .btn-primary:hover,
+  .problem-detail-content-shell .modal .btn-primary:hover {
+    border-color: var(--numoj-brand-hover);
+    background: var(--numoj-brand-hover);
+  }
+
+  .numoj-problems-content .btn-outline-primary,
+  .numoj-problems-content .modal .btn-outline-primary,
+  .problem-detail-content-shell .btn-outline-primary,
+  .problem-detail-content-shell .modal .btn-outline-primary {
+    border-color: var(--numoj-line);
+    color: var(--numoj-ink-2);
+  }
+
+  .numoj-problems-content .btn-outline-primary:hover,
+  .numoj-problems-content .modal .btn-outline-primary:hover,
+  .problem-detail-content-shell .btn-outline-primary:hover,
+  .problem-detail-content-shell .modal .btn-outline-primary:hover {
+    border-color: var(--numoj-ink);
+    background: var(--numoj-ink);
+    color: #fff;
+  }
+
+  .numoj-problems-content .btn-outline-success,
+  .problem-detail-content-shell .btn-outline-success {
+    border-color: var(--numoj-brand);
+    color: var(--numoj-brand-ink);
+  }
+
+  .numoj-problems-content .btn-outline-success:hover,
+  .problem-detail-content-shell .btn-outline-success:hover {
+    border-color: var(--numoj-brand);
+    background: var(--numoj-brand);
+    color: #fff;
+  }
+
+  .numoj-problems-content .badge,
+  .problem-detail-content-shell .badge {
+    border-radius: 5px;
+    font-family: var(--numoj-mono);
+    font-size: 0.66rem;
+    font-weight: 550;
+  }
+
+  .numoj-problems-content .bg-primary,
+  .problem-detail-content-shell .bg-primary {
+    background-color: var(--numoj-brand) !important;
+  }
+
+  .numoj-problems-content .text-primary,
+  .problem-detail-content-shell .text-primary {
+    color: var(--numoj-brand-ink) !important;
+  }
+
+  .numoj-problems-content .alert,
+  .problem-detail-content-shell .alert {
+    border-color: var(--numoj-line);
+    border-radius: var(--numoj-radius-sm);
+  }
+
+  .numoj-problems-content code,
+  .numoj-problems-content pre,
+  .numoj-problems-content .font-monospace,
+  .problem-detail-content-shell code,
+  .problem-detail-content-shell pre,
+  .problem-detail-content-shell .font-monospace {
+    font-family: var(--numoj-mono) !important;
+  }
+
+  .numoj-mobile-topbar {
+    position: sticky;
+    z-index: 1030;
+    top: 0;
+    display: grid;
+    width: 100%;
+    height: 48px;
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    align-items: center;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--numoj-line);
+    background: rgba(255, 255, 255, 0.97);
+    box-shadow: 0 1px 2px rgba(24, 24, 27, 0.025);
+    color: var(--numoj-ink);
+    font-family: var(--numoj-font);
+    font-feature-settings: "cv11", "ss01";
+    backdrop-filter: blur(12px);
+  }
+
+  .numoj-mobile-topbar-logo,
+  .numoj-mobile-menu-toggle {
+    display: inline-grid;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--numoj-ink);
+  }
+
+  .numoj-mobile-topbar-logo {
+    justify-self: start;
+    text-decoration: none;
+  }
+
+  .numoj-mobile-menu-toggle {
+    justify-self: end;
+  }
+
+  .numoj-mobile-topbar-logo:hover,
+  .numoj-mobile-menu-toggle:hover {
+    background: var(--numoj-line-soft);
+    color: var(--numoj-ink);
+  }
+
+  .numoj-mobile-topbar .numoj-brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+  }
+
+  .numoj-mobile-topbar-title {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--numoj-ink);
+    font-size: 0.86rem;
+    font-weight: 680;
+    letter-spacing: -0.015em;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .numoj-mobile-sidebar.offcanvas {
+    --bs-offcanvas-width: 150px;
+    width: 150px !important;
+    max-width: 150px;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--numoj-line);
+    background: rgba(255, 255, 255, 0.99);
+    box-shadow: 10px 0 32px rgba(24, 24, 27, 0.12);
+    color: var(--numoj-ink);
+    font-family: var(--numoj-font);
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  .numoj-mobile-sidebar .numoj-brand {
+    display: flex;
+    min-height: 62px;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 10px;
+    border-bottom: 1px solid var(--numoj-line);
+    color: var(--numoj-ink);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .numoj-mobile-sidebar .numoj-brand-mark,
+  .numoj-mobile-topbar .numoj-brand-mark {
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-items: center;
+    background: linear-gradient(135deg, var(--numoj-ink), #3f3f46);
+    color: #fb923c;
+  }
+
+  .numoj-mobile-sidebar .numoj-brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+  }
+
+  .numoj-mobile-sidebar .numoj-brand-copy,
+  .numoj-mobile-sidebar .numoj-user-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    line-height: 1.15;
+  }
+
+  .numoj-mobile-sidebar .numoj-brand-copy strong {
+    overflow: hidden;
+    font-size: 0.7rem;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    text-overflow: ellipsis;
+  }
+
+  .numoj-mobile-sidebar .numoj-brand-copy small {
+    overflow: hidden;
+    margin-top: 3px;
+    color: var(--numoj-ink-3);
+    font-family: var(--numoj-mono);
+    font-size: 0.47rem;
+    letter-spacing: 0.08em;
+    text-overflow: ellipsis;
+  }
+
+  .numoj-mobile-sidebar .numoj-sidebar-nav {
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 9px 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--numoj-line) transparent;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-group {
+    margin-bottom: 13px;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-group h2 {
+    margin: 0 0 4px;
+    padding: 0 11px;
+    color: var(--numoj-ink-4);
+    font-family: var(--numoj-mono);
+    font-size: 0.5rem;
+    font-weight: 550;
+    letter-spacing: 0.13em;
+    line-height: 1.5;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-item {
+    position: relative;
+    display: flex;
+    width: auto;
+    min-height: 34px;
+    align-items: center;
+    gap: 7px;
+    margin: 1px 6px;
+    padding: 7px 7px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--numoj-ink-2);
+    font-size: 0.7rem;
+    font-weight: 470;
+    line-height: 1.35;
+    text-align: left;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-item:hover {
+    background: var(--numoj-line-soft);
+    color: var(--numoj-ink);
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-item.active {
+    background: var(--numoj-ink);
+    color: #fff;
+  }
+
+  .numoj-mobile-sidebar .numoj-icon {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 15px;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-label {
+    min-width: 0;
+    overflow: hidden;
+    flex: 1 1 auto;
+    text-overflow: ellipsis;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-count {
+    margin-left: auto;
+    color: var(--numoj-ink-4);
+    font-family: var(--numoj-mono);
+    font-size: 0.52rem;
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-item.active .numoj-nav-count {
+    color: rgba(255, 255, 255, 0.62);
+  }
+
+  .numoj-mobile-sidebar .numoj-nav-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 6px;
+    margin-left: auto;
+    border-radius: 50%;
+    background: var(--numoj-brand);
+    animation: numoj-pulse 1.8s ease-in-out infinite;
+  }
+
+  .numoj-mobile-sidebar .numoj-logout-form {
+    margin: 0;
+  }
+
+  .numoj-mobile-sidebar .numoj-logout-form .numoj-nav-item {
+    width: calc(100% - 12px);
+  }
+
+  .numoj-mobile-sidebar .numoj-sidebar-footer {
+    display: flex;
+    min-height: 62px;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 8px;
+    border-top: 1px solid var(--numoj-line);
+  }
+
+  .numoj-mobile-sidebar .numoj-user-summary {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .numoj-mobile-sidebar .numoj-avatar {
+    --avatar-cell: var(--numoj-ink);
+    display: grid;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    overflow: hidden;
+    padding: 2px;
+    border: 1px solid #d4d4d8;
+    border-radius: 7px;
+    background: #fff;
+    color: var(--avatar-cell);
+    font-size: 0.55rem;
+    font-weight: 650;
+  }
+
+  .numoj-mobile-sidebar .numoj-avatar > span {
+    background: transparent;
+  }
+
+  .numoj-mobile-sidebar .numoj-avatar > span.is-filled {
+    background: var(--avatar-cell);
+  }
+
+  .numoj-mobile-sidebar .numoj-guest-avatar {
+    display: inline-grid;
+    grid-template: none;
+    place-items: center;
+  }
+
+  .numoj-mobile-sidebar .numoj-user-copy strong,
+  .numoj-mobile-sidebar .numoj-user-copy small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .numoj-mobile-sidebar .numoj-user-copy strong {
+    font-size: 0.61rem;
+    font-weight: 650;
+  }
+
+  .numoj-mobile-sidebar .numoj-user-copy small {
+    margin-top: 2px;
+    color: var(--numoj-ink-3);
+    font-size: 0.51rem;
+  }
+
+  .numoj-mobile-sidebar .numoj-sidebar-toggle {
+    display: inline-grid;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid var(--numoj-line);
+    border-radius: 7px;
+    background: #fff;
+    color: var(--numoj-ink-3);
+  }
+
+  .numoj-mobile-sidebar .numoj-sidebar-toggle:hover {
+    background: var(--numoj-line-soft);
+    color: var(--numoj-ink);
+  }
+
+  .numoj-content.numoj-problems-content,
+  .numoj-content.container.numoj-problems-content {
+    width: 100%;
+    max-width: none;
+    margin: 0 !important;
+    padding: 18px 12px 40px;
+    background-color: var(--numoj-bg);
+    background-image: radial-gradient(circle, var(--numoj-line) 1px, transparent 1px);
+    background-position: -10px -10px;
+    background-size: 20px 20px;
+  }
+
+  .numoj-problem-dashboard {
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .numoj-page-header {
+    display: flex;
+    min-height: 52px;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .numoj-page-header > div {
+    min-width: 0;
+  }
+
+  .numoj-page-header h1 {
+    overflow: hidden;
+    margin: 2px 0 0;
+    font-size: clamp(1.35rem, 6vw, 1.72rem);
+    font-weight: 720;
+    letter-spacing: -0.035em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .numoj-eyebrow {
+    margin: 0;
+    color: var(--numoj-ink-4);
+    font-family: var(--numoj-mono);
+    font-size: 0.61rem;
+    font-weight: 650;
+    letter-spacing: 0.13em;
+  }
+
+  .numoj-primary-action {
+    display: inline-flex;
+    min-height: 38px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 12px;
+    border-color: var(--numoj-brand);
+    border-radius: 7px;
+    background: var(--numoj-brand);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .numoj-primary-action:hover {
+    border-color: var(--numoj-brand-hover);
+    background: var(--numoj-brand-hover);
+    color: #fff;
+  }
+
+  .numoj-dashboard-grid,
+  .numoj-dashboard-grid.numoj-library-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .numoj-dashboard-main,
+  .numoj-dashboard-aside {
+    min-width: 0;
+  }
+
+  .numoj-panel {
+    overflow: hidden;
+    border: 1px solid var(--numoj-line);
+    border-radius: var(--numoj-radius);
+    background: var(--numoj-panel);
+    box-shadow: 0 1px 1px rgba(24, 24, 27, 0.018);
+  }
+
+  .numoj-assignment-panel {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .numoj-class-switcher {
+    display: flex;
+    position: relative;
+    min-height: 62px;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--numoj-line);
+  }
+
+  .numoj-class-switcher-label {
+    flex: 0 0 auto;
+    color: var(--numoj-ink-4);
+    font-family: var(--numoj-mono);
+    font-size: 0.6rem;
+    font-weight: 650;
+    letter-spacing: 0.13em;
+  }
+
+  .numoj-class-picker {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .numoj-class-picker-menu {
+    right: 0;
+    left: 0;
+    width: 100%;
+    max-width: none;
+  }
+
+  .numoj-assignment-row,
+  .numoj-library-grid .numoj-assignment-row {
+    display: grid;
+    min-height: 58px;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--numoj-line);
+  }
+
+  .numoj-assignment-row-library,
+  .numoj-library-grid .numoj-assignment-row-library {
+    grid-template-columns: 24px minmax(0, 1fr) 30px;
+  }
+
+  .numoj-row-state {
+    width: 22px;
+    height: 22px;
+  }
+
+  .numoj-row-title-line {
+    display: block;
+    min-width: 0;
+  }
+
+  .numoj-row-title-line a {
+    display: block;
+    overflow: hidden;
+    color: var(--numoj-ink);
+    font-size: 0.82rem;
+    font-weight: 650;
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .numoj-row-title-line a:hover {
+    color: var(--numoj-brand-ink);
+  }
+
+  .numoj-row-id,
+  .numoj-row-tags,
+  .numoj-row-metric,
+  .numoj-row-arrow {
+    display: none;
+  }
+
+  .numoj-problem-dashboard .numoj-row-deadline-absolute {
+    display: none;
+  }
+
+  .numoj-row-deadline {
+    display: block;
+    min-width: 0;
+    color: var(--numoj-success);
+    font-family: var(--numoj-mono);
+    font-size: 0.61rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .numoj-row-deadline .numoj-row-deadline-relative {
+    display: block;
+    margin: 0;
+    color: var(--numoj-success);
+  }
+
+  .numoj-row-deadline .urgent,
+  .numoj-row-deadline .expired {
+    color: var(--numoj-danger);
+  }
+
+  .numoj-row-deadline .numoj-row-deadline-empty {
+    color: var(--numoj-ink-4);
+  }
+
+  .numoj-row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: end;
+  }
+
+  .numoj-icon-button {
+    width: 30px;
+    height: 30px;
+  }
+
+  .numoj-empty-state {
+    min-height: 180px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  .numoj-dashboard-aside {
+    display: grid;
+    gap: 14px;
+  }
+
+  .numoj-library-grid .numoj-dashboard-aside {
+    display: none;
+  }
+
+  .numoj-dashboard-aside .numoj-panel {
+    padding: 16px;
+  }
+
+  .numoj-dashboard-aside .numoj-panel > header {
+    margin-bottom: 14px;
+  }
+
+  .numoj-heatmap-frame {
+    min-height: 134px;
+    padding: 12px;
+  }
+
+  .numoj-heatmap {
+    grid-auto-columns: minmax(7px, 12px);
+    gap: clamp(3px, 1.2vw, 5px);
+  }
+
+  .numoj-resource-card li > a {
+    min-height: 34px;
+  }
+
+  .numoj-content.problem-detail-content-shell,
+  .numoj-content.container.problem-detail-content-shell {
+    width: 100%;
+    height: auto;
+    max-width: none;
+    margin: 0 !important;
+    padding: 0;
+    overflow: visible;
+  }
+
+  .problem-detail-page {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    overflow: visible;
+    background: var(--numoj-panel);
+  }
+
+  .numoj-breadcrumb {
+    display: flex;
+    min-height: 44px;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--numoj-line);
+    color: var(--numoj-ink-4);
+    font-family: var(--numoj-mono);
+    font-size: 0.61rem;
+    white-space: nowrap;
+  }
+
+  .numoj-breadcrumb a {
+    flex: 0 0 auto;
+    color: var(--numoj-ink-3);
+    text-decoration: none;
+  }
+
+  .numoj-breadcrumb strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--numoj-ink-2);
+    font-weight: 600;
+    text-overflow: ellipsis;
+  }
+
+  .problem-detail-page .problem-detail-row {
+    display: grid;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 0;
+    margin: 0;
+    overflow: visible;
+  }
+
+  .problem-detail-page .problem-col-left,
+  .problem-detail-page .problem-col-right {
+    position: static;
+    top: auto;
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    max-width: none;
+    max-height: none;
+    margin: 0 !important;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: var(--numoj-panel);
+  }
+
+  .problem-detail-page .problem-col-right {
+    border-top: 1px solid var(--numoj-line);
+    background: #fff;
+  }
+
+  .problem-detail-page .problem-header {
+    margin-bottom: 0 !important;
+    padding: 20px 16px 0;
+  }
+
+  .problem-detail-page .problem-content {
+    margin: 0 !important;
+    padding: 8px 16px 36px;
+    color: var(--numoj-ink-2);
+    font-size: 0.88rem;
+    line-height: 1.75;
+  }
+
+  .numoj-problem-kickers {
+    margin-bottom: 11px;
+  }
+
+  .problem-detail-page .problem-title-singleline {
+    width: 100%;
+    margin: 0;
+    font-size: clamp(1.4rem, 6vw, 1.72rem);
+    line-height: 1.18;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .problem-detail-page .problem-heading-layout,
+  .problem-detail-page .problem-heading-layout.has-recent-submissions {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding-bottom: 18px;
+  }
+
+  .problem-detail-page .recent-submissions-card {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .problem-detail-page .recent-submissions-card li {
+    min-height: 32px;
+    grid-template-columns: 28px minmax(0, 1fr) 20px;
+    padding: 4px 8px;
+  }
+
+  .problem-detail-page .problem-admin-actions {
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    gap: 6px;
+    margin-top: 16px !important;
+    overflow-x: auto;
+    padding: 0 0 3px;
+    scrollbar-width: thin;
+  }
+
+  .problem-detail-page .problem-admin-actions .btn {
+    min-width: max-content;
+    flex: 0 0 auto;
+  }
+
+  .problem-detail-page .problem-content h1,
+  .problem-detail-page .problem-content h2,
+  .problem-detail-page .problem-content h3,
+  .problem-detail-page .problem-content h4 {
+    margin-top: 25px;
+  }
+
+  .problem-detail-page .problem-content table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .problem-detail-content-shell .problem-detail-page .numoj-problem-code-rendering code {
+    background: var(--numoj-line-soft);
+    color: var(--numoj-brand-ink);
+    font-family: var(--numoj-mono);
+  }
+
+  .problem-detail-content-shell .problem-detail-page .numoj-problem-code-rendering pre {
+    border: 0;
+    border-radius: 9px;
+    background: #18181b;
+    color: #f4f4f5;
+  }
+
+  .problem-detail-content-shell .problem-detail-page .numoj-problem-code-rendering pre code {
+    background: transparent;
+    color: inherit;
+  }
+
+  .problem-detail-page .problem-col-right > form {
+    margin: 0 !important;
+  }
+
+  .problem-detail-page .problem-code-submit-form,
+  .problem-detail-page .problem-prompt-submit-form {
+    display: block;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .problem-detail-page .problem-editor-toolbar {
+    display: grid !important;
+    min-height: 64px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end !important;
+    gap: 10px;
+    margin: 0 !important;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--numoj-line);
+    background: #f8f8f8;
+  }
+
+  .problem-detail-page .problem-editor-toolbar > * {
+    min-width: 0;
+  }
+
+  .problem-detail-page .problem-editor-actions {
+    width: auto;
+    align-items: stretch;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .problem-detail-page .student-code-actions .btn {
+    flex: 0 1 auto;
+  }
+
+  .problem-detail-page .problem-editor-actions .btn {
+    min-height: 36px;
+    padding: 7px 10px;
+    white-space: nowrap;
+  }
+
+  .problem-detail-page .problem-code-submit-form .problem-editor-card {
+    min-height: 0;
+    flex: none;
+  }
+
+  .problem-detail-page .problem-editor-card .card-body {
+    height: auto;
+  }
+
+  .problem-detail-page .problem-editor-desktop-shell {
+    display: block;
+    position: relative;
+    height: clamp(360px, 58svh, 620px);
+    min-height: 360px;
+    overflow: hidden;
+    background: #1e1e1e;
+  }
+
+  .problem-detail-page .problem-editor-desktop-shell[hidden] {
+    display: none !important;
+  }
+
+  .problem-detail-page .problem-editor-loading-state {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+  }
+
+  .problem-detail-page #codeEditor:not(.numoj-code-textarea-fallback) {
+    display: none;
+  }
+
+  .problem-detail-page #monacoEditorContainer {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .problem-detail-page .numoj-code-textarea-fallback {
+    width: 100%;
+    min-height: 360px;
+    height: clamp(360px, 58svh, 620px);
+    border-radius: 0;
+  }
+
+  .problem-detail-page #promptEditor {
+    width: 100%;
+    min-height: 360px;
+    height: clamp(360px, 58svh, 620px);
+    padding: 14px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  @keyframes numoj-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+}
+
+@media (max-width: 359.98px) {
+  .numoj-content.numoj-problems-content,
+  .numoj-content.container.numoj-problems-content {
+    padding-inline: 9px;
+  }
+
+  .numoj-page-header {
+    gap: 8px;
+  }
+
+  .numoj-primary-action {
+    padding-inline: 9px;
+  }
+
+  .problem-detail-page .problem-editor-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch !important;
+  }
+
+  .problem-detail-page .problem-editor-toolbar > .align-items-end {
+    align-items: stretch !important;
+  }
+
+  .problem-detail-page .problem-editor-actions,
+  .problem-detail-page .student-code-actions {
+    width: 100%;
+  }
+
+  .problem-detail-page .problem-editor-actions .btn {
+    flex: 1 1 0;
   }
 }
