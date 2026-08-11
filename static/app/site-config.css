@@ -17,16 +17,13 @@
   --cfg-ink-4: #a1a1aa;
   --cfg-line: #e4e4e7;
   --cfg-line-soft: #f4f4f5;
-  --cfg-paper: #fafaf8;
   --cfg-orange: #ea580c;
-  --cfg-orange-dark: #c2410c;
   --cfg-orange-ink: #9a3412;
   --cfg-orange-soft: #fff7ed;
   --cfg-green: #16845b;
   --cfg-green-soft: #ecfdf5;
   --cfg-red: #b91c1c;
   --cfg-red-soft: #fef2f2;
-  --cfg-blue: #1d4ed8;
   --cfg-rail: clamp(204px, 15vw, 226px);
   --cfg-mono: "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
   position: relative;

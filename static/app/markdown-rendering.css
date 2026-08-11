@@ -1,7 +1,6 @@
 .numoj-markdown {
   --numoj-markdown-mono:
     "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
-  --numoj-markdown-ink: #18181b;
   --numoj-markdown-muted: #71717a;
   --numoj-markdown-line: #d4d4d8;
   --numoj-markdown-soft: #fafaf8;

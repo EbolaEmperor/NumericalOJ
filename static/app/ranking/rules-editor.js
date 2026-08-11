@@ -117,7 +117,6 @@
     return s.length > n ? s.slice(0, n) + '…' : s;
   }
   function ruleTitle(r) { return (r.rule_name || '').trim() || compact(r.rule_text, 14); }
-  function ruleOptionLabel(r) { return '规则 ' + r.rule_id + '：' + ruleTitle(r); }
   function setHint(text, cls) {
     if (!hintEl) return;
     hintEl.textContent = text || '';
@@ -583,7 +582,7 @@
     pendingEdgeFrom = null;
     selectedEdge = null;
     pendingDeleteIndexes = {};
-    setHint(deleteNodeMode ? '请选择要删除的节点。' : '已退出删除模式。', deleteNodeMode ? 'text-muted' : 'text-muted');
+    setHint(deleteNodeMode ? '请选择要删除的节点。' : '已退出删除模式。', 'text-muted');
     renderTopo();
   };
   if (confirmDeleteNodeBtn) confirmDeleteNodeBtn.onclick = function () {

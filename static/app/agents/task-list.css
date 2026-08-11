@@ -1,7 +1,6 @@
 .numoj-content.container-fluid.agent-home-shell {
   --agent-paper: #fffefb;
   --agent-canvas: #f7f5ef;
-  --agent-canvas-deep: #f0ede4;
   --agent-ink: var(--numoj-ink, #18181b);
   --agent-ink-2: var(--numoj-ink-2, #3f3f46);
   --agent-muted: var(--numoj-ink-3, #71717a);
