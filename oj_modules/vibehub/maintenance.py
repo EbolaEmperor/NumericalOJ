@@ -2,7 +2,7 @@
 
 模块导入和配置注册都不会创建目录、连接数据库或启动线程。Web worker 必须通过
 ``ensure_vibehub_storage_gc`` 显式启动 daemon。每轮严格沿用业务写入的锁序：先取得
-全局 ``storage_mutation_lock``，再用 ``FOR UPDATE`` 锁定全部社区作品与版本 live-set，
+全局 ``storage_mutation_lock``，再用 ``FOR UPDATE`` 锁定全部作品与版本 live-set，
 最后调用存储层经过 device/inode/ctime_ns 绑定和完整审计的回收原语。
 """
 
@@ -65,13 +65,12 @@ def _optional_positive_id(value, *, label: str) -> int | None:
 
 
 def _locked_snapshot_gc_states(cursor) -> tuple[dict, ...]:
-    """有界锁定全部社区作品与版本，并生成存储层需要的 live-set。"""
+    """有界锁定全部作品与版本，并生成存储层需要的 live-set。"""
 
     cursor.execute(
         """
         SELECT id, slug, latest_version_id, public_version_id, review_version_id
         FROM vibehub_projects
-        WHERE project_kind = 'container'
         ORDER BY id
         LIMIT %s
         FOR UPDATE
@@ -121,8 +120,6 @@ def _locked_snapshot_gc_states(cursor) -> tuple[dict, ...]:
         """
         SELECT v.project_id, v.id, v.version_number
         FROM vibehub_versions v
-        INNER JOIN vibehub_projects p ON p.id = v.project_id
-        WHERE p.project_kind = 'container'
         ORDER BY v.project_id, v.version_number
         LIMIT %s
         FOR UPDATE

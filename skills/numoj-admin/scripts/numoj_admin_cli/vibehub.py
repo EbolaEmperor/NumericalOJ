@@ -15,7 +15,7 @@ PROJECT_FIELDS = (
     "review_status", "review_note", "latest_review_note", "last_reviewed_version",
     "last_review_status", "last_review_note", "featured_status",
     "featured_review_note", "is_featured", "visibility", "cover_url", "tags",
-    "project_kind", "play_url", "created_at", "updated_at", "review_requested_at",
+    "play_url", "created_at", "updated_at", "review_requested_at",
 )
 
 

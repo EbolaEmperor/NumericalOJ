@@ -11,10 +11,10 @@ from PIL import Image, UnidentifiedImageError
 from oj_modules.api.helpers import json_error, json_success, public_user
 from oj_modules.security.auth import current_user
 from oj_modules.vibehub import quotas, services, storage
+from oj_modules.vibehub.guide import DEVELOPER_GUIDE_PATH
 
 
 vibehub_api_bp = Blueprint("vibehub_api", __name__, url_prefix="/api/vibehub")
-_DEVELOPER_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "vibehub-developer-guide.md"
 
 
 def _upload_root():
@@ -35,6 +35,14 @@ def _payload():
         value = request.get_json(silent=True)
         return value if isinstance(value, dict) else {}
     return request.form.to_dict(flat=True)
+
+
+def _submission_payload():
+    payload = _payload()
+    value = str(payload.pop("submit_for_review", "") or "").strip().lower()
+    if value not in {"", "0", "1", "false", "true", "no", "yes", "off", "on"}:
+        raise services.VibeHubError("submit_for_review 必须是布尔值")
+    return payload, value in {"1", "true", "yes", "on"}
 
 
 def _uploaded_package():
@@ -127,7 +135,7 @@ def _handle_vibehub_error(exc):
 def developer_guide():
     """向网页之外的客户端提供仓库内同一份完整开发手册。"""
     response = send_file(
-        _DEVELOPER_GUIDE,
+        DEVELOPER_GUIDE_PATH,
         mimetype="text/markdown; charset=utf-8",
         as_attachment=False,
         download_name="vibehub-developer-guide.md",
@@ -164,11 +172,11 @@ def create_project():
     with _storage_mutation_request_slot():
         # 预检位于槽内但仍先于 request.files/form；事务内会最终重检。
         services.preflight_create_project(user)
+        upload = _uploaded_package()
+        payload, submit_for_review = _submission_payload()
         project = services.create_project(
-            user,
-            _uploaded_package(),
-            _payload(),
-            upload_root=_upload_root(),
+            user, upload, payload, upload_root=_upload_root(),
+            submit_for_review=submit_for_review,
         )
     return json_success(project=project), 201
 
@@ -178,8 +186,10 @@ def edit_project(slug):
     user = _require_user()
     with _storage_mutation_request_slot():
         services.preflight_upload_project(user, slug)
+        payload, submit_for_review = _submission_payload()
         project = services.edit_project(
-            user, slug, _payload(), upload_root=_upload_root(),
+            user, slug, payload, upload_root=_upload_root(),
+            submit_for_review=submit_for_review,
         )
     return json_success(project=project)
 
@@ -189,12 +199,11 @@ def upload_version(slug):
     user = _require_user()
     with _storage_mutation_request_slot():
         services.preflight_upload_project(user, slug)
+        upload = _uploaded_package()
+        payload, submit_for_review = _submission_payload()
         project = services.upload_new_version(
-            user,
-            slug,
-            _uploaded_package(),
-            _payload(),
-            upload_root=_upload_root(),
+            user, slug, upload, payload, upload_root=_upload_root(),
+            submit_for_review=submit_for_review,
         )
     return json_success(project=project), 201
 
@@ -251,8 +260,6 @@ def project_cover(slug):
     if view != "public":
         response.headers["Cache-Control"] = "private, no-store"
     else:
-        # URL 随公开版本变化；内置作品也始终条件校验 ETag，避免规范源更新
-        # 后被同一个固定 slug 的旧封面缓存一小时。
         response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
     return response
 
@@ -274,6 +281,7 @@ def review_project(slug):
             slug,
             payload.get("decision"),
             note=payload.get("note") or "",
+            expected_version=payload.get("expected_version"),
             upload_root=_upload_root(),
         )
     return json_success(project=project)

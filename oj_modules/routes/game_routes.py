@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""已退役内置游戏入口的兼容路由。
+"""已退役游戏入口的兼容路由。
 
 围住小猫和 ARC-AGI-3 已迁移为独立 VibeHub 程序包。这里仅保留旧书签的
 永久跳转，并明确拒绝旧游戏 API，避免两套实现继续并存。
@@ -16,7 +16,7 @@ _RETIRED_MESSAGE = "旧游戏接口已停用，请从 VibeHub 进入作品。"
 
 
 def _vibehub_redirect(slug):
-    return redirect(url_for("vibehub.detail", slug=slug), code=301)
+    return redirect(url_for("vibehub.play", slug=slug), code=301)
 
 
 def _retired_api_response():
@@ -25,7 +25,7 @@ def _retired_api_response():
 
 @game_bp.get("/games/circle-cat")
 def circle_cat_bookmark():
-    """将旧围住小猫书签永久迁移到 VibeHub 详情页。"""
+    """将旧围住小猫书签永久迁移到 VibeHub 试玩页。"""
 
     return _vibehub_redirect("circle-cat")
 
@@ -47,7 +47,7 @@ def circle_cat_retired_api(legacy_path):
 
 @game_bp.get("/games/arc-agi-3")
 def arc_agi_3_bookmark():
-    """将旧 ARC-AGI-3 书签永久迁移到 VibeHub 详情页。"""
+    """将旧 ARC-AGI-3 书签永久迁移到 VibeHub 试玩页。"""
 
     return _vibehub_redirect("arc-agi-3")
 

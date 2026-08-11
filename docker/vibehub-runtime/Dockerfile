@@ -5,7 +5,7 @@ FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/tmp/home \
+    HOME=/data/home \
     TMPDIR=/tmp \
     VIBEHUB_SOCKET=/run/vibehub/app.sock \
     VIBEHUB_HEALTH_PATH=/healthz
@@ -15,8 +15,8 @@ COPY uds_relay.py /usr/local/bin/vibehub-uds-relay
 RUN python -m pip install --no-cache-dir \
         numpy==2.5.0 pillow==12.2.0 arcengine==0.9.3 \
     && chmod 0555 /usr/local/bin/vibehub-uds-relay \
-    && mkdir -p /app \
-    && chown 65532:65532 /app
+    && mkdir -p /app /data/home \
+    && chown -R 65532:65532 /app /data
 
 # 运行器仍会强制 --user 65532:65532；这里让直接调试也保持非 root。
 USER 65532:65532

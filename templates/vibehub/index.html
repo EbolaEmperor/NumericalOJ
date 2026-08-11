@@ -1,89 +1,121 @@
 {% extends "layouts/site.html" %}
 {% from "vibehub/_project_card.html" import project_card %}
-{% block title %}VibeHub · 可玩的灵感 - {{ super() }}{% endblock %}
+{% block title %}VibeHub - {{ super() }}{% endblock %}
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/vibehub.css') }}">
 {% endblock %}
-{% block content_container_class %}container-fluid p-0 vibehub-page{% endblock %}
+{% block content_container_class %}container-fluid p-0 vibehub-page vibehub-page--gallery{% endblock %}
 {% block content %}
-<div class="vibe-gallery" data-vibehub-app data-vibe-view="gallery">
+<div
+  class="vibe-gallery"
+  data-vibehub-app
+  data-vibe-view="gallery"
+  data-create-url="{{ url_for('vibehub_api.create_project') }}"
+  data-project-url-template="{{ url_for('vibehub_api.project_detail', slug='__SLUG__') }}"
+  data-edit-url-template="{{ url_for('vibehub_api.edit_project', slug='__SLUG__') }}"
+  data-version-url-template="{{ url_for('vibehub_api.upload_version', slug='__SLUG__') }}"
+  data-admin-review-url-template="{{ url_for('vibehub_api.review_project', slug='__SLUG__') }}"
+  data-initial-filter="{{ initial_filter }}"
+  data-initial-edit="{{ edit_slug }}"
+>
   {% if load_error %}<div class="vibe-load-notice" role="status"><i class="fas fa-circle-exclamation" aria-hidden="true"></i>{{ load_error }}</div>{% endif %}
-  <header class="vibe-gallery-hero">
-    <div class="vibe-hero-copy">
-      <p class="vibe-eyebrow"><span>NUMERICAL OJ</span> / PLAYABLE WORKS</p>
-      <h1>Vibe<span>Hub</span></h1>
-      <p class="vibe-hero-lede">把灵感写成代码，把代码变成一个能被打开的世界。</p>
-      <div class="vibe-hero-actions">
+
+  <section class="vibe-catalog" aria-label="VibeHub 作品">
+    <header class="vibe-catalog-toolbar">
+      <label class="vibe-search">
+        <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+        <span class="visually-hidden">搜索游戏</span>
+        <input type="search" placeholder="搜索游戏或作者" data-vibe-search autocomplete="off">
+        <kbd>/</kbd>
+      </label>
+
+      <div class="vibe-filter-pills" aria-label="筛选作品">
+        <button type="button" data-vibe-filter="all">全部</button>
+        <button type="button" data-vibe-filter="featured"><i class="fas fa-gem" aria-hidden="true"></i>精品</button>
+        {% if user %}<button type="button" data-vibe-filter="mine">我的</button>{% endif %}
+      </div>
+
+      <div class="vibe-toolbar-actions">
+        <a class="vibe-toolbar-link" href="{{ url_for('vibehub.guide') }}">开发者手册</a>
         {% if user %}
-        <a class="vibe-button vibe-button--ink" href="{{ url_for('vibehub.workspace') }}">
-          <i class="fas fa-layer-group" aria-hidden="true"></i>我的工作台
-        </a>
-        <a class="vibe-button vibe-button--paper" href="{{ url_for('vibehub.workspace') }}#new-project">
-          <i class="fas fa-plus" aria-hidden="true"></i>创建作品
-        </a>
+        <button class="vibe-create-trigger" type="button" data-vibe-open-create aria-label="创建作品">
+          <i class="fas fa-plus" aria-hidden="true"></i><span>创建作品</span>
+        </button>
         {% else %}
-        <a class="vibe-button vibe-button--ink" href="{{ url_for('auth.login') }}">
-          <i class="fas fa-right-to-bracket" aria-hidden="true"></i>登录后开始创作
+        <a class="vibe-create-trigger" href="{{ url_for('auth.login') }}" aria-label="创建作品">
+          <i class="fas fa-plus" aria-hidden="true"></i><span>创建作品</span>
         </a>
         {% endif %}
-      </div>
-    </div>
-
-    <div class="vibe-hero-note" aria-label="VibeHub 发布流程">
-      <span class="vibe-note-pin" aria-hidden="true"></span>
-      <p>HOW IT WORKS</p>
-      <ol>
-        <li><b>01</b><span>上传完整作品包</span></li>
-        <li><b>02</b><span>在隔离沙箱试玩</span></li>
-        <li><b>03</b><span>提交审核后公开</span></li>
-      </ol>
-      <small>每次编辑生成新版本，公开副本始终保持稳定。</small>
-    </div>
-
-    <div class="vibe-hero-orbit" aria-hidden="true">
-      <span></span><span></span><span></span>
-    </div>
-  </header>
-
-  <section class="vibe-catalog" aria-labelledby="vibeCatalogTitle">
-    <header class="vibe-catalog-header">
-      <div>
-        <p class="vibe-section-number">01 / DISCOVER</p>
-        <h2 id="vibeCatalogTitle">今天玩点什么？</h2>
-      </div>
-      <div class="vibe-filter-bar" role="search">
-        <label class="vibe-search">
-          <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
-          <span class="visually-hidden">搜索作品</span>
-          <input type="search" placeholder="搜索作品、作者或标签" data-vibe-search autocomplete="off">
-          <kbd>/</kbd>
-        </label>
-        <div class="vibe-filter-pills" aria-label="筛选作品">
-          <button type="button" class="is-active" data-vibe-filter="all">全部</button>
-          <button type="button" data-vibe-filter="featured"><i class="fas fa-sparkles" aria-hidden="true"></i>精品</button>
-          <button type="button" data-vibe-filter="builtin">官方示例</button>
-        </div>
       </div>
     </header>
 
     <div class="vibe-gallery-grid" data-vibe-grid>
       {% for project in projects %}
-      {{ project_card(project, loop.index0) }}
+      {{ project_card(project) }}
       {% endfor %}
     </div>
 
     <div class="vibe-empty-state" data-vibe-empty {% if projects %}hidden{% endif %}>
-      <span aria-hidden="true"><i></i><i></i><i></i></span>
-      <h3>{% if projects %}没有找到相符的作品{% else %}展厅正在布置中{% endif %}</h3>
-      <p>{% if projects %}换个关键词，或者回到全部作品看看。{% else %}第一个公开作品会在审核通过后出现在这里。{% endif %}</p>
+      <i class="fas fa-shapes" aria-hidden="true"></i>
+      <h2>{% if projects %}没有找到相符的作品{% else %}还没有作品{% endif %}</h2>
+      <p>{% if projects %}换个关键词或筛选条件再试试。{% else %}审核通过的作品会出现在这里。{% endif %}</p>
     </div>
   </section>
 
-  <footer class="vibe-gallery-footer">
-    <p><span>VIBEHUB</span> · CODE SOMETHING WORTH PLAYING</p>
-    <a href="{{ url_for('vibehub.guide') }}">开发者接入手册 <i class="fas fa-arrow-right" aria-hidden="true"></i></a>
-  </footer>
+  {% if user %}
+  <dialog class="vibe-modal" data-vibe-project-modal aria-labelledby="vibeProjectModalTitle">
+    <section class="vibe-modal-panel">
+      <header>
+        <div>
+          <h2 id="vibeProjectModalTitle" data-vibe-modal-title>创建作品</h2>
+          <p data-vibe-modal-description>上传一个完整的 VibeHub ZIP 程序包。</p>
+        </div>
+        <button class="vibe-modal-close" type="button" data-vibe-close-modal aria-label="关闭">
+          <i class="fas fa-xmark" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <form data-vibe-project-form enctype="multipart/form-data">
+        <label class="vibe-form-field">
+          <span>游戏名称</span>
+          <input name="title" required maxlength="120" autocomplete="off" placeholder="给作品起个名字">
+        </label>
+
+        <label class="vibe-package-field" data-vibe-dropzone>
+          <input type="file" name="package" accept=".zip,application/zip">
+          <i class="fas fa-file-zipper" aria-hidden="true"></i>
+          <span>
+            <strong data-vibe-file-label>选择 ZIP 程序包</strong>
+            <small data-vibe-file-help>必须包含 Dockerfile 与 vibehub.json</small>
+          </span>
+          <b>选择文件</b>
+        </label>
+
+        <p class="vibe-form-status" data-vibe-form-status aria-live="polite"></p>
+        <footer>
+          <button class="vibe-modal-secondary" type="button" data-vibe-close-modal>取消</button>
+          <button class="vibe-modal-primary" type="submit" data-vibe-submit-project>创建并提交审核</button>
+        </footer>
+      </form>
+    </section>
+  </dialog>
+
+  {% if user.is_admin == 1 %}
+  <dialog class="vibe-modal" data-vibe-approve-modal aria-labelledby="vibeApproveTitle" aria-describedby="vibeApproveDescription">
+    <section class="vibe-modal-panel vibe-modal-panel--confirm">
+      <span class="vibe-confirm-icon" aria-hidden="true"><i class="fas fa-check"></i></span>
+      <h2 id="vibeApproveTitle">审核通过这个作品？</h2>
+      <p id="vibeApproveDescription" data-vibe-approve-description>通过后，当前待审版本会立即成为所有用户看到的公开版本。</p>
+      <p class="vibe-form-status" data-vibe-approve-status aria-live="polite"></p>
+      <footer>
+        <button class="vibe-modal-secondary" type="button" data-vibe-close-approve>取消</button>
+        <button class="vibe-modal-primary" type="button" data-vibe-confirm-approve>确认通过</button>
+      </footer>
+    </section>
+  </dialog>
+  {% endif %}
+  {% endif %}
 </div>
 {% endblock %}
 {% block scripts %}

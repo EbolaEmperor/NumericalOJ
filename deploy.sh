@@ -813,15 +813,14 @@ ln -s "$arc_candidate_target" "$ARC_CURRENT_SET_TEMP"
 mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"
 rm -f -- "$ARC_RESULT_FILE"
 
-phase='同步 VibeHub 内置作品'
-"$CANDIDATE_PYTHON" -B deploy/sync_vibehub_builtins.py \
+"$CANDIDATE_PYTHON" scripts/init_db_schema.py
+
+phase='种入 VibeHub 示例作品'
+"$CANDIDATE_PYTHON" -B deploy/seed_vibehub_examples.py \
   --repository-root "$ROOT_DIR" \
-  --source-root "$ROOT_DIR/vibehub_examples" \
   --upload-root "$ROOT_DIR/uploads/vibehub" \
   --arc-set "$ARC_CURRENT_SET"
 
-phase='切换运行环境并更新数据库结构'
-"$CANDIDATE_PYTHON" scripts/init_db_schema.py
 "$CANDIDATE_PYTHON" scripts/repository_storage_admin.py \
   cleanup-expired-uploads --apply --confirm-expired-staging-delete
 "$CANDIDATE_PYTHON" scripts/repository_storage_admin.py doctor
@@ -927,12 +926,6 @@ phase='确认数据库回滚点状态'
   --plan "$backup_plan"
 restart_started=0
 
-phase='清理旧 VibeHub 内置作品'
-if ! "$CANDIDATE_PYTHON" -B deploy/sync_vibehub_builtins.py \
-    --upload-root "$ROOT_DIR/uploads/vibehub" \
-    --finalize-only; then
-  printf '警告：旧 VibeHub 内置 release 清理失败，已保留供人工检查。\n' >&2
-fi
 vibehub_oci_prune_args=(
   --output-root "$VIBEHUB_BASE_OCI_LAYOUT_ROOT"
 )

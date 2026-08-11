@@ -9,7 +9,6 @@ import secrets
 
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.vibehub import quotas, storage
-from oj_modules.vibehub.builtins import get_builtin_project, list_builtin_projects
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
@@ -63,7 +62,7 @@ class VibeHubPermissionError(VibeHubError):
 
 _PROJECT_SELECT = """
 SELECT
-    p.id, p.slug, p.owner_id, p.project_kind,
+    p.id, p.slug, p.owner_id,
     p.latest_version_id, p.public_version_id, p.review_version_id,
     p.last_reviewed_version_id,
     p.featured_status, p.is_featured, p.featured_requested_at,
@@ -244,8 +243,6 @@ def _requested_slug(value=None) -> str:
     slug = str(value).strip().lower()
     if not SLUG_RE.fullmatch(slug):
         raise VibeHubError("slug 只能包含小写字母、数字和连字符，长度为 3–63")
-    if get_builtin_project(slug):
-        raise VibeHubError("该 slug 为系统内置作品保留")
     return slug
 
 
@@ -311,8 +308,6 @@ def _serialize_project(row, *, audience: str, include_workflow=False) -> dict:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "review_requested_at": row.get("review_requested_at"),
-        "project_kind": row.get("project_kind") or "container",
-        "builtin_entrypoint": None,
         "play_url": play_url,
     }
     if audience == "public" and not include_workflow:
@@ -328,7 +323,7 @@ def _fetch_project_row(cursor, slug: str):
 def _fetch_core_for_update(cursor, slug: str):
     cursor.execute(
         """
-        SELECT id, slug, owner_id, project_kind, latest_version_id,
+        SELECT id, slug, owner_id, latest_version_id,
                public_version_id, review_version_id, last_reviewed_version_id,
                featured_status, is_featured
         FROM vibehub_projects
@@ -456,7 +451,7 @@ def _lock_owner_snapshot_gc_states(cursor, owner_id: int) -> list[dict]:
         """
         SELECT id, slug, latest_version_id, public_version_id, review_version_id
         FROM vibehub_projects
-        WHERE owner_id = %s AND project_kind = 'container'
+        WHERE owner_id = %s
         ORDER BY id
         FOR UPDATE
         """,
@@ -498,7 +493,7 @@ def _lock_owner_snapshot_gc_states(cursor, owner_id: int) -> list[dict]:
             SELECT v.project_id, v.id, v.version_number
             FROM vibehub_versions v
             INNER JOIN vibehub_projects p ON p.id = v.project_id
-            WHERE p.owner_id = %s AND p.project_kind = 'container'
+            WHERE p.owner_id = %s
             ORDER BY v.project_id, v.version_number
             FOR UPDATE
             """,
@@ -612,8 +607,6 @@ def preflight_upload_project(actor, slug: str) -> None:
 
     _actor_id(actor)
     normalized_slug = str(slug or "").strip().lower()
-    if get_builtin_project(normalized_slug):
-        raise VibeHubPermissionError("内置作品不能通过用户上传修改")
     if not SLUG_RE.fullmatch(normalized_slug):
         raise VibeHubNotFoundError()
     conn = get_db_connection()
@@ -621,7 +614,7 @@ def preflight_upload_project(actor, slug: str) -> None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT p.owner_id, p.project_kind,
+                SELECT p.owner_id,
                        (SELECT COUNT(*)
                         FROM vibehub_versions v
                         WHERE v.project_id = p.id) AS version_count
@@ -634,8 +627,6 @@ def preflight_upload_project(actor, slug: str) -> None:
         if not project:
             raise VibeHubNotFoundError()
         _require_owner(project, actor)
-        if project.get("project_kind") != "container":
-            raise VibeHubPermissionError("内置作品不能通过用户上传修改")
         try:
             version_count = int(project["version_count"])
         except (KeyError, TypeError, ValueError) as exc:
@@ -659,12 +650,10 @@ def preflight_upload_project(actor, slug: str) -> None:
 
 
 def preflight_owned_project(actor, slug: str) -> None:
-    """进入不创建新版本的存储变更前，只预检作者与作品类型。"""
+    """进入不创建新版本的存储变更前预检作者。"""
 
     _actor_id(actor)
     normalized_slug = str(slug or "").strip().lower()
-    if get_builtin_project(normalized_slug):
-        raise VibeHubPermissionError("内置作品不能进入用户发布流程")
     if not SLUG_RE.fullmatch(normalized_slug):
         raise VibeHubNotFoundError()
     conn = get_db_connection()
@@ -672,7 +661,7 @@ def preflight_owned_project(actor, slug: str) -> None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT owner_id, project_kind
+                SELECT owner_id
                 FROM vibehub_projects
                 WHERE slug = %s
                 """,
@@ -682,8 +671,6 @@ def preflight_owned_project(actor, slug: str) -> None:
         if not project:
             raise VibeHubNotFoundError()
         _require_owner(project, actor)
-        if project.get("project_kind") != "container":
-            raise VibeHubPermissionError("内置作品不能进入用户发布流程")
     finally:
         conn.close()
 
@@ -758,31 +745,103 @@ def _insert_version(
     return int(cursor.lastrowid)
 
 
-def list_public_projects(*, limit=None) -> list[dict]:
+def _point_latest_version(
+    cursor,
+    *,
+    project_id: int,
+    version_id: int,
+    previous_review_id=None,
+    submit_for_review=False,
+):
+    """在当前项目事务内切换 latest，并按需原子替换待审版本。"""
+
+    if submit_for_review and previous_review_id and int(previous_review_id) != version_id:
+        cursor.execute(
+            """UPDATE vibehub_versions SET review_status = 'draft',
+            review_requested_at = NULL WHERE id = %s AND review_status = 'pending'""",
+            (previous_review_id,),
+        )
+    if submit_for_review:
+        cursor.execute(
+            """UPDATE vibehub_versions SET review_status = 'pending',
+            review_requested_at = CURRENT_TIMESTAMP WHERE id = %s""",
+            (version_id,),
+        )
+    review_sql = "review_version_id = %s, " if submit_for_review else ""
+    params = (version_id, version_id, project_id) if submit_for_review else (
+        version_id, project_id,
+    )
+    cursor.execute(
+        f"""UPDATE vibehub_projects SET latest_version_id = %s, {review_sql}
+        updated_at = CURRENT_TIMESTAMP WHERE id = %s""",
+        params,
+    )
+    return version_id if submit_for_review else previous_review_id
+
+
+def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
+    admin = _is_admin(actor)
+    if admin:
+        condition = "p.public_version_id IS NOT NULL OR p.owner_id = %s"
+        condition += " OR (p.review_version_id IS NOT NULL AND rv.review_status = 'pending')"
+        order = "COALESCE(rv.review_requested_at, pv.reviewed_at, p.updated_at)"
+        params = (_actor_id(actor),)
+    elif actor:
+        condition = "p.public_version_id IS NOT NULL OR p.owner_id = %s"
+        order = (
+            "CASE WHEN p.owner_id = %s "
+            "THEN COALESCE(rv.review_requested_at, p.updated_at, pv.reviewed_at, p.created_at) "
+            "ELSE COALESCE(pv.reviewed_at, p.created_at) END"
+        )
+        actor_id = _actor_id(actor)
+        params = (actor_id, actor_id)
+    else:
+        condition = "p.public_version_id IS NOT NULL"
+        order = "COALESCE(pv.reviewed_at, p.created_at)"
+        params = ()
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
                 _PROJECT_SELECT
-                + " WHERE p.public_version_id IS NOT NULL"
-                + " ORDER BY p.is_featured DESC,"
-                + " COALESCE(pv.reviewed_at, p.created_at) DESC"
+                + f" WHERE ({condition}) ORDER BY p.is_featured DESC,"
+                + f" {order} DESC",
+                params,
             )
-            projects = [
-                _serialize_project(row, audience="public")
-                for row in (cursor.fetchall() or [])
-            ]
+            projects = []
+            for row in cursor.fetchall() or []:
+                is_mine = _owns(row, actor)
+                is_review = admin and row.get("review_review_status") == "pending"
+                audience = "review" if is_review else ("latest" if is_mine else "public")
+                project = _serialize_project(row, audience=audience)
+                pending = is_review or is_mine and (
+                    row.get("latest_version_id") != row.get("public_version_id")
+                )
+                if gallery:
+                    project.update(
+                        is_mine=is_mine, is_pending=bool(pending),
+                        can_edit=is_mine, can_approve=is_review,
+                    )
+                projects.append(project)
     finally:
         conn.close()
-    projects = [
-        _without_private_workflow(project) for project in list_builtin_projects()
-    ] + projects
+
     if limit is not None:
         try:
             projects = projects[: max(0, min(int(limit), 500))]
         except (TypeError, ValueError):
             pass
     return projects
+
+
+def list_public_projects(*, limit=None) -> list[dict]:
+    return _list_projects(limit=limit)
+
+
+def list_gallery_projects(actor=None) -> list[dict]:
+    """公开作品加本人 latest；管理员额外看到 pending review。"""
+    return _list_projects(actor=actor, gallery=True)
 
 
 def list_user_projects(actor) -> list[dict]:
@@ -804,11 +863,6 @@ def list_user_projects(actor) -> list[dict]:
 
 
 def get_project(slug: str, *, actor=None, audience=None) -> dict:
-    builtin = get_builtin_project(slug)
-    if builtin:
-        if audience not in (None, "public"):
-            raise VibeHubPermissionError("内置作品没有私有草稿")
-        return _without_private_workflow(builtin)
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -833,15 +887,15 @@ def get_project(slug: str, *, actor=None, audience=None) -> dict:
             return _serialize_project(
                 row,
                 audience=selected,
-                # 作者在公开详情页需要看到“另有开发版本”等管理提示；管理员
-                # 对他人作品的普通 public 视图仍必须与其他访客完全相同。
+                # 作者显式读取 public 投影时需要看到开发版本管理提示；管理员
+                # 对他人作品的 public 投影仍必须与其他访客完全相同。
                 include_workflow=selected == "public" and is_owner,
             )
     finally:
         conn.close()
 
 
-def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
+def create_project(actor, upload, metadata=None, *, upload_root=None, submit_for_review=False) -> dict:
     actor_id = _actor_id(actor)
     metadata = dict(metadata or {})
     slug = _requested_slug(metadata.pop("slug", None))
@@ -862,8 +916,8 @@ def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
                         )
                     cursor.execute(
                         """
-                        INSERT INTO vibehub_projects (slug, owner_id, project_kind)
-                        VALUES (%s, %s, 'container')
+                        INSERT INTO vibehub_projects (slug, owner_id)
+                        VALUES (%s, %s)
                         """,
                         (slug, actor_id),
                     )
@@ -927,9 +981,11 @@ def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
                         version_id=version_id,
                         upload_root=upload_root,
                     )
-                    cursor.execute(
-                        "UPDATE vibehub_projects SET latest_version_id = %s WHERE id = %s",
-                        (version_id, project_id),
+                    _point_latest_version(
+                        cursor,
+                        project_id=project_id,
+                        version_id=version_id,
+                        submit_for_review=submit_for_review,
                     )
                     row = _fetch_project_row(cursor, slug)
                 conn.commit()
@@ -976,6 +1032,7 @@ def _create_next_version(
     *,
     upload=None,
     upload_root=None,
+    submit_for_review=False,
 ) -> dict:
     actor_id = _actor_id(actor)
     normalized_slug = str(slug or "").strip().lower()
@@ -994,8 +1051,6 @@ def _create_next_version(
                     # 上传内容在此之后才会保存和解压，未授权请求不会
                     # 消耗宿主磁盘、CPU 或触发用户包解析。
                     _require_owner(project, actor)
-                    if project.get("project_kind") != "container":
-                        raise VibeHubPermissionError("内置作品不能通过用户上传修改")
                     owner_slugs = _lock_owner_and_list_slugs(cursor, actor_id)
                     version_count = _lock_and_count_versions(
                         cursor,
@@ -1151,13 +1206,12 @@ def _create_next_version(
                         version_id=version_id,
                         upload_root=upload_root,
                     )
-                    cursor.execute(
-                        """
-                        UPDATE vibehub_projects
-                        SET latest_version_id = %s, updated_at = CURRENT_TIMESTAMP
-                        WHERE id = %s
-                        """,
-                        (version_id, project["id"]),
+                    review_version_id = _point_latest_version(
+                        cursor,
+                        project_id=int(project["id"]),
+                        version_id=version_id,
+                        previous_review_id=project.get("review_version_id"),
+                        submit_for_review=submit_for_review,
                     )
                     row = _fetch_project_row(cursor, normalized_slug)
                     known_versions, live_versions = _snapshot_sets(
@@ -1165,7 +1219,7 @@ def _create_next_version(
                         (
                             version_id,
                             project.get("public_version_id"),
-                            project.get("review_version_id"),
+                            review_version_id,
                         ),
                     )
                 conn.commit()
@@ -1204,23 +1258,23 @@ def _create_next_version(
         conn.close()
 
 
-def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=None) -> dict:
+def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=None,
+                       submit_for_review=False) -> dict:
     return _create_next_version(
-        actor,
-        slug,
-        metadata or {},
-        upload=upload,
-        upload_root=upload_root,
+        actor, slug, metadata or {}, upload=upload, upload_root=upload_root,
+        submit_for_review=submit_for_review,
     )
 
 
-def edit_project(actor, slug: str, metadata, *, upload_root=None) -> dict:
+def edit_project(actor, slug: str, metadata, *, upload_root=None,
+                 submit_for_review=False) -> dict:
     if not isinstance(metadata, dict) or not any(
         key in metadata for key in ("title", "summary", "description", "tags", "cover_image")
     ):
         raise VibeHubError("没有可更新的作品字段")
     return _create_next_version(
         actor, slug, metadata, upload=None, upload_root=upload_root,
+        submit_for_review=submit_for_review,
     )
 
 
@@ -1374,6 +1428,7 @@ def review_submission(
     decision: str,
     *,
     note="",
+    expected_version=None,
     upload_root=None,
 ) -> dict:
     _require_admin(actor)
@@ -1406,6 +1461,17 @@ def review_submission(
                             status_code=409,
                             code="review_stale",
                         )
+                    if expected_version not in (None, ""):
+                        try:
+                            expected_number = int(expected_version)
+                        except (TypeError, ValueError) as exc:
+                            raise VibeHubError("expected_version 必须是整数") from exc
+                        if expected_number != int(version["version_number"]):
+                            raise VibeHubError(
+                                "待审核版本已经更新，请刷新后重新确认",
+                                status_code=409,
+                                code="review_stale",
+                            )
                     rejected_response = None
                     if decision == "reject":
                         rejected_response = _serialize_project(
@@ -1622,31 +1688,6 @@ def review_featured(actor, slug: str, decision: str, *, note="") -> dict:
 
 def resolve_project_package(slug: str, *, audience="public", actor=None, upload_root=None) -> dict:
     """为运行时解析已授权的不可变作品包目录。"""
-    builtin = get_builtin_project(slug)
-    if builtin:
-        if audience != "public":
-            raise VibeHubPermissionError("内置作品只有公开版本")
-        try:
-            deployment = storage.resolve_builtin_deployment(
-                builtin["slug"], upload_root=upload_root,
-            )
-            manifest = storage.validate_manifest(Path(deployment["package_dir"]))
-        except (OSError, RuntimeError, storage.PackageValidationError) as exc:
-            raise VibeHubError(
-                "内置作品尚未完成安全部署",
-                status_code=503,
-                code="builtin_not_deployed",
-            ) from exc
-        return {
-            "project_id": int(builtin["id"]),
-            "slug": builtin["slug"],
-            "version_id": int(builtin["id"]),
-            "version": int(builtin["public_version"]),
-            "package_dir": Path(deployment["package_dir"]),
-            "package_sha256": deployment["package_sha256"],
-            "manifest": manifest,
-            "featured": bool(builtin.get("is_featured")),
-        }
     if audience not in {"public", "latest", "review"}:
         raise VibeHubError("未知的作品包视图")
     conn = get_db_connection()

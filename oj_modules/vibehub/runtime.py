@@ -2,8 +2,8 @@
 
 作品容器没有网络命名空间中的可用接口，也不发布端口。应用只允许在容器内有界
 ``/run/vibehub`` tmpfs 中创建 ``app.sock``，宿主通过受信任的 ``docker exec`` relay
-转发经过净化和限额的 HTTP 请求，不挂载任何宿主可写目录。根文件系统始终只读；
-20/40 GiB 是完整不可变镜像预算，不是可持久写盘。
+转发经过净化和限额的 HTTP 请求。容器根层可写但随实例销毁；平台只把按数据库
+project id 与通道隔离的受管 Docker volume 挂到 ``/data``，作品不能选择宿主路径。
 
 运行状态位于权限为 0700 的宿主目录，并用 ``flock`` 只串行化短暂的 state
 预留与 CAS 提交。Docker start/stop、健康探测等不可信 I/O 全部在锁外执行，避免一个
@@ -47,6 +47,8 @@ MANAGED_CONTAINER_LABEL = "com.numericaloj.vibehub.managed"
 MANAGER_SCOPE_LABEL = "com.numericaloj.vibehub.scope"
 RUNTIME_ID_LABEL = "com.numericaloj.vibehub.runtime-id"
 SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
+MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
+DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
 
 DEFAULT_BASE_IMAGE = "numericaloj-vibehub-runtime:1"
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "tmp" / "vibehub_runtime"
@@ -63,6 +65,8 @@ STANDARD_CPUS = "2"
 FEATURED_CPUS = "4"
 STANDARD_PIDS = 256
 FEATURED_PIDS = 512
+STANDARD_WRITABLE_BYTES = 4 * GIB
+FEATURED_WRITABLE_BYTES = 8 * GIB
 
 DEFAULT_LEASE_TTL_SECONDS = 90.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
@@ -139,6 +143,12 @@ _IMAGE_REFERENCE_RE = re.compile(
 _PROJECT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$")
 _CHANNEL_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _RUNTIME_ID_RE = re.compile(r"^[0-9a-f]{40}$")
+_STORAGE_KEY_RE = re.compile(
+    r"^project-(?P<project_id>[1-9][0-9]{0,18})-(?P<channel>public|latest|review)$"
+)
+_DATA_VOLUME_RE = re.compile(
+    r"^numoj-vh-data-[0-9a-f]{16}-project-[1-9][0-9]{0,18}-(?:public|latest|review)$"
+)
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _OCI_RUNTIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
@@ -245,6 +255,7 @@ class RuntimeLimits:
     cpus: str
     pids: int
     tmpfs_bytes: int
+    writable_bytes: int
 
 
 @dataclass(frozen=True)
@@ -460,6 +471,7 @@ def limits_for(featured: bool) -> RuntimeLimits:
             cpus=FEATURED_CPUS,
             pids=FEATURED_PIDS,
             tmpfs_bytes=512 * 1024 * 1024,
+            writable_bytes=FEATURED_WRITABLE_BYTES,
         )
     return RuntimeLimits(
         image_bytes=STANDARD_IMAGE_BYTES,
@@ -467,6 +479,7 @@ def limits_for(featured: bool) -> RuntimeLimits:
         cpus=STANDARD_CPUS,
         pids=STANDARD_PIDS,
         tmpfs_bytes=256 * 1024 * 1024,
+        writable_bytes=STANDARD_WRITABLE_BYTES,
     )
 
 
@@ -489,6 +502,16 @@ def _validate_channel(value: str) -> str:
     if not _CHANNEL_RE.fullmatch(channel):
         raise VibeHubLeaseError("VibeHub channel 无效")
     return channel
+
+
+def _validate_storage_key(value: str, *, channel: str) -> str:
+    key = str(value or "").strip().lower()
+    match = _STORAGE_KEY_RE.fullmatch(key)
+    if not match or match.group("channel") != channel:
+        raise VibeHubLeaseError(
+            "VibeHub storage_key 必须由真实 project id 与当前通道组成"
+        )
+    return key
 
 
 def _validate_proxy_root(value: str) -> str:
@@ -1300,6 +1323,63 @@ class DockerCLI:
             detail = f"{result.stdout}\n{result.stderr}".strip()
             raise VibeHubRuntimeError(f"VibeHub 容器启动失败：{detail[:1000]}")
 
+    def ensure_data_volume(
+        self,
+        name: str,
+        *,
+        scope: str,
+        storage_key: str,
+    ) -> None:
+        if not _DATA_VOLUME_RE.fullmatch(name):
+            raise VibeHubRuntimeError("VibeHub data volume 名称无效")
+        expected = {
+            MANAGED_DATA_VOLUME_LABEL: "1",
+            MANAGER_SCOPE_LABEL: scope,
+            DATA_STORAGE_KEY_LABEL: storage_key,
+        }
+        label_args: list[str] = []
+        for key, value in expected.items():
+            label_args.extend(["--label", f"{key}={value}"])
+        # create 对同名 volume 幂等；随后仍完整核验，避免复用异物。
+        created = self._run([
+            "docker", "volume", "create", "--driver", "local",
+            *label_args, name,
+        ], timeout=15)
+        if created.returncode != 0 or created.stdout.strip() != name:
+            raise VibeHubRuntimeError("无法创建受管 VibeHub data volume")
+        inspect = self._run([
+            "docker", "volume", "inspect", "--format", "{{json .}}", name,
+        ], timeout=15)
+        try:
+            payload = json.loads(inspect.stdout.strip())
+            labels = payload.get("Labels") or {}
+            options = payload.get("Options") or {}
+        except (AttributeError, json.JSONDecodeError) as exc:
+            raise VibeHubRuntimeError("Docker data volume inspect 返回无效数据") from exc
+        if (
+            inspect.returncode != 0
+            or payload.get("Name") != name
+            or payload.get("Driver") != "local"
+            or payload.get("Scope") != "local"
+            or labels != expected
+            or options
+        ):
+            raise VibeHubRuntimeError("VibeHub data volume 身份或驱动不可信")
+
+    def verify_data_writable(self, container_name: str) -> None:
+        probe = "/data/.vibehub-write-probe"
+        script = (
+            "import os; p=" + repr(probe)
+            + "; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
+            " os.close(fd); os.unlink(p)"
+        )
+        result = self._run([
+            "docker", "exec", "--user", "65532:65532", container_name,
+            "/usr/local/bin/python", "-I", "-S", "-c", script,
+        ], timeout=10)
+        if result.returncode != 0:
+            raise VibeHubRuntimeError("受管 VibeHub /data 不可由作品用户写入")
+
     def remove_container(self, name: str) -> None:
         last_detail = ""
         for _attempt in range(2):
@@ -2081,9 +2161,24 @@ class VibeHubRuntimeManager:
             ):
                 yield
 
-    def _runtime_id(self, project_key: str, channel: str, image_id: str, featured: bool) -> str:
-        payload = f"{project_key}\0{channel}\0{image_id}\0{int(featured)}"
+    def _runtime_id(
+        self,
+        project_key: str,
+        channel: str,
+        image_id: str,
+        featured: bool,
+        storage_key: str,
+    ) -> str:
+        payload = (
+            f"{project_key}\0{channel}\0{image_id}\0{int(featured)}\0{storage_key}"
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:40]
+
+    def _data_volume_name(self, storage_key: str) -> str:
+        name = f"numoj-vh-data-{self.scope}-{storage_key}"
+        if not _DATA_VOLUME_RE.fullmatch(name):
+            raise VibeHubRuntimeError("VibeHub data volume 名称无效")
+        return name
 
     def _container_name(self, runtime_id: str) -> str:
         if not _RUNTIME_ID_RE.fullmatch(runtime_id):
@@ -2096,7 +2191,10 @@ class VibeHubRuntimeManager:
         runtime_id: str,
         image_id: str,
         featured: bool,
+        data_volume: str,
     ) -> list[str]:
+        if not _DATA_VOLUME_RE.fullmatch(data_volume):
+            raise VibeHubRuntimeError("VibeHub data volume 名称无效")
         limits = limits_for(featured)
         name = self._container_name(runtime_id)
         args = [
@@ -2107,7 +2205,6 @@ class VibeHubRuntimeManager:
             "--label", f"{MANAGER_SCOPE_LABEL}={self.scope}",
             "--label", f"{RUNTIME_ID_LABEL}={runtime_id}",
             "--network", "none",
-            "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges=true",
             "--ipc", "none",
@@ -2121,19 +2218,21 @@ class VibeHubRuntimeManager:
             "--cpu-period", "100000",
             "--cpu-quota", str(int(float(limits.cpus) * 100000)),
             "--pids-limit", str(limits.pids),
+            "--storage-opt", f"size={limits.writable_bytes}",
             "--ulimit", f"nproc={limits.pids}:{limits.pids}",
             "--ulimit", "nofile=1024:1024",
             "--ulimit", "core=0:0",
             "--tmpfs", (
                 f"/tmp:rw,nosuid,nodev,noexec,size={limits.tmpfs_bytes},mode=1777"
             ),
+            "--mount", f"type=volume,source={data_volume},target=/data",
             "--tmpfs", (
                 "/run/vibehub:rw,nosuid,nodev,noexec,"
                 f"size={SOCKET_TMPFS_BYTES},mode=0770,uid=65532,gid=65532"
             ),
             "--env", f"VIBEHUB_SOCKET={APP_SOCKET_PATH}",
             "--env", f"VIBEHUB_HEALTH_PATH={HEALTH_PATH}",
-            "--env", "HOME=/tmp/home",
+            "--env", "HOME=/data/home",
             "--env", "TMPDIR=/tmp",
             # 作品输出可能包含用户源码、答案或凭据，不得由 Docker 持久写入
             # 宿主日志。平台只记录受控的生命周期与代理元数据。
@@ -2218,15 +2317,22 @@ class VibeHubRuntimeManager:
         channel: str,
         image: ImageInfo,
         featured: bool,
+        storage_key: str,
     ) -> dict:
         name = self._container_name(runtime_id)
+        data_volume = self._data_volume_name(storage_key)
+        self.docker.ensure_data_volume(
+            data_volume, scope=self.scope, storage_key=storage_key,
+        )
         self.docker.remove_container(name)
         try:
             self.docker.run_container(self._container_args(
                 runtime_id=runtime_id,
                 image_id=image.image_id,
                 featured=featured,
+                data_volume=data_volume,
             ))
+            self.docker.verify_data_writable(name)
             self._wait_ready(name)
         except Exception:
             self.docker.remove_container(name)
@@ -2561,11 +2667,15 @@ class VibeHubRuntimeManager:
         featured: bool = False,
         channel: str = "public",
         base_path: str = "/api/vibehub/runtime",
+        storage_key: str,
     ) -> RuntimeLease:
         """取得短期租约；首次访问按需启动，同一版本的玩家共享一个容器。"""
 
         key = _validate_project_key(project_key)
         selected_channel = _validate_channel(channel)
+        selected_storage_key = _validate_storage_key(
+            storage_key, channel=selected_channel,
+        )
         proxy_root = _validate_proxy_root(base_path)
         selected_image_ref = _validate_image_reference(
             image_ref or image_reference_for(key, channel=selected_channel)
@@ -2583,7 +2693,11 @@ class VibeHubRuntimeManager:
                 featured=bool(featured),
             )
             runtime_id = self._runtime_id(
-                key, selected_channel, image.image_id, bool(featured)
+                key,
+                selected_channel,
+                image.image_id,
+                bool(featured),
+                selected_storage_key,
             )
             reservation_id = ""
             with self._locked_state() as state:
@@ -2625,6 +2739,7 @@ class VibeHubRuntimeManager:
                 channel=selected_channel,
                 image=image,
                 featured=bool(featured),
+                storage_key=selected_storage_key,
             )
         except Exception:
             action = None

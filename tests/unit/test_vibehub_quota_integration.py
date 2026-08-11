@@ -99,7 +99,6 @@ def _core_project(*, owner_id=7):
         "id": 3,
         "slug": "demo-vibe",
         "owner_id": owner_id,
-        "project_kind": "container",
         "latest_version_id": 12,
         "public_version_id": None,
         "review_version_id": None,

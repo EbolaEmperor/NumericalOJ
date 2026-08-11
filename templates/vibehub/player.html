@@ -8,12 +8,10 @@
 {% block content_container_class %}container-fluid p-0 vibehub-player-page{% endblock %}
 {% block flash_messages %}{% endblock %}
 {% block content %}
-{% set is_builtin = project.project_kind == 'builtin' %}
 <div
   class="vibe-player"
   data-vibehub-player
   data-project-slug="{{ project.slug }}"
-  data-project-kind="{{ project.project_kind }}"
   data-acquire-url="{{ acquire_url|default('', true) }}"
   data-heartbeat-url-template="{{ heartbeat_url_template|default('', true) }}"
   data-release-url-template="{{ release_url_template|default('', true) }}"
@@ -25,7 +23,7 @@
     </a>
     <div class="vibe-player-identity">
       <i class="fas fa-cube" aria-hidden="true"></i>
-      <span><small>VIBEHUB / {{ 'BUILT-IN SANDBOX' if is_builtin else 'SANDBOX' }}</small><strong>{{ project.title }}</strong></span>
+      <span><small>VIBEHUB / SANDBOX</small><strong>{{ project.title }}</strong></span>
     </div>
     <p class="vibe-player-state" data-vibe-player-state>
       <i aria-hidden="true"></i><span>正在申请运行资源</span>

@@ -51,7 +51,6 @@ _COVER_MIME_TYPES = {
     "WEBP": "image/webp",
 }
 _STORAGE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_DIRECTORY_RE = re.compile(r"^v([1-9][0-9]*)$")
 _CLONE_STAGING_RE = re.compile(r"^\.v([1-9][0-9]*)\.clone-([0-9a-f]{32})$")
 _RETIREMENT_MARKER_RE = re.compile(r"^v([1-9][0-9]*)\.json$")
@@ -62,7 +61,6 @@ _RETIREMENT_MARKER_SCHEMA_VERSION = 2
 SNAPSHOT_RETIREMENT_GRACE_SECONDS = 60 * 60
 CRASH_ORPHAN_GRACE_SECONDS = 60 * 60
 CRASH_ORPHAN_MARKER_DIRECTORY = ".orphan-gc"
-BUILTIN_STORAGE_SLUGS = frozenset({"circle-cat", "arc-agi-3"})
 _CRASH_ORPHAN_MARKER_SCHEMA_VERSION = 2
 _CRASH_ORPHAN_MARKER_RE = re.compile(r"^([0-9a-f]{64})\.json$")
 _CRASH_ORPHAN_TEMP_RE = re.compile(r"^\.marker-([0-9a-f]{32})\.tmp$")
@@ -731,8 +729,6 @@ def _crash_orphan_key(
     clone: str | None = None,
 ) -> str:
     safe_slug = _safe_slug(slug)
-    if safe_slug in BUILTIN_STORAGE_SLUGS:
-        raise SnapshotReconciliationError("VibeHub 内置作品不能成为崩溃孤儿")
     if kind == "project" and version is None and clone is None:
         return f"project:{safe_slug}"
     if (
@@ -1423,7 +1419,7 @@ def reclaim_expired_crash_orphans(
             slug = _safe_slug(raw_slug)
         except ValueError as exc:
             raise SnapshotReconciliationError("VibeHub 崩溃孤儿 DB slug 无效") from exc
-        if slug in BUILTIN_STORAGE_SLUGS or slug in normalized:
+        if slug in normalized:
             raise SnapshotReconciliationError("VibeHub 崩溃孤儿 DB 作品事实冲突")
         known = _normalize_version_set(
             state.get("known_versions", ()),
@@ -1469,14 +1465,6 @@ def reclaim_expired_crash_orphans(
             continue
         if name == CRASH_ORPHAN_MARKER_DIRECTORY:
             # marker 在收集完整候选后统一审计。
-            continue
-        if name in BUILTIN_STORAGE_SLUGS:
-            _managed_directory_identity(
-                path,
-                root_device=root_device,
-                label=f"VibeHub 内置作品 {name}",
-                scan_tree=False,
-            )
             continue
         if not _STORAGE_SLUG_RE.fullmatch(name):
             raise SnapshotReconciliationError(f"VibeHub 存储根包含未知入口：{name}")
@@ -1811,48 +1799,7 @@ def resolve_snapshot_app(slug: str, version_number: int, *, upload_root=None) ->
     return path
 
 
-def resolve_builtin_deployment(slug: str, *, upload_root=None) -> dict:
-    """解析部署脚本原子切换的内置作品不可变安装包。"""
-    builtin_root = project_root(slug, upload_root=upload_root) / "builtin"
-    pointer_path = builtin_root / "current.json"
-    try:
-        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid VibeHub builtin pointer: {pointer_path}") from exc
-    release = payload.get("release") if isinstance(payload, dict) else None
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema_version") != 1
-        or payload.get("slug") != _safe_slug(slug)
-        or not isinstance(release, str)
-        or not _SHA256_RE.fullmatch(release)
-        or payload.get("package_sha256") != release
-        or not isinstance(payload.get("source_sha256"), str)
-        or not _SHA256_RE.fullmatch(payload["source_sha256"])
-    ):
-        raise RuntimeError(f"invalid VibeHub builtin pointer: {pointer_path}")
-    unresolved_release = builtin_root / "releases" / release
-    if unresolved_release.is_symlink():
-        raise RuntimeError(f"invalid VibeHub builtin release: {unresolved_release}")
-    release_root = unresolved_release.resolve()
-    allowed_root = (builtin_root / "releases").resolve()
-    try:
-        release_root.relative_to(allowed_root)
-    except ValueError as exc:
-        raise RuntimeError(f"invalid VibeHub builtin release: {release_root}") from exc
-    app_dir = release_root / "app"
-    if not app_dir.is_dir():
-        raise FileNotFoundError(f"VibeHub builtin app directory is missing: {app_dir}")
-    result = dict(payload)
-    result["package_dir"] = app_dir
-    result["release_dir"] = release_root
-    return result
-
-
 __all__ = [
-    "BUILTIN_STORAGE_SLUGS",
     "CRASH_ORPHAN_GRACE_SECONDS",
     "CRASH_ORPHAN_MARKER_DIRECTORY",
     "CrashOrphanGCResult",
@@ -1877,7 +1824,6 @@ __all__ = [
     "read_pointer",
     "processed_cover_path",
     "remove_version_snapshot",
-    "resolve_builtin_deployment",
     "resolve_snapshot_app",
     "restore_pointer",
     "validate_cover_image",

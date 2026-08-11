@@ -38,7 +38,7 @@
 
   <section class="vibe-review-queue" data-vibe-review-panel="release">
     {% for project in review_projects %}
-    <article class="vibe-review-card" data-review-card data-review-kind="release" data-project-slug="{{ project.slug }}">
+    <article class="vibe-review-card" data-review-card data-review-kind="release" data-project-slug="{{ project.slug }}" data-project-version="{{ project.submitted_version }}">
       <header class="vibe-review-card-head">
         <span class="vibe-review-serial">R-{{ "%03d"|format(loop.index) }}</span>
         <div>
@@ -50,7 +50,7 @@
       </header>
 
       <div class="vibe-review-card-body">
-        <section class="vibe-review-preview vibe-work-mark--{{ project.cover_kind|default('code', true) }}">
+        <section class="vibe-review-preview">
           {% if project.cover_url %}<img src="{{ project.cover_url }}" alt="{{ project.title }} 封面">{% else %}<i class="fas fa-cube" aria-hidden="true"></i>{% endif %}
           <a href="{{ project.play_url }}" target="_blank" rel="noopener"><i class="fas fa-play" aria-hidden="true"></i>在隔离容器中试玩</a>
         </section>
@@ -92,7 +92,7 @@
         <b class="vibe-featured-badge"><i class="fas fa-sparkles" aria-hidden="true"></i>2× RESOURCE</b>
       </header>
       <div class="vibe-review-card-body">
-        <section class="vibe-review-preview vibe-work-mark--{{ project.cover_kind|default('code', true) }}">
+        <section class="vibe-review-preview">
           {% if project.cover_url %}<img src="{{ project.cover_url }}" alt="{{ project.title }} 封面">{% else %}<i class="fas fa-sparkles" aria-hidden="true"></i>{% endif %}
           <a href="{{ project.play_url }}" target="_blank" rel="noopener"><i class="fas fa-play" aria-hidden="true"></i>试玩公开版本</a>
         </section>

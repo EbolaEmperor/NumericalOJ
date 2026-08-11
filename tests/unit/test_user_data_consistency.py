@@ -235,22 +235,6 @@ def test_rename_user_updates_all_known_identity_columns_atomically(monkeypatch):
     assert 'UPDATE users SET username=%s WHERE id=%s' in updates
 
 
-def test_rename_user_allows_absent_optional_table(monkeypatch):
-    cursor = _FakeCursor(
-        user={'id': 9, 'username': 'alice'},
-        schema_rows=_complete_rename_schema_rows(excluded_tables={'circle_cat_games'}),
-    )
-    conn = _FakeConnection(cursor)
-    monkeypatch.setattr(db_services, 'get_db_connection', lambda: conn)
-
-    db_services.rename_user(9, 'alice-new')
-
-    updates = [sql for sql, _params in cursor.calls if sql.startswith('UPDATE')]
-    assert not any('circle_cat_games' in sql for sql in updates)
-    assert conn.commit_count == 1
-    assert conn.rollback_count == 0
-
-
 def test_rename_user_exactly_replaces_json_and_legacy_matched_usernames(monkeypatch):
     cursor = _FakeCursor(
         user={'id': 9, 'username': 'alice'},

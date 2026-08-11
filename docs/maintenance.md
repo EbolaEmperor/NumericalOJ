@@ -197,10 +197,10 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、本地 socket 认证、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。MySQL 认证复用严格加载的部署配置，并通过位于私有 plans 目录、权限 `0600` 的短期 option file 交给提权后的客户端；凭据值不得进入 plan、manifest、argv、环境或输出，option file 无论成功失败都必须删除。sudo 交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
-6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，把 Git 跟踪的两个内置规范包同步到 `uploads/vibehub` 的新不可变 release 并原子切换指针。此时必须保留上一代 release。随后执行带独立前置检查的显式迁移和一次非破坏性结构同步，显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取该本地缓存，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
-7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理旧 VibeHub 内置 release、历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 latest/public/review tag 或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
+6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步。结构就绪后，仅在同名作品不存在时把 Git 跟踪的示例通过普通创建、发布和精品审核链路种入为 admin 的个人作品；已有 admin 作品不覆盖，slug 属于其他用户时失败关闭。随后显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程只读取普通作品版本内的离线数据，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
+7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 latest/public/review tag 或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
 
-`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。它还只管理 `uploads/vibehub/circle-cat/builtin` 与 `uploads/vibehub/arc-agi-3/builtin` 两个固定内置命名空间；不得触碰社区作品或用户版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
+`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。首次部署时，`vibehub_examples/` 会通过普通作品链路种入为 admin 的个人作品；同名 admin 作品此后完全由 UI 管理，后续部署不覆盖。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
 
 VibeHub 候选基础镜像在停服前完成静态供应链核验：只读证明生产专属 Buildx builder 是
 `docker-container` driver、全部节点为 running，且逐节点容器使用 `NetworkMode=none`；再将
@@ -214,6 +214,12 @@ stable tag 与 `.deploy/vibehub-base-oci/current` 才一起切到同一 engine I
 社区 VibeHub 作品及版本快照位于 Git 忽略的 `uploads/vibehub/`。数据库回滚点不会自动包含
 这些文件；运维必须用同一零写入窗口为该目录制作独立、可验证的快照，并把文件快照与数据库
 备份的 run-id 绑定。恢复时必须成对恢复，不能把新数据库与旧作品树（或反之）混用。
+作品运行数据位于 Docker 名称为
+`numoj-vh-data-<manager scope>-project-<数据库 id>-<通道>` 的受管 local volume；容器回收、
+镜像更新和普通存储 GC 都不会删除它。数据库备份同样不包含这些 volume。需要恢复作品运行状态时，
+必须在零写入窗口逐卷制作并校验快照，和数据库、`uploads/vibehub/` 使用同一个 run-id 成对恢复；
+禁止按 slug 猜测或把一个 project id 的卷挂给另一个项目。`docker volume prune` 会破坏这项持久性，
+生产运维不得对这些受管 volume 做宽泛清理。
 每个 Web worker 会幂等启动存储 GC daemon，启动后立即扫描，之后默认每 15 分钟运行。
 每轮先取得全局 `storage_mutation_lock`，再以 `FOR UPDATE` 锁定全部社区容器作品与版本
 live-set，最后调用存储层的 device/inode/ctime_ns 绑定退役快照回收和上传 staging 回收；数据库事务
@@ -222,12 +228,12 @@ live-set，最后调用存储层的 device/inode/ctime_ns 绑定退役快照回�
 install-before-commit 崩溃留下的 DB 未知 `vN`、clone 和无 DB 社区项目写入根级
 `.orphan-gc` marker，一小时后仍为同一 device/inode/ctime_ns 才回收；同路径目录被替换后
 即使文件系统复用了 inode，也必须重新开始宽限。旧格式 marker 只允许刷新，不允许直接删除。
-内置作品、控制锁和 `.staging` 不进入项目孤儿删除面。任一轮完整性审计、DB 或文件系统
+控制锁和 `.staging` 不进入项目孤儿删除面。任一轮完整性审计、DB 或文件系统
 操作失败都只告警并等待下一周期，不得终止 Web，也不得降级为未审计删除。
 
 部署专用 Python 辅助实现统一维护在 `deploy/`；日志、结构同步和停机恢复继续复用 `scripts/` 中的通用运维入口。`deploy.sh` 只做 Shell 流程编排，不允许 heredoc Python 或 `python -c`。数据库备份实现按兼容策略、APT、物理执行、路径安全、特权操作和状态编排分层；稳定入口是 `deploy/backup_database.py`，服务端兼容判断不得在 `policy.py` 之外复制。
 
-`.deploy/venvs/` 只使用两个轮换槽。数据库备份按物理产物、逻辑产物、计划与 manifest 分区；留存使用持久化单调 generation，而不是可能回拨的墙上时间，并始终保护本次 run。只有 Web/Celery 恢复且真实产物再次验证成功后，才保留最近 2 个成功部署回滚点并清理 VibeHub 旧内置 release；`pending`、`failed`、未知或旧格式产物永不自动删除。停服前失败可能留下候选 venv/镜像、日志目录、APT 或备份目录状态，但现有 Web/Celery 不会被停止；停服后失败则恢复部署前的 VibeHub stable 镜像标签，保留新旧内置 release，并让服务停止、现场留存。任何失败都不得触发机械回灌，应先判断 DDL 是否已提交，再选择向前修复或人工恢复。
+`.deploy/venvs/` 只使用两个轮换槽。数据库备份按物理产物、逻辑产物、计划与 manifest 分区；留存使用持久化单调 generation，而不是可能回拨的墙上时间，并始终保护本次 run。只有 Web/Celery 恢复且真实产物再次验证成功后，才保留最近 2 个成功部署回滚点；`pending`、`failed`、未知或旧格式产物永不自动删除。停服前失败可能留下候选 venv/镜像、日志目录、APT 或备份目录状态，但现有 Web/Celery 不会被停止；停服后失败则恢复部署前的 VibeHub stable 镜像标签，并让服务停止、现场留存。任何失败都不得触发机械回灌，应先判断 DDL 是否已提交，再选择向前修复或人工恢复。
 
 逻辑产物、计划和 manifest 只能由部署用户读取，物理产物只能由 root 读取。备份路径出现符号链接、属主、设备或 inode 漂移时必须 fail-closed；任何特权清理只能作用于身份已重新绑定并验证的受管备份根，禁止退化为对字符串路径直接执行 `sudo rm`。
 
