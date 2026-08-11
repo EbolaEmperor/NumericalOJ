@@ -7,7 +7,6 @@
   --rkv2-line: #e4e4e7;
   --rkv2-line-soft: #f4f4f5;
   --rkv2-orange: #ea580c;
-  --rkv2-orange-dark: #c2410c;
   --rkv2-orange-ink: #9a3412;
   --rkv2-orange-soft: #fff7ed;
   --rkv2-green: #16845b;
@@ -206,16 +205,6 @@
   color: var(--rkv2-ink-4);
   font-size: 9px;
   font-weight: 500;
-}
-
-.ranking-v2-detail [data-ranking-delta] {
-  margin-left: 6px;
-  color: var(--rkv2-green);
-  font: 700 9px/1 var(--rkv2-mono);
-}
-
-.ranking-v2-detail [data-ranking-delta].is-down {
-  color: var(--rkv2-red);
 }
 
 /* Matches */
@@ -834,20 +823,6 @@
   min-width: 0;
   align-items: center;
   gap: 7px;
-}
-
-.ranking-v2-detail .ranking-v2-update-slot:not([hidden]) {
-  display: flex;
-  min-height: 34px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 0 0 10px;
-  padding: 7px 10px;
-  border-left: 3px solid var(--rkv2-orange);
-  background: var(--rkv2-orange-soft);
-  color: var(--rkv2-orange-ink);
-  font-size: 9.5px;
 }
 
 .ranking-v2-detail .submissions-search {
@@ -1478,8 +1453,7 @@
   z-index: 8;
 }
 
-.ranking-v2-detail .bm-dd-panel,
-.ranking-v2-detail .bm-node-menu {
+.ranking-v2-detail .bm-dd-panel {
   position: absolute;
   z-index: 20;
   top: calc(100% + 5px);

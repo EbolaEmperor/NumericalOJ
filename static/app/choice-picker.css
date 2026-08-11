@@ -3,9 +3,7 @@
   --choice-ink-2: var(--cfg-ink-2, var(--numoj-ink-2, #3f3f46));
   --choice-ink-3: var(--cfg-ink-3, var(--numoj-ink-3, #71717a));
   --choice-ink-4: var(--cfg-ink-4, var(--numoj-ink-4, #a1a1aa));
-  --choice-line: var(--cfg-line, var(--numoj-line, #e4e4e7));
   --choice-soft: var(--cfg-line-soft, var(--numoj-line-soft, #f4f4f5));
-  --choice-brand: var(--cfg-orange, var(--numoj-brand, #ea580c));
   --choice-brand-ink: var(--cfg-orange-ink, var(--numoj-brand-ink, #9a3412));
   --choice-brand-soft: var(--cfg-orange-soft, var(--numoj-brand-soft, #fff7ed));
   --choice-success: var(--cfg-green, var(--numoj-success, #16845b));

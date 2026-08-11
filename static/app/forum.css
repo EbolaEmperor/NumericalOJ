@@ -1,7 +1,6 @@
 /* 讨论区：全站视觉语言下的高密度主从工作台。 */
 
 .forum-content-container {
-  --forum-bg: #f7f7f5;
   --forum-paper: #ffffff;
   --forum-ink: #18181b;
   --forum-ink-2: #3f3f46;
@@ -855,7 +854,6 @@
 
 .forum-markdown {
   --numoj-markdown-mono: var(--forum-mono);
-  --numoj-markdown-ink: var(--forum-ink);
   --numoj-markdown-muted: var(--forum-ink-3);
   --numoj-markdown-line: var(--forum-line);
   --numoj-markdown-soft: #fafaf8;

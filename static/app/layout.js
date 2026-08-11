@@ -158,11 +158,6 @@
     }
 
     bindAdaptiveFont(
-      '.layout-navbar',
-      '[data-problem-list-label="desktop"]',
-      window.matchMedia('(min-width: 992px)')
-    );
-    bindAdaptiveFont(
       '.layout-offcanvas-nav',
       '[data-problem-list-label="mobile"]',
       window.matchMedia('(max-width: 991.98px)')
