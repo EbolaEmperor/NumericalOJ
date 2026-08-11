@@ -25,7 +25,7 @@ import pytest
 OJ_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OJ_ROOT))
 
-import config  # noqa: E402
+from oj_modules import config  # noqa: E402
 from tests.environment_guard import (  # noqa: E402
     DestructiveTestTarget,
     UnsafeTestEnvironmentError,

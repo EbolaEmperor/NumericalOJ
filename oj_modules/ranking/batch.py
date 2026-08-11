@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import tempfile
 
-import config as _cfg
+from oj_modules import config as _cfg
 
 
 PLACEHOLDER = "<username>"

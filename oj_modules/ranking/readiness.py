@@ -2,7 +2,7 @@
 
 import os
 
-import config as _cfg
+from oj_modules import config as _cfg
 from oj_modules.ranking.agent_judge.db import (
     list_agent_judge_endpoints,
     list_competition_rules,

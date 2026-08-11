@@ -6,7 +6,7 @@ import os
 import tempfile
 import time
 
-from config import (
+from oj_modules.config import (
     LATEX_OCR_MAX_IMAGES_PER_REQUEST,
     LATEX_OCR_STREAM_EMIT_INTERVAL,
     LATEX_OCR_STREAM_EMIT_MIN_DELTA,

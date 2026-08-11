@@ -4,11 +4,11 @@ NumericalOJ 把配置分成两类：
 
 - `.env.tmpl` 只列出新部署必须明确填写的九项启动配置：`SECRET_KEY`、五项
   `MYSQL_*` 和三项 `REDIS_*`。
-- 本文列出的高级运行参数在 `config.py` 中有类型化默认值。只有需要覆盖默认行为时，
+- 本文列出的高级运行参数在 `oj_modules/config.py` 中有类型化默认值。只有需要覆盖默认行为时，
   才把同名键写入 `.env` 或进程环境；修改后需要重启对应 Web/Celery 进程。
 
 优先级为“进程环境变量 > `.env` > 代码默认值”。字符串使用 JSON 双引号，布尔值使用
-`true` / `false`，字符串列表使用 JSON 数组。未在本文和 `config.py` 中声明的键不会被
+`true` / `false`，字符串列表使用 JSON 数组。未在本文和 `oj_modules/config.py` 中声明的键不会被
 自动导出为应用配置。
 
 LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启动配置。它们只从
@@ -137,9 +137,9 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | --- | --- | --- | --- |
 | `VIBEHUB_RUNTIME_ROOT` | string | `tmp/vibehub_runtime` | 权限为 0700 的跨 worker 状态与锁目录；不会挂入作品容器。 |
 | `VIBEHUB_ALLOWED_BASE_IMAGES` | string[] | `["numericaloj-vibehub-runtime:1"]` | 唯一允许出现在用户 Dockerfile 外部 `FROM` 中、且必须已在本机预置的镜像。 |
-| `VIBEHUB_OCI_RUNTIME` | string/空 | 空 | 开发环境可为空；`NUMOJ_ENVIRONMENT=production` 时强制为 `runsc`。 |
-| `VIBEHUB_BUILD_BUILDER` | string/空 | 空 | 开发环境为空时兼容本机 builder；生产必须是预置的 VibeHub 专属 Buildx builder 名称。 |
-| `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | `false` | 设为 `true` 时拒绝空 builder；生产强制为 `true`。 |
+| `VIBEHUB_OCI_RUNTIME` | string/空 | 开发为空；生产 `runsc` | 正式部署自动使用 gVisor；只有覆盖默认行为时才需要写入环境。 |
+| `VIBEHUB_BUILD_BUILDER` | string/空 | 开发为空；生产 `numoj-vibehub` | 正式部署自动选择预置的 VibeHub 专属 Buildx builder。 |
+| `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | 开发 `false`；生产 `true` | 正式部署始终拒绝复用普通 builder。 |
 | `VIBEHUB_BUILD_CACHE_MAX_BYTES` | int | `4294967296` | 专属 builder 的最大保留缓存，严格范围 256 MiB–100 GiB；构建后仅对该 builder 执行按量 prune。 |
 | `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
 | `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |

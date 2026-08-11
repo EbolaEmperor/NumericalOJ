@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from config import AGENT_WORKSPACE_ROOT
+from oj_modules.config import AGENT_WORKSPACE_ROOT
 from oj_modules.problems.agent_launch import token_pricing_from_endpoint
 from oj_modules.ranking.reverse_judge.traces import (
     calculate_agent_token_cost_rmb,

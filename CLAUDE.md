@@ -49,7 +49,7 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modul
 
 - 直接依赖使用精确版本：生产、测试、可选依赖分别写入 `requirements/production.txt`、
   `requirements/test.txt`、`requirements/optional.txt`；不要用文档里的零散 `pip install` 代替。
-- 配置优先级是“进程环境变量 > `.env` > `config.py` 默认值”。密钥不得写入 tracked 文件。
+- 配置优先级是“进程环境变量 > `.env` > `oj_modules/config.py` 默认值”。密钥不得写入 tracked 文件。
 - LLM、Embedding、SMTP 和 WebSearch MCP 只从 MySQL 动态配置读取，不得增加环境变量回退。
 - Redis 客户端只能由 `oj_modules/infrastructure/redis.py` 创建。
 

@@ -6,7 +6,7 @@
 
 import uuid
 
-from config import EVALUATE_SUBMISSION_LOCK_TTL_SECONDS
+from oj_modules.config import EVALUATE_SUBMISSION_LOCK_TTL_SECONDS
 from oj_modules.infrastructure.redis import create_optional_redis_client
 
 

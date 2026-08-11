@@ -86,7 +86,7 @@ def _config_value(name, default=None):
     if env_value is not None and str(env_value).strip() != "":
         return env_value
     try:
-        import config as _cfg
+        from oj_modules import config as _cfg
     except ImportError:
         return default
     return getattr(_cfg, name, default)

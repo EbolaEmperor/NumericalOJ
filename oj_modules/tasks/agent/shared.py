@@ -4,7 +4,7 @@
 import json
 import time
 
-from config import SUBMISSION_SNAPSHOT_TTL_SECONDS
+from oj_modules.config import SUBMISSION_SNAPSHOT_TTL_SECONDS
 from oj_modules.db_services import (
     cancel_agent_run_snapshot,
     get_agent_run_by_task_id,

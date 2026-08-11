@@ -31,10 +31,6 @@ REQUIRED_ENV_KEYS = REQUIRED_STRING_SETTINGS + (
     "MYSQL_PORT",
     "REDIS_PORT",
     "REDIS_DB",
-    "VIBEHUB_OCI_RUNTIME",
-    "VIBEHUB_BUILD_BUILDER",
-    "VIBEHUB_REQUIRE_DEDICATED_BUILDER",
-    "VIBEHUB_BASE_OCI_LAYOUT_ROOT",
 )
 SOURCE_DIGEST_DOMAIN = b"NumericalOJ Docker source v1\0"
 REQUIRED_VIBEHUB_OCI_RUNTIME = "runsc"
@@ -50,9 +46,10 @@ class PreflightError(RuntimeError):
 
 def _load_project_config() -> ModuleType:
     """Import config lazily so unrelated preflight commands never load .env."""
+    os.environ.setdefault("NUMOJ_ENVIRONMENT", "production")
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    return importlib.import_module("config")
+    return importlib.import_module("oj_modules.config")
 
 
 def _metadata_fingerprint(metadata: os.stat_result) -> tuple[int, ...]:
@@ -69,7 +66,7 @@ def _metadata_fingerprint(metadata: os.stat_result) -> tuple[int, ...]:
 
 def _validate_config_values(config: ModuleType) -> None:
     if not getattr(config, "ENV_FILE_LOADED", False):
-        raise PreflightError("生产 .env 没有被 config.py 加载")
+        raise PreflightError("生产 .env 没有被配置模块加载")
 
     env_file_keys = getattr(config, "ENV_FILE_KEYS", ())
     try:
@@ -98,26 +95,17 @@ def _validate_config_values(config: ModuleType) -> None:
         raise PreflightError("生产 .env 的 REDIS_DB 无效")
 
     if getattr(config, "VIBEHUB_OCI_RUNTIME", None) != REQUIRED_VIBEHUB_OCI_RUNTIME:
-        raise PreflightError(
-            "生产 VibeHub 必须在 .env 中显式配置 VIBEHUB_OCI_RUNTIME=runsc"
-        )
+        raise PreflightError("生产 VibeHub 必须使用 VIBEHUB_OCI_RUNTIME=runsc")
 
     builder = getattr(config, "VIBEHUB_BUILD_BUILDER", None)
     if not isinstance(builder, str) or BUILDER_NAME_RE.fullmatch(builder) is None:
-        raise PreflightError(
-            "生产 VibeHub 必须显式配置安全的 VIBEHUB_BUILD_BUILDER"
-        )
+        raise PreflightError("生产 VibeHub 的 VIBEHUB_BUILD_BUILDER 无效")
     if getattr(config, "VIBEHUB_REQUIRE_DEDICATED_BUILDER", None) is not True:
-        raise PreflightError(
-            "生产 VibeHub 必须显式配置 "
-            "VIBEHUB_REQUIRE_DEDICATED_BUILDER=true"
-        )
+        raise PreflightError("生产 VibeHub 必须要求专属 Buildx builder")
 
     layout_value = getattr(config, "VIBEHUB_BASE_OCI_LAYOUT_ROOT", None)
     if not isinstance(layout_value, str) or not layout_value.strip():
-        raise PreflightError(
-            "生产 VibeHub 必须显式配置 VIBEHUB_BASE_OCI_LAYOUT_ROOT"
-        )
+        raise PreflightError("生产 VibeHub 的 VIBEHUB_BASE_OCI_LAYOUT_ROOT 无效")
     layout_path = Path(layout_value)
     if ".." in layout_path.parts:
         raise PreflightError("VIBEHUB_BASE_OCI_LAYOUT_ROOT 路径无效")

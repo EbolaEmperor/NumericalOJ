@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export NUMOJ_ENVIRONMENT=production
 STATE_DIR="$ROOT_DIR/.deploy"
 VENV_ROOT="$STATE_DIR/venvs"
 CURRENT_VENV="$STATE_DIR/current-venv"
