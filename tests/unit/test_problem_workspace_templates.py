@@ -3,6 +3,21 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 
+def _braced_block(source, marker):
+    """返回 marker 后首个花括号块，供响应式静态契约精确取规则。"""
+    marker_start = source.index(marker)
+    block_start = source.index("{", marker_start)
+    depth = 0
+    for index in range(block_start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[block_start + 1:index]
+    raise AssertionError(f"{marker} 缺少闭合花括号")
+
+
 def test_desktop_problem_templates_preserve_class_context_and_separate_library_deadline():
     repo = Path(__file__).resolve().parents[2]
     problem_list = (repo / "templates/problems/list.html").read_text()
@@ -39,6 +54,75 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
         "{% else %}", 1
     )[0]
     assert "p.ddl" not in library_rows
+
+
+def test_problem_list_uses_one_canonical_v2_dashboard_at_every_breakpoint():
+    repo = Path(__file__).resolve().parents[2]
+    problem_list = (repo / "templates/problems/list.html").read_text()
+    dashboard = (repo / "templates/problems/desktop/list.html").read_text()
+
+    assert "{% include 'problems/desktop/list.html' %}" in problem_list
+    assert '<section class="numoj-problem-dashboard"' in dashboard
+    assert "numoj-problem-dashboard d-none" not in dashboard
+    assert "numoj-row-title-link" in dashboard
+
+    for legacy_marker in (
+        '<div class="d-lg-none">',
+        "student-hw-row",
+        "student-hw-main",
+        "student-hw-ddl-mobile",
+    ):
+        assert legacy_marker not in problem_list
+
+
+def test_mobile_assignment_deadline_keeps_only_the_relative_status_visible():
+    repo = Path(__file__).resolve().parents[2]
+    dashboard = (repo / "templates/problems/desktop/list.html").read_text()
+    layout_css = (repo / "static/app/layout.css").read_text()
+
+    assert 'class="numoj-row-deadline-absolute"' in dashboard
+    assert 'class="numoj-row-deadline-relative expired"' in dashboard
+    assert 'class="numoj-row-deadline-relative urgent"' in dashboard
+    assert 'class="numoj-row-deadline-relative"' in dashboard
+
+    mobile_rules = _braced_block(layout_css, "@media (max-width: 991.98px)")
+    absolute_rule = _braced_block(
+        mobile_rules,
+        ".numoj-problem-dashboard .numoj-row-deadline-absolute",
+    )
+    assert "display: none;" in absolute_rule
+
+
+def test_problem_detail_mobile_workspace_keeps_the_complete_monaco_surface():
+    repo = Path(__file__).resolve().parents[2]
+    detail = (repo / "templates/problems/detail.html").read_text()
+    layout_css = (repo / "static/app/layout.css").read_text()
+
+    assert "{% set monaco_all_breakpoints = true %}" in detail
+    assert 'id="desktopEditorShell"' in detail
+    assert 'id="monacoEditorLoading"' in detail
+    assert 'id="monacoEditorContainer"' in detail
+    assert 'id="codeMirrorContainer"' not in detail
+
+    mobile_rules = _braced_block(layout_css, "@media (max-width: 991.98px)")
+    editor_rule = _braced_block(
+        mobile_rules,
+        ".problem-detail-page .problem-editor-desktop-shell",
+    )
+    assert "display: block;" in editor_rule
+    assert "height: clamp(360px, 58svh, 620px);" in editor_rule
+
+    title_rule = _braced_block(
+        mobile_rules,
+        ".problem-detail-page .problem-title-singleline",
+    )
+    assert "white-space: normal;" in title_rule
+
+    table_rule = _braced_block(
+        mobile_rules,
+        ".problem-detail-page .problem-content table",
+    )
+    assert "overflow-x: auto;" in table_rule
 
 
 def test_problem_resources_link_to_the_repository_instead_of_the_retired_zju_site():

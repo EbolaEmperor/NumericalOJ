@@ -139,13 +139,17 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
     consumers = {
         "problems/create.html",
         "problems/edit.html",
-        "problems/detail.html",
         "submissions/detail.html",
         "repository/index.html",
     }
     for name in consumers:
         source = (TEMPLATES / name).read_text(encoding="utf-8")
         assert source.count(editor_include) == 1
+
+    problem_detail = (TEMPLATES / "problems" / "detail.html").read_text(
+        encoding="utf-8"
+    )
+    assert editor_include not in problem_detail
 
 
 def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
@@ -164,6 +168,9 @@ def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
         encoding="utf-8"
     )
     edit = (TEMPLATES / "problems" / "edit.html").read_text(encoding="utf-8")
+    detail = (TEMPLATES / "problems" / "detail.html").read_text(
+        encoding="utf-8"
+    )
     form_editor = (
         ROOT / "static" / "app" / "problem-form-editors.js"
     ).read_text(encoding="utf-8")
@@ -194,6 +201,12 @@ def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
     assert "function registerMatlab(monaco)" in editor_runtime
     assert "function registerMatlab(monaco)" not in problem_editor
     assert "function registerMatlab(monaco)" not in submission_editor
+    assert "{% set monaco_all_breakpoints = true %}" in detail
+    assert "var allBreakpoints =" in monaco_component
+    assert "if (!allBreakpoints && !window.matchMedia" in monaco_component
+    assert "window.NumOJMonacoReady" in problem_editor
+    assert "window.NumOJCodeMirrorReady" not in problem_editor
+    assert "createCodeMirrorAdapter" not in problem_editor
     assert "}, 8000);" in monaco_component
     assert "}, 8000);" in codemirror_component
     assert "TEXTMATE_INITIAL_WAIT_MS = 250" in editor_runtime
@@ -274,10 +287,15 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert 'id="monacoEditorLoading"' in detail
     assert "代码编辑器正在加载" in detail
     assert 'data-size="lg"' in detail
-    assert "recent-submissions-panel" in detail
+    assert "recent-submissions-panel" not in detail
     assert "recent-submissions-card" in detail
-    assert 'class="recent-submissions-panel d-lg-none"' in detail
+    assert 'class="recent-submissions-card"' in detail
+    assert "recent-submissions-card d-none" not in detail
     assert "recent-submission-arrow" in detail
+    assert 'class="numoj-breadcrumb d-flex"' in detail
+    assert 'class="numoj-problem-kickers d-flex"' in detail
+    assert 'id="codeMirrorContainer"' not in detail
+    assert "{% set monaco_all_breakpoints = true %}" in detail
     for status, abbreviation in (
         ("Accepted", "AC"),
         ("Unaccepted", "WA"),
@@ -312,8 +330,8 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "const PROBLEM_EDITOR_LINE_HEIGHT = 20;" in editor
     assert "fontSize: PROBLEM_EDITOR_FONT_SIZE" in editor
     assert "lineHeight: PROBLEM_EDITOR_LINE_HEIGHT" in editor
-    assert "style.fontSize = PROBLEM_EDITOR_FONT_SIZE + 'px'" in editor
-    assert "style.lineHeight = PROBLEM_EDITOR_LINE_HEIGHT + 'px'" in editor
+    assert "createCodeMirrorAdapter" not in editor
+    assert "window.NumOJCodeMirrorReady" not in editor
     assert 'font: 12.5px/20px "SFMono-Regular", Consolas, monospace;' in detail
     assert "fontSize: 14," in editor_runtime
     assert "lineHeight: 22," in editor_runtime
