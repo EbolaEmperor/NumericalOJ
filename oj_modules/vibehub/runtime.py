@@ -150,7 +150,7 @@ _DATA_VOLUME_RE = re.compile(
     r"^numoj-vh-data-[0-9a-f]{16}-project-[1-9][0-9]{0,18}-(?:public|latest|review)$"
 )
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-_OCI_RUNTIME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_DOCKER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 _REQUEST_HEADER_ALLOWLIST = frozenset({
     "accept",
@@ -870,7 +870,7 @@ class DockerCLI:
         self._command_runner = command_runner
         self._binary_command_runner = binary_command_runner
         self.build_builder = str(build_builder or "").strip()
-        if self.build_builder and not _OCI_RUNTIME_RE.fullmatch(self.build_builder):
+        if self.build_builder and not _DOCKER_NAME_RE.fullmatch(self.build_builder):
             raise ValueError("VIBEHUB_BUILD_BUILDER 名称无效")
         self.build_cache_max_bytes = _validated_build_cache_max_bytes(
             build_cache_max_bytes
@@ -957,7 +957,7 @@ class DockerCLI:
             or not 1 <= len(nodes) <= 16
             or len(set(node_names)) != len(node_names)
             or any(
-                not _OCI_RUNTIME_RE.fullmatch(name) or status != "running"
+                not _DOCKER_NAME_RE.fullmatch(name) or status != "running"
                 for name, status in nodes
             )
         ):
@@ -1761,7 +1761,6 @@ class VibeHubRuntimeManager:
         require_dedicated_builder: bool = False,
         build_cache_max_bytes: int = DEFAULT_BUILD_CACHE_MAX_BYTES,
         base_oci_layout_root: Path | str = DEFAULT_BASE_OCI_LAYOUT_ROOT,
-        oci_runtime: str | None = None,
         reaper_interval_seconds: float | None = None,
         clock=time.time,
     ):
@@ -1773,7 +1772,7 @@ class VibeHubRuntimeManager:
             self.runtime_root / "build-cleanup.pending"
         )
         self.build_builder = str(build_builder or "").strip()
-        if self.build_builder and not _OCI_RUNTIME_RE.fullmatch(self.build_builder):
+        if self.build_builder and not _DOCKER_NAME_RE.fullmatch(self.build_builder):
             raise ValueError("VIBEHUB_BUILD_BUILDER 名称无效")
         if type(require_dedicated_builder) is not bool:
             raise ValueError("VIBEHUB_REQUIRE_DEDICATED_BUILDER 必须是布尔值")
@@ -1820,7 +1819,6 @@ class VibeHubRuntimeManager:
         self.max_active_runtimes = _validated_max_active_runtimes(
             max_active_runtimes
         )
-        self.oci_runtime = str(oci_runtime or "").strip()
         self.reaper_interval_seconds = float(
             reaper_interval_seconds
             if reaper_interval_seconds is not None
@@ -1856,8 +1854,6 @@ class VibeHubRuntimeManager:
             or not 0 <= self.health_probe_slot_timeout_seconds <= 5
         ):
             raise ValueError("VibeHub health probe slot timeout 必须在 0–5 秒之间")
-        if self.oci_runtime and not _OCI_RUNTIME_RE.fullmatch(self.oci_runtime):
-            raise ValueError("VibeHub OCI runtime 名称无效")
         if (
             not math.isfinite(self.reaper_interval_seconds)
             or not 0.05 <= self.reaper_interval_seconds < self.lease_ttl_seconds
@@ -2239,8 +2235,6 @@ class VibeHubRuntimeManager:
             "--log-driver", "none",
             "--stop-timeout", "1",
         ]
-        if self.oci_runtime:
-            args.extend(["--runtime", self.oci_runtime])
         args.append(image_id)
         return args
 
@@ -3196,7 +3190,7 @@ def _manager_kwargs_from_config(config_source) -> dict:
     build_builder = str(_config_value(
         config_source, "VIBEHUB_BUILD_BUILDER", "",
     ) or "").strip()
-    if build_builder and not _OCI_RUNTIME_RE.fullmatch(build_builder):
+    if build_builder and not _DOCKER_NAME_RE.fullmatch(build_builder):
         raise ValueError("VIBEHUB_BUILD_BUILDER 名称无效")
     require_dedicated_builder = _config_value(
         config_source, "VIBEHUB_REQUIRE_DEDICATED_BUILDER", False,
@@ -3278,7 +3272,6 @@ def _manager_kwargs_from_config(config_source) -> dict:
             DEFAULT_BUILD_CACHE_MAX_BYTES,
         )),
         "base_oci_layout_root": selected_oci_root,
-        "oci_runtime": str(_config_value(config_source, "VIBEHUB_OCI_RUNTIME", "") or ""),
     }
     lease_ttl = kwargs["lease_ttl_seconds"]
     reaper_interval = kwargs["reaper_interval_seconds"]
@@ -3316,8 +3309,6 @@ def _manager_kwargs_from_config(config_source) -> dict:
         raise ValueError(
             "VIBEHUB_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS 必须在 0–5 秒之间"
         )
-    if kwargs["oci_runtime"] and not _OCI_RUNTIME_RE.fullmatch(kwargs["oci_runtime"]):
-        raise ValueError("VIBEHUB_OCI_RUNTIME 名称无效")
     if kwargs["require_dedicated_builder"] and not kwargs["build_builder"]:
         raise ValueError(
             "要求专属 builder 时 VIBEHUB_BUILD_BUILDER 不能为空"
@@ -3328,10 +3319,6 @@ def _manager_kwargs_from_config(config_source) -> dict:
         os.environ.get("NUMOJ_ENVIRONMENT", "development"),
     ) or "development").strip().lower()
     if environment == "production":
-        if kwargs["oci_runtime"] != "runsc":
-            raise ValueError(
-                "production 必须设置 VIBEHUB_OCI_RUNTIME=runsc"
-            )
         if (
             not kwargs["require_dedicated_builder"]
             or not kwargs["build_builder"]

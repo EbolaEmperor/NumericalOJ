@@ -209,7 +209,6 @@ _CODE_DEFAULTS: dict[str, str] = {
     "JUDGER_ENABLE_MKL": '""',
     "VIBEHUB_RUNTIME_ROOT": '"tmp/vibehub_runtime"',
     "VIBEHUB_ALLOWED_BASE_IMAGES": '["numericaloj-vibehub-runtime:1"]',
-    "VIBEHUB_OCI_RUNTIME": '""',
     "VIBEHUB_BUILD_BUILDER": '""',
     "VIBEHUB_REQUIRE_DEDICATED_BUILDER": "false",
     "VIBEHUB_BUILD_CACHE_MAX_BYTES": "4294967296",
@@ -276,12 +275,11 @@ _CODE_DEFAULTS: dict[str, str] = {
     "REVERSE_TRACE_MIN_DELETE_AGE_SECONDS": "21600",
 }
 
-# 本地开发保持对普通 Docker Desktop / daemon 的兼容；正式部署由 deploy.sh
-# 固定 NUMOJ_ENVIRONMENT=production，从这里取得无需写入 .env 的安全默认值。
+# 正式部署由 deploy.sh 固定 NUMOJ_ENVIRONMENT=production，从这里取得无需
+# 写入 .env 的 VibeHub builder 默认值。
 if os.environ.get("NUMOJ_ENVIRONMENT", "development").strip().lower() == "production":
     _CODE_DEFAULTS.update(
         {
-            "VIBEHUB_OCI_RUNTIME": '"runsc"',
             "VIBEHUB_BUILD_BUILDER": '"numoj-vibehub"',
             "VIBEHUB_REQUIRE_DEDICATED_BUILDER": "true",
         }
@@ -505,7 +503,6 @@ JUDGER_ENABLE_MKL = _env_optional_bool("JUDGER_ENABLE_MKL")
 # VibeHub 离线构建、UDS 代理与短期容器
 VIBEHUB_RUNTIME_ROOT = _env_str("VIBEHUB_RUNTIME_ROOT")
 VIBEHUB_ALLOWED_BASE_IMAGES = _env_str_list("VIBEHUB_ALLOWED_BASE_IMAGES")
-VIBEHUB_OCI_RUNTIME = _env_str("VIBEHUB_OCI_RUNTIME")
 VIBEHUB_BUILD_BUILDER = _env_str("VIBEHUB_BUILD_BUILDER")
 VIBEHUB_REQUIRE_DEDICATED_BUILDER = _env_bool(
     "VIBEHUB_REQUIRE_DEDICATED_BUILDER"

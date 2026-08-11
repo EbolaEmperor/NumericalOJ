@@ -271,8 +271,6 @@ ENV_FILE="$ROOT_DIR/.env"
 }
 PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
   deploy/preflight.py validate-config "$ENV_FILE"
-PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
-  deploy/preflight.py validate-vibehub-runtime
 VIBEHUB_BUILD_BUILDER="$(
   PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
     deploy/preflight.py validate-vibehub-builder

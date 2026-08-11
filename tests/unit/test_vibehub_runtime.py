@@ -665,11 +665,11 @@ def test_dockerfile_allows_only_runtime_uid_chown_copy_flag(copy_line):
     ) == (runtime.DEFAULT_BASE_IMAGE,)
 
 
-def test_runtime_args_are_networkless_writable_and_featured_resources_double(
+def test_runtime_args_use_default_docker_and_featured_resources_double(
     monkeypatch,
     short_tmp,
 ):
-    manager = _manager(monkeypatch, short_tmp, oci_runtime="runsc")
+    manager = _manager(monkeypatch, short_tmp)
     runtime_id = "a" * 40
 
     standard = manager._container_args(
@@ -688,9 +688,10 @@ def test_runtime_args_are_networkless_writable_and_featured_resources_double(
     for required in (
         "--network", "none", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges=true", "--user", "65532:65532",
-        "--pull", "never", "--ipc", "none", "--runtime", "runsc",
+        "--pull", "never", "--ipc", "none",
     ):
         assert required in standard
+    assert "--runtime" not in standard
     assert standard[standard.index("--memory") + 1] == "4g"
     assert featured[featured.index("--memory") + 1] == "8g"
     assert standard[standard.index("--cpu-period") + 1] == "100000"
@@ -1292,13 +1293,12 @@ def test_state_symlink_fails_closed(monkeypatch, short_tmp):
         manager.reap_expired()
 
 
-def test_composition_root_configuration_exposes_runsc_and_limits(short_tmp):
+def test_composition_root_configuration_exposes_limits(short_tmp):
     runtime.shutdown_runtime_manager(reset_config=True)
     try:
         manager = runtime.configure_runtime_manager({
             "VIBEHUB_RUNTIME_ROOT": str(short_tmp / "configured"),
             "VIBEHUB_ALLOWED_BASE_IMAGES": ["local/base:locked"],
-            "VIBEHUB_OCI_RUNTIME": "runsc",
             "VIBEHUB_LEASE_TTL_SECONDS": 120,
             "VIBEHUB_REAPER_INTERVAL_SECONDS": 20,
             "VIBEHUB_REQUEST_TIMEOUT_SECONDS": 7,
@@ -1315,7 +1315,6 @@ def test_composition_root_configuration_exposes_runsc_and_limits(short_tmp):
         }, docker_client=_FakeDocker(), start_reaper=False)
 
         assert runtime.get_runtime_manager() is manager
-        assert manager.oci_runtime == "runsc"
         assert manager.allowed_base_images == ("local/base:locked",)
         assert manager.lease_ttl_seconds == 120
         assert manager.reaper_interval_seconds == 20
@@ -1382,41 +1381,32 @@ def test_build_cache_limit_configuration_is_strict(short_tmp, value):
         })
 
 
-def test_development_allows_legacy_builder_and_empty_oci_runtime(short_tmp):
+def test_development_allows_legacy_builder(short_tmp):
     kwargs = runtime._manager_kwargs_from_config({
         "NUMOJ_ENVIRONMENT": "development",
         "VIBEHUB_RUNTIME_ROOT": str(short_tmp / "configured"),
         "VIBEHUB_BUILD_BUILDER": "",
         "VIBEHUB_REQUIRE_DEDICATED_BUILDER": False,
-        "VIBEHUB_OCI_RUNTIME": "",
     })
 
     assert kwargs["build_builder"] == ""
     assert kwargs["require_dedicated_builder"] is False
-    assert kwargs["oci_runtime"] == ""
 
 
-def test_production_requires_runsc_and_dedicated_builder(short_tmp):
+def test_production_requires_dedicated_builder(short_tmp):
     base = {
         "NUMOJ_ENVIRONMENT": "production",
         "VIBEHUB_RUNTIME_ROOT": str(short_tmp / "configured"),
     }
-    with pytest.raises(ValueError, match="VIBEHUB_OCI_RUNTIME=runsc"):
-        runtime._manager_kwargs_from_config(base)
     with pytest.raises(ValueError, match="专属 docker-container builder"):
-        runtime._manager_kwargs_from_config({
-            **base,
-            "VIBEHUB_OCI_RUNTIME": "runsc",
-        })
+        runtime._manager_kwargs_from_config(base)
 
     kwargs = runtime._manager_kwargs_from_config({
         **base,
-        "VIBEHUB_OCI_RUNTIME": "runsc",
         "VIBEHUB_BUILD_BUILDER": "numoj-vibehub",
         "VIBEHUB_REQUIRE_DEDICATED_BUILDER": True,
         "VIBEHUB_BASE_OCI_LAYOUT_ROOT": str(short_tmp / "base-oci"),
     })
-    assert kwargs["oci_runtime"] == "runsc"
     assert kwargs["build_builder"] == "numoj-vibehub"
 
 
@@ -1488,7 +1478,6 @@ def test_registered_config_is_lazy_until_first_runtime_request(short_tmp):
         runtime.register_runtime_manager_config({
             "VIBEHUB_RUNTIME_ROOT": str(root),
             "VIBEHUB_ALLOWED_BASE_IMAGES": [runtime.DEFAULT_BASE_IMAGE],
-            "VIBEHUB_OCI_RUNTIME": "",
             "VIBEHUB_LEASE_TTL_SECONDS": 90,
             "VIBEHUB_REAPER_INTERVAL_SECONDS": 15,
             "VIBEHUB_REQUEST_TIMEOUT_SECONDS": 15,

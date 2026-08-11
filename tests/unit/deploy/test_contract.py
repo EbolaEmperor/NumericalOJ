@@ -405,11 +405,9 @@ def test_deploy_fails_closed_without_private_production_config():
     assert "export NUMOJ_ENVIRONMENT=production" in script
     assert 'ENV_FILE="$ROOT_DIR/.env"' in script
     assert 'deploy/preflight.py validate-config "$ENV_FILE"' in script
-    assert "VIBEHUB_OCI_RUNTIME" in preflight
-    assert "REQUIRED_VIBEHUB_OCI_RUNTIME = \"runsc\"" in preflight
-    assert "deploy/preflight.py validate-vibehub-runtime" in script
     service_stop = script.index("phase='停止现有服务'")
-    assert script.index("deploy/preflight.py validate-vibehub-runtime") < service_stop
+    builder_check = script.index("deploy/preflight.py validate-vibehub-builder")
+    assert builder_check < service_stop
     assert "docker run --rm" not in script
     assert 'getattr(config, "ENV_FILE_LOADED", False)' in preflight
     assert 'getattr(config, "ENV_FILE_KEYS", ())' in preflight
