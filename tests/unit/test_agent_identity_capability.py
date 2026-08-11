@@ -4,6 +4,7 @@ from oj_modules.security import auth
 from oj_modules.security.agent_identity import (
     AGENT_IDENTITY_HEADER,
     create_agent_identity_capability,
+    resolve_agent_identity_capability,
     verify_agent_identity_capability,
 )
 
@@ -87,3 +88,75 @@ def test_browser_session_without_agent_header_keeps_normal_permissions(monkeypat
     with app.test_request_context("/admin/agent_tasks"):
         session["username"] = "admin"
         assert auth.current_user() == {"username": "admin", "is_admin": 1}
+
+
+def test_task_capability_authenticates_only_its_active_database_binding(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_username",
+        lambda username: {"id": 7, "username": username, "is_admin": 1},
+    )
+    active = {
+        "session_id": "session-1",
+        "current_task_id": "task-2",
+        "requested_by": "admin",
+        "access_role": "admin",
+        "status": "Running",
+    }
+    monkeypatch.setattr(
+        "oj_modules.agents.sessions.get_agent_session",
+        lambda session_id: active if session_id == "session-1" else None,
+    )
+    token = create_agent_identity_capability(
+        "admin",
+        "admin",
+        session_id="session-1",
+        task_id="task-2",
+    )
+    resolved = resolve_agent_identity_capability(token)
+    assert resolved["session_id"] == "session-1"
+    assert resolved["task_id"] == "task-2"
+
+    app = _app()
+    with app.test_request_context(
+        "/api/admin/users",
+        headers={AGENT_IDENTITY_HEADER: token},
+    ):
+        assert auth.current_user()["username"] == "admin"
+        assert auth.current_user()["agent_access_role"] == "admin"
+
+    active["status"] = "Completed"
+    with app.test_request_context(
+        "/api/admin/users",
+        headers={AGENT_IDENTITY_HEADER: token},
+    ):
+        assert auth.current_user() is None
+
+
+def test_task_capability_rechecks_current_admin_permission(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_username",
+        lambda username: {"id": 7, "username": username, "is_admin": 0},
+    )
+    monkeypatch.setattr(
+        "oj_modules.agents.sessions.get_agent_session",
+        lambda _session_id: {
+            "current_task_id": "task-2",
+            "requested_by": "admin",
+            "access_role": "admin",
+            "status": "Running",
+        },
+    )
+    token = create_agent_identity_capability(
+        "admin",
+        "admin",
+        session_id="session-1",
+        task_id="task-2",
+    )
+    app = _app()
+    with app.test_request_context(
+        "/api/admin/users",
+        headers={AGENT_IDENTITY_HEADER: token},
+    ):
+        assert auth.current_user() is None

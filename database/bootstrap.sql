@@ -504,6 +504,9 @@ CREATE TABLE `agent_sessions` (
   `status` varchar(32) NOT NULL DEFAULT 'Pending',
   `message` text,
   `turn_count` int NOT NULL DEFAULT '1',
+  `queue_paused` tinyint(1) NOT NULL DEFAULT '0',
+  `queue_pause_reason` text,
+  `fresh_native_session_pending` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -513,7 +516,9 @@ CREATE TABLE `agent_sessions` (
   KEY `idx_agent_sessions_user_updated` (`requested_by`,`updated_at`),
   CONSTRAINT `chk_agent_sessions_access_role` CHECK (`access_role` IN ('user','admin')),
   CONSTRAINT `chk_agent_sessions_endpoint_revision` CHECK (`endpoint_revision` > 0),
-  CONSTRAINT `chk_agent_sessions_turn_count` CHECK (`turn_count` > 0)
+  CONSTRAINT `chk_agent_sessions_turn_count` CHECK (`turn_count` > 0),
+  CONSTRAINT `chk_agent_sessions_queue_paused` CHECK (`queue_paused` IN (0,1)),
+  CONSTRAINT `chk_agent_sessions_fresh_native_pending` CHECK (`fresh_native_session_pending` IN (0,1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -549,6 +554,47 @@ CREATE TABLE `agent_session_turns` (
   KEY `idx_agent_turns_superseded_by` (`superseded_by_task_id`),
   CONSTRAINT `fk_agent_turns_session` FOREIGN KEY (`session_id`) REFERENCES `agent_sessions` (`session_id`) ON DELETE CASCADE,
   CONSTRAINT `chk_agent_turn_index` CHECK (`turn_index` > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_session_messages`
+--
+
+DROP TABLE IF EXISTS `agent_session_messages`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_session_messages` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `message_id` varchar(64) NOT NULL,
+  `session_id` varchar(64) NOT NULL,
+  `created_by` varchar(50) NOT NULL,
+  `user_message` longtext NOT NULL,
+  `attachments_json` longtext,
+  `dispatch_payload_json` longtext,
+  `delivery_mode` varchar(16) NOT NULL,
+  `status` varchar(16) NOT NULL DEFAULT 'queued',
+  `target_task_id` varchar(64) DEFAULT NULL,
+  `final_task_id` varchar(64) DEFAULT NULL,
+  `queue_position` bigint NOT NULL,
+  `dispatch_attempt_id` varchar(64) DEFAULT NULL,
+  `dispatch_attempted_at` datetime DEFAULT NULL,
+  `broker_enqueued_at` datetime DEFAULT NULL,
+  `error_message` text,
+  `delivered_at` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_agent_message_id` (`message_id`),
+  UNIQUE KEY `uniq_agent_message_final_task` (`final_task_id`),
+  KEY `idx_agent_messages_session_queue` (`session_id`,`delivery_mode`,`status`,`queue_position`,`id`),
+  KEY `idx_agent_messages_delivery_status` (`delivery_mode`,`status`,`session_id`,`final_task_id`),
+  KEY `idx_agent_messages_dispatch_recovery` (`delivery_mode`,`status`,`broker_enqueued_at`,`dispatch_attempted_at`,`session_id`),
+  KEY `idx_agent_messages_target_status` (`target_task_id`,`status`,`queue_position`),
+  CONSTRAINT `fk_agent_messages_session` FOREIGN KEY (`session_id`) REFERENCES `agent_sessions` (`session_id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_agent_messages_delivery_mode` CHECK (`delivery_mode` IN ('turn','queue','steer')),
+  CONSTRAINT `chk_agent_messages_status` CHECK (`status` IN ('queued','dispatching','sent','canceled','failed','unknown')),
+  CONSTRAINT `chk_agent_messages_queue_position` CHECK (`queue_position` > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

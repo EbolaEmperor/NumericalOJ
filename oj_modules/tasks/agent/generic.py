@@ -37,6 +37,7 @@ from oj_modules.tasks.agent.shared import (
 )
 from oj_modules.tasks.agent.titles import generate_initial_agent_session_title
 from oj_modules.tasks.agent.traces import prepare_agent_trace_dir
+from oj_modules.tasks.agent.queue import build_agent_control_bridge
 
 
 def _generic_task_id(task):
@@ -230,6 +231,7 @@ def _conclude_unhandled_generic_failures(function):
         resume_session_id="",
         generate_title=False,
         restore_runtime_checkpoint_id="",
+        start_fresh_native_session=False,
     ):
         task_id = _generic_task_id(self)
         state = _initial_generic_state(
@@ -254,6 +256,7 @@ def _conclude_unhandled_generic_failures(function):
                 resume_session_id,
                 generate_title,
                 restore_runtime_checkpoint_id,
+                start_fresh_native_session,
             )
         except Exception as exc:
             return _finalize_unhandled_generic_failure(state, exc)
@@ -334,6 +337,7 @@ def register_agent_run_turn_task(celery_app):
         resume_session_id="",
         generate_title=False,
         restore_runtime_checkpoint_id="",
+        start_fresh_native_session=False,
     ):
         task_id = _generic_task_id(self)
         terminal_result = existing_agent_terminal_result(task_id)
@@ -372,8 +376,6 @@ def register_agent_run_turn_task(celery_app):
         user = get_user_by_username(requested_by)
         if not user or int(user.get("is_admin") or 0) != 1:
             return _generic_failure(state, "无权限执行通用 Agent")
-        if not str(session_cookie or "").strip():
-            return _generic_failure(state, "Agent 任务身份已失效")
         if not str(prompt or "").strip():
             return _generic_failure(state, "Agent 消息不能为空")
 
@@ -388,7 +390,7 @@ def register_agent_run_turn_task(celery_app):
                 resume_session_id=normalized_resume_session_id,
                 allow_empty_resume=bool(
                     str(restore_runtime_checkpoint_id or "").strip()
-                ),
+                ) or start_fresh_native_session is True,
             )
             normalized_role = normalize_agent_access_role(
                 normalized_role,
@@ -445,6 +447,10 @@ def register_agent_run_turn_task(celery_app):
 
         if agent_run_is_canceled(task_id):
             return canceled_agent_task_result(task_id)
+        control_source, control_callback = build_agent_control_bridge(
+            normalized_session_id,
+            task_id,
+        )
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
@@ -464,6 +470,9 @@ def register_agent_run_turn_task(celery_app):
                 ),
                 trace_callback=lambda: _publish_agent_trace(state),
                 cancel_check=lambda: agent_run_is_canceled(task_id),
+                control_source=control_source,
+                control_callback=control_callback,
+                control_target_task_id=task_id,
                 reset_trace=False,
             )
         except AgentHarnessCleanupError as exc:

@@ -1582,7 +1582,13 @@ def _unlink_regular_file(directory_fd: int, name: str, *, missing_ok: bool) -> b
 
 
 def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]:
-    """流式保存一轮 multipart 附件，并返回可持久化的相对路径元数据。"""
+    """流式保存一批 multipart 附件，并返回可持久化的相对路径元数据。
+
+    每次调用都发布到与消息 ID 关联的独立 generation 目录。这样同一条排队
+    消息可以安全追加或替换附件；若进程在文件发布后、数据库提交前退出，
+    客户端以相同 message ID 重试时也不会被遗留目录永久阻塞。调用方只根据
+    返回的精确路径提交或补偿删除，不会覆盖另一并发请求已经发布的文件。
+    """
 
     safe_task_id = _normalize_identifier(task_id, label="Agent task_id")
     if _is_private_name(safe_task_id):
@@ -1602,6 +1608,13 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
     if not prepared:
         return []
 
+    # 目录标识仍保留消息/任务 ID 前缀，便于运维定位；随机 generation 使
+    # 每批文件拥有独立、可精确补偿的发布单元。31 + 1 + 32 == 64，满足
+    # 受管目录标识上限。
+    attachment_generation_id = (
+        f"{safe_task_id[:31]}-{uuid.uuid4().hex}"
+    )
+
     with _open_session_directories(session_id) as (_safe_id, session_fd, workspace_fd):
         (
             _max_bytes,
@@ -1617,7 +1630,7 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
             additional_files=len(prepared),
             additional_entries=_workspace_missing_parent_count(
                 workspace_fd,
-                ("attachments", safe_task_id, "attachment"),
+                ("attachments", attachment_generation_id, "attachment"),
             ),
             free_reservation_bytes=0,
         )
@@ -1626,7 +1639,7 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
             ".attachment-staging",
             label="Agent 附件暂存目录",
         )
-        stage_name = f"{safe_task_id}-{uuid.uuid4().hex}"
+        stage_name = f"{attachment_generation_id}-{uuid.uuid4().hex}"
         stage_fd = None
         attachments_fd = None
         target_fd = None
@@ -1701,7 +1714,7 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
                 metadata.append(
                     {
                         "name": name,
-                        "path": f"attachments/{safe_task_id}/{name}",
+                        "path": f"attachments/{attachment_generation_id}/{name}",
                         "size": file_size,
                         "sha256": digest.hexdigest(),
                     }
@@ -1723,12 +1736,19 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
                 label="Agent 附件目录",
             )
             try:
-                os.mkdir(safe_task_id, mode=0o700, dir_fd=attachments_fd)
+                os.mkdir(
+                    attachment_generation_id,
+                    mode=0o700,
+                    dir_fd=attachments_fd,
+                )
                 target_created = True
             except FileExistsError as exc:
-                raise AgentAttachmentError("本轮附件目录已存在，拒绝覆盖") from exc
+                # UUID generation 碰撞时绝不复用或覆盖未知目录。
+                raise AgentAttachmentError("附件批次目录冲突，请重试") from exc
             target_fd = os.open(
-                safe_task_id, _DIRECTORY_OPEN_FLAGS, dir_fd=attachments_fd
+                attachment_generation_id,
+                _DIRECTORY_OPEN_FLAGS,
+                dir_fd=attachments_fd,
             )
             _harden_managed_directory_fd(target_fd, label="Agent 单轮附件目录")
             for item in metadata:
@@ -1768,7 +1788,7 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
                 os.close(target_fd)
             if target_created and not completed and attachments_fd is not None:
                 try:
-                    os.rmdir(safe_task_id, dir_fd=attachments_fd)
+                    os.rmdir(attachment_generation_id, dir_fd=attachments_fd)
                     os.fsync(attachments_fd)
                 except OSError:
                     pass

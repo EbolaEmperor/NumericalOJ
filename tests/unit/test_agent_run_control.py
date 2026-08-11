@@ -26,6 +26,7 @@ def test_terminator_persists_before_revoke_and_force_remove(monkeypatch):
         return SimpleNamespace(returncode=0, stdout=command[-1], stderr="")
 
     monkeypatch.setattr(control, "cancel_agent_run", cancel)
+    monkeypatch.setattr(control, "_wait_for_protocol_interrupt", lambda _task_id: False)
     monkeypatch.setattr(
         control,
         "_project_session_cleanup_status",
@@ -119,6 +120,7 @@ def test_terminator_projects_canceled_only_after_cleanup_succeeds(monkeypatch):
         },
     )
     monkeypatch.setattr(control, "_force_remove_agent_container", lambda _task_id: None)
+    monkeypatch.setattr(control, "_wait_for_protocol_interrupt", lambda _task_id: False)
     monkeypatch.setattr(
         control,
         "_read_native_session_id_for_task",
@@ -154,6 +156,7 @@ def test_terminator_projects_cleanup_failed_when_revoke_is_uncertain(monkeypatch
         },
     )
     monkeypatch.setattr(control, "_force_remove_agent_container", lambda _task_id: None)
+    monkeypatch.setattr(control, "_wait_for_protocol_interrupt", lambda _task_id: False)
     monkeypatch.setattr(
         control,
         "_read_native_session_id_for_task",
@@ -193,6 +196,7 @@ def test_terminator_preserves_live_native_session_for_resume(monkeypatch):
         },
     )
     monkeypatch.setattr(control, "_force_remove_agent_container", lambda _task_id: None)
+    monkeypatch.setattr(control, "_wait_for_protocol_interrupt", lambda _task_id: False)
     monkeypatch.setattr(
         control,
         "_read_native_session_id_for_task",
@@ -213,3 +217,53 @@ def test_terminator_preserves_live_native_session_for_resume(monkeypatch):
     assert projected == [(("cancel-live", "Canceled", "任务已由管理员终止"), {
         "native_session_id": "native-live-123",
     })]
+
+
+def test_terminator_prefers_protocol_interrupt_without_revoke_or_force_remove(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        control,
+        "cancel_agent_run",
+        lambda task_id: {
+            "exists": True,
+            "changed": True,
+            "canceled": True,
+            "state": {"task_id": task_id, "status": "Canceled"},
+        },
+    )
+    monkeypatch.setattr(
+        control,
+        "_wait_for_protocol_interrupt",
+        lambda task_id: calls.append(("wait", task_id)) or True,
+    )
+    monkeypatch.setattr(
+        control,
+        "_force_remove_agent_container",
+        lambda _task_id: pytest.fail("协议中断成功后不得强制删除容器"),
+    )
+    monkeypatch.setattr(
+        control,
+        "_read_native_session_id_for_task",
+        lambda _task_id: "native-after-interrupt",
+    )
+    monkeypatch.setattr(
+        control,
+        "_project_session_cleanup_status",
+        lambda *_args, **_kwargs: True,
+    )
+    celery_control = SimpleNamespace(
+        revoke=lambda *_args, **_kwargs: pytest.fail(
+            "协议中断成功后不得 revoke"
+        ),
+    )
+
+    result = control.build_agent_run_terminator(
+        SimpleNamespace(control=celery_control),
+    )("soft-stop")
+
+    assert calls == [("wait", "soft-stop")]
+    assert result["errors"] == []
+    assert result["state"]["status"] == "Canceled"
+    assert result["state"]["native_session_id"] == "native-after-interrupt"

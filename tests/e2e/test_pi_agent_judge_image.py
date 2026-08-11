@@ -500,7 +500,8 @@ def test_pi_lite_image_openai_endpoint_uses_standard_roles(
 
 
 def test_pi_lite_image_problem_agent_auto_resumes_output_limit(
-        tmp_path: Path):
+        docker_shared_tmp_path: Path):
+    tmp_path = docker_shared_tmp_path
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI 不可用")
     image = os.environ[_IMAGE_ENV]
@@ -779,7 +780,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
 
 
 def test_pi_reverse_agent_length_auto_finalizes_same_native_session(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        docker_shared_tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """真实 _run_agent 必须把 rc=0 + length 恢复成可评测交付物。"""
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI 不可用")
@@ -794,6 +795,7 @@ def test_pi_reverse_agent_length_auto_finalizes_same_native_session(
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
+    tmp_path = docker_shared_tmp_path
     package = tmp_path / "package"
     template_dir = package / "template"
     problem_dir = package / "problem"

@@ -5,12 +5,17 @@
 from __future__ import annotations
 
 import subprocess
+import time
 
 from oj_modules.problems.agent_runs import (
     agent_run_container_name,
     normalize_agent_task_id,
 )
 from oj_modules.tasks.agent.shared import cancel_agent_run
+
+
+_PROTOCOL_INTERRUPT_GRACE_SECONDS = 10.0
+_PROTOCOL_INTERRUPT_POLL_SECONDS = 0.25
 
 
 def _project_session_cleanup_status(
@@ -75,6 +80,59 @@ def _force_remove_agent_container(task_id):
     return f"强制清理 Agent 容器失败：{last_error[:500]}"
 
 
+def _agent_container_running(task_id):
+    """探测任务容器；Docker 状态未知时返回 None 并进入强制兜底。"""
+
+    container_name = agent_run_container_name(task_id)
+    try:
+        completed = subprocess.run(
+            [
+                "docker",
+                "container",
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                container_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    detail = f"{completed.stdout or ''}\n{completed.stderr or ''}".strip()
+    if completed.returncode != 0:
+        if "no such" in detail.lower():
+            return False
+        return None
+    normalized = str(completed.stdout or "").strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    return None
+
+
+def _wait_for_protocol_interrupt(task_id):
+    """给活动 worker 时间读取持久取消标记并发送 Harness interrupt。"""
+
+    running = _agent_container_running(task_id)
+    if running is False:
+        return True
+    if running is None:
+        return False
+    deadline = time.monotonic() + _PROTOCOL_INTERRUPT_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(_PROTOCOL_INTERRUPT_POLL_SECONDS)
+        running = _agent_container_running(task_id)
+        if running is False:
+            return True
+        if running is None:
+            return False
+    return False
+
+
 def build_agent_run_terminator(celery_app):
     """构造供 HTTP 适配层注入的任务终止操作。"""
 
@@ -88,18 +146,20 @@ def build_agent_run_terminator(celery_app):
             return result
 
         errors = []
-        try:
-            celery_app.control.revoke(
-                normalized_task_id,
-                terminate=True,
-                signal="SIGTERM",
-            )
-        except Exception as exc:
-            errors.append(f"撤销 Celery 任务失败：{str(exc)[:500]}")
+        protocol_stopped = _wait_for_protocol_interrupt(normalized_task_id)
+        if not protocol_stopped:
+            try:
+                celery_app.control.revoke(
+                    normalized_task_id,
+                    terminate=True,
+                    signal="SIGTERM",
+                )
+            except Exception as exc:
+                errors.append(f"撤销 Celery 任务失败：{str(exc)[:500]}")
 
-        container_error = _force_remove_agent_container(normalized_task_id)
-        if container_error:
-            errors.append(container_error)
+            container_error = _force_remove_agent_container(normalized_task_id)
+            if container_error:
+                errors.append(container_error)
         native_session_id = ""
         try:
             native_session_id = _read_native_session_id_for_task(

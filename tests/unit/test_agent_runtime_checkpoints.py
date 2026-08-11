@@ -137,7 +137,6 @@ def test_checkpoint_is_immutable_and_never_overwritten(checkpoint_workspace):
     [
         ("absolute", "/etc/passwd"),
         ("escape", "../outside"),
-        ("nested/parent-reference", "../sibling"),
         ("nested/escape", "../../outside"),
     ],
 )
@@ -159,6 +158,85 @@ def test_checkpoint_rejects_absolute_or_escaping_symlinks(
     assert not _checkpoint(checkpoint_workspace, "unsafe").exists()
 
 
+def test_checkpoint_preserves_parent_reference_that_stays_inside_runtime(
+    checkpoint_workspace,
+):
+    public = workspace.ensure_agent_workspace("session")
+    runtime = public / ".runtime"
+    package = runtime / "config" / "node_modules" / "package"
+    executable = runtime / "config" / "node_modules" / ".bin" / "package"
+    package.mkdir(parents=True)
+    executable.parent.mkdir()
+    (package / "cli.js").write_text("export {};\n", encoding="utf-8")
+    executable.symlink_to("../package/cli.js")
+
+    runtime_checkpoints.create_agent_runtime_checkpoint("session", "safe-link")
+
+    saved_link = (
+        _checkpoint(checkpoint_workspace, "safe-link")
+        / "runtime"
+        / "config"
+        / "node_modules"
+        / ".bin"
+        / "package"
+    )
+    assert saved_link.is_symlink()
+    assert os.readlink(saved_link) == "../package/cli.js"
+
+
+def test_checkpoint_rejects_chained_symlink_escape(checkpoint_workspace):
+    public = workspace.ensure_agent_workspace("session")
+    runtime = public / ".runtime"
+    nested = runtime / "nested"
+    nested.mkdir(parents=True)
+    (nested / "collapse").symlink_to("..")
+    # 逐条做词法归一化时两个 target 都仍在 runtime 内；只有按完整
+    # symlink 解析语义展开后，第二条链接才会越过 runtime 根。
+    (nested / "escape").symlink_to("collapse/../../etc/passwd")
+
+    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="链接链"):
+        runtime_checkpoints.create_agent_runtime_checkpoint("session", "unsafe-chain")
+
+    assert not _checkpoint(checkpoint_workspace, "unsafe-chain").exists()
+
+
+def test_checkpoint_rejects_symlink_cycle(checkpoint_workspace):
+    public = workspace.ensure_agent_workspace("session")
+    runtime = public / ".runtime"
+    runtime.mkdir()
+    (runtime / "first").symlink_to("second")
+    (runtime / "second").symlink_to("first")
+
+    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="包含环"):
+        runtime_checkpoints.create_agent_runtime_checkpoint("session", "cycle")
+
+    assert not _checkpoint(checkpoint_workspace, "cycle").exists()
+
+
+def test_symlink_graph_has_a_linear_global_resolution_budget(monkeypatch):
+    link_count = 2_000
+    links = {
+        (f"link-{index}",): (
+            f"link-{index + 1}" if index + 1 < link_count else "target"
+        )
+        for index in range(link_count)
+    }
+    calls = 0
+    original_entry_name = runtime_checkpoints._entry_name
+
+    def counted_entry_name(raw_name):
+        nonlocal calls
+        calls += 1
+        return original_entry_name(raw_name)
+
+    monkeypatch.setattr(runtime_checkpoints, "_entry_name", counted_entry_name)
+
+    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="过于复杂"):
+        runtime_checkpoints._validate_symlink_graph(links)
+
+    assert calls <= link_count * 64
+
+
 def test_checkpoint_rejects_special_files(checkpoint_workspace):
     public = workspace.ensure_agent_workspace("session")
     runtime = public / ".runtime"
@@ -169,6 +247,35 @@ def test_checkpoint_rejects_special_files(checkpoint_workspace):
         runtime_checkpoints.create_agent_runtime_checkpoint("session", "special")
 
     assert not _checkpoint(checkpoint_workspace, "special").exists()
+
+
+def test_checkpoint_discards_codex_arg0_absolute_symlinks(
+    checkpoint_workspace,
+):
+    public = workspace.ensure_agent_workspace("session")
+    runtime = public / ".runtime"
+    codex = runtime / "codex"
+    sessions = codex / "sessions"
+    arg0 = codex / "tmp" / "arg0" / "codex-arg0"
+    sessions.mkdir(parents=True)
+    arg0.mkdir(parents=True)
+    (sessions / "turn.jsonl").write_text("persist\n", encoding="utf-8")
+    (arg0 / "apply_patch").symlink_to("/usr/local/bin/codex")
+
+    runtime_checkpoints.create_agent_runtime_checkpoint(
+        "session",
+        "codex-baseline",
+    )
+
+    assert not (codex / "tmp").exists()
+    saved_runtime = _checkpoint(
+        checkpoint_workspace,
+        "codex-baseline",
+    ) / "runtime"
+    assert (saved_runtime / "codex" / "sessions" / "turn.jsonl").read_text() == (
+        "persist\n"
+    )
+    assert not (saved_runtime / "codex" / "tmp").exists()
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ checkpoint 位于会话目录内、容器只挂载的 ``workspace/`` 之外。�
 
 from __future__ import annotations
 
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
@@ -26,6 +27,7 @@ _CHECKPOINT_MANIFEST_FILENAME = "manifest.json"
 _CHECKPOINT_MANIFEST_VERSION = 1
 _MAX_MANIFEST_BYTES = 16 * 1024
 _COPY_CHUNK_BYTES = 64 * 1024
+_EPHEMERAL_RUNTIME_PATHS = (("codex", "tmp"),)
 
 
 @dataclass(slots=True)
@@ -107,18 +109,66 @@ def _validate_symlink_target(target: str, parent_parts: tuple[str, ...]) -> None
             "Agent runtime 符号链接必须指向内部相对路径"
         )
 
-    del parent_parts
+    resolved_parts = list(parent_parts)
     for raw_part in target.split("/"):
         if raw_part in {"", "."}:
             continue
         if raw_part == "..":
-            # 单条链接的词法归一化无法证明 symlink 链不会先跳到父目录再
-            # 继续解析。runtime 状态不依赖上行链接，直接拒绝才能保持
-            # checkpoint 在复制和恢复后都严格位于 .runtime 内。
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 符号链接不能包含父目录跳转"
-            )
-        _entry_name(raw_part)
+            if not resolved_parts:
+                raise workspace_store.AgentWorkspaceSecurityError(
+                    "Agent runtime 符号链接不能逃逸运行态目录"
+                )
+            resolved_parts.pop()
+            continue
+        resolved_parts.append(_entry_name(raw_part))
+
+
+def _validate_symlink_graph(
+    symlinks: dict[tuple[str, ...], str],
+) -> None:
+    """按真实 symlink 展开语义验证整个链接图不会逃逸或成环。"""
+
+    if not symlinks:
+        return
+    max_hops = len(symlinks)
+    # 全局预算保证敌对的长链不会让每条链接都从头解析而退化为 O(n²)。
+    # 正常 npm `.bin` 链只需少量步骤；异常复杂的图直接 fail closed。
+    remaining_steps = max(1024, len(symlinks) * 64)
+    for link_path, target in symlinks.items():
+        pending = deque((*link_path[:-1], *target.split("/")))
+        resolved: list[str] = []
+        hops = 0
+        while pending:
+            remaining_steps -= 1
+            if remaining_steps < 0:
+                raise workspace_store.AgentWorkspaceSecurityError(
+                    "Agent runtime 符号链接图过于复杂"
+                )
+            raw_part = pending.popleft()
+            if raw_part in {"", "."}:
+                continue
+            if raw_part == "..":
+                if not resolved:
+                    raise workspace_store.AgentWorkspaceSecurityError(
+                        "Agent runtime 符号链接链不能逃逸运行态目录"
+                    )
+                resolved.pop()
+                continue
+
+            part = _entry_name(raw_part)
+            candidate = (*resolved, part)
+            nested_target = symlinks.get(candidate)
+            if nested_target is None:
+                resolved.append(part)
+                continue
+
+            hops += 1
+            if hops > max_hops:
+                raise workspace_store.AgentWorkspaceSecurityError(
+                    "Agent runtime 符号链接链不能包含环"
+                )
+            for nested_part in reversed(nested_target.split("/")):
+                pending.appendleft(nested_part)
 
 
 def _same_inode(before, after) -> bool:
@@ -153,6 +203,7 @@ def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, in
         )
     root_device = int(root_before.st_dev)
     counter = _new_counter()
+    symlinks: dict[tuple[str, ...], str] = {}
 
     def walk(directory_fd: int, parent_parts: tuple[str, ...], depth: int) -> None:
         directory_before = os.fstat(directory_fd)
@@ -225,6 +276,7 @@ def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, in
                         "Agent runtime 符号链接扫描期间发生变化"
                     )
                 _validate_symlink_target(target, parent_parts)
+                symlinks[(*parent_parts, name)] = target
                 counter.add_entry(depth=entry_depth, size=int(before.st_size))
                 continue
             raise workspace_store.AgentWorkspaceSecurityError(
@@ -236,6 +288,7 @@ def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, in
             )
 
     walk(root_fd, (), 0)
+    _validate_symlink_graph(symlinks)
     root_after = os.fstat(root_fd)
     if _stable_signature(root_before) != _stable_signature(root_after):
         raise workspace_store.AgentWorkspaceSecurityError(
@@ -340,6 +393,7 @@ def _copy_tree_fd(
         )
     source_device = int(source_root_before.st_dev)
     counter = _new_counter()
+    symlinks: dict[tuple[str, ...], str] = {}
 
     def copy_directory(
         source_fd: int,
@@ -437,6 +491,7 @@ def _copy_tree_fd(
                         "Agent runtime 符号链接复制期间发生变化"
                     )
                 _validate_symlink_target(target, parent_parts)
+                symlinks[(*parent_parts, name)] = target
                 counter.add_entry(depth=entry_depth, size=int(before.st_size))
                 try:
                     os.symlink(target, name, dir_fd=destination_fd)
@@ -455,6 +510,9 @@ def _copy_tree_fd(
         os.fsync(destination_fd)
 
     copy_directory(source_root_fd, destination_root_fd, (), 0)
+    # scan 与 copy 之间源目录仍可能被敌对进程替换；以实际复制到 staging
+    # 的链接图再次验证，不能只依赖复制前的扫描结果。
+    _validate_symlink_graph(symlinks)
     if _stable_signature(source_root_before) != _stable_signature(
         os.fstat(source_root_fd)
     ):
@@ -681,6 +739,62 @@ def _checkpoint_exists(checkpoints_fd: int, checkpoint_id: str) -> bool:
     return True
 
 
+def _discard_tree_at(parent_fd: int, name: str) -> None:
+    """不跟随链接地删除一个明确允许丢弃的运行时目录项。"""
+
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise workspace_store.AgentWorkspaceSecurityError(
+            "无法安全检查 Agent 临时运行态"
+        ) from exc
+    if stat.S_ISDIR(info.st_mode):
+        child_fd = workspace_store._open_existing_directory_at(
+            parent_fd,
+            name,
+            label="Agent 临时运行态目录",
+        )
+        try:
+            for raw_name in os.listdir(child_fd):
+                _discard_tree_at(child_fd, _entry_name(raw_name))
+        finally:
+            os.close(child_fd)
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+        except OSError as exc:
+            raise workspace_store.AgentWorkspaceSecurityError(
+                "无法安全删除 Agent 临时运行态目录"
+            ) from exc
+    else:
+        try:
+            # unlink 固定在 parent_fd 下且不解析链接目标；这里可以安全清理
+            # Codex 为镜像内 arg0 helper 创建的绝对符号链接。
+            os.unlink(name, dir_fd=parent_fd)
+        except OSError as exc:
+            raise workspace_store.AgentWorkspaceSecurityError(
+                "无法安全删除 Agent 临时运行态目录项"
+            ) from exc
+    os.fsync(parent_fd)
+
+
+def _discard_ephemeral_runtime(source_runtime_fd: int) -> None:
+    for parent_name, child_name in _EPHEMERAL_RUNTIME_PATHS:
+        try:
+            parent_fd = workspace_store._open_existing_directory_at(
+                source_runtime_fd,
+                parent_name,
+                label="Agent harness 运行态目录",
+            )
+        except FileNotFoundError:
+            continue
+        try:
+            _discard_tree_at(parent_fd, child_name)
+        finally:
+            os.close(parent_fd)
+
+
 def _create_checkpoint(
     session_id,
     checkpoint_id,
@@ -731,6 +845,7 @@ def _create_checkpoint(
                         raise workspace_store.AgentWorkspaceSecurityError(
                             "Agent runtime 目录不存在；空基线必须显式创建"
                         ) from exc
+                    _discard_ephemeral_runtime(source_runtime_fd)
                     expected_usage, _root_mode = _scan_tree_fd(source_runtime_fd)
 
                 _max_bytes, _max_files, _max_entries, _max_depth, min_free = _limits()
