@@ -1023,12 +1023,14 @@ def remove_managed_directory(
     *,
     expected_device: int,
     expected_inode: int,
+    expected_ctime_ns: int | None = None,
 ) -> int:
     """按已审计 inode 精确删除存储根内的一棵真实目录树。
 
     该原语只能在 :func:`storage_mutation_lock` 内使用。路径的每一级均通过
     ``dir_fd`` 和 ``O_NOFOLLOW`` 打开；目标必须仍与调用方记录的设备号、
-    inode 完全一致。返回删除前安全扫描得到的逻辑字节数。
+    inode 完全一致；调用方提供 ``expected_ctime_ns`` 时还会拒绝 inode
+    被文件系统快速复用后的同路径新目录。返回删除前安全扫描得到的逻辑字节数。
     """
 
     root_path = assert_storage_mutation_lock(root)
@@ -1044,6 +1046,12 @@ def remove_managed_directory(
         raise VibeHubStorageSecurityError("VibeHub 待删除目录路径无效")
     device = _nonnegative_integer(expected_device, label="VibeHub 待删除目录设备号")
     inode = _positive_integer(expected_inode, label="VibeHub 待删除目录 inode")
+    ctime_ns = None
+    if expected_ctime_ns is not None:
+        ctime_ns = _nonnegative_integer(
+            expected_ctime_ns,
+            label="VibeHub 待删除目录 ctime_ns",
+        )
 
     opened_root, root_fd = _prepare_private_root(root_path)
     parent_fd = -1
@@ -1068,6 +1076,7 @@ def remove_managed_directory(
             not stat.S_ISDIR(before.st_mode)
             or int(before.st_dev) != device
             or int(before.st_ino) != inode
+            or (ctime_ns is not None and int(before.st_ctime_ns) != ctime_ns)
         ):
             raise VibeHubStorageSecurityError("VibeHub 待删除目录身份已变化")
         child_fd = _open_child_directory(
@@ -1076,7 +1085,10 @@ def remove_managed_directory(
             root_device=root_device,
         )
         opened = os.fstat(child_fd)
-        if (int(opened.st_dev), int(opened.st_ino)) != (device, inode):
+        if (
+            (int(opened.st_dev), int(opened.st_ino)) != (device, inode)
+            or (ctime_ns is not None and int(opened.st_ctime_ns) != ctime_ns)
+        ):
             raise VibeHubStorageSecurityError("VibeHub 待删除目录打开后身份不一致")
         logical_bytes = _scan_directory_fd(child_fd, root_device=root_device)
         _secure_clear_directory_fd(child_fd, root_device=root_device)

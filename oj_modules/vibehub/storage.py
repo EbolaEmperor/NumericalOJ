@@ -63,7 +63,7 @@ SNAPSHOT_RETIREMENT_GRACE_SECONDS = 60 * 60
 CRASH_ORPHAN_GRACE_SECONDS = 60 * 60
 CRASH_ORPHAN_MARKER_DIRECTORY = ".orphan-gc"
 BUILTIN_STORAGE_SLUGS = frozenset({"circle-cat", "arc-agi-3"})
-_CRASH_ORPHAN_MARKER_SCHEMA_VERSION = 1
+_CRASH_ORPHAN_MARKER_SCHEMA_VERSION = 2
 _CRASH_ORPHAN_MARKER_RE = re.compile(r"^([0-9a-f]{64})\.json$")
 _CRASH_ORPHAN_TEMP_RE = re.compile(r"^\.marker-([0-9a-f]{32})\.tmp$")
 _STORAGE_SLOT_LOCK_RE = re.compile(r"^\.storage-mutation-slot-([0-7])\.lock$")
@@ -129,6 +129,7 @@ class _CrashOrphanCandidate:
     path: Path
     target_device: int
     target_inode: int
+    target_ctime_ns: int
     version: int | None = None
     clone: str | None = None
 
@@ -142,6 +143,7 @@ class _CrashOrphanMarker:
     orphaned_at: float
     target_device: int
     target_inode: int
+    target_ctime_ns: int | None
     version: int | None = None
     clone: str | None = None
 
@@ -759,7 +761,7 @@ def _managed_directory_identity(
     root_device: int,
     label: str,
     scan_tree: bool = True,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     try:
         info = path.lstat()
     except OSError as exc:
@@ -778,7 +780,7 @@ def _managed_directory_identity(
             quotas.logical_tree_bytes(path)
         except quotas.VibeHubStorageSecurityError as exc:
             raise SnapshotReconciliationError(f"{label}审计失败") from exc
-    return int(info.st_dev), int(info.st_ino)
+    return int(info.st_dev), int(info.st_ino), int(info.st_ctime_ns)
 
 
 def _managed_orphan_candidate(
@@ -790,7 +792,7 @@ def _managed_orphan_candidate(
     version: int | None = None,
     clone: str | None = None,
 ) -> _CrashOrphanCandidate:
-    target_device, target_inode = _managed_directory_identity(
+    target_device, target_inode, target_ctime_ns = _managed_directory_identity(
         path,
         root_device=root_device,
         label="VibeHub 崩溃孤儿目录",
@@ -808,6 +810,7 @@ def _managed_orphan_candidate(
         path=path,
         target_device=target_device,
         target_inode=target_inode,
+        target_ctime_ns=target_ctime_ns,
         version=version,
         clone=clone,
     )
@@ -825,6 +828,7 @@ def _crash_orphan_marker_payload(
         "orphaned_at": float(orphaned_at),
         "target_device": candidate.target_device,
         "target_inode": candidate.target_inode,
+        "target_ctime_ns": candidate.target_ctime_ns,
     }
     if candidate.version is not None:
         payload["version"] = candidate.version
@@ -844,7 +848,11 @@ def _write_crash_orphan_marker(
         label="VibeHub 崩溃孤儿目录",
         scan_tree=False,
     )
-    if current_identity != (candidate.target_device, candidate.target_inode):
+    if current_identity != (
+        candidate.target_device,
+        candidate.target_inode,
+        candidate.target_ctime_ns,
+    ):
         raise SnapshotReconciliationError("VibeHub 崩溃孤儿在 marker 写入前被替换")
     marker_root.mkdir(parents=False, exist_ok=True, mode=0o700)
     info = marker_root.lstat()
@@ -928,6 +936,7 @@ def _crash_orphan_markers(marker_root: Path, *, root_device: int):
                 version=version,
                 clone=clone,
             )
+            schema_version = payload.get("schema_version")
             expected_keys = {
                 "schema_version",
                 "key",
@@ -937,6 +946,8 @@ def _crash_orphan_markers(marker_root: Path, *, root_device: int):
                 "target_device",
                 "target_inode",
             }
+            if schema_version == _CRASH_ORPHAN_MARKER_SCHEMA_VERSION:
+                expected_keys.add("target_ctime_ns")
             if version is not None:
                 expected_keys.add("version")
             if clone is not None:
@@ -950,13 +961,14 @@ def _crash_orphan_markers(marker_root: Path, *, root_device: int):
             orphaned_at = float(raw_orphaned_at)
             target_device = payload.get("target_device")
             target_inode = payload.get("target_inode")
+            target_ctime_ns = payload.get("target_ctime_ns")
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise SnapshotReconciliationError("VibeHub 崩溃孤儿 marker 无法解析") from exc
         if (
             set(payload) != expected_keys
             or isinstance(payload.get("schema_version"), bool)
             or not isinstance(payload.get("schema_version"), int)
-            or payload.get("schema_version") != _CRASH_ORPHAN_MARKER_SCHEMA_VERSION
+            or schema_version not in {1, _CRASH_ORPHAN_MARKER_SCHEMA_VERSION}
             or payload.get("key") != key
             or hashlib.sha256(key.encode("utf-8")).hexdigest() != matched.group(1)
             or not math.isfinite(orphaned_at)
@@ -967,6 +979,15 @@ def _crash_orphan_markers(marker_root: Path, *, root_device: int):
             or isinstance(target_inode, bool)
             or not isinstance(target_inode, int)
             or target_inode <= 0
+            or (
+                schema_version == _CRASH_ORPHAN_MARKER_SCHEMA_VERSION
+                and (
+                    isinstance(target_ctime_ns, bool)
+                    or not isinstance(target_ctime_ns, int)
+                    or target_ctime_ns < 0
+                )
+            )
+            or (schema_version == 1 and target_ctime_ns is not None)
         ):
             raise SnapshotReconciliationError("VibeHub 崩溃孤儿 marker 内容异常")
         if key in markers:
@@ -979,6 +1000,11 @@ def _crash_orphan_markers(marker_root: Path, *, root_device: int):
             orphaned_at=orphaned_at,
             target_device=target_device,
             target_inode=target_inode,
+            target_ctime_ns=(
+                target_ctime_ns
+                if schema_version == _CRASH_ORPHAN_MARKER_SCHEMA_VERSION
+                else None
+            ),
             version=version,
             clone=clone,
         )
@@ -1534,9 +1560,18 @@ def reclaim_expired_crash_orphans(
         if candidate is None:
             stale_markers.append(marker.path)
             continue
-        identity = (candidate.target_device, candidate.target_inode)
-        if identity != (marker.target_device, marker.target_inode):
-            # 同路径已被新的崩溃遗留替换；绝不沿用旧宽限删除新 inode。
+        identity = (
+            candidate.target_device,
+            candidate.target_inode,
+            candidate.target_ctime_ns,
+        )
+        marker_identity = (
+            marker.target_device,
+            marker.target_inode,
+            marker.target_ctime_ns,
+        )
+        if marker.target_ctime_ns is None or identity != marker_identity:
+            # 同路径已被新的崩溃遗留替换；即使 inode 被复用，也绝不沿用旧宽限。
             refreshed_candidates.append(candidate)
         elif current_time - marker.orphaned_at >= grace:
             expired_candidates.append((candidate, marker))
@@ -1562,6 +1597,7 @@ def reclaim_expired_crash_orphans(
                 candidate.path,
                 expected_device=marker.target_device,
                 expected_inode=marker.target_inode,
+                expected_ctime_ns=marker.target_ctime_ns,
             )
         except quotas.VibeHubStorageSecurityError as exc:
             raise SnapshotReconciliationError("VibeHub 崩溃孤儿目录无法安全回收") from exc
