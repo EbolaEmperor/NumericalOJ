@@ -50,7 +50,7 @@ def _normalized_historical_dom(name):
     prefix = '<div class="numoj-content arc-agi-page">\n'
     suffixes = {
         "index.html": '\n</div>\n<script src="./vendor/bootstrap/bootstrap.bundle.min.js">',
-        "game.html": '\n</div>\n<script src="../../arc-agi-3.js">',
+        "game.html": '\n</div>\n<script src="../arc-agi-3.js">',
         "not-found.html": "\n</div>\n\n</body>",
     }
     assert source.count(prefix) == 1
@@ -235,8 +235,9 @@ def test_catalog_and_player_keep_original_dom_and_only_use_relative_runtime_urls
     assert "探索未知规则" not in index
     assert "OFFLINE SANDBOX" not in index
     assert 'id="arcGameApp"' in player
-    assert 'data-start-url="../../api/games/g000/start"' in player
-    assert 'data-action-url-template="../../api/sessions/SESSION_ID/action"' in player
+    assert 'data-start-url="../api/games/g000/start"' in player
+    assert 'data-action-url-template="../api/sessions/SESSION_ID/action"' in player
+    assert "../../" not in player + (STATIC / "not-found.html").read_text()
     assert "__GAME_" not in player
     assert "url_for(" not in index + player
 
