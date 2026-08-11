@@ -3,7 +3,7 @@
 模块导入和配置注册都不会创建目录、连接数据库或启动线程。Web worker 必须通过
 ``ensure_vibehub_storage_gc`` 显式启动 daemon。每轮严格沿用业务写入的锁序：先取得
 全局 ``storage_mutation_lock``，再用 ``FOR UPDATE`` 锁定全部社区作品与版本 live-set，
-最后调用存储层经过 inode 绑定和完整审计的回收原语。
+最后调用存储层经过 device/inode/ctime_ns 绑定和完整审计的回收原语。
 """
 
 from __future__ import annotations

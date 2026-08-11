@@ -174,11 +174,13 @@ TTL 回收旧容器。每个作品的 latest、public、review 通道分别使�
 multipart/form 请求体；发布申请不需要请求体，管理员审核则在进入槽和解析决定前先验证
 管理员身份。所有路径最终都在业务事务中重新锁定并校验作者、状态与配额。
 存储 GC 始终按“全局 `storage_mutation_lock` → 数据库作品/版本
-`FOR UPDATE` live-set → 存储层 inode 绑定回收”的顺序执行。超过 1 小时的退役
+`FOR UPDATE` live-set → 存储层 device/inode/ctime_ns 绑定回收”的顺序执行。超过 1 小时的退役
 marker 不再依赖作者后续写入才删除；同一轮还会回收超过 1 小时的受管上传
 staging。安装快照后、DB commit 前崩溃所留的未提交 `vN`、clone 或完全无 DB 行的
-社区项目也会先写入根级严格 marker；只有同一 device/inode 连续超过 1 小时才会删除，
-内置作品、锁和上传 staging 均不会被当成项目孤儿。启动在单进程内幂等，生产保持
+社区项目也会先写入根级严格 marker；只有同一 device/inode/ctime_ns 连续超过 1 小时才会
+删除，同路径目录被替换后即使文件系统复用了 inode，也会重新开始宽限。旧格式 marker 会先
+安全刷新为新身份格式，不会沿用旧时间删除目录。内置作品、锁和上传 staging 均不会被当成
+项目孤儿。启动在单进程内幂等，生产保持
 单 worker；单轮 DB 或存储异常只记录日志并在
 下一周期重试，不会终止 Web 服务。
 作品能写入的 `/tmp` 与 `/run/vibehub` 都是内存与容器资源限制内的有界 tmpfs，不存在可借

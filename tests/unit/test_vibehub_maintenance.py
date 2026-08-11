@@ -187,7 +187,7 @@ def test_background_gc_reclaims_db_unknown_version_and_crashed_clone(tmp_path):
     assert not clone.exists()
 
 
-def test_install_before_commit_project_orphan_uses_fresh_inode_grace(tmp_path):
+def test_install_before_commit_project_orphan_uses_fresh_identity_grace(tmp_path):
     first_orphan = _snapshot(tmp_path, 1, slug="lost-vibe")
     first = maintenance.run_storage_gc_once(
         upload_root=tmp_path,
@@ -197,6 +197,10 @@ def test_install_before_commit_project_orphan_uses_fresh_inode_grace(tmp_path):
 
     assert first.crash_orphans.newly_marked == ("project:lost-vibe",)
     assert first_orphan.is_dir()
+    marker = next((tmp_path / storage.CRASH_ORPHAN_MARKER_DIRECTORY).iterdir())
+    marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert marker_payload["schema_version"] == 2
+    assert marker_payload["target_ctime_ns"] > 0
 
     # 模拟用户重试时业务层清理旧孤儿，随后又在 commit 前崩溃。
     with quotas.storage_mutation_lock(tmp_path):
@@ -223,6 +227,37 @@ def test_install_before_commit_project_orphan_uses_fresh_inode_grace(tmp_path):
 
     assert expired.crash_orphans.deleted_expired == ("project:lost-vibe",)
     assert not (tmp_path / "lost-vibe").exists()
+
+
+def test_legacy_crash_orphan_marker_refreshes_grace_before_delete(tmp_path):
+    orphan = _snapshot(tmp_path, 1, slug="lost-vibe")
+    maintenance.run_storage_gc_once(
+        upload_root=tmp_path,
+        connection_factory=_empty_connection,
+        now=100,
+    )
+    marker = next((tmp_path / storage.CRASH_ORPHAN_MARKER_DIRECTORY).iterdir())
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    payload.pop("target_ctime_ns")
+    marker.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    refreshed = maintenance.run_storage_gc_once(
+        upload_root=tmp_path,
+        connection_factory=_empty_connection,
+        now=3_700,
+    )
+
+    assert refreshed.crash_orphans.refreshed_markers == ("project:lost-vibe",)
+    assert refreshed.crash_orphans.deleted_expired == ()
+    assert orphan.is_dir()
+    upgraded = json.loads(marker.read_text(encoding="utf-8"))
+    assert upgraded["schema_version"] == 2
+    assert upgraded["orphaned_at"] == 3_700
+    assert upgraded["target_ctime_ns"] > 0
 
 
 def test_orphan_gc_audits_entire_root_before_deleting(tmp_path):

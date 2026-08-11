@@ -216,12 +216,13 @@ stable tag 与 `.deploy/vibehub-base-oci/current` 才一起切到同一 engine I
 备份的 run-id 绑定。恢复时必须成对恢复，不能把新数据库与旧作品树（或反之）混用。
 每个 Web worker 会幂等启动存储 GC daemon，启动后立即扫描，之后默认每 15 分钟运行。
 每轮先取得全局 `storage_mutation_lock`，再以 `FOR UPDATE` 锁定全部社区容器作品与版本
-live-set，最后调用存储层的 inode 绑定退役快照回收和上传 staging 回收；数据库事务
+live-set，最后调用存储层的 device/inode/ctime_ns 绑定退役快照回收和上传 staging 回收；数据库事务
 只用于保持该事实快照，通过 rollback 释放行锁，不会写入业务数据。超过 1 小时的 marker
 与受管 staging 因此会在没有后续用户写入时最终回收。同一轮还审计整个受管根，对
 install-before-commit 崩溃留下的 DB 未知 `vN`、clone 和无 DB 社区项目写入根级
-`.orphan-gc` marker，一小时后仍为同一 device/inode 才回收；同路径被新 inode 替换时必须
-重新开始宽限。内置作品、控制锁和 `.staging` 不进入项目孤儿删除面。任一轮完整性审计、DB 或文件系统
+`.orphan-gc` marker，一小时后仍为同一 device/inode/ctime_ns 才回收；同路径目录被替换后
+即使文件系统复用了 inode，也必须重新开始宽限。旧格式 marker 只允许刷新，不允许直接删除。
+内置作品、控制锁和 `.staging` 不进入项目孤儿删除面。任一轮完整性审计、DB 或文件系统
 操作失败都只告警并等待下一周期，不得终止 Web，也不得降级为未审计删除。
 
 部署专用 Python 辅助实现统一维护在 `deploy/`；日志、结构同步和停机恢复继续复用 `scripts/` 中的通用运维入口。`deploy.sh` 只做 Shell 流程编排，不允许 heredoc Python 或 `python -c`。数据库备份实现按兼容策略、APT、物理执行、路径安全、特权操作和状态编排分层；稳定入口是 `deploy/backup_database.py`，服务端兼容判断不得在 `policy.py` 之外复制。
