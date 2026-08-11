@@ -241,6 +241,50 @@ def test_validate_vibehub_builder_reports_missing_builder():
         )
 
 
+def test_ensure_vibehub_builder_creates_only_when_missing():
+    calls = []
+    list_count = 0
+    builder = {
+        "Name": "numoj-vibehub",
+        "Driver": "docker-container",
+        "Nodes": [{"Name": "numoj-vibehub0", "Status": "running"}],
+    }
+
+    def runner(command, **kwargs):
+        nonlocal list_count
+        calls.append((command, kwargs))
+        if command[:3] == ["docker", "buildx", "ls"]:
+            list_count += 1
+            payload = (
+                {"Name": "default", "Driver": "docker", "Nodes": []}
+                if list_count == 1
+                else builder
+            )
+            return subprocess.CompletedProcess(
+                command, 0, _buildx_list_output(payload), ""
+            )
+        if command[:3] == ["docker", "buildx", "create"]:
+            return subprocess.CompletedProcess(command, 0, "numoj-vibehub\n", "")
+        name = command[-1]
+        return subprocess.CompletedProcess(command, 0, json.dumps({
+            "Name": f"/{name}",
+            "State": {"Running": True},
+            "HostConfig": {"NetworkMode": "none"},
+        }), "")
+
+    assert preflight.ensure_vibehub_builder(
+        config_loader=_config,
+        command_runner=runner,
+    ) == "numoj-vibehub"
+    create = next(
+        command for command, _kwargs in calls
+        if command[:3] == ["docker", "buildx", "create"]
+    )
+    assert "--use" not in create
+    assert "network=none" in create
+    assert f"image={preflight.VIBEHUB_BUILDKIT_IMAGE}" in create
+
+
 def test_validate_vibehub_builder_preserves_buildx_error():
     def runner(command, **_kwargs):
         return subprocess.CompletedProcess(

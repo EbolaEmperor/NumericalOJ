@@ -37,6 +37,10 @@ REQUIRED_VIBEHUB_OCI_LAYOUT_ROOT = ROOT / ".deploy" / "vibehub-base-oci"
 BUILDER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 BUILDER_NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 MAX_BUILDER_NODES = 16
+VIBEHUB_BUILDKIT_IMAGE = (
+    "moby/buildkit:v0.30.0@"
+    "sha256:0168606be2315b7c807a03b3d8aa79beefdb31c98740cebdffdfeebf31190c9f"
+)
 
 
 class PreflightError(RuntimeError):
@@ -184,7 +188,12 @@ def _run_builder_inspect(command_runner, command: list[str]):
     return payload
 
 
-def _read_buildx_builder(command_runner, builder: str) -> dict:
+def _read_buildx_builder(
+    command_runner,
+    builder: str,
+    *,
+    allow_missing: bool = False,
+) -> dict | None:
     try:
         result = command_runner(
             ["docker", "buildx", "ls", "--format", "json"],
@@ -213,10 +222,69 @@ def _read_buildx_builder(command_runner, builder: str) -> dict:
         raise PreflightError("VibeHub 专属 builder 清单格式无效")
     matches = [payload for payload in payloads if payload.get("Name") == builder]
     if not matches:
+        if allow_missing:
+            return None
         raise PreflightError(f"生产未预置 VibeHub 专属 builder：{builder}")
     if len(matches) != 1:
         raise PreflightError("VibeHub 专属 builder 清单存在同名重复项")
     return matches[0]
+
+
+def ensure_vibehub_builder(
+    *,
+    config_loader: Callable[[], ModuleType] | None = None,
+    command_runner=None,
+) -> str:
+    """创建缺失的离线 builder，然后执行完整的只读校验。"""
+
+    loader = config_loader or _load_project_config
+    config = loader()
+    builder = getattr(config, "VIBEHUB_BUILD_BUILDER", None)
+    if not isinstance(builder, str) or BUILDER_NAME_RE.fullmatch(builder) is None:
+        raise PreflightError("生产 VibeHub 专属 builder 名称无效")
+    if getattr(config, "VIBEHUB_REQUIRE_DEDICATED_BUILDER", None) is not True:
+        raise PreflightError(
+            "生产 VibeHub 必须要求专属 docker-container builder"
+        )
+
+    runner = command_runner or subprocess.run
+    if _read_buildx_builder(runner, builder, allow_missing=True) is None:
+        node_name = f"{builder}0"
+        if BUILDER_NODE_NAME_RE.fullmatch(node_name) is None:
+            raise PreflightError("VibeHub 专属 builder 节点名称无效")
+        command = [
+            "docker", "buildx", "create",
+            "--name", builder,
+            "--node", node_name,
+            "--driver", "docker-container",
+            "--driver-opt", f"image={VIBEHUB_BUILDKIT_IMAGE}",
+            "--driver-opt", "network=none",
+            "--bootstrap",
+            "default",
+        ]
+        try:
+            result = runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise PreflightError("无法创建 VibeHub 专属 builder") from exc
+        if result.returncode != 0:
+            detail = " ".join(str(result.stderr or "").split())[:500]
+            suffix = f"：{detail}" if detail else ""
+            raise PreflightError(
+                f"VibeHub 专属 builder 创建失败"
+                f"（退出码：{result.returncode}）{suffix}"
+            )
+        print(f"已创建 VibeHub 专属 builder：{builder}", file=sys.stderr)
+
+    return validate_vibehub_builder(
+        config_loader=lambda: config,
+        command_runner=runner,
+    )
 
 
 def validate_vibehub_builder(
@@ -362,6 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-vibehub-builder",
         description="Validate the dedicated, network-isolated Buildx builder.",
     )
+    commands.add_parser(
+        "ensure-vibehub-builder",
+        description="Create the dedicated Buildx builder when it is missing.",
+    )
 
     source_digest = commands.add_parser(
         "docker-source-digest",
@@ -377,6 +449,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "validate-config":
             validate_production_config(args.env_file)
+        elif args.command == "ensure-vibehub-builder":
+            print(ensure_vibehub_builder())
         elif args.command == "validate-vibehub-builder":
             print(validate_vibehub_builder())
         else:
