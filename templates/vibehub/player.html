@@ -16,23 +16,6 @@
   data-heartbeat-url-template="{{ heartbeat_url_template|default('', true) }}"
   data-release-url-template="{{ release_url_template|default('', true) }}"
 >
-  <header class="vibe-player-toolbar" data-vibe-player-toolbar>
-    <a href="{{ return_url }}" aria-label="退出作品并返回{{ return_label }}">
-      <i class="fas fa-arrow-left" aria-hidden="true"></i>
-      <span>退出作品</span>
-    </a>
-    <div class="vibe-player-identity">
-      <i class="fas fa-cube" aria-hidden="true"></i>
-      <span><small>VIBEHUB / SANDBOX</small><strong>{{ project.title }}</strong></span>
-    </div>
-    <p class="vibe-player-state" data-vibe-player-state>
-      <i aria-hidden="true"></i><span>正在申请运行资源</span>
-    </p>
-    <button type="button" data-vibe-reload aria-label="重新载入作品" title="重新载入">
-      <i class="fas fa-rotate-right" aria-hidden="true"></i>
-    </button>
-  </header>
-
   <iframe
     class="vibe-player-frame"
     data-vibe-player-frame
@@ -50,7 +33,7 @@
       data-icon-only="true"
       data-size="lg"
       data-color-a="#c95d32"
-      data-color-b="#385b4a"
+      data-color-b="#c95d32"
       data-stroke-scale="1.08"
       aria-label="正在准备游戏运行环境"
     ></span>

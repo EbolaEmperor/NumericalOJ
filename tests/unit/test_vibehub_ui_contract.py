@@ -111,10 +111,15 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
         'allow-downloads"'
     ) in player
     assert "allow-same-origin" not in player
-    assert "VIBEHUB / SANDBOX" in player
+    assert "VIBEHUB / SANDBOX" not in player
+    assert "data-vibe-player-toolbar" not in player
+    assert "data-vibe-reload" not in player
+    assert ".vibe-player-toolbar" not in css
     assert "data-math-curve-loader" in player
     assert 'data-icon-only="true"' in player
     assert 'data-size="lg"' in player
+    assert 'data-color-a="#c95d32"' in player
+    assert 'data-color-b="#c95d32"' in player
     assert "首次访问需要构建游戏镜像" in player
     assert ".vibe-player-loading .vibe-player-loader" in css
     assert ".vibe-player-loader i" not in css
@@ -123,6 +128,7 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     assert "height: 100vh" in css
     assert 'window.addEventListener("pagehide"' in javascript
     assert "navigator.sendBeacon" in javascript
+    assert "data-vibe-reload" not in javascript
     assert "window.setInterval(heartbeat" in javascript
     assert "heartbeatFailures >= 3" in javascript
     assert "releaseLease(false)" in javascript
@@ -133,6 +139,10 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     assert "if (lease && !released) return Promise.resolve(lease);" in javascript
     assert "if (heartbeatPromise) return heartbeatPromise;" in javascript
     assert "lease !== heartbeatLease || released" in javascript
+    assert 'response.headers.get("Retry-After")' in javascript
+    assert "error.status === 429" in javascript
+    assert "retryCount < MAX_ACQUIRE_RETRIES" in javascript
+    assert "requestLease(generation, retryCount + 1)" in javascript
     assert "controller.abort()" in javascript
 
 
