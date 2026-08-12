@@ -379,13 +379,22 @@ def serialize_frame_data(frame_data, session):
         selected = [frames[index] for index in indices]
     else:
         selected = frames
+    encoded_frames = []
+    for raw_frame in selected:
+        frame = _validated_frame(raw_frame)
+        height, width = frame.shape
+        encoded_frames.append([
+            int(width),
+            int(height),
+            base64.b64encode(frame.tobytes(order="C")).decode("ascii"),
+        ])
     return {
         "game_id": session.game_spec["slug"],
         "state": frame_data.state.value,
         "levels_completed": int(frame_data.levels_completed),
         "win_levels": int(frame_data.win_levels),
         "available_actions": [int(action) for action in frame_data.available_actions],
-        "frames": [_validated_frame(frame).tolist() for frame in selected],
+        "frames": encoded_frames,
         "skipped_frames": max(0, len(frames) - len(selected)),
         "action_count": session.action_count,
         "default_fps": session.game_spec["default_fps"],

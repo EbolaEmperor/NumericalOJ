@@ -89,6 +89,7 @@ MAX_BUILD_CACHE_MAX_BYTES = 100 * GIB
 BUILD_CONCURRENCY = 1
 PROXY_CONCURRENCY = 8
 HEALTH_PROBE_CONCURRENCY = 4
+RELAY_POOL_SIZE = 4
 _COMMAND_OUTPUT_LIMIT = 128 * 1024
 _BUILDKIT_DIAGNOSTIC_MAX_CHARS = 2_048
 _MAX_STATE_BYTES = 4 * 1024 * 1024
@@ -390,6 +391,208 @@ class _BoundedBytes:
             self.value.extend(chunk[:remaining])
         if len(chunk) > max(0, remaining):
             self.truncated = True
+
+
+class _PersistentRelayProcess:
+    """复用一个固定 ``docker exec``，按帧串行转发多个 HTTP 请求。"""
+
+    def __init__(self, command: Sequence[str], *, popen_factory=subprocess.Popen):
+        self._command = tuple(str(item) for item in command)
+        self._proc = popen_factory(
+            list(self._command),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+            start_new_session=True,
+        )
+        if self._proc.stdin is None or self._proc.stdout is None:
+            self.close()
+            raise OSError("persistent relay pipes unavailable")
+        os.set_blocking(self._proc.stdin.fileno(), False)
+        os.set_blocking(self._proc.stdout.fileno(), False)
+
+    def request(
+        self,
+        request_frame: bytes,
+        *,
+        timeout: float,
+        response_max_bytes: int,
+    ) -> bytes:
+        if self._proc.poll() is not None:
+            raise OSError("persistent relay exited")
+        assert self._proc.stdin is not None and self._proc.stdout is not None
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        request_offset = 0
+        response = bytearray()
+        expected_size = None
+        hard_limit = int(response_max_bytes) + _RELAY_METADATA_MAX_BYTES + 8
+        selector = selectors.DefaultSelector()
+        selector.register(self._proc.stdin, selectors.EVENT_WRITE)
+        selector.register(self._proc.stdout, selectors.EVENT_READ)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(self._command, timeout)
+                events = selector.select(min(0.1, remaining))
+                if not events and self._proc.poll() is not None:
+                    raise OSError("persistent relay exited")
+                for key, _mask in events:
+                    pipe = key.fileobj
+                    if pipe is self._proc.stdin:
+                        try:
+                            written = os.write(
+                                pipe.fileno(),
+                                request_frame[request_offset:request_offset + 65536],
+                            )
+                        except BlockingIOError:
+                            continue
+                        request_offset += written
+                        if request_offset >= len(request_frame):
+                            selector.unregister(pipe)
+                        continue
+
+                    try:
+                        chunk = os.read(pipe.fileno(), 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        raise OSError("persistent relay closed stdout")
+                    response.extend(chunk)
+                    if len(response) > hard_limit:
+                        raise ValueError("persistent relay response too large")
+                    if len(response) >= 8 and expected_size is None:
+                        if response[:4] != _RELAY_MAGIC:
+                            raise ValueError("persistent relay magic mismatch")
+                        metadata_length = struct.unpack(">I", response[4:8])[0]
+                        if not 1 <= metadata_length <= _RELAY_METADATA_MAX_BYTES:
+                            raise ValueError("persistent relay metadata too large")
+                        metadata_end = 8 + metadata_length
+                        if len(response) >= metadata_end:
+                            metadata = json.loads(
+                                response[8:metadata_end].decode("utf-8")
+                            )
+                            body_length = (
+                                metadata.get("body_length")
+                                if isinstance(metadata, dict)
+                                else None
+                            )
+                            if (
+                                type(body_length) is not int
+                                or not 0 <= body_length <= int(response_max_bytes)
+                            ):
+                                raise ValueError("persistent relay body length invalid")
+                            expected_size = metadata_end + body_length
+                    if expected_size is not None and len(response) >= expected_size:
+                        if len(response) != expected_size:
+                            raise ValueError("persistent relay emitted trailing bytes")
+                        return bytes(response)
+        except Exception:
+            self.close()
+            raise
+        finally:
+            selector.close()
+
+    def close(self) -> None:
+        proc = getattr(self, "_proc", None)
+        if proc is None:
+            return
+        for pipe_name in ("stdin", "stdout"):
+            pipe = getattr(proc, pipe_name, None)
+            if pipe is not None and not pipe.closed:
+                pipe.close()
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except (OSError, ProcessLookupError):
+                pass
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (OSError, ProcessLookupError):
+                    proc.kill()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+
+
+class _PersistentRelayPool:
+    """为单个容器保留少量零 CPU 空闲 relay，避免逐请求启动进程。"""
+
+    def __init__(self, command, factory, *, max_size: int = RELAY_POOL_SIZE):
+        self._command = tuple(command)
+        self._factory = factory
+        self._max_size = int(max_size)
+        self._condition = threading.Condition()
+        self._idle = []
+        self._total = 0
+        self._closed = False
+
+    def request(self, frame, *, timeout: float, response_max_bytes: int) -> bytes:
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        relay = None
+        create = False
+        with self._condition:
+            while relay is None:
+                if self._closed:
+                    raise OSError("persistent relay pool closed")
+                if self._idle:
+                    relay = self._idle.pop()
+                    break
+                if self._total < self._max_size:
+                    self._total += 1
+                    create = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(self._command, timeout)
+                self._condition.wait(remaining)
+        if create:
+            try:
+                relay = self._factory(self._command)
+            except Exception:
+                with self._condition:
+                    self._total -= 1
+                    self._condition.notify()
+                raise
+        assert relay is not None
+        healthy = True
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self._command, timeout)
+            return relay.request(
+                frame,
+                timeout=remaining,
+                response_max_bytes=response_max_bytes,
+            )
+        except Exception:
+            healthy = False
+            raise
+        finally:
+            keep = False
+            with self._condition:
+                if healthy and not self._closed:
+                    self._idle.append(relay)
+                    keep = True
+                else:
+                    self._total -= 1
+                self._condition.notify()
+            if not keep:
+                relay.close()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            idle, self._idle = self._idle, []
+            self._total -= len(idle)
+            self._condition.notify_all()
+        for relay in idle:
+            relay.close()
 
 
 def _run_binary_command(
@@ -928,12 +1131,18 @@ class DockerCLI:
         *,
         command_runner=_run_command,
         binary_command_runner=_run_binary_command,
+        relay_process_factory=None,
         build_builder: str = "",
         build_cache_max_bytes: int = DEFAULT_BUILD_CACHE_MAX_BYTES,
         base_oci_layout_root: Path | str = DEFAULT_BASE_OCI_LAYOUT_ROOT,
     ):
         self._command_runner = command_runner
         self._binary_command_runner = binary_command_runner
+        if relay_process_factory is None and binary_command_runner is _run_binary_command:
+            relay_process_factory = _PersistentRelayProcess
+        self._relay_process_factory = relay_process_factory
+        self._relay_pools: dict[str, _PersistentRelayPool] = {}
+        self._relay_pools_lock = threading.Lock()
         self.build_builder = str(build_builder or "").strip()
         if self.build_builder and not _DOCKER_NAME_RE.fullmatch(self.build_builder):
             raise ValueError("VIBEHUB_BUILD_BUILDER 名称无效")
@@ -1479,6 +1688,7 @@ class DockerCLI:
             raise VibeHubRuntimeError("受管 VibeHub /data 不可由作品用户写入")
 
     def remove_container(self, name: str) -> None:
+        self._close_relay_pool(name)
         last_detail = ""
         for _attempt in range(2):
             result = self._run(["docker", "rm", "-f", name], timeout=15)
@@ -1487,6 +1697,55 @@ class DockerCLI:
                 return
             last_detail = detail or f"docker rm exited {result.returncode}"
         raise VibeHubRuntimeError(f"无法确认 VibeHub 容器已删除：{last_detail[:500]}")
+
+    def _close_relay_pool(self, container_name: str) -> None:
+        with self._relay_pools_lock:
+            pool = self._relay_pools.pop(container_name, None)
+        if pool is not None:
+            pool.close()
+
+    def retain_relay_pools(self, container_names: Iterable[str]) -> None:
+        """回收本 Web worker 中已不对应共享 runtime 的 relay。"""
+
+        retained = frozenset(container_names)
+        with self._relay_pools_lock:
+            stale = [
+                (name, self._relay_pools.pop(name))
+                for name in tuple(self._relay_pools)
+                if name not in retained
+            ]
+        for _name, pool in stale:
+            pool.close()
+
+    def _persistent_relay_response(
+        self,
+        container_name: str,
+        command: Sequence[str],
+        request_frame: bytes,
+        *,
+        timeout: float,
+        response_max_bytes: int,
+    ) -> bytes:
+        factory = self._relay_process_factory
+        if factory is None:
+            raise OSError("persistent relay disabled")
+        with self._relay_pools_lock:
+            pool = self._relay_pools.get(container_name)
+            if pool is None:
+                pool = _PersistentRelayPool(command, factory)
+                self._relay_pools[container_name] = pool
+        try:
+            return pool.request(
+                request_frame,
+                timeout=timeout,
+                response_max_bytes=response_max_bytes,
+            )
+        except Exception:
+            with self._relay_pools_lock:
+                if self._relay_pools.get(container_name) is pool:
+                    self._relay_pools.pop(container_name, None)
+            pool.close()
+            raise
 
     def container_running(self, name: str) -> bool:
         result = self._run(
@@ -1567,6 +1826,27 @@ class DockerCLI:
             container_name,
             "/usr/local/bin/vibehub-uds-relay",
         ]
+        if self._relay_process_factory is not None:
+            try:
+                response_frame = self._persistent_relay_response(
+                    container_name,
+                    command,
+                    request_frame,
+                    timeout=float(timeout) + 3.0,
+                    response_max_bytes=int(response_max_bytes),
+                )
+            except FileNotFoundError as exc:
+                raise VibeHubProxyError(
+                    "Docker CLI 不存在，无法执行 VibeHub relay"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise VibeHubProxyError("VibeHub docker exec relay 超时") from exc
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                raise VibeHubProxyError("VibeHub docker exec relay 执行失败") from exc
+            return _parse_relay_response(
+                response_frame,
+                response_max_bytes=response_max_bytes,
+            )
         try:
             result = self._binary_command_runner(
                 command,
@@ -2994,6 +3274,17 @@ class VibeHubRuntimeManager:
         self._reconcile_once()
         with self._locked_state() as state:
             removed, actions = self._collect_cleanup_locked(state)
+            retained_relays = {
+                str(runtime.get("container_name") or "")
+                for runtime in state["runtimes"].values()
+                if isinstance(runtime, dict)
+            }
+        retained_relays.difference_update(
+            str(action[2].get("container_name") or "") for action in actions
+        )
+        retain_relay_pools = getattr(self.docker, "retain_relay_pools", None)
+        if callable(retain_relay_pools):
+            retain_relay_pools(retained_relays)
         first_error: Exception | None = None
         for action in actions:
             try:
@@ -3158,8 +3449,6 @@ class VibeHubRuntimeManager:
 
             poison_runtime = False
             try:
-                if not self.docker.container_running(container_name):
-                    raise VibeHubProxyError("VibeHub 代理发现容器未运行")
                 raw_response = self._runtime_http_request(
                     container_name,
                     selected_method,

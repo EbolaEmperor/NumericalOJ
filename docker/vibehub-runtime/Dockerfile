@@ -11,12 +11,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     VIBEHUB_HEALTH_PATH=/healthz
 
 WORKDIR /app
-COPY uds_relay.py /usr/local/bin/vibehub-uds-relay
 RUN python -m pip install --no-cache-dir \
         numpy==2.5.0 pillow==12.2.0 arcengine==0.9.3 \
-    && chmod 0555 /usr/local/bin/vibehub-uds-relay \
     && mkdir -p /app /data/home \
     && chown -R 65532:65532 /app /data
+COPY uds_relay.py /usr/local/bin/vibehub-uds-relay
+RUN chmod 0555 /usr/local/bin/vibehub-uds-relay
 
 # 运行器仍会强制 --user 65532:65532；这里让直接调试也保持非 root。
 USER 65532:65532

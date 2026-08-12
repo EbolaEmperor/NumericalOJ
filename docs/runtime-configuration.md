@@ -148,7 +148,7 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `VIBEHUB_REQUEST_TIMEOUT_SECONDS` | float | `15` | relay HTTP 端到端单请求总时限，范围 0.1–120 秒。 |
 | `VIBEHUB_REQUEST_MAX_BYTES` | int | `16777216` | 单请求体上限；硬上限 64 MiB。 |
 | `VIBEHUB_RESPONSE_MAX_BYTES` | int | `16777216` | 单响应体上限；硬上限 64 MiB。 |
-| `VIBEHUB_PROXY_TRANSPORT` | string | `docker-exec` | 只允许有界 `docker exec` relay；`auto` 是兼容别名，`host-uds` 被拒绝。 |
+| `VIBEHUB_PROXY_TRANSPORT` | string | `docker-exec` | 只允许有界、可复用的 `docker exec` relay；`auto` 是兼容别名，`host-uds` 被拒绝。 |
 | `VIBEHUB_BUILD_TIMEOUT_SECONDS` | float | `480` | 单次离线镜像构建时限，范围 1–540 秒；硬上限低于 Gunicorn 的 600 秒请求超时。 |
 | `VIBEHUB_BUILD_SLOT_TIMEOUT_SECONDS` | float | `5` | 等待宿主唯一构建槽的最长时间；范围 0–120 秒，超时返回 429。 |
 | `VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS` | float | `0.25` | 等待宿主 8 个代理槽之一的最长时间；范围 0–10 秒，超时返回 429。 |
@@ -167,7 +167,10 @@ driver 才会落实；Docker Desktop/containerd 等环境可能只接受参数�
 目录扫描不能作为对抗恶意作品的安全边界。
 
 `/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
-`docker exec` relay 访问 `app.sock`。普通作品另限制为 20 GiB 完整镜像、4 GiB 内存和 2 CPU；
+`docker exec` relay 访问 `app.sock`。同一 Web worker 会为活跃容器复用最多 4 个固定命令、固定用户的
+relay 进程，避免每个静态资源和游戏操作都重新启动 Python 与 `docker exec`；协议仍逐请求执行完整
+长度、超时和响应上限校验。容器回收或 relay 异常时进程池立即失效，各 worker 的 reaper 也会清理
+已不在共享 runtime state 中的本地池。普通作品另限制为 20 GiB 完整镜像、4 GiB 内存和 2 CPU；
 精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
 跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
 TTL 回收旧容器。每个作品的 latest、public、review 通道分别使用稳定的受管镜像 tag，内容

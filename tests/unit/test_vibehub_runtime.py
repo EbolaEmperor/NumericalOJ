@@ -1269,6 +1269,31 @@ def test_proxy_overwrites_session_headers_and_strips_oj_credentials_and_cookies(
     assert "sandbox" in response_headers["content-security-policy"]
 
 
+def test_proxy_hot_path_trusts_relay_instead_of_running_docker_inspect(
+    monkeypatch,
+    short_tmp,
+):
+    class RelayDocker(_FakeDocker):
+        def __init__(self):
+            super().__init__()
+            self.running_checks = 0
+
+        def container_running(self, name):
+            self.running_checks += 1
+            return super().container_running(name)
+
+        def relay_http(self, *_args, **_kwargs):
+            return runtime.ProxyResponse(200, "OK", (), b"ok")
+
+    docker = RelayDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    docker.running_checks = 0
+
+    assert manager.proxy(lease.token, "GET", "/", {}).body == b"ok"
+    assert docker.running_checks == 0
+
+
 def test_stream_proxy_never_reads_body_for_invalid_token_or_full_capacity(
     monkeypatch,
     short_tmp,
@@ -2142,6 +2167,81 @@ def test_docker_exec_relay_uses_fixed_bounded_command_and_frame():
     assert observed["stdout_limit"] == 1024 + runtime._RELAY_METADATA_MAX_BYTES + 8
     assert observed["stderr_limit"] == 16 * 1024
     assert observed["input"].startswith(runtime._RELAY_MAGIC)
+
+
+def test_persistent_relay_reuses_one_exec_for_sequential_requests():
+    created = []
+
+    class FakeRelay:
+        def __init__(self, command):
+            self.command = list(command)
+            self.requests = 0
+            self.closed = False
+            created.append(self)
+
+        def request(self, _frame, *, timeout, response_max_bytes):
+            assert timeout > 0
+            assert response_max_bytes == 1024
+            self.requests += 1
+            return _relay_frame({
+                "version": 1,
+                "status": 200,
+                "reason": "OK",
+                "headers": [],
+                "body_length": 2,
+            }, b"ok")
+
+        def close(self):
+            self.closed = True
+
+    docker = runtime.DockerCLI(relay_process_factory=FakeRelay)
+    name = "numoj-vh-" + "a" * 16 + "-" + "b" * 40
+
+    for _ in range(2):
+        assert docker.relay_http(
+            name,
+            "GET",
+            "/healthz",
+            {"Host": "vibehub.internal"},
+            b"",
+            timeout=2,
+            response_max_bytes=1024,
+        ).body == b"ok"
+
+    assert len(created) == 1
+    assert created[0].requests == 2
+    assert created[0].command == [
+        "docker", "exec", "-i", "--user", "65532:65532", name,
+        "/usr/local/bin/vibehub-uds-relay",
+    ]
+    docker._close_relay_pool(name)
+    assert created[0].closed is True
+
+
+def test_relay_protocol_accepts_multiple_frames_on_one_stream():
+    import importlib.util
+    from io import BytesIO
+
+    relay_path = (
+        Path(__file__).resolve().parents[2]
+        / "docker" / "vibehub-runtime" / "uds_relay.py"
+    )
+    spec = importlib.util.spec_from_file_location("vibehub_uds_relay", relay_path)
+    relay = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(relay)
+    first = runtime._encode_relay_request(
+        "GET", "/one", {"Host": "vibehub.internal"}, b"",
+        timeout=2, response_max_bytes=1024,
+    )
+    second = runtime._encode_relay_request(
+        "POST", "/two", {"Host": "vibehub.internal"}, b"payload",
+        timeout=2, response_max_bytes=1024,
+    )
+    source = BytesIO(first + second)
+
+    assert relay._load_request(source)[:2] == ("GET", "/one")
+    assert relay._load_request(source)[:2] == ("POST", "/two")
+    assert relay._load_request(source) is None
 
 
 def test_auto_transport_is_secure_alias_for_docker_exec(short_tmp):

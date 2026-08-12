@@ -6,12 +6,12 @@
     return;
   }
 
-  const palette = [
-    '#ffffff', '#cccccc', '#999999', '#666666',
-    '#333333', '#000000', '#e53aa3', '#ff7bcc',
-    '#f93c31', '#1e93ff', '#88d8f1', '#ffdc00',
-    '#ff851b', '#921231', '#4fcc30', '#a356d6',
-  ];
+  const palette = new Uint8Array([
+    255, 255, 255, 204, 204, 204, 153, 153, 153, 102, 102, 102,
+    51, 51, 51, 0, 0, 0, 229, 58, 163, 255, 123, 204,
+    249, 60, 49, 30, 147, 255, 136, 216, 241, 255, 220, 0,
+    255, 133, 27, 146, 18, 49, 79, 204, 48, 163, 86, 214,
+  ]);
   const canvas = document.getElementById('arcGameCanvas');
   const context = canvas.getContext('2d', { alpha: false });
   const loader = document.getElementById('arcBoardLoader');
@@ -36,6 +36,7 @@
   let gameState = 'NOT_PLAYED';
   let availableActions = new Set();
   let currentFrame = null;
+  let currentImageData = null;
   let animationSequence = 0;
 
   function showLoader(message) {
@@ -116,23 +117,37 @@
   }
 
   function drawFrame(frame) {
-    if (!Array.isArray(frame) || !frame.length || !Array.isArray(frame[0])) {
+    if (
+      !Array.isArray(frame) || frame.length !== 3
+      || !Number.isInteger(frame[0]) || !Number.isInteger(frame[1])
+      || frame[0] < 1 || frame[0] > 64 || frame[1] < 1 || frame[1] > 64
+      || typeof frame[2] !== 'string'
+    ) {
       return;
     }
-    const height = frame.length;
-    const width = frame[0].length;
-    canvas.width = width;
-    canvas.height = height;
-    context.imageSmoothingEnabled = false;
-    for (let y = 0; y < height; y += 1) {
-      const row = frame[y];
-      for (let x = 0; x < width; x += 1) {
-        const colorIndex = Number(row[x]);
-        context.fillStyle = palette[colorIndex] || '#000000';
-        context.fillRect(x, y, 1, 1);
-      }
+    const width = frame[0];
+    const height = frame[1];
+    const encoded = window.atob(frame[2]);
+    if (encoded.length !== width * height) {
+      return;
     }
-    currentFrame = frame;
+    if (canvas.width !== width || canvas.height !== height || !currentImageData) {
+      canvas.width = width;
+      canvas.height = height;
+      context.imageSmoothingEnabled = false;
+      currentImageData = context.createImageData(width, height);
+    }
+    const pixels = currentImageData.data;
+    for (let index = 0; index < encoded.length; index += 1) {
+      const colorOffset = encoded.charCodeAt(index) * 3;
+      const pixelOffset = index * 4;
+      pixels[pixelOffset] = palette[colorOffset] || 0;
+      pixels[pixelOffset + 1] = palette[colorOffset + 1] || 0;
+      pixels[pixelOffset + 2] = palette[colorOffset + 2] || 0;
+      pixels[pixelOffset + 3] = 255;
+    }
+    context.putImageData(currentImageData, 0, 0);
+    currentFrame = { width: width, height: height };
   }
 
   function animateFrames(frames, fps) {
@@ -263,12 +278,12 @@
     }
     const bounds = canvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(
-      canvas.width - 1,
-      Math.floor((event.clientX - bounds.left) * canvas.width / bounds.width)
+      currentFrame.width - 1,
+      Math.floor((event.clientX - bounds.left) * currentFrame.width / bounds.width)
     ));
     const y = Math.max(0, Math.min(
-      canvas.height - 1,
-      Math.floor((event.clientY - bounds.top) * canvas.height / bounds.height)
+      currentFrame.height - 1,
+      Math.floor((event.clientY - bounds.top) * currentFrame.height / bounds.height)
     ));
     submitAction(6, { x: x, y: y });
   });
