@@ -154,7 +154,7 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     assert "controller.abort()" in javascript
 
 
-def test_player_route_overrides_global_csp_and_confines_iframe(monkeypatch):
+def test_player_route_removes_outgoing_csp_restrictions(monkeypatch):
     user = {"id": 7, "username": "alice", "is_admin": 0}
     monkeypatch.setattr(auth_module, "current_user", lambda: user)
     monkeypatch.setattr(vibehub_routes, "current_user", lambda: user)
@@ -184,20 +184,7 @@ def test_player_route_overrides_global_csp_and_confines_iframe(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
-    directives = {
-        parts[0]: parts[1:]
-        for directive in response.headers["Content-Security-Policy"].split(";")
-        if (parts := directive.strip().split())
-    }
-    for name in ("frame-src", "child-src"):
-        assert directives[name] == ["*", "data:", "blob:"]
-    assert directives["connect-src"] == [
-        "*", "data:", "blob:", "http:", "https:", "ws:", "wss:",
-    ]
-    assert directives["script-src"] == ["'self'"]
-    assert "'self'" in directives["style-src"]
-    assert directives["object-src"] == ["'none'"]
-    assert "https:" in response.headers["Content-Security-Policy"]
+    assert response.headers["Content-Security-Policy"] == "frame-ancestors 'self'"
 
 
 def test_runtime_proxy_is_the_only_capability_public_route_contract():

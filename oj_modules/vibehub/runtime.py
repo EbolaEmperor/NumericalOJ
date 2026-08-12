@@ -226,14 +226,7 @@ _ALLOWED_METHODS = frozenset((*RUNTIME_CORS_METHODS, "OPTIONS"))
 
 _PROXY_CSP = (
     "sandbox allow-scripts allow-forms allow-modals allow-downloads "
-    "allow-popups allow-popups-to-escape-sandbox; "
-    "default-src * data: blob:; "
-    "script-src * data: blob: 'unsafe-inline' 'unsafe-eval'; "
-    "style-src * data: blob: 'unsafe-inline'; "
-    "img-src * data: blob:; media-src * data: blob:; "
-    "font-src * data: blob:; connect-src * data: blob: http: https: ws: wss:; "
-    "worker-src * data: blob:; frame-src * data: blob:; "
-    "object-src * data: blob:; base-uri *; form-action *; navigate-to *"
+    "allow-popups allow-popups-to-escape-sandbox"
 )
 
 _logger = logging.getLogger(__name__)
@@ -2055,25 +2048,7 @@ def _sanitize_response(
         except ValueError:
             return None
         if parsed_location.scheme or parsed_location.netloc or raw_value.startswith("//"):
-            external_location = parsed_location
-            if raw_value.startswith("//"):
-                try:
-                    external_location = urlsplit("http:" + raw_value)
-                except ValueError:
-                    return None
-            if (
-                external_location.scheme.lower() in {"http", "https"}
-                and external_location.netloc
-                and external_location.hostname
-                and external_location.username is None
-                and external_location.password is None
-            ):
-                try:
-                    external_location.port
-                except ValueError:
-                    return None
-                return raw_value
-            return None
+            return raw_value
         origin = "http://vibehub.internal"
         resolved = urlsplit(urljoin(origin + request_target, raw_value))
         if resolved.scheme != "http" or resolved.netloc != "vibehub.internal":
@@ -2683,7 +2658,6 @@ class VibeHubRuntimeManager:
             self.docker.remove_container(name)
             raise
         return {
-            "runtime_abi": RUNTIME_ABI,
             "project_key": project_key,
             "channel": channel,
             "image_ref": image.reference,
@@ -2880,15 +2854,6 @@ class VibeHubRuntimeManager:
 
             actions: list[tuple[str, str, dict]] = []
             with self._locked_state() as state:
-                for runtime_id, runtime in list(state["runtimes"].items()):
-                    if (
-                        _RUNTIME_ID_RE.fullmatch(runtime_id)
-                        and isinstance(runtime, dict)
-                        and runtime.get("runtime_abi") != RUNTIME_ABI
-                    ):
-                        actions.append(
-                            self._mark_stopping_locked(state, runtime_id, runtime)
-                        )
                 for runtime_id, name in candidates:
                     if runtime_id in state["runtimes"]:
                         continue
@@ -3074,7 +3039,6 @@ class VibeHubRuntimeManager:
                 self._require_runtime_capacity_locked(state)
                 reservation_id = secrets.token_hex(16)
                 state["runtimes"][runtime_id] = {
-                    "runtime_abi": RUNTIME_ABI,
                     "status": "starting",
                     "reservation_id": reservation_id,
                     "reservation_deadline": (
