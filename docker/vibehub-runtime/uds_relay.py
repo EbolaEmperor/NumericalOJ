@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import http.client
+import errno
 import json
 import math
 import re
@@ -11,6 +12,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 
 
 MAGIC = b"VHR1"
@@ -19,6 +21,8 @@ METADATA_MAX_BYTES = 64 * 1024
 BODY_HARD_MAX_BYTES = 64 * 1024 * 1024
 ALLOWED_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+SOCKET_CONNECT_RETRY_SECONDS = 2.0
+SOCKET_CONNECT_RETRY_INTERVAL_SECONDS = 0.02
 
 
 def _has_controls(value: str) -> bool:
@@ -40,14 +44,23 @@ class _UnixConnection(http.client.HTTPConnection):
         super().__init__("vibehub.internal", timeout=timeout)
 
     def connect(self) -> None:
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(self.timeout)
-        try:
-            connection.connect(SOCKET_PATH)
-        except Exception:
-            connection.close()
-            raise
-        self.sock = connection
+        deadline = time.monotonic() + min(
+            float(self.timeout), SOCKET_CONNECT_RETRY_SECONDS,
+        )
+        while True:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.settimeout(self.timeout)
+            try:
+                connection.connect(SOCKET_PATH)
+            except OSError as exc:
+                connection.close()
+                remaining = deadline - time.monotonic()
+                if exc.errno not in {errno.ENOENT, errno.ECONNREFUSED} or remaining <= 0:
+                    raise
+                time.sleep(min(SOCKET_CONNECT_RETRY_INTERVAL_SECONDS, remaining))
+                continue
+            self.sock = connection
+            return
 
 
 def _load_request(source):
