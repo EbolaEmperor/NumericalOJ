@@ -254,6 +254,17 @@ def _ensure_stable_workspace(session_id):
     return workspace
 
 
+def _read_stable_workspace(session_id):
+    """验证已有工作区路径，不触发递归配额扫描。"""
+
+    from oj_modules.agents.workspace import get_existing_agent_workspace_path
+
+    workspace = Path(get_existing_agent_workspace_path(session_id)).expanduser().resolve()
+    if not workspace.is_dir() or workspace.is_symlink():
+        raise RuntimeError("Agent 会话工作区不可用")
+    return workspace
+
+
 def _clear_current_session_state(workspace):
     """每轮启动前移除上一轮摘要，防止把陈旧 session 当成新结果。"""
 
@@ -383,7 +394,7 @@ def read_agent_steer_capability(session_id, harness):
     """返回会话当前原生 harness 是否支持同轮软插话及原因。"""
 
     normalized_harness = normalize_launch_harness(harness)
-    workspace = _ensure_stable_workspace(session_id)
+    workspace = _read_stable_workspace(session_id)
     state = _read_native_session_state(workspace, normalized_harness)
     if isinstance(state, dict) and "interactive_supported" in state:
         supported = bool(state.get("interactive_supported"))

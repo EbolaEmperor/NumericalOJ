@@ -1211,6 +1211,26 @@ def test_read_agent_steer_capability_marks_legacy_opencode_only(
     assert runtime.read_agent_steer_capability("s-1", "opencode") == (True, "")
 
 
+def test_read_agent_steer_capability_does_not_scan_workspace_quota(
+        monkeypatch, tmp_path):
+    workspace_root = tmp_path / "agent-workspaces"
+    monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
+    workspace = workspace_root / "sessions/s-1/workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aj_session_state.json").write_text(json.dumps({
+        "harness": "codex",
+        "session_id": "00000000-0000-0000-0000-000000000001",
+        "interactive_supported": True,
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        agent_workspace,
+        "_check_workspace_quota_fd",
+        lambda *_args, **_kwargs: pytest.fail("读取插话能力不应扫描 workspace 配额"),
+    )
+
+    assert runtime.read_agent_steer_capability("s-1", "codex") == (True, "")
+
+
 def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path):
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()

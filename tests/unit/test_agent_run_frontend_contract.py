@@ -235,6 +235,21 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     assert "background: transparent;" in retry_rule
 
 
+def test_agent_detail_live_refreshes_do_not_overlap_or_poll_beside_healthy_sse():
+    controller = _read("static/app/agents/conversation.js")
+
+    assert "if (workspaceFetchPending) return workspaceFetchPending;" in controller
+    assert "if (workspaceFetchPending) {" in controller
+    assert "if (normalizedDelay === 0) workspaceFinalRefreshPending = true;" in controller
+    assert "if (workspaceFetchPending === request) workspaceFetchPending = null;" in controller
+    assert "messageStreamHealthy = true;" in controller
+    assert "stopMessageStatePolling();" in controller
+    poll_finally = controller.split(
+        "refreshMessageState().catch(function () {}).finally(function () {", 1
+    )[1].split("});", 1)[0]
+    assert "if (!messageStream || !messageStreamHealthy)" in poll_finally
+
+
 def test_agent_detail_supports_durable_queue_and_soft_steering_controls():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")

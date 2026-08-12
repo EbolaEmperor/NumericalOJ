@@ -15,9 +15,11 @@
   var stream = null;
   var pollingTimer = null;
   var workspaceTimer = null;
+  var workspaceFinalRefreshPending = false;
   var currentState = readJson('[data-agent-current-state-json]', {});
   var messageState = readJson('[data-agent-message-state-json]', {});
   var messageStream = null;
+  var messageStreamHealthy = false;
   var messagePollingTimer = null;
   var messagePollingDueAt = 0;
   var queuePaused = root.dataset.queuePaused === 'true';
@@ -85,6 +87,7 @@
   var traceSignature = '';
   var treeSignature = '';
   var workspaceFetchGeneration = 0;
+  var workspaceFetchPending = null;
   var fileFetchGeneration = 0;
   var selectedPath = '';
   var fileAbortController = null;
@@ -992,18 +995,26 @@
       messagePollingTimer = null;
       messagePollingDueAt = 0;
       refreshMessageState().catch(function () {}).finally(function () {
-        var hasQueue = queuedMessages(messageState).length > 0;
-        if (running || hasQueue || queuePaused || !messageStream) {
+        if (!messageStream || !messageStreamHealthy) {
+          var hasQueue = queuedMessages(messageState).length > 0;
           scheduleMessageStateRefresh(running || hasQueue ? 2400 : 6000);
         }
       });
     }, normalizedDelay);
   }
 
+  function stopMessageStatePolling() {
+    if (messagePollingTimer) global.clearTimeout(messagePollingTimer);
+    messagePollingTimer = null;
+    messagePollingDueAt = 0;
+  }
+
   function parseMessageStreamEvent(event) {
     try {
       var payload = JSON.parse(event.data);
       applyMessageState(parseMessageStatePayload(payload));
+      messageStreamHealthy = true;
+      stopMessageStatePolling();
     } catch (_error) {
       scheduleMessageStateRefresh(0);
     }
@@ -1016,11 +1027,16 @@
       return;
     }
     messageStream = new global.EventSource(endpoint);
+    messageStream.addEventListener('open', function () {
+      messageStreamHealthy = true;
+      stopMessageStatePolling();
+    });
     ['session', 'message', 'queue', 'status'].forEach(function (eventName) {
       messageStream.addEventListener(eventName, parseMessageStreamEvent);
     });
     messageStream.onmessage = parseMessageStreamEvent;
     messageStream.addEventListener('error', function () {
+      messageStreamHealthy = false;
       scheduleMessageStateRefresh(500);
     });
   }
@@ -1933,9 +1949,10 @@
 
   function refreshWorkspace() {
     if (!workspaceTree || !root.dataset.workspaceTreeUrl) return Promise.resolve();
+    if (workspaceFetchPending) return workspaceFetchPending;
     var generation = ++workspaceFetchGeneration;
     setWorkspaceSync('syncing', '正在同步 Workspace');
-    return global.fetch(root.dataset.workspaceTreeUrl, {
+    var request = global.fetch(root.dataset.workspaceTreeUrl, {
       headers: {'Accept': 'application/json'},
       credentials: 'same-origin',
       cache: 'no-store',
@@ -1960,16 +1977,30 @@
         ));
       }
     });
+    workspaceFetchPending = request;
+    return request.finally(function () {
+      if (workspaceFetchPending === request) workspaceFetchPending = null;
+    });
   }
 
   function scheduleWorkspaceRefresh(delay) {
+    var normalizedDelay = Math.max(0, delay || 0);
+    if (workspaceFetchPending) {
+      if (normalizedDelay === 0) workspaceFinalRefreshPending = true;
+      return;
+    }
     if (workspaceTimer) return;
     workspaceTimer = global.setTimeout(function tick() {
       workspaceTimer = null;
       refreshWorkspace().finally(function () {
-        if (running) scheduleWorkspaceRefresh(2800);
+        if (workspaceFinalRefreshPending) {
+          workspaceFinalRefreshPending = false;
+          scheduleWorkspaceRefresh(0);
+        } else if (running) {
+          scheduleWorkspaceRefresh(2800);
+        }
       });
-    }, Math.max(0, delay || 0));
+    }, normalizedDelay);
   }
 
   function disposeFilePreview() {
@@ -2544,7 +2575,7 @@
   global.addEventListener('beforeunload', function () {
     stopLiveUpdates();
     if (messageStream) messageStream.close();
-    if (messagePollingTimer) global.clearTimeout(messagePollingTimer);
+    stopMessageStatePolling();
     if (workspaceTimer) global.clearTimeout(workspaceTimer);
     disposeFilePreview();
   });
