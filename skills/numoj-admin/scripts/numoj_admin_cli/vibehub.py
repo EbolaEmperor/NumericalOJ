@@ -114,11 +114,6 @@ def project_edit(args):
     _output(resp, necessary_project_payload)
 
 
-def project_review_request(args):
-    resp = client_from_args(args).request("POST", f"/api/vibehub/projects/{args.slug}/review")
-    _output(resp, necessary_project_payload)
-
-
 def project_featured_request(args):
     resp = client_from_args(args).request("POST", f"/api/vibehub/projects/{args.slug}/featured")
     _output(resp, necessary_project_payload)
@@ -141,7 +136,8 @@ def review_decide(args):
     resp = client_from_args(args).request(
         "POST",
         f"/api/vibehub/admin/reviews/{args.slug}",
-        json={"decision": args.decision, "note": common.read_text_value(args.note or "")},
+        json={"decision": args.decision, "note": common.read_text_value(args.note or ""),
+              "expected_version": args.expected_version},
     )
     _output(resp, necessary_project_payload)
 
@@ -199,9 +195,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("slug")
     _add_metadata_args(parser)
     parser.set_defaults(func=project_edit)
-    parser = common.add_cli_parser(commands, "submit-review", "Publish the latest administrator-owned version immediately.")
-    parser.add_argument("slug")
-    parser.set_defaults(func=project_review_request)
     parser = common.add_cli_parser(commands, "request-featured", "Request featured review for a published project.")
     parser.add_argument("slug")
     parser.set_defaults(func=project_featured_request)
@@ -210,6 +203,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser = common.add_cli_parser(commands, "review", "Approve or reject one submitted publication version.")
     parser.add_argument("slug")
     parser.add_argument("decision", choices=["approve", "reject"])
+    parser.add_argument("--expected-version", type=int, required=True,
+                        help="Version number shown in the pending-review queue.")
     parser.add_argument("--note", help="Review note, or @file.")
     parser.set_defaults(func=review_decide)
     parser = common.add_cli_parser(commands, "featured-pending", "List pending featured applications.")

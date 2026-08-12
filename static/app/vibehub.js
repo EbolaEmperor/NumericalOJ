@@ -168,9 +168,9 @@
       projectForm.elements.package.required = !editing;
       one("[data-vibe-modal-title]", projectDialog).textContent = editing ? "编辑作品" : "创建作品";
       one("[data-vibe-modal-description]", projectDialog).textContent = editing
-        ? "修改信息，可选上传新的完整程序包。"
-        : "上传一个完整的 VibeHub ZIP 程序包。";
-      projectSubmit.textContent = editing ? "更新并提交审核" : "创建并提交审核";
+        ? "保存修改时构建镜像并自动送审；可选上传新程序包。"
+        : "保存时构建镜像并自动送审。";
+      projectSubmit.textContent = editing ? "保存更新并自动送审" : "创建并自动送审";
       projectForm.elements.title.value = project.title || "";
       setFileLabel();
       showMessage(projectStatus, "");
@@ -227,7 +227,6 @@
         return;
       }
       var data = new FormData(projectForm);
-      data.set("submit_for_review", "true");
       var url = root.dataset.createUrl;
       var method = "POST";
       if (editing) {
@@ -237,11 +236,11 @@
         );
         method = hasPackage ? "POST" : "PATCH";
       }
-      showMessage(projectStatus, editing ? "正在更新并提交审核…" : "正在创建并提交审核…");
-      setBusy(projectSubmit, true, "提交中…");
+      showMessage(projectStatus, editing ? "正在构建更新并自动送审…" : "正在构建作品并自动送审…");
+      setBusy(projectSubmit, true, "构建并送审中…");
       try {
         await apiRequest(url, { method: method, body: data });
-        showMessage(projectStatus, "已进入审核队列，正在刷新我的作品…");
+        showMessage(projectStatus, "latest 镜像已构建并进入审核队列，正在刷新我的作品…");
         setTimeout(function () { window.location.assign("/vibehub/?view=mine"); }, 350);
       } catch (error) {
         showMessage(projectStatus, error.message, true);
@@ -257,8 +256,6 @@
       button.addEventListener("click", function () {
         approveDialog.dataset.slug = button.dataset.projectSlug;
         approveDialog.dataset.version = button.dataset.projectVersion;
-        one("[data-vibe-approve-description]", approveDialog).textContent =
-          "通过《" + button.dataset.projectTitle + "》后，当前待审版本会立即公开。";
         showMessage(approveStatus, "");
         openDialog(approveDialog, approveSubmit);
       });

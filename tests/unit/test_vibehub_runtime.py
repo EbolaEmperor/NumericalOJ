@@ -19,6 +19,7 @@ from oj_modules.vibehub import runtime
 
 _BASE_ID = "sha256:" + "1" * 64
 _APP_ID = "sha256:" + "2" * 64
+_PACKAGE_DIGEST = "a" * 64
 
 
 @pytest.fixture
@@ -152,32 +153,25 @@ class _FakeDocker:
         self.run_commands: list[list[str]] = []
         self.stopped: list[str] = []
         self.orphans: dict[str, dict[str, str]] = {}
-        self.managed_image_prunes = 0
-        self.build_cache_prunes = 0
-        self.removed_image_references: list[tuple[str, str]] = []
         self.data_volumes: dict[str, tuple[str, str]] = {}
-        self.data_write_checks: list[str] = []
 
     def inspect_image(self, reference):
         return runtime.ImageInfo(
             str(reference),
             _APP_ID,
             1024,
-            {runtime.MANAGED_IMAGE_LABEL: "1", runtime.SOURCE_DIGEST_LABEL: "source"},
+            {
+                runtime.MANAGED_IMAGE_LABEL: "1",
+                runtime.PACKAGE_DIGEST_LABEL: _PACKAGE_DIGEST,
+                runtime.SOURCE_DIGEST_LABEL: "source",
+            },
         )
+
+    def find_image(self, reference):
+        return self.inspect_image(reference)
 
     def build(self, *_args, **_kwargs):
         raise AssertionError("lifecycle test must not build")
-
-    def prune_managed_dangling_images(self):
-        self.managed_image_prunes += 1
-
-    def prune_dedicated_build_cache(self):
-        self.build_cache_prunes += 1
-
-    def remove_managed_image_reference(self, reference, expected_image_id):
-        self.removed_image_references.append((reference, expected_image_id))
-        return True
 
     def run_container(self, args):
         args = list(args)
@@ -190,9 +184,6 @@ class _FakeDocker:
         previous = self.data_volumes.setdefault(name, identity)
         if previous != identity:
             raise runtime.VibeHubRuntimeError("volume identity mismatch")
-
-    def verify_data_writable(self, container_name):
-        self.data_write_checks.append(container_name)
 
     def remove_container(self, name):
         if name in self.running or name in self.orphans:
@@ -245,6 +236,7 @@ def _manager(monkeypatch, tmp_path, *, docker=None, clock=lambda: 100.0, **kwarg
 
     def acquire_test_project(*args, **acquire_kwargs):
         acquire_kwargs.setdefault("storage_key", "project-1-public")
+        acquire_kwargs.setdefault("package_digest", _PACKAGE_DIGEST)
         return acquire(*args, **acquire_kwargs)
 
     monkeypatch.setattr(manager, "acquire", acquire_test_project)
@@ -272,6 +264,7 @@ def test_build_is_networked_bounded_and_inspects_final_image(tmp_path):
                     "Size": 10 * 1024 * 1024,
                     "Config": {"Labels": {
                         runtime.MANAGED_IMAGE_LABEL: "1",
+                        runtime.PACKAGE_DIGEST_LABEL: _PACKAGE_DIGEST,
                         runtime.SOURCE_DIGEST_LABEL: source_digest,
                     }},
                 }
@@ -293,6 +286,7 @@ def test_build_is_networked_bounded_and_inspects_final_image(tmp_path):
     result = runtime.build_image(
         package,
         "numoj-vibehub:test",
+        package_digest=_PACKAGE_DIGEST,
         docker_client=runtime.DockerCLI(command_runner=runner),
     )
 
@@ -333,6 +327,7 @@ def test_buildx_missing_uses_one_exact_legacy_fallback_with_same_command(tmp_pat
     runtime.DockerCLI(command_runner=runner).build(
         package,
         "numoj-vibehub:test",
+        package_digest=_PACKAGE_DIGEST,
         source_digest="a" * 64,
         limits=runtime.limits_for(False),
         timeout=30,
@@ -367,6 +362,7 @@ def test_dedicated_builder_uses_buildx_load_and_never_legacy_fallback(tmp_path):
     ).build(
         package,
         "numoj-vibehub:test",
+        package_digest=_PACKAGE_DIGEST,
         source_digest="a" * 64,
         resolved_bases=((runtime.DEFAULT_BASE_IMAGE, _BASE_ID),),
         limits=runtime.limits_for(False),
@@ -418,6 +414,7 @@ def test_dedicated_builder_fails_closed_when_oci_current_mismatches_base(tmp_pat
         ).build(
             package,
             "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
             source_digest="a" * 64,
             resolved_bases=((runtime.DEFAULT_BASE_IMAGE, _BASE_ID),),
             limits=runtime.limits_for(False),
@@ -431,54 +428,6 @@ def test_dedicated_builder_fails_closed_when_oci_current_mismatches_base(tmp_pat
             "buildx_buildkit_numoj-vibehub0",
         ],
     ]
-
-
-def test_cache_cleanup_is_scoped_to_managed_images_and_dedicated_builder():
-    commands: list[list[str]] = []
-
-    def runner(command, *, timeout, env=None):
-        command = list(command)
-        commands.append(command)
-        if command[:3] == ["docker", "buildx", "ls"]:
-            return runtime._CommandResult(0, _buildx_list_output(), "")
-        if command[:3] == ["docker", "container", "inspect"]:
-            return runtime._CommandResult(0, _buildx_node_inspect_payload(), "")
-        return runtime._CommandResult(0, "", "")
-
-    docker = runtime.DockerCLI(
-        command_runner=runner,
-        build_builder="numoj-vibehub",
-        build_cache_max_bytes=2 * runtime.GIB,
-    )
-    docker.prune_managed_dangling_images()
-    docker.prune_dedicated_build_cache()
-
-    image_prune = commands[0]
-    assert image_prune == [
-        "docker", "image", "prune", "--force", "--filter",
-        f"label={runtime.MANAGED_IMAGE_LABEL}=1",
-    ]
-    assert "-a" not in image_prune
-    cache_prune = commands[-1]
-    assert cache_prune == [
-        "docker", "buildx", "prune",
-        "--builder", "numoj-vibehub",
-        "--force", "--max-used-space", str(2 * runtime.GIB),
-    ]
-    assert not any(command[:3] == ["docker", "builder", "prune"] for command in commands)
-
-
-def test_local_legacy_mode_never_runs_global_builder_prune():
-    commands = []
-
-    def runner(command, *, timeout, env=None):
-        commands.append(list(command))
-        return runtime._CommandResult(0, "", "")
-
-    docker = runtime.DockerCLI(command_runner=runner)
-    docker.prune_dedicated_build_cache()
-
-    assert commands == []
 
 
 def test_dedicated_builder_rejects_shared_or_wrong_driver():
@@ -561,50 +510,6 @@ def test_dedicated_builder_verifies_every_running_node_uses_bridge():
     ]
 
 
-def test_idle_image_tag_cleanup_skips_a_retagged_or_unmanaged_image():
-    commands = []
-    replacement_id = "sha256:" + "9" * 64
-
-    def runner(command, *, timeout, env=None):
-        command = list(command)
-        commands.append(command)
-        return runtime._CommandResult(0, json.dumps({
-            "Id": replacement_id,
-            "Config": {"Labels": {runtime.MANAGED_IMAGE_LABEL: "1"}},
-        }), "")
-
-    removed = runtime.DockerCLI(
-        command_runner=runner,
-    ).remove_managed_image_reference("numoj-vibehub:test", _APP_ID)
-
-    assert removed is False
-    assert len(commands) == 1
-    assert commands[0][:3] == ["docker", "image", "inspect"]
-
-
-def test_idle_image_tag_cleanup_removes_only_the_exact_verified_reference():
-    commands = []
-
-    def runner(command, *, timeout, env=None):
-        command = list(command)
-        commands.append(command)
-        if command[:3] == ["docker", "image", "inspect"]:
-            return runtime._CommandResult(0, json.dumps({
-                "Id": _APP_ID,
-                "Config": {"Labels": {runtime.MANAGED_IMAGE_LABEL: "1"}},
-            }), "")
-        return runtime._CommandResult(0, "Untagged", "")
-
-    removed = runtime.DockerCLI(
-        command_runner=runner,
-    ).remove_managed_image_reference("numoj-vibehub:test", _APP_ID)
-
-    assert removed is True
-    assert commands[-1] == [
-        "docker", "image", "rm", "numoj-vibehub:test",
-    ]
-
-
 def test_other_build_failure_never_uses_legacy_fallback(tmp_path):
     package = _write_package(tmp_path / "package")
     calls = []
@@ -617,6 +522,7 @@ def test_other_build_failure_never_uses_legacy_fallback(tmp_path):
         runtime.DockerCLI(command_runner=runner).build(
             package,
             "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
             source_digest="a" * 64,
             limits=runtime.limits_for(False),
             timeout=30,
@@ -653,6 +559,7 @@ def test_build_failure_keeps_only_a_safe_single_line_buildkit_diagnostic(tmp_pat
         runtime.DockerCLI(command_runner=runner).build(
             package,
             "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
             source_digest="a" * 64,
             limits=runtime.limits_for(False),
             timeout=30,
@@ -692,6 +599,7 @@ def test_build_rejects_external_or_privilege_widening_dockerfile(tmp_path, docke
         runtime.build_image(
             package,
             "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
             docker_client=runtime.DockerCLI(
                 command_runner=lambda *_args, **_kwargs: pytest.fail(
                     "invalid Dockerfile must fail before Docker"
@@ -739,7 +647,7 @@ def test_runtime_args_use_default_docker_and_featured_resources_double(
     for required in (
         "--network", "bridge", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges=true", "--user", "65532:65532",
-        "--pull", "never", "--ipc", "none",
+        "--pull", "never", "--read-only",
     ):
         assert required in standard
     assert "--runtime" not in standard
@@ -754,10 +662,7 @@ def test_runtime_args_use_default_docker_and_featured_resources_double(
     assert standard[standard.index("--pids-limit") + 1] == "256"
     assert featured[featured.index("--pids-limit") + 1] == "512"
     assert standard[standard.index("--log-driver") + 1] == "none"
-    assert "--read-only" not in standard
-    assert standard[standard.index("--storage-opt") + 1] == str(
-        "size=" + str(runtime.STANDARD_WRITABLE_BYTES)
-    )
+    assert not any(value in standard for value in ("--storage-opt", "--ipc", "--cgroupns"))
     assert "--log-opt" not in standard
     tmpfs_mounts = [
         standard[index + 1]
@@ -778,12 +683,45 @@ def test_runtime_args_use_default_docker_and_featured_resources_double(
 
 
 def test_runtime_lease_exposes_only_container_internal_socket_path(monkeypatch, short_tmp):
-    lease = _manager(monkeypatch, short_tmp).acquire(
-        "demo@v1", "numoj-vibehub:demo"
-    )
+    lease = _manager(monkeypatch, short_tmp).acquire("demo@v1")
 
     assert lease.socket_path == Path("/run/vibehub/app.sock")
     assert not (short_tmp / "runtime" / "sessions").exists()
+
+
+def test_acquire_rejects_image_from_a_different_saved_package(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+
+    with pytest.raises(runtime.VibeHubImageError, match="当前作品版本"):
+        manager.acquire("demo@v1", package_digest="b" * 64)
+
+    assert docker.run_commands == []
+
+
+def test_legacy_public_image_remains_playable_but_cannot_be_reviewed(
+    monkeypatch,
+    short_tmp,
+):
+    class LegacyDocker(_FakeDocker):
+        def inspect_image(self, reference):
+            image = super().inspect_image(reference)
+            labels = dict(image.labels)
+            labels.pop(runtime.PACKAGE_DIGEST_LABEL)
+            return runtime.ImageInfo(
+                image.reference, image.image_id, image.size_bytes, labels,
+            )
+
+    docker = LegacyDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+
+    assert manager.acquire("demo@v1", channel="public")
+    with pytest.raises(runtime.VibeHubImageError, match="当前作品版本"):
+        manager.acquire(
+            "demo@v1",
+            channel="review",
+            storage_key="project-1-review",
+        )
 
 
 def test_storage_key_is_database_identity_and_channel_bound(monkeypatch, short_tmp):
@@ -791,7 +729,7 @@ def test_storage_key_is_database_identity_and_channel_bound(monkeypatch, short_t
     for value in ("demo-public", "project-0-public", "project-1-review", "../x"):
         with pytest.raises(runtime.VibeHubLeaseError, match="storage_key"):
             manager.acquire(
-                "demo@v1", "numoj-vibehub:demo", storage_key=value,
+                "demo@v1", storage_key=value,
             )
 
 
@@ -799,16 +737,15 @@ def test_data_volume_persists_after_container_recreation(monkeypatch, short_tmp)
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
 
-    first = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    first = manager.acquire("demo@v1")
     first_mount = docker.run_commands[-1][docker.run_commands[-1].index("--mount") + 1]
     assert manager.release(first.token) is True
-    second = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    second = manager.acquire("demo@v1")
     second_mount = docker.run_commands[-1][docker.run_commands[-1].index("--mount") + 1]
 
     assert first.container_name == second.container_name
     assert first_mount == second_mount
     assert len(docker.data_volumes) == 1
-    assert len(docker.data_write_checks) == 2
 
 
 def test_zero_idle_grace_starts_once_and_last_release_removes_container(
@@ -818,8 +755,8 @@ def test_zero_idle_grace_starts_once_and_last_release_removes_container(
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
 
-    first = manager.acquire("demo@v1", "numoj-vibehub:demo")
-    second = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    first = manager.acquire("demo@v1")
+    second = manager.acquire("demo@v1")
 
     assert len(docker.run_commands) == 1
     state_text = manager.state_path.read_text(encoding="utf-8")
@@ -832,6 +769,44 @@ def test_zero_idle_grace_starts_once_and_last_release_removes_container(
     assert docker.stopped == []
     assert manager.release(second.token) is True
     assert docker.stopped == [first.container_name]
+
+
+def test_acquire_replaces_dead_runtime_instead_of_returning_stale_lease(
+    monkeypatch,
+    short_tmp,
+):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    first = manager.acquire("demo@v1")
+    docker.running.remove(first.container_name)
+
+    second = manager.acquire("demo@v1")
+
+    assert second.container_name == first.container_name
+    assert len(docker.run_commands) == 2
+    with pytest.raises(runtime.VibeHubLeaseError):
+        manager.heartbeat(first.token)
+
+
+def test_reused_container_is_probed_outside_the_global_state_lock(
+    monkeypatch,
+    short_tmp,
+):
+    class ProbeDocker(_FakeDocker):
+        manager = None
+
+        def container_running(self, name):
+            acquired = self.manager._thread_lock.acquire(blocking=False)
+            assert acquired, "Docker inspect 不得占用全局 runtime state 锁"
+            self.manager._thread_lock.release()
+            return super().container_running(name)
+
+    docker = ProbeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    docker.manager = manager
+    manager.acquire("demo@v1")
+
+    manager.acquire("demo@v1")
 
 
 def test_idle_grace_reuses_container_and_cancels_scheduled_cleanup(
@@ -848,7 +823,7 @@ def test_idle_grace_reuses_container_and_cancels_scheduled_cleanup(
         idle_grace_seconds=300,
     )
 
-    first = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    first = manager.acquire("demo@v1")
     assert manager.release(first.token) is True
 
     state = manager._load_state()
@@ -858,7 +833,7 @@ def test_idle_grace_reuses_container_and_cancels_scheduled_cleanup(
     assert docker.stopped == []
 
     now[0] = 399.0
-    second = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    second = manager.acquire("demo@v1")
     active_runtime = next(iter(manager._load_state()["runtimes"].values()))
     assert "idle_deadline" not in active_runtime
     assert second.container_name == first.container_name
@@ -889,7 +864,7 @@ def test_active_runtime_limit_is_global_but_allows_existing_runtime_reuse(
         docker=docker,
         max_active_runtimes=1,
     )
-    first = first_worker.acquire("first@v1", "numoj-vibehub:first")
+    first = first_worker.acquire("first@v1")
     second_worker = _manager(
         monkeypatch,
         short_tmp,
@@ -898,9 +873,9 @@ def test_active_runtime_limit_is_global_but_allows_existing_runtime_reuse(
     )
 
     with pytest.raises(runtime.VibeHubCapacityError, match="宿主上限"):
-        second_worker.acquire("second@v1", "numoj-vibehub:second")
+        second_worker.acquire("second@v1")
 
-    shared = second_worker.acquire("first@v1", "numoj-vibehub:first")
+    shared = second_worker.acquire("first@v1")
     assert shared.container_name == first.container_name
     assert len(docker.run_commands) == 1
     assert len(second_worker._load_state()["runtimes"]) == 1
@@ -908,40 +883,6 @@ def test_active_runtime_limit_is_global_but_allows_existing_runtime_reuse(
     assert first_worker.release(first.token) is True
     assert second_worker.release(shared.token) is True
     assert docker.stopped == [first.container_name]
-
-
-def test_active_runtime_limit_reclaims_crash_orphan_before_new_start(
-    monkeypatch,
-    short_tmp,
-):
-    docker = _FakeDocker()
-    manager = _manager(
-        monkeypatch,
-        short_tmp,
-        docker=docker,
-        max_active_runtimes=2,
-    )
-    manager.acquire("first@v1", "numoj-vibehub:first")
-    orphan_runtime_id = "b" * 40
-    orphan_name = manager._container_name(orphan_runtime_id)
-    docker.orphans[orphan_name] = {
-        runtime.MANAGED_CONTAINER_LABEL: "1",
-        runtime.MANAGER_SCOPE_LABEL: manager.scope,
-        runtime.RUNTIME_ID_LABEL: orphan_runtime_id,
-    }
-    docker.running.add(orphan_name)
-
-    restarted_worker = _manager(
-        monkeypatch,
-        short_tmp,
-        docker=docker,
-        max_active_runtimes=2,
-    )
-    second = restarted_worker.acquire("second@v1", "numoj-vibehub:second")
-
-    assert len(docker.run_commands) == 2
-    assert orphan_name in docker.stopped
-    assert second.container_name in docker.running
 
 
 def test_slow_start_reservation_never_holds_global_state_lock(
@@ -963,9 +904,7 @@ def test_slow_start_reservation_never_holds_global_state_lock(
 
     def acquire_in_thread():
         try:
-            result["lease"] = starter.acquire(
-                "slow@v1", "numoj-vibehub:slow"
-            )
+            result["lease"] = starter.acquire("slow@v1")
         except Exception as exc:  # pragma: no cover - asserted below
             result["error"] = exc
 
@@ -981,7 +920,7 @@ def test_slow_start_reservation_never_holds_global_state_lock(
 
     began = time.monotonic()
     with pytest.raises(runtime.VibeHubCapacityError, match="正在切换"):
-        observer.acquire("slow@v1", "numoj-vibehub:slow")
+        observer.acquire("slow@v1")
     assert time.monotonic() - began < 0.5
 
     continue_start.set()
@@ -989,134 +928,6 @@ def test_slow_start_reservation_never_holds_global_state_lock(
     assert not thread.is_alive()
     assert "error" not in result
     assert result["lease"].container_name in docker.running
-
-
-def test_slow_heartbeat_probe_never_blocks_release_lock(
-    monkeypatch,
-    short_tmp,
-):
-    docker = _FakeDocker()
-    heartbeat_worker = _manager(monkeypatch, short_tmp, docker=docker)
-    first = heartbeat_worker.acquire("demo@v1", "numoj-vibehub:demo")
-    second = heartbeat_worker.acquire("demo@v1", "numoj-vibehub:demo")
-    release_worker = _manager(monkeypatch, short_tmp, docker=docker)
-    probing = threading.Event()
-    continue_probe = threading.Event()
-    result = {}
-
-    def block_probe(*_args, **_kwargs):
-        probing.set()
-        assert continue_probe.wait(2)
-
-    monkeypatch.setattr(heartbeat_worker, "_probe_runtime_health", block_probe)
-
-    def heartbeat_in_thread():
-        try:
-            result["lease"] = heartbeat_worker.heartbeat(first.token)
-        except Exception as exc:  # pragma: no cover - asserted below
-            result["error"] = exc
-
-    thread = threading.Thread(target=heartbeat_in_thread)
-    thread.start()
-    assert probing.wait(1)
-
-    began = time.monotonic()
-    assert release_worker.release(second.token) is True
-    assert time.monotonic() - began < 0.25
-
-    continue_probe.set()
-    thread.join(timeout=2)
-    assert not thread.is_alive()
-    assert "error" not in result
-    assert result["lease"].container_name == first.container_name
-    assert heartbeat_worker.release(first.token) is True
-
-
-def test_busy_cross_process_health_probe_returns_capacity_without_renewal(
-    monkeypatch,
-    short_tmp,
-):
-    now = [100.0]
-    docker = _FakeDocker()
-    manager = _manager(
-        monkeypatch,
-        short_tmp,
-        docker=docker,
-        clock=lambda: now[0],
-        health_probe_slot_timeout_seconds=0.05,
-    )
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
-    digest = runtime._token_digest(lease.token)
-    before = manager._load_state()["leases"][digest]["expires_at"]
-    lock_names = [
-        f"health-probe-slot-{index}.lock"
-        for index in range(runtime.HEALTH_PROBE_CONCURRENCY)
-    ]
-    context = multiprocessing.get_context("fork")
-    ready = context.Event()
-    release = context.Event()
-    process = context.Process(
-        target=_hold_capacity_locks,
-        args=(manager.runtime_root, lock_names, ready, release),
-    )
-    process.start()
-    try:
-        assert ready.wait(2)
-        now[0] = 105.0
-        with pytest.raises(runtime.VibeHubCapacityError, match="并发已满"):
-            manager.heartbeat(lease.token)
-        after = manager._load_state()["leases"][digest]["expires_at"]
-        assert after == before
-        assert lease.container_name in docker.running
-    finally:
-        release.set()
-        process.join(timeout=2)
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=2)
-    assert process.exitcode == 0
-    assert manager.release(lease.token) is True
-
-
-def test_busy_health_probe_fails_new_start_fast_and_cleans_reservation(short_tmp):
-    docker = _FakeDocker()
-    manager = runtime.VibeHubRuntimeManager(
-        short_tmp / "runtime",
-        docker_client=docker,
-        proxy_transport="docker-exec",
-        health_probe_slot_timeout_seconds=0.05,
-        clock=lambda: 100.0,
-    )
-    lock_names = [
-        f"health-probe-slot-{index}.lock"
-        for index in range(runtime.HEALTH_PROBE_CONCURRENCY)
-    ]
-    context = multiprocessing.get_context("fork")
-    ready = context.Event()
-    release = context.Event()
-    process = context.Process(
-        target=_hold_capacity_locks,
-        args=(manager.runtime_root, lock_names, ready, release),
-    )
-    process.start()
-    try:
-        assert ready.wait(2)
-        began = time.monotonic()
-        with pytest.raises(runtime.VibeHubCapacityError, match="并发已满"):
-            manager.acquire(
-                "demo@v1", "numoj-vibehub:demo",
-                storage_key="project-1-public",
-            )
-        assert time.monotonic() - began < 0.5
-    finally:
-        release.set()
-        process.join(timeout=2)
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=2)
-    assert process.exitcode == 0
-    assert manager._load_state() == runtime._empty_state()
-    assert docker.running == set()
 
 
 def test_expired_start_reservation_is_retried_and_cleaned_outside_lock(
@@ -1153,7 +964,7 @@ def test_expired_lease_reaper_removes_container(monkeypatch, short_tmp):
         clock=lambda: now[0],
         lease_ttl_seconds=10,
     )
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
 
     now[0] = 111.0
     assert manager.reap_expired() >= 1
@@ -1174,7 +985,7 @@ def test_background_reaper_collects_crashed_browser_without_later_request(
         lease_ttl_seconds=10,
         reaper_interval_seconds=0.05,
     )
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
     now[0] = 111.0
     manager.start_reaper()
     try:
@@ -1208,8 +1019,8 @@ def test_proxy_overwrites_session_headers_and_strips_oj_credentials_and_cookies(
 ):
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
-    first = manager.acquire("demo@v1", "numoj-vibehub:demo")
-    second = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    first = manager.acquire("demo@v1")
+    second = manager.acquire("demo@v1")
     observed: list[dict[str, str]] = []
 
     def fake_relay(_name, method, target, headers, body, **_kwargs):
@@ -1289,7 +1100,7 @@ def test_proxy_hot_path_trusts_relay_instead_of_running_docker_inspect(
 
     docker = RelayDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
     docker.running_checks = 0
 
     assert manager.proxy(lease.token, "GET", "/", {}).body == b"ok"
@@ -1317,7 +1128,7 @@ def test_stream_proxy_never_reads_body_for_invalid_token_or_full_capacity(
         manager.proxy_from_reader("invalid", "POST", "/", {}, reader)
     assert reads == []
 
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
 
     @contextmanager
     def reject_capacity():
@@ -1336,7 +1147,7 @@ def test_stream_proxy_reads_once_inside_slot_and_enforces_body_limit(
 ):
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
     in_slot = [False]
     reads = []
 
@@ -1372,7 +1183,7 @@ def test_proxy_capability_validation_does_not_touch_docker_or_container_http(
 ):
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
     docker.run_commands.clear()
 
     with monkeypatch.context() as isolated:
@@ -1397,7 +1208,7 @@ def test_proxy_capability_validation_does_not_touch_docker_or_container_http(
 def test_invalid_proxy_headers_do_not_leave_inflight_request(monkeypatch, short_tmp):
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
 
     with pytest.raises(runtime.VibeHubProxyError, match="请求头格式"):
         manager.proxy(lease.token, "GET", "/", {"X-Bad": "a\nb"})
@@ -1430,11 +1241,8 @@ def test_composition_root_configuration_exposes_limits(short_tmp):
             "VIBEHUB_RESPONSE_MAX_BYTES": 5678,
             "VIBEHUB_PROXY_TRANSPORT": "docker-exec",
             "VIBEHUB_BUILD_TIMEOUT_SECONDS": 321,
-            "VIBEHUB_BUILD_SLOT_TIMEOUT_SECONDS": 9,
             "VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS": 0.5,
-            "VIBEHUB_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS": 0.2,
             "VIBEHUB_MAX_ACTIVE_RUNTIMES": 12,
-            "VIBEHUB_BUILD_CACHE_MAX_BYTES": 2 * runtime.GIB,
             "VIBEHUB_BASE_OCI_LAYOUT_ROOT": str(short_tmp / "base-oci"),
         }, docker_client=_FakeDocker(), start_reaper=False)
 
@@ -1447,11 +1255,8 @@ def test_composition_root_configuration_exposes_limits(short_tmp):
         assert manager.response_max_bytes == 5678
         assert manager.proxy_transport == "docker-exec"
         assert manager.build_timeout_seconds == 321
-        assert manager.build_slot_timeout_seconds == 9
         assert manager.proxy_slot_timeout_seconds == 0.5
-        assert manager.health_probe_slot_timeout_seconds == 0.2
         assert manager.max_active_runtimes == 12
-        assert manager.build_cache_max_bytes == 2 * runtime.GIB
         assert manager.base_oci_layout_root == (short_tmp / "base-oci").resolve()
     finally:
         runtime.shutdown_runtime_manager(reset_config=True)
@@ -1507,15 +1312,6 @@ def test_required_builder_configuration_is_strict_boolean(short_tmp, value):
         })
 
 
-@pytest.mark.parametrize("value", (0, 256 * 1024 * 1024 - 1, True, "1"))
-def test_build_cache_limit_configuration_is_strict(short_tmp, value):
-    with pytest.raises(ValueError, match="VIBEHUB_BUILD_CACHE_MAX_BYTES"):
-        runtime._manager_kwargs_from_config({
-            "VIBEHUB_RUNTIME_ROOT": str(short_tmp / "configured"),
-            "VIBEHUB_BUILD_CACHE_MAX_BYTES": value,
-        })
-
-
 def test_development_allows_legacy_builder(short_tmp):
     kwargs = runtime._manager_kwargs_from_config({
         "NUMOJ_ENVIRONMENT": "development",
@@ -1560,32 +1356,19 @@ def test_manager_passes_configured_build_timeout_to_builder(monkeypatch, short_t
     package = _write_package(short_tmp / "package")
     manager = _manager(monkeypatch, short_tmp, build_timeout_seconds=321)
     observed = {}
-    expected_digest = runtime._effective_source_digest(
-        runtime._scan_context(package)[0],
-        ((runtime.DEFAULT_BASE_IMAGE, _APP_ID),),
-    )
 
     def fake_build_image(*_args, **kwargs):
         observed.update(kwargs)
-        manager.docker.inspect_image = lambda reference: runtime.ImageInfo(
-            str(reference),
-            _APP_ID,
-            1024,
-            {
-                runtime.MANAGED_IMAGE_LABEL: "1",
-                runtime.SOURCE_DIGEST_LABEL: expected_digest,
-            },
-        )
+        observed["image_ref"] = _args[1]
 
     monkeypatch.setattr(runtime, "build_image", fake_build_image)
 
-    manager._ensure_image(
-        "numoj-vibehub:test",
-        build_context=package,
-        featured=False,
+    manager.build_latest_image(
+        "demo@v3", package, package_digest=_PACKAGE_DIGEST,
     )
 
     assert observed["timeout_seconds"] == 321
+    assert observed["image_ref"] == runtime.image_reference_for("demo", channel="latest")
 
 
 def test_low_level_builder_rejects_timeout_over_hard_cap(tmp_path):
@@ -1599,6 +1382,7 @@ def test_low_level_builder_rejects_timeout_over_hard_cap(tmp_path):
         runtime.DockerCLI(command_runner=runner).build(
             tmp_path,
             "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
             source_digest="a" * 64,
             limits=runtime.limits_for(False),
             timeout=541,
@@ -1625,7 +1409,7 @@ def test_registered_config_is_lazy_until_first_runtime_request(short_tmp):
         assert manager.runtime_root == root.resolve()
         assert manager.proxy_transport == "docker-exec"
         assert root.is_dir()
-        assert manager._reaper_thread is not None
+        assert manager._reaper_thread is None
     finally:
         runtime.shutdown_runtime_manager(reset_config=True)
 
@@ -1675,27 +1459,26 @@ def test_image_inspect_parses_and_fails_closed_on_volumes():
         runtime.DockerCLI(command_runner=malformed_runner).inspect_image("local/app:1")
 
 
-def test_data_volume_creation_is_labeled_and_existing_identity_is_verified():
+def test_find_image_only_accepts_an_explicit_missing_tag():
+    missing = runtime.DockerCLI(command_runner=lambda *_args, **_kwargs: (
+        runtime._CommandResult(1, "", "Error: No such image: local/app:1")
+    ))
+    assert missing.find_image("local/app:1") is None
+
+    unavailable = runtime.DockerCLI(command_runner=lambda *_args, **_kwargs: (
+        runtime._CommandResult(1, "", "permission denied")
+    ))
+    with pytest.raises(runtime.VibeHubImageError, match="无法 inspect"):
+        unavailable.find_image("local/app:1")
+
+
+def test_data_volume_creation_uses_derived_name_and_labels():
     scope = "a" * 16
     name = f"numoj-vh-data-{scope}-project-42-public"
     calls = []
-    payload = json.dumps({
-        "Name": name,
-        "Driver": "local",
-        "Scope": "local",
-        "Labels": {
-            runtime.MANAGED_DATA_VOLUME_LABEL: "1",
-            runtime.MANAGER_SCOPE_LABEL: scope,
-            runtime.DATA_STORAGE_KEY_LABEL: "project-42-public",
-        },
-        "Options": None,
-    })
-
     def runner(command, *, timeout, env=None):
         calls.append(list(command))
-        if command[:3] == ["docker", "volume", "create"]:
-            return runtime._CommandResult(0, name + "\n", "")
-        return runtime._CommandResult(0, payload, "")
+        return runtime._CommandResult(0, name + "\n", "")
 
     docker = runtime.DockerCLI(command_runner=runner)
     docker.ensure_data_volume(
@@ -1708,16 +1491,7 @@ def test_data_volume_creation_is_labeled_and_existing_identity_is_verified():
         f"{runtime.MANAGER_SCOPE_LABEL}={scope}",
         f"{runtime.DATA_STORAGE_KEY_LABEL}=project-42-public",
     }
-    foreign = payload.replace(f'"{runtime.MANAGER_SCOPE_LABEL}": "{scope}", ', "")
-    def foreign_runner(command, **_kwargs):
-        if command[:3] == ["docker", "volume", "create"]:
-            return runtime._CommandResult(0, name + "\n", "")
-        return runtime._CommandResult(0, foreign, "")
-
-    with pytest.raises(runtime.VibeHubRuntimeError, match="身份"):
-        runtime.DockerCLI(command_runner=foreign_runner).ensure_data_volume(
-            name, scope=scope, storage_key="project-42-public",
-        )
+    assert len(calls) == 1
 
 
 def test_build_rejects_inherited_base_volume_before_docker_build(tmp_path):
@@ -1733,157 +1507,132 @@ def test_build_rejects_inherited_base_volume_before_docker_build(tmp_path):
             pytest.fail("带 VOLUME 的基础镜像必须在 build 前拒绝")
 
     with pytest.raises(runtime.VibeHubImageError, match="基础镜像.*VOLUME"):
-        runtime.build_image(package, "numoj-vibehub:test", docker_client=VolumeBaseDocker())
+        runtime.build_image(
+            package,
+            "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
+            docker_client=VolumeBaseDocker(),
+        )
 
 
-def test_cached_managed_image_with_volume_is_never_runnable(short_tmp):
-    class CachedVolumeDocker(_FakeDocker):
+def test_build_rejects_final_image_volume(short_tmp):
+    package = _write_package(short_tmp / "package")
+
+    class VolumeDocker(_FakeDocker):
+        source_digest = ""
+
         def inspect_image(self, reference):
+            if reference == runtime.DEFAULT_BASE_IMAGE:
+                return runtime.ImageInfo(str(reference), _BASE_ID, 1024, {})
             return runtime.ImageInfo(
                 str(reference),
                 _APP_ID,
                 1024,
-                {runtime.MANAGED_IMAGE_LABEL: "1"},
+                {
+                    runtime.MANAGED_IMAGE_LABEL: "1",
+                    runtime.PACKAGE_DIGEST_LABEL: _PACKAGE_DIGEST,
+                    runtime.SOURCE_DIGEST_LABEL: self.source_digest,
+                },
                 ("/data",),
             )
 
-    manager = runtime.VibeHubRuntimeManager(
-        short_tmp / "runtime",
-        docker_client=CachedVolumeDocker(),
-        proxy_transport="docker-exec",
-    )
+        def build(self, _root, _ref, *, source_digest, **_kwargs):
+            self.source_digest = source_digest
+
     with pytest.raises(runtime.VibeHubImageError, match="VOLUME"):
-        manager.acquire(
-            "demo@v1", "numoj-vibehub:cached",
-            storage_key="project-1-public",
+        runtime.build_image(
+            package,
+            "numoj-vibehub:test",
+            package_digest=_PACKAGE_DIGEST,
+            docker_client=VolumeDocker(),
         )
 
 
-def test_project_image_tags_are_stable_per_live_channel():
+def test_project_image_tags_are_stable_and_review_reuses_latest():
     latest = runtime.image_reference_for("demo@v3", channel="latest")
     review = runtime.image_reference_for("demo@v3", channel="review")
     public = runtime.image_reference_for("demo@v3", channel="public")
 
-    assert len({latest, review, public}) == 3
+    assert review == latest
+    assert public != latest
     assert runtime.image_reference_for("demo@v4", channel="latest") == latest
     assert runtime.image_reference_for("demo@v99", channel="review") == review
     assert runtime.image_reference_for("demo@v4", channel="public") == public
     assert runtime.image_reference_for("other@v3", channel="public") != public
 
 
-def test_base_image_id_change_invalidates_cached_project_image(monkeypatch, tmp_path):
-    package = _write_package(tmp_path / "package")
-    base_ids = ["sha256:" + "3" * 64]
-    context_digest = runtime._scan_context(package)[0]
-    cached_digest = runtime._effective_source_digest(
-        context_digest,
-        ((runtime.DEFAULT_BASE_IMAGE, base_ids[0]),),
-    )
-
-    class CacheDocker(_FakeDocker):
-        def __init__(self):
-            super().__init__()
-            self.project_digest = cached_digest
-            self.builds = []
-
-        def inspect_image(self, reference):
-            if reference == runtime.DEFAULT_BASE_IMAGE:
-                return runtime.ImageInfo(reference, base_ids[0], 1024, {})
-            return runtime.ImageInfo(
-                str(reference),
-                _APP_ID,
-                1024,
-                {
-                    runtime.MANAGED_IMAGE_LABEL: "1",
-                    runtime.SOURCE_DIGEST_LABEL: self.project_digest,
-                },
-            )
-
-        def build(self, _root, _ref, *, source_digest, **_kwargs):
-            self.builds.append(source_digest)
-            self.project_digest = source_digest
-
-    docker = CacheDocker()
-    manager = runtime.VibeHubRuntimeManager(
-        tmp_path / "runtime",
-        docker_client=docker,
-        proxy_transport="docker-exec",
-    )
-    manager._ensure_image(
-        "numoj-vibehub:demo", build_context=package, featured=False,
-    )
-    assert docker.builds == []
-
-    base_ids[0] = "sha256:" + "4" * 64
-    manager._ensure_image(
-        "numoj-vibehub:demo", build_context=package, featured=False,
-    )
-    assert docker.builds == [runtime._effective_source_digest(
-        context_digest,
-        ((runtime.DEFAULT_BASE_IMAGE, base_ids[0]),),
-    )]
-
-
-def test_successful_build_preserves_image_and_builder_caches(short_tmp):
+def test_build_latest_image_always_rebuilds_the_stable_latest_tag(short_tmp):
     package = _write_package(short_tmp / "package")
 
-    class CleanupDocker(_FakeDocker):
+    class BuildDocker(_FakeDocker):
         def __init__(self):
             super().__init__()
-            self.project_digest = None
+            self.source_digest = ""
             self.builds = 0
 
         def inspect_image(self, reference):
             if reference == runtime.DEFAULT_BASE_IMAGE:
                 return runtime.ImageInfo(reference, _BASE_ID, 1024, {})
-            if self.project_digest is None:
-                raise runtime.VibeHubImageError("not built")
             return runtime.ImageInfo(
                 str(reference),
                 _APP_ID,
                 1024,
                 {
                     runtime.MANAGED_IMAGE_LABEL: "1",
-                    runtime.SOURCE_DIGEST_LABEL: self.project_digest,
+                    runtime.PACKAGE_DIGEST_LABEL: _PACKAGE_DIGEST,
+                    runtime.SOURCE_DIGEST_LABEL: self.source_digest,
                 },
             )
 
         def build(self, _root, _ref, *, source_digest, **_kwargs):
             self.builds += 1
-            self.project_digest = source_digest
+            self.source_digest = source_digest
 
-        def prune_managed_dangling_images(self):
-            pytest.fail("作品构建不得自动清理镜像")
-
-        def prune_dedicated_build_cache(self):
-            pytest.fail("作品构建不得自动清理 BuildKit 缓存")
-
-    docker = CleanupDocker()
+    docker = BuildDocker()
     manager = runtime.VibeHubRuntimeManager(
         short_tmp / "runtime",
         docker_client=docker,
         proxy_transport="docker-exec",
     )
-
-    first = manager._ensure_image(
-        "numoj-vibehub:test",
-        build_context=package,
-        featured=False,
+    first = manager.build_latest_image(
+        "demo@v1", package, package_digest=_PACKAGE_DIGEST,
     )
-    second = manager._ensure_image(
-        "numoj-vibehub:test",
-        build_context=package,
-        featured=False,
+    second = manager.build_latest_image(
+        "demo@v2", package, package_digest=_PACKAGE_DIGEST,
     )
 
-    assert first.image_id == _APP_ID
-    assert second.image_id == _APP_ID
-    assert docker.builds == 1
-    assert docker.managed_image_prunes == 0
-    assert docker.build_cache_prunes == 0
+    assert first.image_ref == second.image_ref
+    assert docker.builds == 2
 
 
-def test_last_release_removes_container_but_preserves_cached_image(
+def test_promote_latest_to_public_only_tags_the_latest_image(short_tmp):
+    class PublishDocker(_FakeDocker):
+        tagged = []
+
+        def tag_image(self, source, target):
+            self.tagged.append((source, target))
+
+    docker = PublishDocker()
+    manager = runtime.VibeHubRuntimeManager(short_tmp / "runtime", docker_client=docker)
+    manager.promote_latest_to_public(
+        "demo", package_digest=_PACKAGE_DIGEST,
+    )
+
+    assert docker.tagged == [(
+        _APP_ID,
+        runtime.image_reference_for("demo", channel="public"),
+    )]
+
+
+def test_promote_rejects_a_latest_image_from_another_package(short_tmp):
+    docker = _FakeDocker()
+    manager = runtime.VibeHubRuntimeManager(short_tmp / "runtime", docker_client=docker)
+
+    with pytest.raises(runtime.VibeHubImageError, match="待审版本"):
+        manager.promote_latest_to_public("demo", package_digest="b" * 64)
+
+
+def test_last_release_removes_container_and_runtime_state(
     monkeypatch,
     short_tmp,
 ):
@@ -1891,7 +1640,6 @@ def test_last_release_removes_container_but_preserves_cached_image(
     manager = _manager(monkeypatch, short_tmp, docker=docker)
     lease = manager.acquire(
         "demo@v1",
-        "numoj-vibehub:demo",
         channel="public",
     )
 
@@ -1899,12 +1647,10 @@ def test_last_release_removes_container_but_preserves_cached_image(
 
     assert docker.stopped == [lease.container_name]
     assert lease.container_name not in docker.running
-    assert docker.removed_image_references == []
-    assert docker.managed_image_prunes == 0
     assert manager._load_state()["runtimes"] == {}
 
 
-def test_concurrent_version_switch_keeps_shared_image_cache(
+def test_concurrent_version_switch_does_not_block_release(
     monkeypatch,
     short_tmp,
 ):
@@ -1912,7 +1658,7 @@ def test_concurrent_version_switch_keeps_shared_image_cache(
     old_manager = _manager(monkeypatch, short_tmp, docker=docker)
     new_manager = _manager(monkeypatch, short_tmp, docker=docker)
     old_lease = old_manager.acquire(
-        "demo@v1", "numoj-vibehub:demo", channel="public",
+        "demo@v1", channel="public",
     )
     reserving = threading.Event()
     continue_reservation = threading.Event()
@@ -1934,7 +1680,7 @@ def test_concurrent_version_switch_keeps_shared_image_cache(
     def acquire_new_version():
         try:
             acquire_result["lease"] = new_manager.acquire(
-                "demo@v2", "numoj-vibehub:demo", channel="public",
+                "demo@v2", channel="public",
             )
         except Exception as exc:  # pragma: no cover - asserted below
             acquire_result["error"] = exc
@@ -1962,34 +1708,8 @@ def test_concurrent_version_switch_keeps_shared_image_cache(
     assert release_result["released"] is True
     new_lease = acquire_result["lease"]
     assert new_lease.container_name in docker.running
-    assert docker.removed_image_references == []
 
     assert new_manager.release(new_lease.token) is True
-    assert docker.removed_image_references == []
-
-
-def test_idle_release_never_invokes_image_cleanup(
-    monkeypatch,
-    short_tmp,
-):
-    class RetryDocker(_FakeDocker):
-        def __init__(self):
-            super().__init__()
-
-        def prune_managed_dangling_images(self):
-            pytest.fail("玩家离开不得自动清理镜像")
-
-        def remove_managed_image_reference(self, reference, expected_image_id):
-            pytest.fail("玩家离开不得删除稳定镜像 tag")
-
-    docker = RetryDocker()
-    manager = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
-
-    assert manager.release(lease.token) is True
-    assert docker.stopped == [lease.container_name]
-    assert manager._load_state()["runtimes"] == {}
-    assert docker.managed_image_prunes == 0
 
 
 def test_request_target_nfc_normalizes_unicode_and_preserves_valid_percent_encoding():
@@ -2073,7 +1793,7 @@ def test_host_uds_transport_is_rejected(short_tmp):
 def test_reconcile_preserves_other_worker_inflight(monkeypatch, short_tmp):
     docker = _FakeDocker()
     first = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = first.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = first.acquire("demo@v1")
     with first._locked_state() as state:
         runtime_id = next(iter(state["runtimes"]))
         state["runtimes"][runtime_id]["inflight"]["worker-a"] = 200.0
@@ -2102,7 +1822,7 @@ def test_proxy_transport_failure_destroys_runtime(monkeypatch, short_tmp):
         docker=docker,
         proxy_transport="docker-exec",
     )
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    lease = manager.acquire("demo@v1")
 
     with pytest.raises(runtime.VibeHubProxyError, match="bad relay"):
         manager.proxy(lease.token, "GET", "/", {})
@@ -2255,49 +1975,32 @@ def test_auto_transport_is_secure_alias_for_docker_exec(short_tmp):
     assert manager.proxy_transport == "docker-exec"
 
 
-def test_heartbeat_requires_running_healthy_container(monkeypatch, short_tmp):
+def test_heartbeat_only_renews_the_existing_lease(monkeypatch, short_tmp):
+    now = [100.0]
     docker = _FakeDocker()
-    manager = _manager(monkeypatch, short_tmp, docker=docker)
-    lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    manager = _manager(monkeypatch, short_tmp, docker=docker, clock=lambda: now[0])
+    lease = manager.acquire("demo@v1")
     monkeypatch.setattr(
         manager,
         "_probe_runtime_health",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            runtime.VibeHubProxyError("unhealthy")
-        ),
+        lambda *_args, **_kwargs: pytest.fail("heartbeat 不应探测容器"),
     )
 
-    with pytest.raises(runtime.VibeHubRuntimeError, match="健康检查失败"):
-        manager.heartbeat(lease.token)
+    now[0] = 105.0
+    renewed = manager.heartbeat(lease.token)
 
-    assert docker.stopped == [lease.container_name]
-    assert manager._load_state()["runtimes"] == {}
-
-
-def test_build_process_slot_fails_fast_when_busy(tmp_path):
-    package = _write_package(tmp_path / "package")
-    assert runtime._PROCESS_BUILD_SEMAPHORE.acquire(timeout=0)
-    try:
-        with pytest.raises(runtime.VibeHubCapacityError, match="并发已满"):
-            runtime.build_image(
-                package,
-                "numoj-vibehub:busy",
-                docker_client=_FakeDocker(),
-                slot_timeout_seconds=0,
-            )
-    finally:
-        runtime._PROCESS_BUILD_SEMAPHORE.release()
+    assert renewed.expires_at == 105.0 + manager.lease_ttl_seconds
+    assert docker.stopped == []
 
 
-def test_capacity_slots_are_shared_across_processes(short_tmp):
+def test_proxy_slots_are_shared_across_processes(short_tmp):
     manager = runtime.VibeHubRuntimeManager(
         short_tmp / "runtime",
         docker_client=_FakeDocker(),
         proxy_transport="docker-exec",
-        build_slot_timeout_seconds=0.05,
         proxy_slot_timeout_seconds=0.05,
     )
-    lock_names = ["build-slot-0.lock"] + [
+    lock_names = [
         f"proxy-slot-{index}.lock" for index in range(runtime.PROXY_CONCURRENCY)
     ]
     context = multiprocessing.get_context("fork")
@@ -2310,9 +2013,6 @@ def test_capacity_slots_are_shared_across_processes(short_tmp):
     process.start()
     try:
         assert ready.wait(2)
-        with pytest.raises(runtime.VibeHubCapacityError):
-            with manager._file_capacity_slot("build-slot", 1, 0.05):
-                pytest.fail("跨进程 build lock 不应被重复取得")
         with pytest.raises(runtime.VibeHubCapacityError):
             with manager._file_capacity_slot(
                 "proxy-slot", runtime.PROXY_CONCURRENCY, 0.05,

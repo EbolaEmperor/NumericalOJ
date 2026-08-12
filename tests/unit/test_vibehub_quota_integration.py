@@ -33,6 +33,11 @@ def _default_quota_service_helpers(monkeypatch):
         "_lock_and_count_nonfeatured_projects",
         lambda _cursor, _owner_id: 0,
     )
+    monkeypatch.setattr(
+        services,
+        "_prepare_latest_image",
+        lambda _project_key, _app_dir, **_kwargs: None,
+    )
 
 
 class _Cursor:
@@ -492,6 +497,14 @@ def test_create_retries_after_rolled_back_slug_storage(tmp_path, monkeypatch):
         "_serialize_project",
         lambda row, *, audience: {"row": row, "audience": audience},
     )
+    built = []
+    monkeypatch.setattr(
+        services,
+        "_prepare_latest_image",
+        lambda project_key, app_dir, **kwargs: built.append(
+            (project_key, Path(app_dir), kwargs)
+        ),
+    )
 
     result = services.create_project(
         USER,
@@ -508,6 +521,10 @@ def test_create_retries_after_rolled_back_slug_storage(tmp_path, monkeypatch):
     ) == {"version": 1, "version_id": 41}
     assert result["audience"] == "latest"
     assert connection.committed is True
+    assert len(built) == 1
+    assert built[0][0] == "retry-vibe"
+    assert built[0][1].name == "app"
+    assert len(built[0][2]["package_digest"]) == 64
 
 
 def test_upload_quota_failure_cleans_prepared_staging(tmp_path, monkeypatch):
@@ -545,6 +562,54 @@ def test_upload_quota_failure_cleans_prepared_staging(tmp_path, monkeypatch):
     assert raised.value.code == "user_storage_quota_exceeded"
     assert connection.rolled_back is True
     assert _empty_staging(tmp_path)
+
+
+def test_update_restores_previous_latest_image_when_db_write_fails(
+    tmp_path,
+    monkeypatch,
+):
+    connection = _Connection()
+    monkeypatch.setattr(services, "get_db_connection", lambda: connection)
+    monkeypatch.setattr(services, "_fetch_core_for_update", lambda *_args: _core_project())
+    monkeypatch.setattr(
+        services,
+        "_lock_owner_and_list_slugs",
+        lambda *_args: ["demo-vibe"],
+    )
+    monkeypatch.setattr(services, "_lock_and_count_versions", lambda *_args: 1)
+    monkeypatch.setattr(services, "_fetch_version", lambda *_args: _latest_version())
+    monkeypatch.setattr(services, "_version_identity_map", lambda *_args: {12: 1})
+    previous_image_id = "sha256:" + "a" * 64
+    monkeypatch.setattr(
+        services,
+        "_prepare_latest_image",
+        lambda *_args, **_kwargs: previous_image_id,
+    )
+    def fail_db_write(*_args, **_kwargs):
+        raise RuntimeError("db write failed")
+
+    monkeypatch.setattr(services, "_insert_version", fail_db_write)
+    restored = []
+    monkeypatch.setattr(
+        services,
+        "_restore_image_tag",
+        lambda project_key, channel, image_id: restored.append(
+            (project_key, channel, image_id)
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="db write failed"):
+        services.upload_new_version(
+            USER,
+            "demo-vibe",
+            BytesIO(_package_bytes()),
+            upload_root=tmp_path,
+        )
+
+    assert restored == [("demo-vibe", "latest", previous_image_id)]
+    assert connection.rolled_back is True
+    assert connection.committed is False
 
 
 def test_metadata_edit_checks_source_size_before_clone(tmp_path, monkeypatch):
@@ -602,6 +667,13 @@ def test_metadata_edit_checks_source_size_before_clone(tmp_path, monkeypatch):
         "_lock_and_count_nonfeatured_projects",
         lambda *_args: pytest.fail("编辑已有作品不应检查作品数量"),
     )
+    monkeypatch.setattr(
+        services,
+        "_prepare_latest_image",
+        lambda project_key, app_dir, **kwargs: order.append(
+            ("image", project_key, Path(app_dir), kwargs)
+        ),
+    )
 
     source_bytes = quotas.logical_tree_bytes(source_app.parent)
     result = services.edit_project(
@@ -611,7 +683,16 @@ def test_metadata_edit_checks_source_size_before_clone(tmp_path, monkeypatch):
         upload_root=tmp_path,
     )
 
-    assert order == [("quota", source_bytes), ("clone", None)]
+    assert order == [
+        ("quota", source_bytes),
+        ("clone", None),
+        (
+            "image",
+            "demo-vibe",
+            tmp_path / "demo-vibe" / "versions" / "v2" / "app",
+            {"package_digest": "a" * 64, "featured": False},
+        ),
+    ]
     assert (tmp_path / "demo-vibe" / "versions" / "v2" / "app").is_dir()
     assert not (
         tmp_path / "demo-vibe" / "versions" / "v2" / "app" / "orphan.txt"

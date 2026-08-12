@@ -14,7 +14,7 @@ def test_user_and_admin_vibehub_cli_groups_expose_expected_commands():
     cases = [
         (
             ROOT / "skills" / "numoj-user" / "scripts" / "numoj_user.py",
-            ("guide", "list", "mine", "detail", "create", "update", "edit", "submit-review", "request-featured"),
+            ("guide", "list", "mine", "detail", "create", "update", "edit", "request-featured"),
         ),
         (
             ROOT / "skills" / "numoj-admin" / "scripts" / "numoj_admin.py",

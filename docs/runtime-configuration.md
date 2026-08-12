@@ -139,7 +139,6 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `VIBEHUB_ALLOWED_BASE_IMAGES` | string[] | `["numericaloj-vibehub-runtime:1"]` | 唯一允许出现在用户 Dockerfile 外部 `FROM` 中、且必须已在本机预置的镜像。 |
 | `VIBEHUB_BUILD_BUILDER` | string/空 | 开发为空；生产 `numoj-vibehub-online` | 正式部署自动创建缺失的 VibeHub 专属 Buildx builder；已有实例只校验、不替换。 |
 | `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | 开发 `false`；生产 `true` | 正式部署始终拒绝复用普通 builder。 |
-| `VIBEHUB_BUILD_CACHE_MAX_BYTES` | int | `4294967296` | 显式运维清理专属 builder 时使用的保留缓存阈值，严格范围 256 MiB–100 GiB；玩家访问和离开不会触发 prune。 |
 | `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
 | `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
 | `VIBEHUB_IDLE_GRACE_SECONDS` | float | `300` | 最后一个玩家离开后的容器空闲宽限，范围 0–3600 秒；宽限内同版本玩家返回会复用容器并取消原回收截止时间。 |
@@ -149,22 +148,15 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `VIBEHUB_REQUEST_MAX_BYTES` | int | `16777216` | 单请求体上限；硬上限 64 MiB。 |
 | `VIBEHUB_RESPONSE_MAX_BYTES` | int | `16777216` | 单响应体上限；硬上限 64 MiB。 |
 | `VIBEHUB_PROXY_TRANSPORT` | string | `docker-exec` | 只允许有界、可复用的 `docker exec` relay；`auto` 是兼容别名，`host-uds` 被拒绝。 |
-| `VIBEHUB_BUILD_TIMEOUT_SECONDS` | float | `480` | 单次镜像构建时限，范围 1–540 秒；硬上限低于 Gunicorn 的 600 秒请求超时。 |
-| `VIBEHUB_BUILD_SLOT_TIMEOUT_SECONDS` | float | `5` | 等待宿主唯一构建槽的最长时间；范围 0–120 秒，超时返回 429。 |
+| `VIBEHUB_BUILD_TIMEOUT_SECONDS` | float | `480` | 创建或更新作品时的单次镜像构建时限，范围 1–540 秒；硬上限低于 Gunicorn 的 600 秒请求超时。 |
 | `VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS` | float | `0.25` | 等待宿主 8 个代理槽之一的最长时间；范围 0–10 秒，超时返回 429。 |
-| `VIBEHUB_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS` | float | `0.1` | 等待宿主 4 个独立健康探测槽之一的最长时间；范围 0–5 秒，超时返回 429 且不延长 lease。 |
 | `VIBEHUB_MAX_ACTIVE_RUNTIMES` | int | `8` | 单台宿主同时运行的作品容器总上限，范围 1–64；容量满时新作品返回 429，已有同版本容器仍可共享。 |
 | `VIBEHUB_STORAGE_MUTATION_SLOTS` | int | `2` | 全宿主同时处理 VibeHub 持久变更的上限，严格范围 1–8；同一槽覆盖 DB 预检、multipart spool 和全局存储锁等待，跨 gthread/worker 共享。 |
 | `VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS` | float | `0.1` | 持久变更槽等待上限，范围 0–1 秒；容量满时快速返回 429 和 `Retry-After`。 |
 
 VibeHub 用户镜像构建和运行容器都使用 Docker bridge 联网，作品可以主动访问外部网络。
-运行时不发布端口，也不允许作品选择宿主路径或 Docker volume。容器根文件系统可写且随实例销毁；平台按数据库 project id
-与 `public/latest/review` 通道创建受管 local
-volume，唯一挂到 `/data`，`HOME=/data/home`，因此版本切换和容器重建后数据仍保留。普通/精品
-根层通过 `--storage-opt size` 请求 4/8 GiB 配额，但只有支持 per-container quota 的 storage
-driver 才会落实；Docker Desktop/containerd 等环境可能只接受参数而不执行。local volume driver
-没有可移植的 `/data` 硬配额，持久盘容量必须由 Docker/宿主运维监控与文件系统配额控制，应用层
-目录扫描不能作为对抗恶意作品的安全边界。
+运行时不发布端口，使用只读根文件系统，也不允许作品选择宿主路径或 Docker volume。平台按数据库
+project id 与 `public/latest/review` 通道创建受管 local volume，唯一挂到 `/data`，因此容器重建后数据仍保留。
 
 `/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
 `docker exec` relay 访问 `app.sock`。同一 Web worker 会为活跃容器复用最多 4 个固定命令、固定用户的
@@ -173,19 +165,19 @@ relay 进程，避免每个静态资源和游戏操作都重新启动 Python 与
 已不在共享 runtime state 中的本地池。普通作品另限制为 20 GiB 完整镜像、4 GiB 内存和 2 CPU；
 精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
 跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
-TTL 回收旧容器。每个作品的 latest、public、review 通道分别使用稳定的受管镜像 tag，内容
-变化由 source digest 触发重建，旧运行容器继续绑定原 image ID。最后一个玩家离开后，运行容器
-进入默认 5 分钟的空闲宽限；同版本玩家在截止前返回会直接复用容器并取消原回收计划，截止后仍
-无人使用才由 reaper 删除容器。稳定镜像 tag、旧受管镜像和 BuildKit 构建缓存均长期保留，再次
-访问相同内容不重新构建。宽限到期后无人游玩时没有作品容器占用 CPU 或内存，磁盘缓存与运行
+TTL 回收旧容器。每个作品只维护 `latest`、`public` 两个受管镜像别名；保存时构建 `latest` 并
+自动送审，`review` 复用其 image ID。审核通过让 `public` 指向已确认的 `latest`，不重新构建。
+玩家访问用同一次镜像 inspect 核验受管标记和当前包摘要，再启动或复用容器；缺失或不匹配时
+失败关闭，不扫描作品目录。最后一个玩家离开后进入默认
+5 分钟空闲宽限；同版本玩家返回会复用容器，宽限到期仍无人使用才由 reaper 删除。稳定镜像
+别名和 Docker 构建缓存由 Docker 自身管理；进入作品始终不构建镜像。宽限到期后无人游玩时
+没有作品容器占用 CPU 或内存，磁盘缓存与运行
 资源的生命周期彼此独立。运行容器使用 Docker `none`
 日志驱动，不会把不可信作品的 stdout/stderr 持久写入宿主日志；平台只记录受控的生命周期
-与代理元数据。运行容器总上限、构建槽、代理槽和健康探测槽都通过 runtime root 中的 `flock` 与
+与代理元数据。运行容器总上限和代理槽通过 runtime root 中的 `flock` 与
 原子 state 跨 worker 共享，不会因增加 Web worker 而成倍放大宿主资源占用。
-创建、上传、元数据编辑、发布申请和管理员发布审核共用同一组私有
-`flock` 持久变更槽。创建、上传和元数据编辑会在槽内先做作者或数量预检，再解析
-multipart/form 请求体；发布申请不需要请求体，管理员审核则在进入槽和解析决定前先验证
-管理员身份。所有路径最终都在业务事务中重新锁定并校验作者、状态与配额。
+创建、上传、元数据编辑和管理员审核共用私有 `flock` 持久变更槽。保存路径先预检，再解析
+multipart/form、构建并自动送审；审核路径先验证管理员。事务最终重检作者、版本与配额。
 存储 GC 始终按“全局 `storage_mutation_lock` → 数据库作品/版本
 `FOR UPDATE` live-set → 存储层 device/inode/ctime_ns 绑定回收”的顺序执行。超过 1 小时的退役
 marker 不再依赖作者后续写入才删除；同一轮还会回收超过 1 小时的受管上传
@@ -209,8 +201,8 @@ daemon base image 通过本地受管 OCI layout named context 注入。玩家访
 layout；转换器不解包路径、不导入模块、不运行镜像内容，并复核 config ID、每层 diff-id、全部
 blob 的 SHA-256 与大小。候选 release 此时不会出现在 `current` 下；数据库回滚点成功后才与
 stable tag 一起切换 `current`，失败时两者一并恢复，成功后保留 current 和上一代 release。
-部署流程遵守生产禁测规则，不运行临时 Dockerfile、构建 probe 或候选容器；首次真实作品构建
-仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
+部署流程遵守生产禁测规则，不运行临时 Dockerfile、构建 probe 或候选容器；部署后的下一次作品
+创建或更新构建仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
 完整作品接口见 `docs/vibehub-developer-guide.md`。
 
 Agent-as-Judge 高级通信和压缩包边界：

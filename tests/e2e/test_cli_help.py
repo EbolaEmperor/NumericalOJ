@@ -88,7 +88,6 @@ USER_COMMAND_PATHS = [
     ["vibehub", "create"],
     ["vibehub", "update"],
     ["vibehub", "edit"],
-    ["vibehub", "submit-review"],
     ["vibehub", "request-featured"],
 ]
 

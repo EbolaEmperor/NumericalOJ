@@ -188,7 +188,6 @@ def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> li
                         package,
                         {},
                         upload_root=upload_root,
-                        submit_for_review=True,
                     )
                     services.review_submission(
                         admin,
@@ -204,7 +203,6 @@ def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> li
                     packages[slug],
                     {"slug": slug},
                     upload_root=upload_root,
-                    submit_for_review=True,
                 )
                 services.review_submission(
                     admin,
