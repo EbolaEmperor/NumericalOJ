@@ -112,6 +112,13 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     ) in player
     assert "allow-same-origin" not in player
     assert "VIBEHUB / SANDBOX" in player
+    assert "data-math-curve-loader" in player
+    assert 'data-icon-only="true"' in player
+    assert 'data-size="lg"' in player
+    assert "首次访问需要构建游戏镜像" in player
+    assert ".vibe-player-loading .vibe-player-loader" in css
+    assert ".vibe-player-loader i" not in css
+    assert "@keyframes vibe-loader" not in css
     assert ".numoj-content.container-fluid.vibehub-player-page" in css
     assert "height: 100vh" in css
     assert 'window.addEventListener("pagehide"' in javascript
