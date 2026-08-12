@@ -66,6 +66,7 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert ".vibehub-page input { font-family: inherit; }" in css
     assert ".vibehub-page input { font: inherit; }" not in css
     assert ".vibe-toolbar-link { border: 1px solid" in css
+    assert "border-top-right-radius: 9px" in css
     assert "保存更新并自动送审" in javascript
     assert all(token in card for token in (
         "project.play_url", "vibe-featured-mark", "vibe-featured-mark--inactive",
