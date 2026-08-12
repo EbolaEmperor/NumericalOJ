@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import hashlib
-import os
 from pathlib import Path
 import shutil
 import stat
@@ -29,7 +28,6 @@ from oj_modules.vibehub import services
 
 EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3")
 EXPECTED_ARC_GAME_COUNT = 25
-DETERMINISTIC_ZIP_MTIME = "1980-01-01T00:00:00Z"
 DETERMINISTIC_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
 
@@ -85,22 +83,40 @@ def _append_arc_data(package, source: Path) -> None:
                     shutil.copyfileobj(source_file, target)
 
 
+def _copy_deterministic_git_archive(source_archive, package) -> None:
+    """规范化 git archive 的 ZIP 元数据，兼容不支持 --mtime 的旧 Git。"""
+
+    source_archive.seek(0)
+    package.seek(0)
+    package.truncate()
+    with zipfile.ZipFile(source_archive, "r") as source, zipfile.ZipFile(
+        package, "w", zipfile.ZIP_DEFLATED,
+    ) as target:
+        for source_info in sorted(source.infolist(), key=lambda item: item.filename):
+            info = zipfile.ZipInfo(source_info.filename, DETERMINISTIC_ZIP_DATE_TIME)
+            info.create_system = 3
+            mode = (source_info.external_attr >> 16) & 0xFFFF
+            if source_info.is_dir():
+                mode = stat.S_IFDIR | (mode & 0o777 or 0o755)
+                info.compress_type = zipfile.ZIP_STORED
+                info.external_attr = (mode << 16) | 0x10
+            else:
+                if not stat.S_IFMT(mode):
+                    mode = stat.S_IFREG | (mode & 0o777 or 0o644)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = mode << 16
+            target.writestr(info, source.read(source_info))
+
+
 def _write_package(package, repository_root: Path, slug: str, arc_set: Path) -> None:
     source = f"HEAD:vibehub_examples/{slug}"
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository_root),
-            "archive",
-            "--format=zip",
-            f"--mtime={DETERMINISTIC_ZIP_MTIME}",
-            source,
-        ],
-        check=True,
-        env={**os.environ, "TZ": "UTC"},
-        stdout=package,
-    )
+    with tempfile.TemporaryFile() as source_archive:
+        subprocess.run(
+            ["git", "-C", str(repository_root), "archive", "--format=zip", source],
+            check=True,
+            stdout=source_archive,
+        )
+        _copy_deterministic_git_archive(source_archive, package)
     if slug == "arc-agi-3":
         _append_arc_data(package, arc_set)
     package.seek(0)
