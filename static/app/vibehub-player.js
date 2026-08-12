@@ -8,7 +8,7 @@
   var loading = root.querySelector("[data-vibe-player-loading]");
   var errorPanel = root.querySelector("[data-vibe-player-error]");
   var errorMessage = root.querySelector("[data-vibe-player-error-message]");
-  var state = root.querySelector("[data-vibe-player-state] span");
+  var MAX_ACQUIRE_RETRIES = 3;
   var lease = null;
   var heartbeatTimer = null;
   var heartbeatPromise = null;
@@ -25,17 +25,26 @@
       return { success: false, message: "服务器返回了无法读取的响应。" };
     }).then(function (payload) {
       if (!response.ok || !payload.success) {
-        throw new Error(payload.message || payload.error || "作品启动失败，请稍后重试。");
+        var error = new Error(
+          payload.message || payload.error || "作品启动失败，请稍后重试。"
+        );
+        error.status = response.status;
+        var retryAfterSeconds = Number.parseFloat(
+          response.headers.get("Retry-After") || ""
+        );
+        error.retryAfterMilliseconds = Number.isFinite(retryAfterSeconds)
+          ? Math.min(5000, Math.max(250, retryAfterSeconds * 1000))
+          : 1000;
+        throw error;
       }
       return payload;
     });
   }
 
-  function setReady(label) {
+  function setReady() {
     loading.hidden = true;
     errorPanel.hidden = true;
     root.classList.add("is-ready");
-    state.textContent = label || "运行中";
   }
 
   function showError(message) {
@@ -43,7 +52,6 @@
     errorPanel.hidden = false;
     root.classList.remove("is-ready");
     errorMessage.textContent = message || "作品暂时无法启动，请稍后重试。";
-    state.textContent = "启动失败";
   }
 
   function leaseField(payload, name) {
@@ -51,10 +59,10 @@
     return source[name] || "";
   }
 
-  function markReadyOnNextLoad(label) {
+  function markReadyOnNextLoad() {
     function onLoad() {
       frame.removeEventListener("load", onLoad);
-      setReady(label);
+      setReady();
     }
     frame.addEventListener("load", onLoad);
   }
@@ -127,7 +135,6 @@
       heartbeatFailures += 1;
       if (heartbeatFailures >= 3 && !recovering && !isLeaving) {
         recovering = true;
-        state.textContent = "连接续期中";
         releaseLease(false);
         lease = null;
         window.setTimeout(function () {
@@ -145,21 +152,8 @@
     return pending;
   }
 
-  function acquireLease() {
-    if (lease && !released) return Promise.resolve(lease);
-    if (acquirePromise) return acquirePromise;
-    if (!root.dataset.acquireUrl) {
-      showError("运行入口尚未配置。请联系管理员检查 VibeHub 运行服务。");
-      return Promise.resolve(null);
-    }
-    var generation = ++acquireGeneration;
-    loading.hidden = false;
-    errorPanel.hidden = true;
-    root.classList.remove("is-ready");
-    state.textContent = "正在申请运行资源";
-    released = false;
-    heartbeatFailures = 0;
-    var pending = fetch(root.dataset.acquireUrl, {
+  function requestLease(generation, retryCount) {
+    return fetch(root.dataset.acquireUrl, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -180,11 +174,42 @@
         releaseUrl: leaseField(payload, "release_url")
           || urlFromTemplate(root.dataset.releaseUrlTemplate, token)
       };
-      markReadyOnNextLoad("隔离容器运行中");
+      markReadyOnNextLoad();
       frame.src = lease.proxyUrl;
       heartbeatTimer = window.setInterval(heartbeat, 20000);
       return lease;
     }).catch(function (error) {
+      if (
+        error.status === 429
+        && retryCount < MAX_ACQUIRE_RETRIES
+        && generation === acquireGeneration
+        && !isLeaving
+      ) {
+        return new Promise(function (resolve) {
+          window.setTimeout(resolve, error.retryAfterMilliseconds || 1000);
+        }).then(function () {
+          if (generation !== acquireGeneration || isLeaving) return null;
+          return requestLease(generation, retryCount + 1);
+        });
+      }
+      throw error;
+    });
+  }
+
+  function acquireLease() {
+    if (lease && !released) return Promise.resolve(lease);
+    if (acquirePromise) return acquirePromise;
+    if (!root.dataset.acquireUrl) {
+      showError("运行入口尚未配置。请联系管理员检查 VibeHub 运行服务。");
+      return Promise.resolve(null);
+    }
+    var generation = ++acquireGeneration;
+    loading.hidden = false;
+    errorPanel.hidden = true;
+    root.classList.remove("is-ready");
+    released = false;
+    heartbeatFailures = 0;
+    var pending = requestLease(generation, 0).catch(function (error) {
       if (generation === acquireGeneration && !isLeaving) showError(error.message);
       return null;
     }).finally(function () {
@@ -193,21 +218,6 @@
     acquirePromise = pending;
     return pending;
   }
-
-  function reloadFrame() {
-    if (lease && lease.proxyUrl) {
-      loading.hidden = false;
-      root.classList.remove("is-ready");
-      markReadyOnNextLoad("隔离容器运行中");
-      frame.src = lease.proxyUrl;
-    } else {
-      acquireLease();
-    }
-  }
-
-  root.querySelectorAll("[data-vibe-reload]").forEach(function (button) {
-    button.addEventListener("click", reloadFrame);
-  });
   var retry = root.querySelector("[data-vibe-retry]");
   if (retry) retry.addEventListener("click", function () {
     invalidatePendingAcquire();
