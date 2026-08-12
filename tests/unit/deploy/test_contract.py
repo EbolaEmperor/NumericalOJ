@@ -445,7 +445,7 @@ def test_vibehub_base_oci_is_exported_before_stop_and_switched_with_tag():
     assert "archive.extractall" not in exporter
     assert "extractfile(member)" in exporter
     assert "oci-layout://" in exporter
-    assert '"--network", "none"' in exporter
+    assert '"--network", "default"' in exporter
     assert '"--pull=false"' in exporter
     assert '"--load"' in exporter
     assert '"--resource"' not in exporter

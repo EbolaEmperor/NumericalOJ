@@ -1012,16 +1012,16 @@ def probe_builder(
             context / "Dockerfile",
             (
                 f"FROM {info.engine_image_ref}\n"
-                "COPY marker.txt /app/.vibehub-offline-probe\n"
+                "COPY marker.txt /app/.vibehub-oci-probe\n"
                 f"LABEL {label}\n"
             ).encode(),
         )
-        _write_bytes(context / "marker.txt", b"offline-oci-context-probe\n")
+        _write_bytes(context / "marker.txt", b"oci-context-probe\n")
         command = [
             "docker", "buildx", "build",
             "--builder", builder,
             "--build-context", f"{info.engine_image_ref}={layout_uri}",
-            "--network", "none",
+            "--network", "default",
             "--pull=false",
             "--load",
             "--shm-size", "16m",
@@ -1038,7 +1038,7 @@ def probe_builder(
             )[:1000]
             suffix = f"：{detail}" if detail else ""
             raise OCIExportError(
-                "VibeHub 专属 builder 离线 OCI probe 失败"
+                "VibeHub 专属 builder OCI probe 失败"
                 f"（退出码：{result.returncode}）{suffix}"
             )
         inspect_result = _run(

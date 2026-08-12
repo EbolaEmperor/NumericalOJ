@@ -338,7 +338,7 @@ def test_export_uses_docker_image_save_and_publishes_by_engine_id(tmp_path):
     assert save[-1] == "numericaloj-vibehub-runtime:deploy-test"
 
 
-def test_offline_probe_uses_exact_oci_context_and_prune(tmp_path):
+def test_networked_probe_uses_exact_oci_context_and_prune(tmp_path):
     _root, release, info = _converted_release(tmp_path)
     commands = []
 
@@ -363,7 +363,7 @@ def test_offline_probe_uses_exact_oci_context_and_prune(tmp_path):
     assert ["--build-context", context_value] == build[
         build.index("--build-context") : build.index("--build-context") + 2
     ]
-    assert ["--network", "none"] == build[build.index("--network") : build.index("--network") + 2]
+    assert ["--network", "default"] == build[build.index("--network") : build.index("--network") + 2]
     assert "--pull=false" in build
     assert "--load" in build
     assert "--resource" not in build
@@ -371,7 +371,7 @@ def test_offline_probe_uses_exact_oci_context_and_prune(tmp_path):
     assert prune[-2:] == ["--max-used-space", "4294967296"]
 
 
-def test_offline_probe_preserves_bounded_buildx_error(tmp_path):
+def test_networked_probe_preserves_bounded_buildx_error(tmp_path):
     _root, release, _info = _converted_release(tmp_path)
 
     def runner(command, **_kwargs):

@@ -1,6 +1,6 @@
 # 围住小猫 VibeHub 示例包
 
-这是一个可直接压缩上传的完整离线作品包。它从 VibeHub 引入前的最后一版
+这是一个可直接压缩上传的完整作品包。它从 VibeHub 引入前的最后一版
 NumericalOJ 围住小猫原样迁移：棋盘、布局、玩法和排行榜展示均保持一致。Python
 标准库 HTTP 服务只监听 `/run/vibehub/app.sock`，不监听 TCP 端口，也
 不访问网络。

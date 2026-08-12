@@ -135,7 +135,7 @@ def test_production_vibehub_defaults_do_not_require_private_env_entries(tmp_path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == (
-        "('numoj-vibehub', True, '.deploy/vibehub-base-oci', [])"
+        "('numoj-vibehub-online', True, '.deploy/vibehub-base-oci', [])"
     )
 
 

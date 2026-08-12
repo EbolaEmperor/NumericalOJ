@@ -142,7 +142,7 @@ def test_validate_config_checks_required_keys_and_decoded_types(tmp_path):
             config_loader=lambda: _config(MYSQL_PORT=True),
         )
 
-def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
+def test_validate_vibehub_builder_requires_all_running_bridge_nodes():
     calls = []
     builder = {
         "Name": "numoj-vibehub",
@@ -170,7 +170,7 @@ def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
             payload = {
                 "Name": f"/{name}",
                 "State": {"Running": True},
-                "HostConfig": {"NetworkMode": "none"},
+                "HostConfig": {"NetworkMode": "bridge"},
             }
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
@@ -190,7 +190,7 @@ def test_validate_vibehub_builder_requires_all_running_network_none_nodes():
     [
         ({"Driver": "docker"}, {}, "docker-container"),
         ({"Nodes": [{"Name": "numoj-vibehub0", "Status": "stopped"}]}, {}, "未就绪"),
-        ({}, {"HostConfig": {"NetworkMode": "bridge"}}, "network=none"),
+        ({}, {"HostConfig": {"NetworkMode": "none"}}, "network=bridge"),
         ({}, {"State": {"Running": False}}, "未运行"),
     ],
 )
@@ -206,7 +206,7 @@ def test_validate_vibehub_builder_fails_closed(
     container = {
         "Name": "/buildx_buildkit_numoj-vibehub0",
         "State": {"Running": True},
-        "HostConfig": {"NetworkMode": "none"},
+        "HostConfig": {"NetworkMode": "bridge"},
     }
     container.update(container_patch)
 
@@ -269,7 +269,7 @@ def test_ensure_vibehub_builder_creates_only_when_missing():
         return subprocess.CompletedProcess(command, 0, json.dumps({
             "Name": f"/{name}",
             "State": {"Running": True},
-            "HostConfig": {"NetworkMode": "none"},
+            "HostConfig": {"NetworkMode": "bridge"},
         }), "")
 
     assert preflight.ensure_vibehub_builder(
@@ -281,7 +281,7 @@ def test_ensure_vibehub_builder_creates_only_when_missing():
         if command[:3] == ["docker", "buildx", "create"]
     )
     assert "--use" not in create
-    assert "network=none" in create
+    assert "network=bridge" in create
     assert f"image={preflight.VIBEHUB_BUILDKIT_IMAGE}" in create
 
 

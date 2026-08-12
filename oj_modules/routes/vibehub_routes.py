@@ -28,17 +28,14 @@ from oj_modules.vibehub.runtime import (
 vibehub_bp = Blueprint("vibehub", __name__, url_prefix="/vibehub")
 
 
-# 播放页自身只需要站内静态资源、运行租约 API 和同源作品 iframe。单独覆盖
-# 应用级兼容性 CSP，避免作品把自己的 iframe 导航到外部 HTTPS 页面后继续
-# 冒用 NumericalOJ 的播放外壳。frame-src 是现代浏览器的主约束，child-src
-# 同时保留为旧实现的兼容回退。
+# 播放页只负责装载作品与调用同源租约 API；作品自身允许访问网络。
 _PLAYER_CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; "
+    "default-src * data: blob:; "
     "script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; font-src 'self' data:; "
-    "media-src 'self' data: blob:; connect-src 'self'; "
-    "frame-src 'self'; child-src 'self'; worker-src 'self' blob:; "
-    "object-src 'none'; base-uri 'self'; form-action 'self'; "
+    "img-src * data: blob:; font-src * data: blob:; "
+    "media-src * data: blob:; connect-src * data: blob: http: https: ws: wss:; "
+    "frame-src * data: blob:; child-src * data: blob:; worker-src * data: blob:; "
+    "object-src 'none'; base-uri 'self'; form-action 'self' http: https:; "
     "frame-ancestors 'self'"
 )
 

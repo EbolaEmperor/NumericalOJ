@@ -137,7 +137,7 @@ def _buildx_list_output(
 def _buildx_node_inspect_payload(
     *,
     builder: str = "numoj-vibehub",
-    network_mode: str = "none",
+    network_mode: str = "bridge",
 ) -> str:
     return json.dumps({
         "Name": f"/buildx_buildkit_{builder}0",
@@ -251,7 +251,7 @@ def _manager(monkeypatch, tmp_path, *, docker=None, clock=lambda: 100.0, **kwarg
     return manager
 
 
-def test_build_is_offline_bounded_and_inspects_final_image(tmp_path):
+def test_build_is_networked_bounded_and_inspects_final_image(tmp_path):
     package = _write_package(tmp_path / "package")
     commands: list[list[str]] = []
     command_timeouts: list[float] = []
@@ -300,7 +300,7 @@ def test_build_is_offline_bounded_and_inspects_final_image(tmp_path):
     build = next(command for command in commands if command[:2] == ["docker", "build"])
     assert command_timeouts[commands.index(build)] == 480
     for flag, value in (
-        ("--network", "none"),
+        ("--network", "default"),
         ("--memory", "4g"),
         ("--memory-swap", "4g"),
         ("--cpu-period", "100000"),
@@ -341,7 +341,7 @@ def test_buildx_missing_uses_one_exact_legacy_fallback_with_same_command(tmp_pat
     assert [mode for _command, mode in calls] == ["1", "0"]
     assert calls[0][0] == calls[1][0]
     assert "--network" in calls[1][0]
-    assert calls[1][0][calls[1][0].index("--network") + 1] == "none"
+    assert calls[1][0][calls[1][0].index("--network") + 1] == "default"
 
 
 def test_dedicated_builder_uses_buildx_load_and_never_legacy_fallback(tmp_path):
@@ -509,25 +509,25 @@ def test_dedicated_builder_reports_missing_builder():
         ).verify_dedicated_builder()
 
 
-def test_dedicated_builder_rejects_networked_buildkit_node():
+def test_dedicated_builder_rejects_non_bridge_buildkit_node():
     def runner(command, *, timeout, env=None):
         command = list(command)
         if command[:3] == ["docker", "buildx", "ls"]:
             return runtime._CommandResult(0, _buildx_list_output(), "")
         return runtime._CommandResult(
             0,
-            _buildx_node_inspect_payload(network_mode="bridge"),
+            _buildx_node_inspect_payload(network_mode="none"),
             "",
         )
 
-    with pytest.raises(runtime.VibeHubImageError, match="NetworkMode=none"):
+    with pytest.raises(runtime.VibeHubImageError, match="NetworkMode=bridge"):
         runtime.DockerCLI(
             command_runner=runner,
             build_builder="numoj-vibehub",
         ).verify_dedicated_builder()
 
 
-def test_dedicated_builder_verifies_every_running_node_is_networkless():
+def test_dedicated_builder_verifies_every_running_node_uses_bridge():
     inspected_containers = []
     output = json.dumps({
         "Name": "numoj-vibehub",
@@ -547,7 +547,7 @@ def test_dedicated_builder_verifies_every_running_node_is_networkless():
         return runtime._CommandResult(0, json.dumps({
             "Name": "/" + name,
             "State": {"Running": True},
-            "HostConfig": {"NetworkMode": "none"},
+            "HostConfig": {"NetworkMode": "bridge"},
         }), "")
 
     runtime.DockerCLI(
@@ -613,7 +613,7 @@ def test_other_build_failure_never_uses_legacy_fallback(tmp_path):
         calls.append(env["DOCKER_BUILDKIT"])
         return runtime._CommandResult(1, "", "Dockerfile RUN failed")
 
-    with pytest.raises(runtime.VibeHubImageError, match="离线构建失败"):
+    with pytest.raises(runtime.VibeHubImageError, match="镜像构建失败"):
         runtime.DockerCLI(command_runner=runner).build(
             package,
             "numoj-vibehub:test",
@@ -659,7 +659,7 @@ def test_build_failure_keeps_only_a_safe_single_line_buildkit_diagnostic(tmp_pat
         )
 
     error = caught.value
-    assert str(error) == "VibeHub 镜像离线构建失败"
+    assert str(error) == "VibeHub 镜像构建失败"
     assert "ERROR: failed to solve" in error.buildkit_diagnostic
     assert "<redacted>" in error.buildkit_diagnostic
     assert source_canary not in error.buildkit_diagnostic
@@ -676,9 +676,7 @@ def test_build_failure_keeps_only_a_safe_single_line_buildkit_diagnostic(tmp_pat
     "FROM docker.io/library/python:3.12\nCOPY . /app\n",
     "# syntax=docker/dockerfile:1\nFROM numericaloj-vibehub-runtime:1\n",
     "FROM numericaloj-vibehub-runtime:1\nADD https://example.test/a /app/a\n",
-    "FROM numericaloj-vibehub-runtime:1\nRUN --network=host true\n",
     "FROM numericaloj-vibehub-runtime:1\nCOPY --from=nginx /x /x\n",
-    "FROM numericaloj-vibehub-runtime:1\nRUN true\nCOPY . /app\nCMD [\"x\"]\n",
     "FROM numericaloj-vibehub-runtime:1\nUSER 0\nCOPY . /app\nCMD [\"x\"]\n",
     "FROM numericaloj-vibehub-runtime:1\nVOLUME [\"/data\"]\nCOPY . /app\nCMD [\"x\"]\n",
     "FROM numericaloj-vibehub-runtime:1\nONBUILD VOLUME /data\nCOPY . /app\nCMD [\"x\"]\n",
@@ -710,6 +708,7 @@ def test_dockerfile_allows_only_runtime_uid_chown_copy_flag(copy_line):
     assert runtime._dockerfile_base_images(
         "\n".join((
             "FROM numericaloj-vibehub-runtime:1",
+            "RUN python -m pip --version",
             copy_line,
             'CMD ["python", "/app/app.py"]',
         )),
@@ -738,7 +737,7 @@ def test_runtime_args_use_default_docker_and_featured_resources_double(
     )
 
     for required in (
-        "--network", "none", "--cap-drop", "ALL",
+        "--network", "bridge", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges=true", "--user", "65532:65532",
         "--pull", "never", "--ipc", "none",
     ):
@@ -945,6 +944,26 @@ def test_active_runtime_limit_reclaims_crash_orphan_before_new_start(
     assert second.container_name in docker.running
 
 
+def test_reconcile_restarts_runtime_from_an_older_network_abi(
+    monkeypatch,
+    short_tmp,
+):
+    docker = _FakeDocker()
+    first_worker = _manager(monkeypatch, short_tmp, docker=docker)
+    first = first_worker.acquire("demo@v1", "numoj-vibehub:demo")
+    with first_worker._locked_state() as state:
+        next(iter(state["runtimes"].values())).pop("runtime_abi")
+
+    restarted_worker = _manager(monkeypatch, short_tmp, docker=docker)
+    second = restarted_worker.acquire("demo@v1", "numoj-vibehub:demo")
+
+    assert docker.stopped == [first.container_name]
+    assert len(docker.run_commands) == 2
+    assert second.container_name in docker.running
+    with pytest.raises(runtime.VibeHubLeaseError):
+        restarted_worker.heartbeat(first.token)
+
+
 def test_slow_start_reservation_never_holds_global_state_lock(
     monkeypatch,
     short_tmp,
@@ -1130,6 +1149,7 @@ def test_expired_start_reservation_is_retried_and_cleaned_outside_lock(
     container_name = manager._container_name(runtime_id)
     with manager._locked_state() as state:
         state["runtimes"][runtime_id] = {
+            "runtime_abi": runtime.RUNTIME_ABI,
             "status": "starting",
             "reservation_id": "d" * 32,
             "reservation_deadline": 99.0,
@@ -1269,9 +1289,9 @@ def test_proxy_overwrites_session_headers_and_strips_oj_credentials_and_cookies(
     proxy_csp = response_headers["content-security-policy"]
     assert "sandbox" in proxy_csp
     assert "allow-popups allow-popups-to-escape-sandbox" in proxy_csp
-    assert "navigate-to 'self' https:" in proxy_csp
-    assert "connect-src 'self'" in proxy_csp
-    assert "connect-src 'self' https:" not in proxy_csp
+    assert "navigate-to *" in proxy_csp
+    assert "connect-src * data: blob: http: https: ws: wss:" in proxy_csp
+    assert "frame-src * data: blob:" in proxy_csp
 
 
 def test_proxy_hot_path_trusts_relay_instead_of_running_docker_inspect(
@@ -2025,13 +2045,18 @@ def test_location_rewrite_handles_root_relative_query_and_existing_base(location
     assert "Set-Cookie" not in headers
 
 
-def test_location_rewrite_drops_external_redirect():
+@pytest.mark.parametrize("location", (
+    "https://example.test/x",
+    "http://example.test/x",
+    "//example.test/x",
+))
+def test_location_rewrite_preserves_external_http_redirect(location):
     response = runtime._sanitize_response(
-        runtime.ProxyResponse(302, "Found", (("Location", "https://evil.test/x"),), b""),
+        runtime.ProxyResponse(302, "Found", (("Location", location),), b""),
         base_path="/vibehub/runtime/token",
         request_target="/",
     )
-    assert "location" not in {name.lower() for name, _value in response.headers}
+    assert dict(response.headers)["Location"] == location
 
 
 def _relay_frame(metadata, body=b""):

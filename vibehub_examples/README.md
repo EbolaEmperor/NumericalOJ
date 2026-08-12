@@ -4,7 +4,7 @@
 `vibehub.json`、前后端，并只通过固定 Unix Socket 提供 HTTP/1.1。
 
 - `circle-cat/`：完全独立、仅使用 Python 标准库的围住小猫游戏。
-- `arc-agi-3/`：ARC-AGI-3 离线目录与 start/action 服务。
+- `arc-agi-3/`：ARC-AGI-3 本地数据目录与 start/action 服务。
 
-首次部署会把示例种入 `admin` 的普通 VibeHub 作品；之后通过普通作品链路编辑、审核和运行，
-再次部署不会覆盖管理员的修改。
+部署会把示例种入 `admin` 的普通 VibeHub 作品；仓库内容变化时通过普通作品链路创建新版本、
+审核并发布。
