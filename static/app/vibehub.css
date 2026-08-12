@@ -60,11 +60,11 @@
 .vibe-toolbar-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
 
 .vibe-toolbar-link,
-.vibe-create-trigger { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border-radius: 8px; font-size: .72rem; font-weight: 650; }
+.vibe-create-trigger { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border-radius: 8px; font-size: .66rem; font-weight: 650; }
 
-.vibe-toolbar-link { color: #52525b !important; }
+.vibe-toolbar-link { border: 1px solid #d4d4d8; background: #fff; color: #52525b !important; transition: background-color 150ms ease, border-color 150ms ease; }
 
-.vibe-toolbar-link:hover { background: #f4f4f5; color: #18181b !important; }
+.vibe-toolbar-link:hover { border-color: #a1a1aa; background: #f4f4f5; color: #18181b !important; }
 
 .vibe-create-trigger { border: 1px solid #18181b; background: #18181b; color: #fff !important; transition: background-color 150ms ease, transform 150ms ease; }
 
@@ -191,7 +191,7 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-modal-panel footer { display: flex; justify-content: flex-end; gap: 8px; }
 
 .vibe-modal-secondary,
-.vibe-modal-primary { min-height: 39px; padding: 0 14px; border-radius: 8px; font-size: .72rem; font-weight: 650; }
+.vibe-modal-primary { min-height: 39px; padding: 0 14px; border-radius: 8px; font-size: .66rem; font-weight: 650; }
 
 .vibe-modal-secondary { border: 1px solid #d4d4d8; background: #fff; color: #3f3f46; }
 
