@@ -47,6 +47,7 @@ def test_vibehub_templates_parse_and_use_external_assets():
 def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     gallery = _read("templates/vibehub/index.html")
     card = _read("templates/vibehub/_project_card.html")
+    css = _read("static/app/vibehub.css")
     javascript = _read("static/app/vibehub.js")
 
     assert all(token in gallery for token in (
@@ -58,6 +59,10 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
         "NUMERICAL OJ", "PLAYABLE WORKS", "HOW IT WORKS", "我的工作台",
     ))
     assert "showModal()" in javascript and "window.confirm" not in javascript
+    assert 'class="vibe-toolbar-link"' in gallery
+    assert "fa-book-open" in gallery
+    assert css.count("font-size: .66rem") >= 2
+    assert ".vibe-toolbar-link { border: 1px solid" in css
     assert "更新并提交审核" in javascript
     assert all(token in card for token in (
         "project.play_url", "vibe-featured-mark", "fa-gem", "data-avatar-seed",
