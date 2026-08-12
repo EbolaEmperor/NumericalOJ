@@ -70,6 +70,7 @@ STANDARD_WRITABLE_BYTES = 4 * GIB
 FEATURED_WRITABLE_BYTES = 8 * GIB
 
 DEFAULT_LEASE_TTL_SECONDS = 90.0
+DEFAULT_IDLE_GRACE_SECONDS = 300.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
 DEFAULT_REQUEST_MAX_BYTES = 16 * 1024 * 1024
 DEFAULT_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
@@ -1843,6 +1844,7 @@ class VibeHubRuntimeManager:
         docker_client: DockerCLI | None = None,
         allowed_base_images: Iterable[str] = (DEFAULT_BASE_IMAGE,),
         lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS,
+        idle_grace_seconds: float = DEFAULT_IDLE_GRACE_SECONDS,
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         request_max_bytes: int = DEFAULT_REQUEST_MAX_BYTES,
         response_max_bytes: int = DEFAULT_RESPONSE_MAX_BYTES,
@@ -1891,6 +1893,7 @@ class VibeHubRuntimeManager:
         )
         self.allowed_base_images = tuple(allowed_base_images)
         self.lease_ttl_seconds = float(lease_ttl_seconds)
+        self.idle_grace_seconds = float(idle_grace_seconds)
         self.request_timeout_seconds = float(request_timeout_seconds)
         self.request_max_bytes = int(request_max_bytes)
         self.response_max_bytes = int(response_max_bytes)
@@ -1926,6 +1929,8 @@ class VibeHubRuntimeManager:
         self._reaper_thread: threading.Thread | None = None
         if not math.isfinite(self.lease_ttl_seconds) or not 10 <= self.lease_ttl_seconds <= 3600:
             raise ValueError("VibeHub lease TTL 必须在 10–3600 秒之间")
+        if not math.isfinite(self.idle_grace_seconds) or not 0 <= self.idle_grace_seconds <= 3600:
+            raise ValueError("VibeHub 空闲回收宽限必须在 0–3600 秒之间")
         if not math.isfinite(self.request_timeout_seconds) or not 0.1 <= self.request_timeout_seconds <= 120:
             raise ValueError("VibeHub proxy timeout 必须在 0.1–120 秒之间")
         if not (
@@ -2444,6 +2449,25 @@ class VibeHubRuntimeManager:
         state["runtimes"][runtime_id] = stopping
         return runtime_id, operation_id, stopping
 
+    def _schedule_idle_cleanup_locked(
+        self,
+        state: dict,
+        runtime_id: str,
+        runtime: Mapping[str, object],
+    ) -> tuple[str, str, dict] | None:
+        """记录空闲截止时间；宽限为零时保留立即回收语义。"""
+
+        if self._runtime_status(runtime) != "ready":
+            raise VibeHubRuntimeError("只有 ready runtime 可以进入空闲宽限")
+        if self.idle_grace_seconds <= 0:
+            return self._mark_stopping_locked(state, runtime_id, runtime)
+        idle = dict(runtime)
+        idle["idle_deadline"] = (
+            float(self._clock()) + self.idle_grace_seconds
+        )
+        state["runtimes"][runtime_id] = idle
+        return None
+
     def _stop_and_finalize(self, action: tuple[str, str, dict]) -> None:
         """锁外删除闲置容器，再用 operation_id 做短锁 CAS 提交。"""
 
@@ -2502,9 +2526,29 @@ class VibeHubRuntimeManager:
                     stop_expired = True
                 if stop_expired:
                     actions.append(self._mark_stopping_locked(state, runtime_id, runtime))
-            elif not self._leases_for_runtime(state, runtime_id) and not inflight:
-                actions.append(self._mark_stopping_locked(state, runtime_id, runtime))
-                removed += 1
+            else:
+                has_leases = bool(self._leases_for_runtime(state, runtime_id))
+                if has_leases or inflight:
+                    runtime.pop("idle_deadline", None)
+                    continue
+                raw_idle_deadline = runtime.get("idle_deadline")
+                if raw_idle_deadline is None:
+                    action = self._schedule_idle_cleanup_locked(
+                        state, runtime_id, runtime,
+                    )
+                    if action is not None:
+                        actions.append(action)
+                        removed += 1
+                    continue
+                try:
+                    idle_expired = float(raw_idle_deadline) <= now
+                except (TypeError, ValueError):
+                    idle_expired = True
+                if idle_expired:
+                    actions.append(
+                        self._mark_stopping_locked(state, runtime_id, runtime)
+                    )
+                    removed += 1
         return removed, actions
 
     def _reconcile_once(self) -> None:
@@ -2645,6 +2689,9 @@ class VibeHubRuntimeManager:
     ) -> RuntimeLease:
         if self._runtime_status(runtime) != "ready":
             raise VibeHubCapacityError("VibeHub 同版本容器正在切换，请稍后重试")
+        active_runtime = dict(runtime)
+        active_runtime.pop("idle_deadline", None)
+        state["runtimes"][runtime_id] = active_runtime
         token = self._new_token()
         lease = {
             "runtime_id": runtime_id,
@@ -2654,7 +2701,7 @@ class VibeHubRuntimeManager:
             "expires_at": float(self._clock()) + self.lease_ttl_seconds,
         }
         state["leases"][_token_digest(token)] = lease
-        return self._lease_from_state(token, lease, runtime)
+        return self._lease_from_state(token, lease, active_runtime)
 
     def acquire(
         self,
@@ -2682,8 +2729,8 @@ class VibeHubRuntimeManager:
         self.reap_expired()
         # 镜像构建可能持续数分钟；单独按 tag 加锁，避免把所有活跃玩家的
         # heartbeat/release 一起卡在全局 runtime state 锁后。starting reservation
-        # 也必须在释放 tag 锁前落盘，否则最后一个旧 lease 的清理可能在
-        # ensure_image 与 docker run 之间删掉尚未被容器 pin 的同一 image ID。
+        # 也必须在释放 tag 锁前落盘，保证跨 worker 的同版本启动与复用只有
+        # 一个明确所有者。
         with self._locked_image_build(selected_image_ref):
             image = self._ensure_image(
                 selected_image_ref,
@@ -2756,7 +2803,7 @@ class VibeHubRuntimeManager:
                     self._stop_and_finalize(action)
                 except Exception:
                     # 原始启动异常更接近调用方；stopping tombstone 会让 reaper
-                    # 重试精确容器/tag 清理，不记录作品内容或 Docker 输出。
+                    # 重试精确容器清理，不记录作品内容或 Docker 输出。
                     _logger.exception("VibeHub 启动失败后的资源回收未完成")
             raise
 
@@ -2919,7 +2966,7 @@ class VibeHubRuntimeManager:
         project_key: str | None = None,
         channel: str | None = None,
     ) -> bool:
-        """释放租约；最后一位玩家且无进行中请求时立刻 ``docker rm -f``。"""
+        """释放租约；最后一位玩家离开后进入可取消的空闲回收宽限。"""
 
         self._reconcile_once()
         action = None
@@ -2936,7 +2983,9 @@ class VibeHubRuntimeManager:
             state["leases"].pop(digest, None)
             inflight = runtime.get("inflight") or {}
             if not self._leases_for_runtime(state, runtime_id) and not inflight:
-                action = self._mark_stopping_locked(state, runtime_id, runtime)
+                action = self._schedule_idle_cleanup_locked(
+                    state, runtime_id, runtime,
+                )
         if action is not None:
             self._stop_and_finalize(action)
         return True
@@ -3148,7 +3197,7 @@ class VibeHubRuntimeManager:
                         if isinstance(inflight, dict):
                             inflight.pop(request_id, None)
                         if not self._leases_for_runtime(state, runtime_id) and not inflight:
-                            action = self._mark_stopping_locked(
+                            action = self._schedule_idle_cleanup_locked(
                                 state, runtime_id, runtime
                             )
                 if action is not None:
@@ -3226,6 +3275,11 @@ def _manager_kwargs_from_config(config_source) -> dict:
         "lease_ttl_seconds": float(_config_value(
             config_source, "VIBEHUB_LEASE_TTL_SECONDS", DEFAULT_LEASE_TTL_SECONDS,
         )),
+        "idle_grace_seconds": float(_config_value(
+            config_source,
+            "VIBEHUB_IDLE_GRACE_SECONDS",
+            DEFAULT_IDLE_GRACE_SECONDS,
+        )),
         "reaper_interval_seconds": float(_config_value(
             config_source, "VIBEHUB_REAPER_INTERVAL_SECONDS", 15.0,
         )),
@@ -3278,10 +3332,13 @@ def _manager_kwargs_from_config(config_source) -> dict:
         "base_oci_layout_root": selected_oci_root,
     }
     lease_ttl = kwargs["lease_ttl_seconds"]
+    idle_grace = kwargs["idle_grace_seconds"]
     reaper_interval = kwargs["reaper_interval_seconds"]
     request_timeout = kwargs["request_timeout_seconds"]
     if not math.isfinite(lease_ttl) or not 10 <= lease_ttl <= 3600:
         raise ValueError("VIBEHUB_LEASE_TTL_SECONDS 必须在 10–3600 之间")
+    if not math.isfinite(idle_grace) or not 0 <= idle_grace <= 3600:
+        raise ValueError("VIBEHUB_IDLE_GRACE_SECONDS 必须在 0–3600 之间")
     if not math.isfinite(reaper_interval) or not 0.05 <= reaper_interval < lease_ttl:
         raise ValueError("VIBEHUB_REAPER_INTERVAL_SECONDS 必须小于 lease TTL")
     if not math.isfinite(request_timeout) or not 0.1 <= request_timeout <= 120:
