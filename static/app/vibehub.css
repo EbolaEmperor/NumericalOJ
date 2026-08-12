@@ -312,13 +312,7 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-player-loading[hidden],
 .vibe-player-error[hidden] { display: none; }
 
-.vibe-player-loader { display: flex; gap: 7px; margin-bottom: 21px; }
-
-.vibe-player-loader i { width: 17px; height: 17px; clip-path: polygon(25% 6%, 75% 6%, 100% 50%, 75% 94%, 25% 94%, 0 50%); background: var(--vibe-orange); animation: vibe-loader 900ms infinite ease-in-out alternate; }
-
-.vibe-player-loader i:nth-child(2) { background: var(--vibe-yellow); animation-delay: 150ms; }
-
-.vibe-player-loader i:nth-child(3) { background: var(--vibe-green); animation-delay: 300ms; }
+.vibe-player-loading .vibe-player-loader { --math-curve-size: clamp(7.5rem, 15vw, 10rem); margin-bottom: 24px; }
 
 .vibe-player-loading strong { font-family: var(--vibe-serif); font-size: 1.3rem; }
 
@@ -336,12 +330,6 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-player-error a { display: inline-flex; min-height: 39px; align-items: center; gap: 7px; padding: 8px 13px; border: 1px solid var(--vibe-ink); background: transparent; color: var(--vibe-ink); font-size: .64rem; font-weight: 700; }
 
 .vibe-player-error button { background: var(--vibe-ink); color: white; }
-
-@keyframes vibe-loader {
-  from { opacity: .35; transform: translateY(5px); }
-
-  to { opacity: 1; transform: translateY(-5px); }
-}
 
 /* 作品不可用 */
 .vibe-not-found { display: grid; min-height: 100vh; place-items: center; align-content: center; padding: 55px 24px; text-align: center; }

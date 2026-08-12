@@ -44,9 +44,18 @@
   ></iframe>
 
   <div class="vibe-player-loading" data-vibe-player-loading role="status">
-    <span class="vibe-player-loader" aria-hidden="true"><i></i><i></i><i></i></span>
-    <strong>正在启动隔离容器</strong>
-    <p>首次启动可能需要几秒；无人游玩后资源会自动回收。</p>
+    <span
+      class="math-curve-loader vibe-player-loader"
+      data-math-curve-loader
+      data-icon-only="true"
+      data-size="lg"
+      data-color-a="#c95d32"
+      data-color-b="#385b4a"
+      data-stroke-scale="1.08"
+      aria-label="正在准备游戏运行环境"
+    ></span>
+    <strong>正在准备游戏运行环境</strong>
+    <p>首次访问需要构建游戏镜像，准备完成后会自动进入。</p>
   </div>
 
   <div class="vibe-player-error" data-vibe-player-error hidden role="alert">
