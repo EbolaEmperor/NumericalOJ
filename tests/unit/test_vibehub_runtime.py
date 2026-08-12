@@ -944,26 +944,6 @@ def test_active_runtime_limit_reclaims_crash_orphan_before_new_start(
     assert second.container_name in docker.running
 
 
-def test_reconcile_restarts_runtime_from_an_older_network_abi(
-    monkeypatch,
-    short_tmp,
-):
-    docker = _FakeDocker()
-    first_worker = _manager(monkeypatch, short_tmp, docker=docker)
-    first = first_worker.acquire("demo@v1", "numoj-vibehub:demo")
-    with first_worker._locked_state() as state:
-        next(iter(state["runtimes"].values())).pop("runtime_abi")
-
-    restarted_worker = _manager(monkeypatch, short_tmp, docker=docker)
-    second = restarted_worker.acquire("demo@v1", "numoj-vibehub:demo")
-
-    assert docker.stopped == [first.container_name]
-    assert len(docker.run_commands) == 2
-    assert second.container_name in docker.running
-    with pytest.raises(runtime.VibeHubLeaseError):
-        restarted_worker.heartbeat(first.token)
-
-
 def test_slow_start_reservation_never_holds_global_state_lock(
     monkeypatch,
     short_tmp,
@@ -1149,7 +1129,6 @@ def test_expired_start_reservation_is_retried_and_cleaned_outside_lock(
     container_name = manager._container_name(runtime_id)
     with manager._locked_state() as state:
         state["runtimes"][runtime_id] = {
-            "runtime_abi": runtime.RUNTIME_ABI,
             "status": "starting",
             "reservation_id": "d" * 32,
             "reservation_deadline": 99.0,
@@ -1289,9 +1268,7 @@ def test_proxy_overwrites_session_headers_and_strips_oj_credentials_and_cookies(
     proxy_csp = response_headers["content-security-policy"]
     assert "sandbox" in proxy_csp
     assert "allow-popups allow-popups-to-escape-sandbox" in proxy_csp
-    assert "navigate-to *" in proxy_csp
-    assert "connect-src * data: blob: http: https: ws: wss:" in proxy_csp
-    assert "frame-src * data: blob:" in proxy_csp
+    assert "-src" not in proxy_csp
 
 
 def test_proxy_hot_path_trusts_relay_instead_of_running_docker_inspect(
@@ -2045,12 +2022,8 @@ def test_location_rewrite_handles_root_relative_query_and_existing_base(location
     assert "Set-Cookie" not in headers
 
 
-@pytest.mark.parametrize("location", (
-    "https://example.test/x",
-    "http://example.test/x",
-    "//example.test/x",
-))
-def test_location_rewrite_preserves_external_http_redirect(location):
+def test_location_rewrite_preserves_external_redirect():
+    location = "https://example.test/x"
     response = runtime._sanitize_response(
         runtime.ProxyResponse(302, "Found", (("Location", location),), b""),
         base_path="/vibehub/runtime/token",

@@ -28,16 +28,8 @@ from oj_modules.vibehub.runtime import (
 vibehub_bp = Blueprint("vibehub", __name__, url_prefix="/vibehub")
 
 
-# 播放页只负责装载作品与调用同源租约 API；作品自身允许访问网络。
-_PLAYER_CONTENT_SECURITY_POLICY = (
-    "default-src * data: blob:; "
-    "script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src * data: blob:; font-src * data: blob:; "
-    "media-src * data: blob:; connect-src * data: blob: http: https: ws: wss:; "
-    "frame-src * data: blob:; child-src * data: blob:; worker-src * data: blob:; "
-    "object-src 'none'; base-uri 'self'; form-action 'self' http: https:; "
-    "frame-ancestors 'self'"
-)
+# 只限制播放页被站外嵌入，不限制作品访问网络。
+_PLAYER_CONTENT_SECURITY_POLICY = "frame-ancestors 'self'"
 
 
 def _log_page_failure(operation):
