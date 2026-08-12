@@ -155,16 +155,9 @@ python3 scripts/numoj_user.py vibehub edit <slug> \
 作品只维护 `latest`、`public` 两个镜像别名；保存时构建 `latest` 并自动送审，`review` 复用
 `latest`。审核通过让 `public` 指向已确认的 `latest`，不重新构建；通过前其他用户仍看到旧版本。
 
-### 申请精品
-
-作品已经公开后，作者可以申请精品资源规格：
-
-```bash
-python3 scripts/numoj_user.py vibehub request-featured <slug>
-```
-
 ## 版本、配额与运行资源
 
+- 精品资格只能由管理员设置或取消，作者不能主动申请。
 - 普通用户同时最多拥有 2 个未获精品资格的作品。
 - 每个用户的持久作品快照逻辑用量上限为 20 GiB；每个作品的版本数量也受站点配额限制。
 - 普通作品运行上限为 4 GiB 内存、2 CPU、256 PID 和 20 GiB 镜像。

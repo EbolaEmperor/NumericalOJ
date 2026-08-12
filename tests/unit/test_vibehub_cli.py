@@ -14,11 +14,11 @@ def test_user_and_admin_vibehub_cli_groups_expose_expected_commands():
     cases = [
         (
             ROOT / "skills" / "numoj-user" / "scripts" / "numoj_user.py",
-            ("guide", "list", "mine", "detail", "create", "update", "edit", "request-featured"),
+            ("guide", "list", "mine", "detail", "create", "update", "edit"),
         ),
         (
             ROOT / "skills" / "numoj-admin" / "scripts" / "numoj_admin.py",
-            ("guide", "pending", "review", "featured-pending", "featured-review"),
+            ("guide", "pending", "review", "featured"),
         ),
     ]
     for script, commands in cases:
@@ -33,6 +33,9 @@ def test_user_and_admin_vibehub_cli_groups_expose_expected_commands():
         assert completed.returncode == 0, completed.stderr
         for command in commands:
             assert command in completed.stdout
+        assert "request-featured" not in completed.stdout
+        assert "featured-pending" not in completed.stdout
+        assert "featured-review" not in completed.stdout
 
 
 def test_vibehub_cli_payload_projection_keeps_review_state_and_drops_internal_fields(monkeypatch):

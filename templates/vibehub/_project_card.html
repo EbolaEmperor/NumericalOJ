@@ -33,7 +33,18 @@
     </span>
   </a>
 
-  {% if project.is_featured %}
+  {% if project.can_manage_featured %}
+  <button
+    class="vibe-featured-mark vibe-featured-mark--control{% if not project.is_featured %} vibe-featured-mark--inactive{% endif %}"
+    type="button"
+    data-vibe-toggle-featured
+    data-project-slug="{{ project.slug }}"
+    data-project-title="{{ project.title }}"
+    data-project-featured="{{ 'true' if project.is_featured else 'false' }}"
+    aria-label="{{ '取消精品：' if project.is_featured else '设为精品：' }}{{ project.title }}"
+    title="{{ '取消精品' if project.is_featured else '设为精品' }}"
+  ><i class="fas fa-gem" aria-hidden="true"></i></button>
+  {% elif project.is_featured %}
   <span class="vibe-featured-mark" title="精品" aria-label="精品作品"><i class="fas fa-gem" aria-hidden="true"></i></span>
   {% endif %}
 

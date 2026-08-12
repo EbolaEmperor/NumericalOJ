@@ -343,50 +343,51 @@ def test_admin_project_creation_skips_project_count_limit(tmp_path, monkeypatch)
     assert connection.rolled_back is True
 
 
-def test_featured_request_keeps_slot_and_approval_releases_it(monkeypatch):
-    pending_project = _core_project()
-    pending_project["public_version_id"] = 10
-    pending_connection = _Connection()
-    monkeypatch.setattr(services, "get_db_connection", lambda: pending_connection)
+def test_admin_can_set_and_unset_featured_directly(monkeypatch):
+    connections = (_Connection(), _Connection())
+    connection_iter = iter(connections)
+    monkeypatch.setattr(services, "get_db_connection", lambda: next(connection_iter))
     monkeypatch.setattr(
         services,
         "_fetch_core_for_update",
-        lambda *_args: pending_project,
+        lambda *_args: _core_project(),
     )
-    monkeypatch.setattr(services, "_fetch_project_row", lambda *_args: {"ok": True})
+    monkeypatch.setattr(
+        services,
+        "_fetch_project_row",
+        lambda *_args: {"public_version_id": 10},
+    )
     monkeypatch.setattr(
         services,
         "_serialize_project",
         lambda row, *, audience, **_kwargs: {"row": row, "audience": audience},
     )
 
-    services.request_featured(USER, "demo-vibe")
+    enabled = services.set_featured(ADMIN, "demo-vibe", True)
+    disabled = services.set_featured(ADMIN, "demo-vibe", False)
 
-    pending_sql = next(
-        sql
-        for sql, _params in pending_connection.fake_cursor.calls
-        if "featured_status = 'pending'" in sql
-    )
-    assert "is_featured" not in pending_sql
+    updates = [next(
+        (sql, params)
+        for sql, params in connection.fake_cursor.calls
+        if "is_featured = %s" in sql
+    ) for connection in connections]
+    assert updates[0][1] == ("approved", 1, ADMIN["id"], 3)
+    assert updates[1][1] == ("none", 0, ADMIN["id"], 3)
+    assert enabled["audience"] == disabled["audience"] == "public"
+    assert all(connection.committed for connection in connections)
 
-    approved_project = _core_project()
-    approved_project.update({"public_version_id": 10, "featured_status": "pending"})
-    approved_connection = _Connection()
-    monkeypatch.setattr(services, "get_db_connection", lambda: approved_connection)
+
+def test_featured_setting_requires_admin_and_boolean_without_opening_db(monkeypatch):
     monkeypatch.setattr(
         services,
-        "_fetch_core_for_update",
-        lambda *_args: approved_project,
+        "get_db_connection",
+        lambda: pytest.fail("无效精品设置不应打开 DB"),
     )
 
-    services.review_featured(ADMIN, "demo-vibe", "approve")
-
-    approved_update = next(
-        (sql, params)
-        for sql, params in approved_connection.fake_cursor.calls
-        if "is_featured = %s" in sql
-    )
-    assert approved_update[1][0:2] == ("approved", 1)
+    with pytest.raises(services.VibeHubPermissionError):
+        services.set_featured(USER, "demo-vibe", True)
+    with pytest.raises(services.VibeHubError, match="featured 必须为布尔值"):
+        services.set_featured(ADMIN, "demo-vibe", 1)
 
 
 def test_version_count_quota_is_checked_before_update_upload(tmp_path, monkeypatch):

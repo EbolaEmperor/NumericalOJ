@@ -104,6 +104,14 @@
 
 .vibe-featured-mark { position: absolute; z-index: 6; top: 0; right: 0; width: 52px; height: 52px; clip-path: polygon(100% 0, 100% 100%, 0 0); background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; filter: drop-shadow(-2px 3px 5px rgb(46 16 101 / 24%)); pointer-events: none; }
 
+.vibe-featured-mark--control { padding: 0; border: 0; appearance: none; cursor: pointer; pointer-events: auto; transition: filter 150ms ease; }
+
+.vibe-featured-mark--control:hover { filter: drop-shadow(-2px 3px 6px rgb(46 16 101 / 30%)) brightness(1.08); }
+
+.vibe-featured-mark--control:focus-visible { outline: 3px solid rgb(124 58 237 / 45%); outline-offset: -3px; }
+
+.vibe-featured-mark--inactive { background: linear-gradient(135deg, #a1a1aa, #71717a); filter: drop-shadow(-2px 3px 5px rgb(39 39 42 / 18%)); }
+
 .vibe-featured-mark i { position: absolute; top: 9px; right: 9px; font-size: .75rem; filter: drop-shadow(0 1px 2px rgb(0 0 0 / 28%)); }
 
 .vibe-card-actions { position: absolute; z-index: 7; right: 10px; bottom: 10px; display: flex; gap: 6px; }
@@ -207,6 +215,8 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-modal-panel--confirm { width: min(100%, 410px); padding: 25px; text-align: center; }
 
 .vibe-confirm-icon { display: grid; width: 42px; height: 42px; margin: 0 auto 14px; place-items: center; border-radius: 9px; background: #ecfdf5; color: #16845b; }
+
+.vibe-confirm-icon--featured { background: #f5f3ff; color: #7c3aed; }
 
 .vibe-modal-panel--confirm > p:not(.vibe-form-status) { margin: 9px 0 18px; color: #71717a; font-size: .72rem; line-height: 1.65; }
 

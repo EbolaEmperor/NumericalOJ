@@ -282,6 +282,49 @@
       });
     }
 
+    var featuredDialog = one("[data-vibe-featured-modal]", root);
+    var featuredSubmit = one("[data-vibe-confirm-featured]", featuredDialog);
+    var featuredStatus = one("[data-vibe-featured-status]", featuredDialog);
+    var featuredTitle = one("[data-vibe-featured-title]", featuredDialog);
+    var featuredDescription = one("[data-vibe-featured-description]", featuredDialog);
+    setupDialog(featuredDialog, "[data-vibe-close-featured]");
+    all("[data-vibe-toggle-featured]", root).forEach(function (button) {
+      button.addEventListener("click", function () {
+        var featured = button.dataset.projectFeatured !== "true";
+        var projectTitle = button.dataset.projectTitle || button.dataset.projectSlug;
+        featuredDialog.dataset.slug = button.dataset.projectSlug;
+        featuredDialog.dataset.featured = featured ? "true" : "false";
+        featuredTitle.textContent = featured ? "设为精品？" : "取消精品？";
+        featuredDescription.textContent = featured
+          ? "确认将“" + projectTitle + "”设为精品，并启用精品标记与资源规格。"
+          : "确认取消“" + projectTitle + "”的精品资格，并恢复普通作品资源规格。";
+        featuredSubmit.textContent = featured ? "确认设为精品" : "确认取消精品";
+        showMessage(featuredStatus, "");
+        openDialog(featuredDialog, featuredSubmit);
+      });
+    });
+    if (featuredSubmit) {
+      featuredSubmit.addEventListener("click", async function () {
+        var featured = featuredDialog.dataset.featured === "true";
+        setBusy(featuredSubmit, true, featured ? "设置中…" : "取消中…");
+        try {
+          await apiRequest(projectUrl(
+            root.dataset.adminFeaturedUrlTemplate,
+            featuredDialog.dataset.slug
+          ), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ featured: featured })
+          });
+          showMessage(featuredStatus, featured ? "已设为精品，正在刷新…" : "已取消精品，正在刷新…");
+          setTimeout(function () { window.location.reload(); }, 300);
+        } catch (error) {
+          showMessage(featuredStatus, error.message, true);
+          setBusy(featuredSubmit, false);
+        }
+      });
+    }
+
     var initialSlug = root.dataset.initialEdit;
     var initialButton = all("[data-vibe-edit-project]", root).find(function (button) {
       return button.dataset.projectSlug === initialSlug;
