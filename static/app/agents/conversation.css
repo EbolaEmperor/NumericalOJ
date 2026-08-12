@@ -951,7 +951,7 @@
   resize: none;
   overflow-y: auto;
   border: 0;
-  outline: 0;
+  outline: 0 !important;
   background: transparent;
   color: var(--agent-ink);
   font-size: 12.5px;
