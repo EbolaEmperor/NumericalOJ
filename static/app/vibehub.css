@@ -15,7 +15,7 @@
 .vibehub-page a { color: inherit; text-decoration: none; }
 
 .vibehub-page button,
-.vibehub-page input { font: inherit; }
+.vibehub-page input { font-family: inherit; }
 
 .vibe-gallery,
 .vibe-guide { width: min(100%, 1600px); min-height: 100vh; margin: 0 auto; }
