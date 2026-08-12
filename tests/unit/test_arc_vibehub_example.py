@@ -2,6 +2,7 @@
 
 from io import BytesIO
 from html.parser import HTMLParser
+import base64
 import hashlib
 import importlib.util
 import json
@@ -163,7 +164,7 @@ def _clear_runtime_state():
     arc_app._catalog_cache = None
 
 
-def test_original_assets_only_adapt_transport_headers_for_opaque_origin():
+def test_original_visual_assets_and_optimized_player_transport_contract():
     expected = {
         "arc-agi-3.css": "05d745dfdaee0208a6272f4d0ac17ebc67da37e18c98b76d071f5e08dad851d1",
         "arc-agi-3-catalog.js": "6be82d1140f6e0993c12694a44a8f26dfb4e44b8259e79c2008f9570bb7d22f8",
@@ -173,15 +174,11 @@ def test_original_assets_only_adapt_transport_headers_for_opaque_origin():
 
     javascript = (STATIC / "arc-agi-3.js").read_text()
     assert "Content-Type" not in javascript and "X-Requested-With" not in javascript
-    historical = javascript.replace(
-        "        'Accept': 'application/json',\n",
-        "        'Accept': 'application/json',\n"
-        "        'Content-Type': 'application/json',\n"
-        "        'X-Requested-With': 'XMLHttpRequest',\n",
-    )
-    assert hashlib.sha256(historical.encode()).hexdigest() == (
-        "8f611b984368a8b0bcfa5881420af612f18569a985b899dc9495bd9b208be190"
-    )
+    assert "new Uint8Array" in javascript
+    assert "window.atob" in javascript
+    assert "context.createImageData" in javascript
+    assert "context.putImageData" in javascript
+    assert "context.fillRect" not in javascript
     assert arc_app.Handler.extensions_map[".woff2"] == "font/woff2"
     assert not (STATIC / "vendor/model-family/model-family.js").exists()
 
@@ -354,7 +351,9 @@ def test_random_session_token_selects_the_active_game(monkeypatch):
     assert initial["available_actions"] == [6]
     updated = arc_app.perform_action(session.token, 6, {"x": 0, "y": 0})
     assert updated["action_count"] == 1
-    assert updated["frames"][0][0][0] == 9
+    width, height, encoded = updated["frames"][0]
+    assert (width, height) == (4, 4)
+    assert base64.b64decode(encoded)[0] == 9
 
 
 def test_sessions_are_bounded_and_same_session_actions_cannot_overlap(monkeypatch):

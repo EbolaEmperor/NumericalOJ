@@ -12,6 +12,9 @@
 容器内的官方环境执行 `RESET` 后生成；内存中只保留固定数量、由高熵随机 token 标识的
 对局，不读取 OJ Cookie、认证、身份或数据库。
 
+游戏帧以“宽度、高度、Base64 索引像素”传输，避免二维 JSON 的重复数字与分隔符；浏览器一次
+解码到复用的 `ImageData` 并通过 `putImageData` 提交整帧，不再逐像素调用 Canvas 绘制 API。
+
 ARC Engine、NumPy 与 Pillow 固化在管理员预置的受信基础镜像中；作品构建本身仍完全
 离线。服务在 `/run/vibehub/app.sock` 提供 HTTP/1.1 与 `GET /healthz`，所有前端请求
 均为相对 URL。

@@ -50,9 +50,11 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock = connection
 
 
-def _load_request():
-    source = sys.stdin.buffer
-    if _read_exact(source, 4) != MAGIC:
+def _load_request(source):
+    magic = source.read(4)
+    if not magic:
+        return None
+    if len(magic) != 4 or magic != MAGIC:
         raise ValueError("invalid magic")
     metadata_length = struct.unpack(">I", _read_exact(source, 4))[0]
     if not 1 <= metadata_length <= METADATA_MAX_BYTES:
@@ -109,13 +111,11 @@ def _load_request():
     ):
         raise ValueError("invalid limits")
     body = _read_exact(source, body_length)
-    if source.read(1):
-        raise ValueError("trailing request bytes")
     return method, target, dict(headers), body, timeout, response_max_bytes
 
 
-def _request():
-    method, target, headers, body, timeout, response_max_bytes = _load_request()
+def _request(request, output):
+    method, target, headers, body, timeout, response_max_bytes = request
     connection = _UnixConnection(timeout)
     deadline_reached = threading.Event()
 
@@ -152,7 +152,6 @@ def _request():
         }, ensure_ascii=True, separators=(",", ":")).encode("ascii")
         if len(metadata) > METADATA_MAX_BYTES:
             raise ValueError("response metadata too large")
-        output = sys.stdout.buffer
         output.write(MAGIC)
         output.write(struct.pack(">I", len(metadata)))
         output.write(metadata)
@@ -165,7 +164,10 @@ def _request():
 
 def main() -> int:
     try:
-        _request()
+        source = sys.stdin.buffer
+        output = sys.stdout.buffer
+        while request := _load_request(source):
+            _request(request, output)
     except Exception:
         # Host only trusts a complete framed response. Avoid traceback/source leakage.
         return 70
