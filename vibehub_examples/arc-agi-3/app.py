@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 from functools import cache
+import gzip
 from http.server import SimpleHTTPRequestHandler
 import html
 import importlib.util
@@ -35,6 +36,7 @@ from PIL import Image  # noqa: E402
 
 
 STATIC_ROOT = APP_ROOT / "static"
+PRECOMPUTED_ROOT = APP_ROOT / ".precomputed"
 SOCKET_PATH = Path(os.environ.get("VIBEHUB_SOCKET", "/run/vibehub/app.sock"))
 HEALTH_PATH = os.environ.get("VIBEHUB_HEALTH_PATH", "/healthz")
 ARC_DATA_ROOT = APP_ROOT / "offline_data"
@@ -93,6 +95,41 @@ _STYLESHEET_TAG_RE = re.compile(
 _SCRIPT_TAG_RE = re.compile(
     r'<script src="(?P<path>(?:\./|\.\./)[^"]+)"></script>'
 )
+
+
+@cache
+def _precomputed_text(relative_path):
+    try:
+        return (PRECOMPUTED_ROOT / relative_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+@cache
+def _precomputed_bytes(relative_path):
+    try:
+        return (PRECOMPUTED_ROOT / relative_path).read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _accepts_gzip(value):
+    qualities = {}
+    for item in str(value or "").split(","):
+        coding, *parameters = item.split(";")
+        coding = coding.strip().lower()
+        if not coding:
+            continue
+        quality = 1.0
+        for parameter in parameters:
+            name, separator, raw_value = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    quality = float(raw_value.strip())
+                except ValueError:
+                    quality = 0.0
+        qualities[coding] = quality
+    return qualities.get("gzip", qualities.get("*", 0.0)) > 0
 
 
 def load_catalog():
@@ -294,7 +331,7 @@ def _runtime_game(game):
     return {**game, "input_label": reset["input_label"]}
 
 
-def render_index():
+def _render_index_live():
     games = tuple(_runtime_game(game) for game in load_catalog())
     content = (
         _template("index.html")
@@ -305,7 +342,11 @@ def render_index():
     return _inline_frontend_assets(content)
 
 
-def render_game(game):
+def render_index():
+    return _precomputed_text("index.html") or _render_index_live()
+
+
+def _render_game_live(game):
     game = _runtime_game(game)
     values = {
         "__GAME_TITLE__": html.escape(game["title"]),
@@ -323,9 +364,44 @@ def render_game(game):
     return _inline_frontend_assets(output)
 
 
-def render_not_found():
+def render_game(game):
+    return (
+        _precomputed_text(f"games/{game['slug']}.html")
+        or _render_game_live(game)
+    )
+
+
+def _render_not_found_live():
     content = _template("not-found.html").replace("__CATALOG_URL__", "../")
     return _inline_frontend_assets(content)
+
+
+def render_not_found():
+    return _precomputed_text("not-found.html") or _render_not_found_live()
+
+
+def precompute_frontend_assets():
+    """在镜像构建期完成目录页所需的 25 个环境初始化。"""
+
+    games = tuple(load_catalog())
+    games_root = PRECOMPUTED_ROOT / "games"
+    previews_root = PRECOMPUTED_ROOT / "previews"
+    games_root.mkdir(parents=True, exist_ok=True)
+    previews_root.mkdir(parents=True, exist_ok=True)
+    (PRECOMPUTED_ROOT / "index.html").write_text(
+        _render_index_live(), encoding="utf-8",
+    )
+    (PRECOMPUTED_ROOT / "not-found.html").write_text(
+        _render_not_found_live(), encoding="utf-8",
+    )
+    for game in games:
+        slug = game["slug"]
+        (games_root / f"{slug}.html").write_text(
+            _render_game_live(game), encoding="utf-8",
+        )
+        (previews_root / f"{slug}.png").write_bytes(
+            _reset_snapshot(game)["preview"],
+        )
 
 
 def load_game_class(spec):
@@ -432,6 +508,9 @@ def preview_png(slug):
     spec = find_game(slug)
     if spec is None:
         raise ArcAppError("游戏不存在", 404)
+    precomputed = _precomputed_bytes(f"previews/{slug}.png")
+    if precomputed is not None:
+        return precomputed
     return _reset_snapshot(spec)["preview"]
 
 
@@ -514,8 +593,21 @@ class Handler(SimpleHTTPRequestHandler):
     def _send(self, data, content_type, status=200):
         if isinstance(data, str):
             data = data.encode()
+        compressed = False
+        if (
+            len(data) >= 1024
+            and (
+                content_type.startswith("text/")
+                or content_type.startswith("application/json")
+            )
+            and _accepts_gzip(self.headers.get("Accept-Encoding"))
+        ):
+            data = gzip.compress(data, compresslevel=6, mtime=0)
+            compressed = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -612,6 +704,11 @@ class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
 
 
 def main():
+    if sys.argv[1:]:
+        if sys.argv[1:] == ["--precompute"]:
+            precompute_frontend_assets()
+            return
+        raise SystemExit("usage: app.py [--precompute]")
     SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
     SOCKET_PATH.unlink(missing_ok=True)
     previous_umask = os.umask(0)
