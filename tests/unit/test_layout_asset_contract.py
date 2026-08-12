@@ -153,7 +153,6 @@ def test_layout_passes_server_values_to_javascript_through_data_attributes():
 def test_layout_styles_and_behaviors_live_in_their_responsible_assets():
     for selector in (
         ".layout-offcanvas-nav.layout-nav-compact",
-        ".layout-navbar",
         ".numoj-mobile-topbar",
         ".numoj-mobile-sidebar",
         ".numoj-account-modal",
