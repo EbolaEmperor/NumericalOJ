@@ -253,8 +253,7 @@ def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> li
                     expected_version=created["latest_version"],
                     upload_root=upload_root,
                 )
-                services.request_featured(admin, slug)
-                services.review_featured(admin, slug, "approve")
+                services.set_featured(admin, slug, True)
                 status = "created"
             results.append(f"{slug}: {status}")
     return results

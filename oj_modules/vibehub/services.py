@@ -34,8 +34,6 @@ _PRIVATE_WORKFLOW_FIELDS = frozenset(
         "last_reviewed_version",
         "last_review_status",
         "last_review_note",
-        "featured_status",
-        "featured_review_note",
         "review_requested_at",
         "updated_at",
     }
@@ -122,8 +120,7 @@ SELECT
     p.id, p.slug, p.owner_id,
     p.latest_version_id, p.public_version_id, p.review_version_id,
     p.last_reviewed_version_id,
-    p.featured_status, p.is_featured, p.featured_requested_at,
-    p.featured_reviewed_at, p.featured_review_note,
+    p.is_featured,
     p.created_at, p.updated_at,
     u.username AS owner_username,
     lv.version_number AS latest_version,
@@ -352,8 +349,6 @@ def _serialize_project(row, *, audience: str, include_workflow=False) -> dict:
         "last_reviewed_version": row.get("last_reviewed_version"),
         "last_review_status": row.get("last_review_status"),
         "last_review_note": row.get("last_review_note"),
-        "featured_status": row.get("featured_status") or "none",
-        "featured_review_note": row.get("featured_review_note"),
         "is_featured": bool(row.get("is_featured")),
         "visibility": "public" if row.get("public_version_id") else "private",
         "cover_image": cover_image,
@@ -382,7 +377,7 @@ def _fetch_core_for_update(cursor, slug: str):
         """
         SELECT id, slug, owner_id, latest_version_id,
                public_version_id, review_version_id, last_reviewed_version_id,
-               featured_status, is_featured
+               is_featured
         FROM vibehub_projects
         WHERE slug = %s
         FOR UPDATE
@@ -848,6 +843,7 @@ def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
                     project.update(
                         is_mine=is_mine, is_pending=bool(pending),
                         can_edit=is_mine, can_approve=is_review,
+                        can_manage_featured=admin,
                     )
                 projects.append(project)
     finally:
@@ -1518,102 +1514,43 @@ def review_submission(
         conn.close()
 
 
-def request_featured(actor, slug: str) -> dict:
+def set_featured(actor, slug: str, featured: bool) -> dict:
+    """由管理员直接设置或取消作品的精品资格。"""
+
+    _require_admin(actor)
+    if type(featured) is not bool:
+        raise VibeHubError("featured 必须为布尔值")
     normalized_slug = str(slug or "").strip().lower()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             project = _fetch_core_for_update(cursor, normalized_slug)
-            _require_owner(project, actor)
-            if not project.get("public_version_id"):
-                raise VibeHubError("作品公开发布后才能申请精品")
-            if project.get("featured_status") != "approved":
-                cursor.execute(
-                    """
-                    UPDATE vibehub_projects
-                    SET featured_status = 'pending', featured_requested_at = CURRENT_TIMESTAMP,
-                        featured_reviewed_at = NULL, featured_reviewed_by_user_id = NULL,
-                        featured_review_note = NULL, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """,
-                    (project["id"],),
-                )
-            row = _fetch_project_row(cursor, normalized_slug)
-        conn.commit()
-        return _serialize_project(row, audience="latest")
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def list_pending_featured(actor) -> list[dict]:
-    _require_admin(actor)
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                _PROJECT_SELECT
-                + " WHERE p.featured_status = 'pending'"
-                + " AND p.public_version_id IS NOT NULL"
-                + " ORDER BY p.featured_requested_at ASC"
-            )
-            return [
-                _serialize_project(
-                    row, audience="public", include_workflow=True,
-                )
-                for row in (cursor.fetchall() or [])
-            ]
-    finally:
-        conn.close()
-
-
-def review_featured(actor, slug: str, decision: str, *, note="") -> dict:
-    _require_admin(actor)
-    decision = str(decision or "").strip().lower()
-    if decision not in {"approve", "reject"}:
-        raise VibeHubError("decision 必须为 approve 或 reject")
-    note = _clean_text(note, field="note", limit=2000)
-    normalized_slug = str(slug or "").strip().lower()
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            project = _fetch_core_for_update(cursor, normalized_slug)
-            if project.get("featured_status") != "pending":
-                raise VibeHubError(
-                    "该作品当前没有待审核的精品申请",
-                    status_code=409,
-                    code="featured_not_pending",
-                )
-            status = "approved" if decision == "approve" else "rejected"
             cursor.execute(
                 """
                 UPDATE vibehub_projects
                 SET featured_status = %s, is_featured = %s,
+                    featured_requested_at = NULL,
                     featured_reviewed_at = CURRENT_TIMESTAMP,
-                    featured_reviewed_by_user_id = %s, featured_review_note = %s,
+                    featured_reviewed_by_user_id = %s, featured_review_note = NULL,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = %s AND featured_status = 'pending'
+                WHERE id = %s
                 """,
                 (
-                    status,
-                    1 if decision == "approve" else 0,
+                    "approved" if featured else "none",
+                    1 if featured else 0,
                     _actor_id(actor),
-                    note or None,
                     project["id"],
                 ),
             )
-            if cursor.rowcount != 1:
-                raise VibeHubError(
-                    "精品申请已被其他管理员处理",
-                    status_code=409,
-                    code="featured_stale",
-                )
             row = _fetch_project_row(cursor, normalized_slug)
         conn.commit()
+        audience = (
+            "public" if row.get("public_version_id")
+            else "review" if row.get("review_version_id")
+            else "latest"
+        )
         return _serialize_project(
-            row, audience="public", include_workflow=True,
+            row, audience=audience, include_workflow=True,
         )
     except Exception:
         conn.rollback()
@@ -1674,16 +1611,14 @@ __all__ = [
     "create_project",
     "edit_project",
     "get_project",
-    "list_pending_featured",
     "list_pending_reviews",
     "list_public_projects",
     "list_user_projects",
     "preflight_admin",
     "preflight_create_project",
     "preflight_upload_project",
-    "request_featured",
     "resolve_project_package",
-    "review_featured",
     "review_submission",
+    "set_featured",
     "upload_new_version",
 ]

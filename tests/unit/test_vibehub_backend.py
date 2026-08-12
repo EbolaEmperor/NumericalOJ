@@ -448,7 +448,8 @@ def test_gallery_projects_selects_only_actor_visible_snapshots(monkeypatch):
     own = by_slug["own-private"]
     assert tuple(own[key] for key in (
         "title", "is_mine", "is_pending", "can_edit", "can_approve",
-    )) == ("latest", True, True, True, False)
+        "can_manage_featured",
+    )) == ("latest", True, True, True, False, False)
     user_query, params = user_connection.fake_cursor.calls[0]
     assert "p.owner_id = %s" in user_query and "rv.review_status = 'pending'" not in user_query
     assert params == (USER["id"], USER["id"])
@@ -457,8 +458,11 @@ def test_gallery_projects_selects_only_actor_visible_snapshots(monkeypatch):
     admin_connection.fake_cursor.fetchall = lambda: [_project_row()]
     monkeypatch.setattr(services, "get_db_connection", lambda: admin_connection)
     pending = services.list_gallery_projects(ADMIN)[0]
-    assert (pending["title"], pending["is_pending"], pending["can_approve"]) == (
-        "latest", True, True,
+    assert (
+        pending["title"], pending["is_pending"], pending["can_approve"],
+        pending["can_manage_featured"],
+    ) == (
+        "latest", True, True, True,
     )
     assert pending["play_url"].endswith("?channel=review")
     assert "rv.review_status = 'pending'" in admin_connection.fake_cursor.calls[0][0]
@@ -573,7 +577,8 @@ def test_only_owner_gets_workflow_enrichment_on_explicit_public_detail(monkeypat
     assert owner["latest_version"] == 3
     assert owner["has_pending_review"] is True
     assert owner["latest_review_note"] == "PRIVATE latest note"
-    assert owner["featured_status"] == "pending"
+    assert "featured_status" not in owner
+    assert "featured_review_note" not in owner
 
 
 def test_admin_cannot_read_owner_latest_but_can_read_pending_review(monkeypatch):
@@ -974,7 +979,7 @@ def test_create_api_requires_login_without_parsing_multipart(monkeypatch):
     assert response.get_json()["code"] == "authentication_required"
 
 
-def test_featured_admin_review_rejects_non_admin_before_parsing_multipart(
+def test_featured_admin_setting_rejects_non_admin_before_parsing_multipart(
     monkeypatch,
 ):
     app = Flask(__name__)
@@ -992,6 +997,41 @@ def test_featured_admin_review_rejects_non_admin_before_parsing_multipart(
 
     assert response.status_code == 403
     assert response.get_json()["code"] == "forbidden"
+
+
+def test_user_featured_request_route_is_removed(monkeypatch):
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY="test")
+    app.register_blueprint(vibehub_api.vibehub_api_bp)
+    monkeypatch.setattr(vibehub_api, "current_user", lambda: USER)
+
+    response = app.test_client().post(
+        "/api/vibehub/projects/demo-vibe/featured",
+    )
+
+    assert response.status_code == 404
+
+
+def test_admin_featured_api_passes_explicit_boolean(monkeypatch):
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY="test")
+    app.register_blueprint(vibehub_api.vibehub_api_bp)
+    monkeypatch.setattr(vibehub_api, "current_user", lambda: ADMIN)
+    received = []
+    monkeypatch.setattr(
+        services,
+        "set_featured",
+        lambda actor, slug, featured: received.append((actor, slug, featured))
+        or {"slug": slug, "is_featured": featured},
+    )
+
+    response = app.test_client().post(
+        "/api/vibehub/admin/featured/demo-vibe",
+        json={"featured": True},
+    )
+
+    assert response.status_code == 200
+    assert received == [(ADMIN, "demo-vibe", True)]
 
 
 def test_create_api_rejects_project_limit_before_parsing_multipart(

@@ -65,17 +65,17 @@ Do not use commands that launch external model/API work, large judging workloads
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
 - `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge / reverse-judge config/endpoints and the independent reverse-judge quality gate, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
-- `vibehub`: fetch the current developer guide, create or update versions with automatic review submission, decide pending publication reviews, and decide featured applications.
+- `vibehub`: fetch the current developer guide, create or update versions with automatic review submission, decide pending publication reviews, and directly set or unset featured status.
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
-For review work, use `vibehub pending` with `vibehub review`, or
-`vibehub featured-pending` with `vibehub featured-review`. Run each command's
-`--help` before applying a decision.
+For publication review work, use `vibehub pending` with `vibehub review`.
+Featured status has no application queue: use `vibehub featured <slug> on|off`
+to set or unset it directly. Run each command's `--help` before changing state.
 
 Administrators are not subject to the standard limit of two non-featured
 projects. They still publish through the same explicit review decision and
-cannot modify another author's work.
+cannot modify another author's package or versioned content.
 
 ## Examples
 

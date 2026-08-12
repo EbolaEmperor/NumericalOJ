@@ -88,7 +88,6 @@ USER_COMMAND_PATHS = [
     ["vibehub", "create"],
     ["vibehub", "update"],
     ["vibehub", "edit"],
-    ["vibehub", "request-featured"],
 ]
 
 
@@ -215,8 +214,7 @@ ADMIN_EXTRA_COMMAND_PATHS = [
     ["ranking", "submit-zip"],
     ["vibehub", "pending"],
     ["vibehub", "review"],
-    ["vibehub", "featured-pending"],
-    ["vibehub", "featured-review"],
+    ["vibehub", "featured"],
 ]
 
 

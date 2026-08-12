@@ -197,12 +197,6 @@ def upload_version(slug):
     return json_success(project=project), 201
 
 
-@vibehub_api_bp.route("/projects/<slug>/featured", methods=["POST"])
-def request_project_featured(slug):
-    project = services.request_featured(_require_user(), slug)
-    return json_success(project=project)
-
-
 @vibehub_api_bp.route("/projects/<slug>/cover", methods=["GET"])
 def project_cover(slug):
     view = (request.args.get("view") or "public").strip().lower()
@@ -267,25 +261,14 @@ def review_project(slug):
     return json_success(project=project)
 
 
-@vibehub_api_bp.route("/admin/featured", methods=["GET"])
-def pending_featured():
-    rows = services.list_pending_featured(_require_user())
-    return json_success(projects=rows, count=len(rows))
-
-
 @vibehub_api_bp.route("/admin/featured/<slug>", methods=["POST"])
-def review_project_featured(slug):
+def set_project_featured(slug):
     user = _require_user()
     # 管理员身份必须在任何 JSON/form/multipart 解析前确认，避免未授权
     # 请求用大 body 占用解析线程和临时文件。
     services.preflight_admin(user)
     payload = _payload()
-    project = services.review_featured(
-        user,
-        slug,
-        payload.get("decision"),
-        note=payload.get("note") or "",
-    )
+    project = services.set_featured(user, slug, payload.get("featured"))
     return json_success(project=project)
 
 

@@ -26,8 +26,6 @@ PROJECT_FIELDS = (
     "last_reviewed_version",
     "last_review_status",
     "last_review_note",
-    "featured_status",
-    "featured_review_note",
     "is_featured",
     "visibility",
     "cover_url",
@@ -140,13 +138,6 @@ def project_edit(args: argparse.Namespace) -> None:
     _output(resp, necessary_project_payload)
 
 
-def project_featured_request(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request(
-        "POST", f"/api/vibehub/projects/{args.slug}/featured",
-    )
-    _output(resp, necessary_project_payload)
-
-
 def developer_guide(args: argparse.Namespace) -> None:
     resp = client_from_args(args).request("GET", "/api/vibehub/developer-guide")
     common.print_or_save_response(
@@ -170,7 +161,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     hub = common.add_cli_parser(
         subparsers,
         "vibehub",
-        "Browse, create, version, publish, and request featured status for VibeHub projects.",
+        "Browse, create, version, and publish VibeHub projects.",
     )
     commands = hub.add_subparsers(dest="cmd", required=True)
 
@@ -205,11 +196,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("slug", help="Owned project slug.")
     _add_metadata_args(parser)
     parser.set_defaults(func=project_edit)
-
-    parser = common.add_cli_parser(commands, "request-featured", "Request featured status for an already published project.")
-    parser.add_argument("slug", help="Owned published project slug.")
-    parser.set_defaults(func=project_featured_request)
-
 
 __all__ = [
     "necessary_list_payload",

@@ -16,6 +16,7 @@
   data-edit-url-template="{{ url_for('vibehub_api.edit_project', slug='__SLUG__') }}"
   data-version-url-template="{{ url_for('vibehub_api.upload_version', slug='__SLUG__') }}"
   data-admin-review-url-template="{{ url_for('vibehub_api.review_project', slug='__SLUG__') }}"
+  {% if user and user.is_admin == 1 %}data-admin-featured-url-template="{{ url_for('vibehub_api.set_project_featured', slug='__SLUG__') }}"{% endif %}
   data-initial-filter="{{ initial_filter }}"
   data-initial-edit="{{ edit_slug }}"
 >
@@ -114,6 +115,19 @@
       <footer>
         <button class="vibe-modal-secondary" type="button" data-vibe-close-approve>取消</button>
         <button class="vibe-modal-primary" type="button" data-vibe-confirm-approve>确认通过</button>
+      </footer>
+    </section>
+  </dialog>
+
+  <dialog class="vibe-modal" data-vibe-featured-modal aria-labelledby="vibeFeaturedTitle" aria-describedby="vibeFeaturedDescription">
+    <section class="vibe-modal-panel vibe-modal-panel--confirm">
+      <span class="vibe-confirm-icon vibe-confirm-icon--featured" aria-hidden="true"><i class="fas fa-gem"></i></span>
+      <h2 id="vibeFeaturedTitle" data-vibe-featured-title>设为精品？</h2>
+      <p id="vibeFeaturedDescription" data-vibe-featured-description></p>
+      <p class="vibe-form-status" data-vibe-featured-status aria-live="polite"></p>
+      <footer>
+        <button class="vibe-modal-secondary" type="button" data-vibe-close-featured>取消</button>
+        <button class="vibe-modal-primary" type="button" data-vibe-confirm-featured>确认设为精品</button>
       </footer>
     </section>
   </dialog>

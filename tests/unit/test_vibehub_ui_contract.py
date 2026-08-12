@@ -53,7 +53,8 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert all(token in gallery for token in (
         'data-vibe-filter="mine"', 'data-vibe-filter="pending"', "<dialog", "data-vibe-project-modal",
         "data-vibe-approve-modal", "创建并自动送审", 'aria-label="创建作品"',
-        "data-admin-review-url-template",
+        "data-admin-review-url-template", "data-vibe-featured-modal",
+        "data-admin-featured-url-template",
     ))
     assert all(token not in gallery for token in (
         "NUMERICAL OJ", "PLAYABLE WORKS", "HOW IT WORKS", "我的工作台",
@@ -67,11 +68,13 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert ".vibe-toolbar-link { border: 1px solid" in css
     assert "保存更新并自动送审" in javascript
     assert all(token in card for token in (
-        "project.play_url", "vibe-featured-mark", "fa-gem", "data-avatar-seed",
+        "project.play_url", "vibe-featured-mark", "vibe-featured-mark--inactive",
+        "data-vibe-toggle-featured", "fa-gem", "data-avatar-seed",
         "project.owner_username", "project.is_pending", "data-vibe-edit-project",
         "data-vibe-approve-project", "审核通过",
     ))
     assert 'decision: "approve"' in javascript
+    assert "JSON.stringify({ featured: featured })" in javascript
     assert "expected_version" in javascript
     assert "initReviewDesk" not in javascript
     assert 'data-vibe-view="review"' not in gallery

@@ -13,7 +13,7 @@ from deploy import seed_vibehub_examples as seed
 ADMIN = {"id": 4, "username": "admin", "is_admin": 1}
 
 
-def test_seed_uses_normal_publish_and_featured_workflow(tmp_path, monkeypatch):
+def test_seed_uses_normal_publish_and_direct_featured_setting(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(seed, "_load_state", lambda: (ADMIN, {}))
     monkeypatch.setattr(seed, "_validated_arc_set", lambda path: path)
@@ -40,25 +40,22 @@ def test_seed_uses_normal_publish_and_featured_workflow(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         seed.services,
-        "request_featured",
-        lambda *args, **kwargs: calls.append(("request_featured", args, kwargs)),
-    )
-    monkeypatch.setattr(
-        seed.services,
-        "review_featured",
-        lambda *args, **kwargs: calls.append(("review_featured", args, kwargs)),
+        "set_featured",
+        lambda *args, **kwargs: calls.append(("set_featured", args, kwargs)),
     )
 
     result = seed.seed_examples(tmp_path, tmp_path / "uploads", tmp_path / "arc")
 
     assert result == ["circle-cat: created", "arc-agi-3: created"]
     assert [call[0] for call in calls] == [
-        "remove", "create", "review", "request_featured", "review_featured",
-        "remove", "create", "review", "request_featured", "review_featured",
+        "remove", "create", "review", "set_featured",
+        "remove", "create", "review", "set_featured",
     ]
-    for call in (calls[1], calls[6]):
+    for call in (calls[1], calls[5]):
         assert call[1] == ADMIN
     assert calls[2][2]["expected_version"] == 1
+    assert calls[3][1] == (ADMIN, "circle-cat", True)
+    assert calls[7][1] == (ADMIN, "arc-agi-3", True)
 
 
 def test_existing_admin_projects_with_same_package_are_unchanged(tmp_path, monkeypatch):
