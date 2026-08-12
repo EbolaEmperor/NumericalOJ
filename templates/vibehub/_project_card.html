@@ -1,6 +1,6 @@
 {% macro project_card(project, compact=false) -%}
 {% set owner_name = project.owner_username|default('Numerical OJ', true) %}
-{% set pending_label = '待审核' if project.has_pending_review or project.review_status == 'pending' else '未提交审核' %}
+{% set pending_label = '待审核' if project.has_pending_review or project.review_status == 'pending' else ('审核未通过' if project.review_status == 'rejected' or project.latest_review_status == 'rejected' else '待处理') %}
 <article
   class="vibe-card{% if project.is_featured %} vibe-card--featured{% endif %}{% if project.is_pending %} vibe-card--pending{% endif %}{% if compact %} vibe-card--compact{% endif %}"
   data-vibe-card

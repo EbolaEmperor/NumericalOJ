@@ -140,13 +140,6 @@ def project_edit(args: argparse.Namespace) -> None:
     _output(resp, necessary_project_payload)
 
 
-def project_review_request(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request(
-        "POST", f"/api/vibehub/projects/{args.slug}/review",
-    )
-    _output(resp, necessary_project_payload)
-
-
 def project_featured_request(args: argparse.Namespace) -> None:
     resp = client_from_args(args).request(
         "POST", f"/api/vibehub/projects/{args.slug}/featured",
@@ -212,10 +205,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("slug", help="Owned project slug.")
     _add_metadata_args(parser)
     parser.set_defaults(func=project_edit)
-
-    parser = common.add_cli_parser(commands, "submit-review", "Submit the latest version for publication review; administrator-owned work publishes immediately.")
-    parser.add_argument("slug", help="Owned project slug.")
-    parser.set_defaults(func=project_review_request)
 
     parser = common.add_cli_parser(commands, "request-featured", "Request featured status for an already published project.")
     parser.add_argument("slug", help="Owned published project slug.")

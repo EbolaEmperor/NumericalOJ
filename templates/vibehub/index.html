@@ -72,7 +72,7 @@
       <header>
         <div>
           <h2 id="vibeProjectModalTitle" data-vibe-modal-title>创建作品</h2>
-          <p data-vibe-modal-description>上传一个完整的 VibeHub ZIP 程序包。</p>
+          <p data-vibe-modal-description>保存时构建镜像并自动送审。</p>
         </div>
         <button class="vibe-modal-close" type="button" data-vibe-close-modal aria-label="关闭">
           <i class="fas fa-xmark" aria-hidden="true"></i>
@@ -98,7 +98,7 @@
         <p class="vibe-form-status" data-vibe-form-status aria-live="polite"></p>
         <footer>
           <button class="vibe-modal-secondary" type="button" data-vibe-close-modal>取消</button>
-          <button class="vibe-modal-primary" type="submit" data-vibe-submit-project>创建并提交审核</button>
+          <button class="vibe-modal-primary" type="submit" data-vibe-submit-project>创建并自动送审</button>
         </footer>
       </form>
     </section>
@@ -109,7 +109,7 @@
     <section class="vibe-modal-panel vibe-modal-panel--confirm">
       <span class="vibe-confirm-icon" aria-hidden="true"><i class="fas fa-check"></i></span>
       <h2 id="vibeApproveTitle">审核通过这个作品？</h2>
-      <p id="vibeApproveDescription" data-vibe-approve-description>通过后，当前待审版本会立即成为所有用户看到的公开版本。</p>
+      <p id="vibeApproveDescription" data-vibe-approve-description>通过后直接公开当前已构建版本，不会重新构建。</p>
       <p class="vibe-form-status" data-vibe-approve-status aria-live="polite"></p>
       <footer>
         <button class="vibe-modal-secondary" type="button" data-vibe-close-approve>取消</button>

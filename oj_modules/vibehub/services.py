@@ -9,6 +9,7 @@ import secrets
 
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.vibehub import quotas, storage
+from oj_modules.vibehub.runtime import get_runtime_manager
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
@@ -58,6 +59,62 @@ class VibeHubNotFoundError(VibeHubError):
 class VibeHubPermissionError(VibeHubError):
     def __init__(self, message="无权操作该 VibeHub 作品"):
         super().__init__(message, status_code=403, code="forbidden")
+
+
+def _prepare_latest_image(
+    project_key: str,
+    app_dir: Path,
+    *,
+    package_digest: str,
+    featured=False,
+):
+    manager = get_runtime_manager()
+    previous_image_id = None
+    captured = False
+    try:
+        previous_image_id = manager.capture_image_tag(project_key, channel="latest")
+        captured = True
+        manager.build_latest_image(
+            project_key,
+            app_dir,
+            package_digest=package_digest,
+            featured=featured,
+        )
+    except RuntimeError as exc:
+        if captured:
+            _restore_image_tag(project_key, "latest", previous_image_id)
+        raise VibeHubError(
+            "作品镜像构建失败，请稍后重试",
+            status_code=503,
+            code="image_build_failed",
+        ) from exc
+    return previous_image_id
+
+
+def _promote_latest_image(project_key: str, package_digest: str):
+    try:
+        return get_runtime_manager().promote_latest_to_public(
+            project_key, package_digest=package_digest,
+        )
+    except RuntimeError as exc:
+        raise VibeHubError(
+            "作品发布镜像不可用，请稍后重试",
+            status_code=503,
+            code="image_publish_failed",
+        ) from exc
+
+
+def _restore_image_tag(project_key: str, channel: str, image_id: str | None):
+    try:
+        get_runtime_manager().restore_image_tag(
+            project_key, channel=channel, image_id=image_id,
+        )
+    except RuntimeError as exc:
+        raise VibeHubError(
+            "作品镜像状态恢复失败，请联系管理员",
+            status_code=503,
+            code="image_restore_failed",
+        ) from exc
 
 
 _PROJECT_SELECT = """
@@ -649,32 +706,6 @@ def preflight_upload_project(actor, slug: str) -> None:
         conn.close()
 
 
-def preflight_owned_project(actor, slug: str) -> None:
-    """进入不创建新版本的存储变更前预检作者。"""
-
-    _actor_id(actor)
-    normalized_slug = str(slug or "").strip().lower()
-    if not SLUG_RE.fullmatch(normalized_slug):
-        raise VibeHubNotFoundError()
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT owner_id
-                FROM vibehub_projects
-                WHERE slug = %s
-                """,
-                (normalized_slug,),
-            )
-            project = cursor.fetchone()
-        if not project:
-            raise VibeHubNotFoundError()
-        _require_owner(project, actor)
-    finally:
-        conn.close()
-
-
 def preflight_admin(actor) -> None:
     """在取得管理员持久变更槽前做无 DB 身份预检。"""
 
@@ -751,32 +782,27 @@ def _point_latest_version(
     project_id: int,
     version_id: int,
     previous_review_id=None,
-    submit_for_review=False,
 ):
-    """在当前项目事务内切换 latest，并按需原子替换待审版本。"""
+    """在当前项目事务内切换 latest，并原子替换待审版本。"""
 
-    if submit_for_review and previous_review_id and int(previous_review_id) != version_id:
+    if previous_review_id and int(previous_review_id) != version_id:
         cursor.execute(
             """UPDATE vibehub_versions SET review_status = 'draft',
             review_requested_at = NULL WHERE id = %s AND review_status = 'pending'""",
             (previous_review_id,),
         )
-    if submit_for_review:
-        cursor.execute(
-            """UPDATE vibehub_versions SET review_status = 'pending',
-            review_requested_at = CURRENT_TIMESTAMP WHERE id = %s""",
-            (version_id,),
-        )
-    review_sql = "review_version_id = %s, " if submit_for_review else ""
-    params = (version_id, version_id, project_id) if submit_for_review else (
-        version_id, project_id,
+    cursor.execute(
+        """UPDATE vibehub_versions SET review_status = 'pending',
+        review_requested_at = CURRENT_TIMESTAMP WHERE id = %s""",
+        (version_id,),
     )
     cursor.execute(
-        f"""UPDATE vibehub_projects SET latest_version_id = %s, {review_sql}
+        """UPDATE vibehub_projects
+        SET latest_version_id = %s, review_version_id = %s,
         updated_at = CURRENT_TIMESTAMP WHERE id = %s""",
-        params,
+        (version_id, version_id, project_id),
     )
-    return version_id if submit_for_review else previous_review_id
+    return version_id
 
 
 def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
@@ -895,7 +921,7 @@ def get_project(slug: str, *, actor=None, audience=None) -> dict:
         conn.close()
 
 
-def create_project(actor, upload, metadata=None, *, upload_root=None, submit_for_review=False) -> dict:
+def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
     actor_id = _actor_id(actor)
     metadata = dict(metadata or {})
     slug = _requested_slug(metadata.pop("slug", None))
@@ -904,6 +930,8 @@ def create_project(actor, upload, metadata=None, *, upload_root=None, submit_for
     installed = False
     committed = False
     previous_pointer = None
+    previous_latest_image = None
+    latest_image_changed = False
     conn = get_db_connection()
     try:
         with quotas.storage_mutation_lock(root):
@@ -957,6 +985,12 @@ def create_project(actor, upload, metadata=None, *, upload_root=None, submit_for
                         staged_incoming_path=prepared.snapshot_dir,
                         retirement_project_states=retirement_states,
                     )
+                    previous_latest_image = _prepare_latest_image(
+                        slug,
+                        prepared.snapshot_dir / "app",
+                        package_digest=prepared.package_sha256,
+                    )
+                    latest_image_changed = True
                     version_id = _insert_version(
                         cursor,
                         project_id=project_id,
@@ -985,7 +1019,6 @@ def create_project(actor, upload, metadata=None, *, upload_root=None, submit_for
                         cursor,
                         project_id=project_id,
                         version_id=version_id,
-                        submit_for_review=submit_for_review,
                     )
                     row = _fetch_project_row(cursor, slug)
                 conn.commit()
@@ -1000,16 +1033,22 @@ def create_project(actor, upload, metadata=None, *, upload_root=None, submit_for
             except Exception as exc:
                 if not committed:
                     conn.rollback()
-                    if installed:
-                        storage.restore_pointer(
-                            slug,
-                            "latest",
-                            previous_pointer,
-                            upload_root=upload_root,
-                        )
-                        storage.remove_version_snapshot(slug, 1, upload_root=upload_root)
-                    if prepared is not None:
-                        prepared.cleanup()
+                    try:
+                        if installed:
+                            storage.restore_pointer(
+                                slug,
+                                "latest",
+                                previous_pointer,
+                                upload_root=upload_root,
+                            )
+                            storage.remove_version_snapshot(
+                                slug, 1, upload_root=upload_root,
+                            )
+                        if prepared is not None:
+                            prepared.cleanup()
+                    finally:
+                        if latest_image_changed:
+                            _restore_image_tag(slug, "latest", previous_latest_image)
                 if getattr(exc, "args", (None,))[0] == 1062:
                     raise VibeHubError(
                         "该 slug 已被使用",
@@ -1032,7 +1071,6 @@ def _create_next_version(
     *,
     upload=None,
     upload_root=None,
-    submit_for_review=False,
 ) -> dict:
     actor_id = _actor_id(actor)
     normalized_slug = str(slug or "").strip().lower()
@@ -1042,6 +1080,8 @@ def _create_next_version(
     previous_pointer = None
     pointer_changed = False
     committed = False
+    previous_latest_image = None
+    latest_image_changed = False
     conn = get_db_connection()
     try:
         with quotas.storage_mutation_lock(root):
@@ -1176,6 +1216,12 @@ def _create_next_version(
                             app_dir.parent / storage.PROCESSED_COVER_FILENAME,
                         )
 
+                    previous_latest_image = _prepare_latest_image(
+                        normalized_slug, app_dir,
+                        package_digest=package_sha256,
+                        featured=bool(project.get("is_featured")),
+                    )
+                    latest_image_changed = True
                     version_id = _insert_version(
                         cursor,
                         project_id=int(project["id"]),
@@ -1211,7 +1257,6 @@ def _create_next_version(
                         project_id=int(project["id"]),
                         version_id=version_id,
                         previous_review_id=project.get("review_version_id"),
-                        submit_for_review=submit_for_review,
                     )
                     row = _fetch_project_row(cursor, normalized_slug)
                     known_versions, live_versions = _snapshot_sets(
@@ -1234,21 +1279,27 @@ def _create_next_version(
             except Exception:
                 if not committed:
                     conn.rollback()
-                    if pointer_changed:
-                        storage.restore_pointer(
-                            normalized_slug,
-                            "latest",
-                            previous_pointer,
-                            upload_root=upload_root,
-                        )
-                    if installed_version is not None:
-                        storage.remove_version_snapshot(
-                            normalized_slug,
-                            installed_version,
-                            upload_root=upload_root,
-                        )
-                    if prepared is not None:
-                        prepared.cleanup()
+                    try:
+                        if pointer_changed:
+                            storage.restore_pointer(
+                                normalized_slug,
+                                "latest",
+                                previous_pointer,
+                                upload_root=upload_root,
+                            )
+                        if installed_version is not None:
+                            storage.remove_version_snapshot(
+                                normalized_slug,
+                                installed_version,
+                                upload_root=upload_root,
+                            )
+                        if prepared is not None:
+                            prepared.cleanup()
+                    finally:
+                        if latest_image_changed:
+                            _restore_image_tag(
+                                normalized_slug, "latest", previous_latest_image,
+                            )
                 raise
     except quotas.VibeHubQuotaPolicyError as exc:
         _raise_quota_error(exc)
@@ -1258,149 +1309,20 @@ def _create_next_version(
         conn.close()
 
 
-def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=None,
-                       submit_for_review=False) -> dict:
+def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=None) -> dict:
     return _create_next_version(
         actor, slug, metadata or {}, upload=upload, upload_root=upload_root,
-        submit_for_review=submit_for_review,
     )
 
 
-def edit_project(actor, slug: str, metadata, *, upload_root=None,
-                 submit_for_review=False) -> dict:
+def edit_project(actor, slug: str, metadata, *, upload_root=None) -> dict:
     if not isinstance(metadata, dict) or not any(
         key in metadata for key in ("title", "summary", "description", "tags", "cover_image")
     ):
         raise VibeHubError("没有可更新的作品字段")
     return _create_next_version(
         actor, slug, metadata, upload=None, upload_root=upload_root,
-        submit_for_review=submit_for_review,
     )
-
-
-def request_review(actor, slug: str, *, upload_root=None) -> dict:
-    normalized_slug = str(slug or "").strip().lower()
-    root = _storage_root(upload_root)
-    previous_public = None
-    public_pointer_changed = False
-    committed = False
-    conn = get_db_connection()
-    try:
-        with quotas.storage_mutation_lock(root):
-            try:
-                with conn.cursor() as cursor:
-                    project = _fetch_core_for_update(cursor, normalized_slug)
-                    _require_owner(project, actor)
-                    latest = _fetch_version(cursor, int(project["latest_version_id"]))
-                    if project.get("review_version_id"):
-                        if int(project["review_version_id"]) == int(latest["id"]):
-                            row = _fetch_project_row(cursor, normalized_slug)
-                            conn.rollback()
-                            return _serialize_project(row, audience="latest")
-                        raise VibeHubError(
-                            "已有其他版本在等待审核，请等待管理员处理后再提交",
-                            status_code=409,
-                            code="review_pending",
-                        )
-                    if (
-                        project.get("public_version_id")
-                        and int(project["public_version_id"]) == int(latest["id"])
-                    ):
-                        row = _fetch_project_row(cursor, normalized_slug)
-                        conn.rollback()
-                        return _serialize_project(row, audience="latest")
-
-                    if _is_admin(actor):
-                        previous_public = storage.read_pointer(
-                            normalized_slug, "public", upload_root=upload_root,
-                        )
-                        public_pointer_changed = True
-                        storage.write_pointer(
-                            normalized_slug,
-                            "public",
-                            version_number=int(latest["version_number"]),
-                            version_id=int(latest["id"]),
-                            upload_root=upload_root,
-                        )
-                        cursor.execute(
-                            """
-                            UPDATE vibehub_versions
-                            SET review_status = 'approved',
-                                review_requested_at = CURRENT_TIMESTAMP,
-                                reviewed_at = CURRENT_TIMESTAMP,
-                                reviewed_by_user_id = %s, review_note = NULL
-                            WHERE id = %s
-                            """,
-                            (_actor_id(actor), latest["id"]),
-                        )
-                        cursor.execute(
-                            """
-                            UPDATE vibehub_projects
-                            SET public_version_id = %s, review_version_id = NULL,
-                                last_reviewed_version_id = %s,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = %s
-                            """,
-                            (latest["id"], latest["id"], project["id"]),
-                        )
-                        reference_ids = (latest["id"], latest["id"], None)
-                    else:
-                        cursor.execute(
-                            """
-                            UPDATE vibehub_versions
-                            SET review_status = 'pending',
-                                review_requested_at = CURRENT_TIMESTAMP,
-                                reviewed_at = NULL, reviewed_by_user_id = NULL,
-                                review_note = NULL
-                            WHERE id = %s
-                            """,
-                            (latest["id"],),
-                        )
-                        cursor.execute(
-                            """
-                            UPDATE vibehub_projects
-                            SET review_version_id = %s, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = %s
-                            """,
-                            (latest["id"], project["id"]),
-                        )
-                        reference_ids = (
-                            latest["id"],
-                            project.get("public_version_id"),
-                            latest["id"],
-                        )
-                    identity_map = _version_identity_map(cursor, int(project["id"]))
-                    known_versions, live_versions = _snapshot_sets(
-                        identity_map,
-                        reference_ids,
-                    )
-                    row = _fetch_project_row(cursor, normalized_slug)
-                conn.commit()
-                committed = True
-                storage.prune_project_snapshots(
-                    normalized_slug,
-                    known_versions,
-                    live_versions,
-                    upload_root=upload_root,
-                )
-                return _serialize_project(row, audience="latest")
-            except Exception:
-                if not committed:
-                    conn.rollback()
-                    if public_pointer_changed:
-                        storage.restore_pointer(
-                            normalized_slug,
-                            "public",
-                            previous_public,
-                            upload_root=upload_root,
-                        )
-                raise
-    except quotas.VibeHubQuotaPolicyError as exc:
-        _raise_quota_error(exc)
-    except storage.SnapshotReconciliationError as exc:
-        _raise_snapshot_error(exc)
-    finally:
-        conn.close()
 
 
 def list_pending_reviews(actor) -> list[dict]:
@@ -1438,9 +1360,15 @@ def review_submission(
     note = _clean_text(note, field="note", limit=2000)
     normalized_slug = str(slug or "").strip().lower()
     root = _storage_root(upload_root)
+    try:
+        expected_number = int(expected_version)
+    except (TypeError, ValueError) as exc:
+        raise VibeHubError("expected_version 必须是整数") from exc
     previous_public = None
     public_pointer_changed = False
     committed = False
+    previous_public_image = None
+    public_image_changed = False
     conn = get_db_connection()
     try:
         with quotas.storage_mutation_lock(root):
@@ -1461,17 +1389,15 @@ def review_submission(
                             status_code=409,
                             code="review_stale",
                         )
-                    if expected_version not in (None, ""):
-                        try:
-                            expected_number = int(expected_version)
-                        except (TypeError, ValueError) as exc:
-                            raise VibeHubError("expected_version 必须是整数") from exc
-                        if expected_number != int(version["version_number"]):
-                            raise VibeHubError(
-                                "待审核版本已经更新，请刷新后重新确认",
-                                status_code=409,
-                                code="review_stale",
-                            )
+                    if (
+                        int(project.get("latest_version_id") or 0) != int(review_version_id)
+                        or expected_number != int(version["version_number"])
+                    ):
+                        raise VibeHubError(
+                            "待审核版本已经更新，请刷新后重新确认",
+                            status_code=409,
+                            code="review_stale",
+                        )
                     rejected_response = None
                     if decision == "reject":
                         rejected_response = _serialize_project(
@@ -1480,6 +1406,10 @@ def review_submission(
                         )
                     new_status = "approved" if decision == "approve" else "rejected"
                     if decision == "approve":
+                        previous_public_image = _promote_latest_image(
+                            normalized_slug, version["package_sha256"],
+                        )
+                        public_image_changed = True
                         previous_public = storage.read_pointer(
                             normalized_slug, "public", upload_root=upload_root,
                         )
@@ -1566,13 +1496,19 @@ def review_submission(
             except Exception:
                 if not committed:
                     conn.rollback()
-                    if public_pointer_changed:
-                        storage.restore_pointer(
-                            normalized_slug,
-                            "public",
-                            previous_public,
-                            upload_root=upload_root,
-                        )
+                    try:
+                        if public_pointer_changed:
+                            storage.restore_pointer(
+                                normalized_slug,
+                                "public",
+                                previous_public,
+                                upload_root=upload_root,
+                            )
+                    finally:
+                        if public_image_changed:
+                            _restore_image_tag(
+                                normalized_slug, "public", previous_public_image,
+                            )
                 raise
     except quotas.VibeHubQuotaPolicyError as exc:
         _raise_quota_error(exc)
@@ -1687,7 +1623,7 @@ def review_featured(actor, slug: str, decision: str, *, note="") -> dict:
 
 
 def resolve_project_package(slug: str, *, audience="public", actor=None, upload_root=None) -> dict:
-    """为运行时解析已授权的不可变作品包目录。"""
+    """为运行时解析已授权的作品版本。"""
     if audience not in {"public", "latest", "review"}:
         raise VibeHubError("未知的作品包视图")
     conn = get_db_connection()
@@ -1725,9 +1661,6 @@ def resolve_project_package(slug: str, *, audience="public", actor=None, upload_
         "slug": project["slug"],
         "version_id": int(version["id"]),
         "version": int(version["version_number"]),
-        "package_dir": storage.resolve_snapshot_app(
-            project["slug"], int(version["version_number"]), upload_root=upload_root,
-        ),
         "package_sha256": version["package_sha256"],
         "manifest": manifest,
         "featured": bool(project.get("is_featured")),
@@ -1747,10 +1680,8 @@ __all__ = [
     "list_user_projects",
     "preflight_admin",
     "preflight_create_project",
-    "preflight_owned_project",
     "preflight_upload_project",
     "request_featured",
-    "request_review",
     "resolve_project_package",
     "review_featured",
     "review_submission",

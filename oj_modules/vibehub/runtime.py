@@ -2,7 +2,7 @@
 
 作品容器可以主动访问网络，但不发布端口。应用只允许在容器内有界
 ``/run/vibehub`` tmpfs 中创建 ``app.sock``，宿主通过受信任的 ``docker exec`` relay
-转发经过净化和限额的 HTTP 请求。容器根层可写但随实例销毁；平台只把按数据库
+转发经过净化和限额的 HTTP 请求。容器根层只读；平台只把按数据库
 project id 与通道隔离的受管 Docker volume 挂到 ``/data``，作品不能选择宿主路径。
 
 运行状态位于权限为 0700 的宿主目录，并用 ``flock`` 只串行化短暂的 state
@@ -48,6 +48,7 @@ MANAGED_CONTAINER_LABEL = "com.numericaloj.vibehub.managed"
 MANAGER_SCOPE_LABEL = "com.numericaloj.vibehub.scope"
 RUNTIME_ID_LABEL = "com.numericaloj.vibehub.runtime-id"
 SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
+PACKAGE_DIGEST_LABEL = "com.numericaloj.vibehub.package-sha256"
 MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
 DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
 RUNTIME_ABI = "network-bridge-v1"
@@ -67,8 +68,6 @@ STANDARD_CPUS = "2"
 FEATURED_CPUS = "4"
 STANDARD_PIDS = 256
 FEATURED_PIDS = 512
-STANDARD_WRITABLE_BYTES = 4 * GIB
-FEATURED_WRITABLE_BYTES = 8 * GIB
 
 DEFAULT_LEASE_TTL_SECONDS = 90.0
 DEFAULT_IDLE_GRACE_SECONDS = 300.0
@@ -77,19 +76,12 @@ DEFAULT_REQUEST_MAX_BYTES = 16 * 1024 * 1024
 DEFAULT_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 DEFAULT_BUILD_TIMEOUT_SECONDS = 480.0
 MAX_BUILD_TIMEOUT_SECONDS = 540.0
-DEFAULT_BUILD_SLOT_TIMEOUT_SECONDS = 5.0
 DEFAULT_PROXY_SLOT_TIMEOUT_SECONDS = 0.25
-DEFAULT_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS = 0.1
 DEFAULT_MAX_ACTIVE_RUNTIMES = 8
 MAX_ACTIVE_RUNTIMES = 64
 START_RESERVATION_TTL_SECONDS = 45.0
 STOP_RESERVATION_TTL_SECONDS = 45.0
-DEFAULT_BUILD_CACHE_MAX_BYTES = 4 * GIB
-MIN_BUILD_CACHE_MAX_BYTES = 256 * 1024 * 1024
-MAX_BUILD_CACHE_MAX_BYTES = 100 * GIB
-BUILD_CONCURRENCY = 1
 PROXY_CONCURRENCY = 8
-HEALTH_PROBE_CONCURRENCY = 4
 RELAY_POOL_SIZE = 4
 _COMMAND_OUTPUT_LIMIT = 128 * 1024
 _BUILDKIT_DIAGNOSTIC_MAX_CHARS = 2_048
@@ -104,11 +96,7 @@ SOCKET_TMPFS_BYTES = 16 * 1024 * 1024
 _RELAY_MAGIC = b"VHR1"
 _RELAY_METADATA_MAX_BYTES = 64 * 1024
 _PROXY_BODY_HARD_MAX_BYTES = 64 * 1024 * 1024
-_PROCESS_BUILD_SEMAPHORE = threading.BoundedSemaphore(BUILD_CONCURRENCY)
 _PROCESS_PROXY_SEMAPHORE = threading.BoundedSemaphore(PROXY_CONCURRENCY)
-_PROCESS_HEALTH_PROBE_SEMAPHORE = threading.BoundedSemaphore(
-    HEALTH_PROBE_CONCURRENCY
-)
 
 _ANSI_ESCAPE_RE = re.compile(
     r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
@@ -141,14 +129,6 @@ def _validated_max_active_runtimes(value) -> int:
         raise ValueError("VIBEHUB_MAX_ACTIVE_RUNTIMES 必须是整数")
     if not 1 <= value <= MAX_ACTIVE_RUNTIMES:
         raise ValueError("VIBEHUB_MAX_ACTIVE_RUNTIMES 必须在 1–64 之间")
-    return value
-
-
-def _validated_build_cache_max_bytes(value) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("VIBEHUB_BUILD_CACHE_MAX_BYTES 必须是整数")
-    if not MIN_BUILD_CACHE_MAX_BYTES <= value <= MAX_BUILD_CACHE_MAX_BYTES:
-        raise ValueError("VIBEHUB_BUILD_CACHE_MAX_BYTES 必须在 256 MiB–100 GiB 之间")
     return value
 
 
@@ -297,6 +277,10 @@ class VibeHubLeaseError(VibeHubRuntimeError):
     """短期运行租约不存在、过期或与请求对象不匹配。"""
 
 
+class VibeHubImageNotFoundError(VibeHubImageError):
+    """受管镜像 tag 明确不存在。"""
+
+
 class VibeHubProxyError(VibeHubRuntimeError):
     """容器 HTTP 响应无效、超时或超过代理上限。"""
 
@@ -316,7 +300,6 @@ class RuntimeLimits:
     cpus: str
     pids: int
     tmpfs_bytes: int
-    writable_bytes: int
 
 
 @dataclass(frozen=True)
@@ -734,7 +717,6 @@ def limits_for(featured: bool) -> RuntimeLimits:
             cpus=FEATURED_CPUS,
             pids=FEATURED_PIDS,
             tmpfs_bytes=512 * 1024 * 1024,
-            writable_bytes=FEATURED_WRITABLE_BYTES,
         )
     return RuntimeLimits(
         image_bytes=STANDARD_IMAGE_BYTES,
@@ -742,7 +724,6 @@ def limits_for(featured: bool) -> RuntimeLimits:
         cpus=STANDARD_CPUS,
         pids=STANDARD_PIDS,
         tmpfs_bytes=256 * 1024 * 1024,
-        writable_bytes=STANDARD_WRITABLE_BYTES,
     )
 
 
@@ -1128,7 +1109,6 @@ class DockerCLI:
         binary_command_runner=_run_binary_command,
         relay_process_factory=None,
         build_builder: str = "",
-        build_cache_max_bytes: int = DEFAULT_BUILD_CACHE_MAX_BYTES,
         base_oci_layout_root: Path | str = DEFAULT_BASE_OCI_LAYOUT_ROOT,
     ):
         self._command_runner = command_runner
@@ -1141,9 +1121,6 @@ class DockerCLI:
         self.build_builder = str(build_builder or "").strip()
         if self.build_builder and not _DOCKER_NAME_RE.fullmatch(self.build_builder):
             raise ValueError("VIBEHUB_BUILD_BUILDER 名称无效")
-        self.build_cache_max_bytes = _validated_build_cache_max_bytes(
-            build_cache_max_bytes
-        )
         self.base_oci_layout_root = Path(base_oci_layout_root).resolve(
             strict=False
         )
@@ -1163,7 +1140,12 @@ class DockerCLI:
             timeout=20,
         )
         if result.returncode != 0:
-            raise VibeHubImageError(f"VibeHub 镜像不存在或无法 inspect：{reference}")
+            detail = f"{result.stdout}\n{result.stderr}".lower()
+            if any(marker in detail for marker in (
+                "no such image", "no such object",
+            )):
+                raise VibeHubImageNotFoundError(f"VibeHub 镜像不存在：{reference}")
+            raise VibeHubImageError(f"VibeHub 镜像无法 inspect：{reference}")
         try:
             payload = json.loads(result.stdout.strip())
             image_id = str(payload["Id"])
@@ -1189,6 +1171,14 @@ class DockerCLI:
         if not isinstance(labels, dict) or any(not isinstance(k, str) for k in labels):
             raise VibeHubImageError("Docker image labels 无效")
         return ImageInfo(reference, image_id, size_bytes, dict(labels), volumes)
+
+    def find_image(self, reference: str) -> ImageInfo | None:
+        """只把 Docker 明确报告的 tag 不存在视为缺失。"""
+
+        try:
+            return self.inspect_image(reference)
+        except VibeHubImageNotFoundError:
+            return None
 
     def verify_dedicated_builder(self) -> None:
         if not self.build_builder:
@@ -1456,83 +1446,34 @@ class DockerCLI:
         uri = f"oci-layout://{release.as_posix()}@{manifest_digest}"
         return (f"{reference}={uri}",)
 
-    def prune_managed_dangling_images(self) -> None:
-        result = self._run([
-            "docker", "image", "prune", "--force",
-            "--filter", f"label={MANAGED_IMAGE_LABEL}=1",
-        ], timeout=60)
-        if result.returncode != 0:
-            raise VibeHubImageError("VibeHub 受管 dangling 镜像清理失败")
-
-    def prune_dedicated_build_cache(self) -> None:
-        if not self.build_builder:
-            return
-        self.verify_dedicated_builder()
-        result = self._run([
-            "docker", "buildx", "prune",
-            "--builder", self.build_builder,
-            "--force",
-            "--max-used-space", str(self.build_cache_max_bytes),
-        ], timeout=120)
-        if result.returncode != 0:
-            raise VibeHubImageError("VibeHub 专属 builder 缓存清理失败")
-
-    def remove_managed_image_reference(
-        self,
-        reference: str,
-        expected_image_id: str,
-    ) -> bool:
-        """只在稳定 tag 仍指向预期受管 image ID 时移除该 tag。"""
-
-        reference = _validate_image_reference(reference)
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_image_id)):
-            raise VibeHubImageError("VibeHub 待回收 image ID 无效")
+    def tag_image(self, source_reference: str, target_reference: str) -> None:
+        source_reference = _validate_image_reference(source_reference)
+        target_reference = _validate_image_reference(target_reference)
         result = self._run(
-            ["docker", "image", "inspect", "--format", "{{json .}}", reference],
+            ["docker", "image", "tag", source_reference, target_reference],
             timeout=20,
         )
-        detail = f"{result.stdout}\n{result.stderr}".strip()
         if result.returncode != 0:
-            if any(marker in detail.lower() for marker in (
-                "no such image",
-                "no such object",
-            )):
-                return False
-            raise VibeHubImageError("无法确认 VibeHub 镜像 tag 当前指向")
-        try:
-            payload = json.loads(result.stdout.strip())
-            current_id = str(payload["Id"])
-            image_config = payload.get("Config") or {}
-            if not isinstance(image_config, dict):
-                raise TypeError("Config must be object")
-            labels = image_config.get("Labels") or {}
-        except (KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise VibeHubImageError("Docker image inspect 返回无效数据") from exc
-        if (
-            current_id != expected_image_id
-            or not isinstance(labels, dict)
-            or labels.get(MANAGED_IMAGE_LABEL) != "1"
-        ):
-            return False
+            raise VibeHubImageError("VibeHub 镜像发布失败")
+
+    def remove_image_tag(self, reference: str) -> None:
+        reference = _validate_image_reference(reference)
         result = self._run(
-            ["docker", "image", "rm", reference],
-            timeout=60,
+            ["docker", "image", "rm", "--force", reference],
+            timeout=20,
         )
-        detail = f"{result.stdout}\n{result.stderr}".strip()
         if result.returncode == 0:
-            return True
-        if any(marker in detail.lower() for marker in (
-            "no such image",
-            "no such object",
-        )):
-            return False
-        raise VibeHubImageError("VibeHub 闲置镜像 tag 回收失败")
+            return
+        detail = f"{result.stdout}\n{result.stderr}".lower()
+        if "no such image" not in detail and "no such object" not in detail:
+            raise VibeHubImageError("VibeHub 镜像标签恢复失败")
 
     def build(
         self,
         package_dir: Path,
         image_ref: str,
         *,
+        package_digest: str,
         source_digest: str,
         resolved_bases: Sequence[tuple[str, str]] = (),
         limits: RuntimeLimits,
@@ -1555,10 +1496,8 @@ class DockerCLI:
             command.extend([
                 "--network", "default",
                 "--pull=false",
-                # 当前生产 Buildx 不支持 build 子命令的 --resource；资源参数
-                # 只能用于 legacy docker build。专属 builder 由全局单构建槽串行
-                # 使用，不能把未知参数传给
-                # Buildx 使构建在客户端解析阶段直接失败。
+                # 当前生产 Buildx 不支持 build 子命令的 --resource，不能把
+                # 未知参数传给客户端而让构建直接失败。
                 "--ulimit", "nofile=1024:1024",
                 "--shm-size", "64m",
             ])
@@ -1577,6 +1516,7 @@ class DockerCLI:
             ])
         command.extend([
             "--label", f"{MANAGED_IMAGE_LABEL}=1",
+            "--label", f"{PACKAGE_DIGEST_LABEL}={package_digest}",
             "--label", f"{SOURCE_DIGEST_LABEL}={source_digest}",
             "--tag", image_ref,
             "--file", str(package_dir / storage.DOCKERFILE_NAME),
@@ -1642,45 +1582,12 @@ class DockerCLI:
         label_args: list[str] = []
         for key, value in expected.items():
             label_args.extend(["--label", f"{key}={value}"])
-        # create 对同名 volume 幂等；随后仍完整核验，避免复用异物。
         created = self._run([
             "docker", "volume", "create", "--driver", "local",
             *label_args, name,
         ], timeout=15)
         if created.returncode != 0 or created.stdout.strip() != name:
             raise VibeHubRuntimeError("无法创建受管 VibeHub data volume")
-        inspect = self._run([
-            "docker", "volume", "inspect", "--format", "{{json .}}", name,
-        ], timeout=15)
-        try:
-            payload = json.loads(inspect.stdout.strip())
-            labels = payload.get("Labels") or {}
-            options = payload.get("Options") or {}
-        except (AttributeError, json.JSONDecodeError) as exc:
-            raise VibeHubRuntimeError("Docker data volume inspect 返回无效数据") from exc
-        if (
-            inspect.returncode != 0
-            or payload.get("Name") != name
-            or payload.get("Driver") != "local"
-            or payload.get("Scope") != "local"
-            or labels != expected
-            or options
-        ):
-            raise VibeHubRuntimeError("VibeHub data volume 身份或驱动不可信")
-
-    def verify_data_writable(self, container_name: str) -> None:
-        probe = "/data/.vibehub-write-probe"
-        script = (
-            "import os; p=" + repr(probe)
-            + "; fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
-            " os.close(fd); os.unlink(p)"
-        )
-        result = self._run([
-            "docker", "exec", "--user", "65532:65532", container_name,
-            "/usr/local/bin/python", "-I", "-S", "-c", script,
-        ], timeout=10)
-        if result.returncode != 0:
-            raise VibeHubRuntimeError("受管 VibeHub /data 不可由作品用户写入")
 
     def remove_container(self, name: str) -> None:
         self._close_relay_pool(name)
@@ -1748,7 +1655,12 @@ class DockerCLI:
             timeout=10,
         )
         if result.returncode != 0:
-            return False
+            detail = f"{result.stdout}\n{result.stderr}".lower()
+            if any(marker in detail for marker in (
+                "no such container", "no such object",
+            )):
+                return False
+            raise VibeHubRuntimeError("无法读取 VibeHub 容器状态")
         value = result.stdout.strip().lower()
         if value not in {"true", "false"}:
             raise VibeHubRuntimeError("Docker container inspect 返回无效状态")
@@ -1866,56 +1778,51 @@ def build_image(
     package_dir: Path | str,
     image_ref: str,
     *,
+    package_digest: str,
     featured: bool = False,
     allowed_base_images: Iterable[str] = (DEFAULT_BASE_IMAGE,),
     docker_client: DockerCLI | None = None,
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
-    slot_timeout_seconds: float = DEFAULT_BUILD_SLOT_TIMEOUT_SECONDS,
 ) -> ImageBuildResult:
     """使用已预置的受信基础镜像构建一个受管作品镜像。"""
 
     timeout_seconds = _validated_build_timeout_seconds(timeout_seconds)
     root = Path(package_dir)
     image_ref = _validate_image_reference(image_ref)
+    package_digest = str(package_digest or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", package_digest):
+        raise VibeHubPackageError("VibeHub 作品包摘要无效")
     _manifest, dockerfile = _manifest_and_dockerfile(root)
     bases = _dockerfile_base_images(dockerfile, allowed_base_images)
     context_digest, _entries, _bytes = _scan_context(root)
     docker = docker_client or DockerCLI()
-    with _process_slot(
-        _PROCESS_BUILD_SEMAPHORE,
-        slot_timeout_seconds,
-        "镜像构建",
-    ):
-        # Docker 在本地缺少 FROM 时即使 --pull=false 仍可能拉取；先逐个 inspect，
-        # 任何缺失都在 build 之前失败关闭。
-        resolved_bases = _inspect_build_bases(docker, bases)
-        source_digest = _effective_source_digest(context_digest, resolved_bases)
-        limits = limits_for(featured)
-        docker.build(
-            root,
-            image_ref,
-            source_digest=source_digest,
-            resolved_bases=resolved_bases,
-            limits=limits,
-            timeout=float(timeout_seconds),
+    # Docker 在本地缺少 FROM 时即使 --pull=false 仍可能拉取；先逐个 inspect，
+    # 任何缺失都在 build 之前失败关闭。
+    resolved_bases = _inspect_build_bases(docker, bases)
+    source_digest = _effective_source_digest(context_digest, resolved_bases)
+    limits = limits_for(featured)
+    docker.build(
+        root,
+        image_ref,
+        package_digest=package_digest,
+        source_digest=source_digest,
+        resolved_bases=resolved_bases,
+        limits=limits,
+        timeout=float(timeout_seconds),
+    )
+    image = docker.inspect_image(image_ref)
+    if image.labels.get(MANAGED_IMAGE_LABEL) != "1":
+        raise VibeHubImageError("构建结果缺少 VibeHub 受管镜像标签")
+    if image.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
+        raise VibeHubImageError("构建结果与作品包摘要不一致")
+    if image.labels.get(PACKAGE_DIGEST_LABEL) != package_digest:
+        raise VibeHubImageError("构建结果与上传包摘要不一致")
+    if image.volumes:
+        raise VibeHubImageError("VibeHub 镜像不得声明持久化 VOLUME")
+    if image.size_bytes > limits.image_bytes:
+        raise VibeHubImageError(
+            f"VibeHub 镜像超过 {'40' if featured else '20'} GiB 预算"
         )
-        rebuilt_context_digest, _rebuilt_entries, _rebuilt_bytes = _scan_context(root)
-        if rebuilt_context_digest != context_digest:
-            raise VibeHubPackageError("VibeHub 构建期间作品目录发生变化")
-        rebuilt_bases = _inspect_build_bases(docker, bases)
-        if rebuilt_bases != resolved_bases:
-            raise VibeHubImageError("VibeHub 构建期间基础镜像 tag 发生变化")
-        image = docker.inspect_image(image_ref)
-        if image.labels.get(MANAGED_IMAGE_LABEL) != "1":
-            raise VibeHubImageError("构建结果缺少 VibeHub 受管镜像标签")
-        if image.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
-            raise VibeHubImageError("构建结果与作品包摘要不一致")
-        if image.volumes:
-            raise VibeHubImageError("VibeHub 镜像不得声明持久化 VOLUME")
-        if image.size_bytes > limits.image_bytes:
-            raise VibeHubImageError(
-                f"VibeHub 镜像超过 {'40' if featured else '20'} GiB 预算"
-            )
     return ImageBuildResult(
         image_ref=image_ref,
         image_id=image.image_id,
@@ -1928,9 +1835,8 @@ def build_image(
 def image_reference_for(project_key: str, *, channel: str = "public") -> str:
     key = _validate_project_key(project_key)
     selected_channel = _validate_channel(channel)
-    # 路由传入 ``<slug>@vN``。tag 只绑定作品身份和 latest/public/review 通道，
-    # SOURCE_DIGEST_LABEL 再绑定该通道当前内容；发布或编辑重建同一稳定 tag，旧
-    # image layer 变为 dangling，而已经启动的容器仍安全地持有旧 image ID。
+    if selected_channel == "review":
+        selected_channel = "latest"
     versioned = re.fullmatch(r"(.+)@v[1-9][0-9]*", key)
     project_identity = versioned.group(1) if versioned else key
     digest_input = f"{project_identity}\0{selected_channel}".encode("utf-8")
@@ -2125,15 +2031,10 @@ class VibeHubRuntimeManager:
         response_max_bytes: int = DEFAULT_RESPONSE_MAX_BYTES,
         proxy_transport: str = "docker-exec",
         build_timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
-        build_slot_timeout_seconds: float = DEFAULT_BUILD_SLOT_TIMEOUT_SECONDS,
         proxy_slot_timeout_seconds: float = DEFAULT_PROXY_SLOT_TIMEOUT_SECONDS,
-        health_probe_slot_timeout_seconds: float = (
-            DEFAULT_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS
-        ),
         max_active_runtimes: int = DEFAULT_MAX_ACTIVE_RUNTIMES,
         build_builder: str = "",
         require_dedicated_builder: bool = False,
-        build_cache_max_bytes: int = DEFAULT_BUILD_CACHE_MAX_BYTES,
         base_oci_layout_root: Path | str = DEFAULT_BASE_OCI_LAYOUT_ROOT,
         reaper_interval_seconds: float | None = None,
         clock=time.time,
@@ -2152,9 +2053,6 @@ class VibeHubRuntimeManager:
             raise ValueError(
                 "要求专属 builder 时 VIBEHUB_BUILD_BUILDER 不能为空"
             )
-        self.build_cache_max_bytes = _validated_build_cache_max_bytes(
-            build_cache_max_bytes
-        )
         raw_oci_root = Path(base_oci_layout_root)
         self.base_oci_layout_root = (
             raw_oci_root
@@ -2163,7 +2061,6 @@ class VibeHubRuntimeManager:
         ).resolve(strict=False)
         self.docker = docker_client or DockerCLI(
             build_builder=self.build_builder,
-            build_cache_max_bytes=self.build_cache_max_bytes,
             base_oci_layout_root=self.base_oci_layout_root,
         )
         self.allowed_base_images = tuple(allowed_base_images)
@@ -2183,11 +2080,7 @@ class VibeHubRuntimeManager:
         self.build_timeout_seconds = _validated_build_timeout_seconds(
             build_timeout_seconds
         )
-        self.build_slot_timeout_seconds = float(build_slot_timeout_seconds)
         self.proxy_slot_timeout_seconds = float(proxy_slot_timeout_seconds)
-        self.health_probe_slot_timeout_seconds = float(
-            health_probe_slot_timeout_seconds
-        )
         self.max_active_runtimes = _validated_max_active_runtimes(
             max_active_runtimes
         )
@@ -2214,20 +2107,10 @@ class VibeHubRuntimeManager:
         ):
             raise ValueError("VibeHub proxy body limits 必须在 1–64 MiB 之间")
         if (
-            not math.isfinite(self.build_slot_timeout_seconds)
-            or not 0 <= self.build_slot_timeout_seconds <= 120
-        ):
-            raise ValueError("VibeHub build slot timeout 必须在 0–120 秒之间")
-        if (
             not math.isfinite(self.proxy_slot_timeout_seconds)
             or not 0 <= self.proxy_slot_timeout_seconds <= 10
         ):
             raise ValueError("VibeHub proxy slot timeout 必须在 0–10 秒之间")
-        if (
-            not math.isfinite(self.health_probe_slot_timeout_seconds)
-            or not 0 <= self.health_probe_slot_timeout_seconds <= 5
-        ):
-            raise ValueError("VibeHub health probe slot timeout 必须在 0–5 秒之间")
         if (
             not math.isfinite(self.reaper_interval_seconds)
             or not 0.05 <= self.reaper_interval_seconds < self.lease_ttl_seconds
@@ -2380,38 +2263,6 @@ class VibeHubRuntimeManager:
                     os.close(fd)
 
     @contextmanager
-    def _locked_image_build(self, image_ref: str):
-        """按目标 tag 串行化长时间构建，不阻塞现有 lease 的 heartbeat。"""
-
-        lock_name = hashlib.sha256(image_ref.encode("utf-8")).hexdigest()[:32]
-        path = self.runtime_root / f"build-{lock_name}.lock"
-        fd = os.open(
-            path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-                raise VibeHubRuntimeError("VibeHub build lock 属主或类型无效")
-            os.fchmod(fd, 0o600)
-            deadline = time.monotonic() + self.build_slot_timeout_seconds
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise VibeHubCapacityError("VibeHub 同版本构建正在进行，请稍后重试")
-                    time.sleep(min(0.02, max(0.001, deadline - time.monotonic())))
-            yield
-        finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
-
-    @contextmanager
     def _file_capacity_slot(self, label: str, count: int, timeout: float):
         """用共享 flock 把并发上限落实到整台宿主，而非单个 Gunicorn 进程。"""
 
@@ -2466,22 +2317,6 @@ class VibeHubRuntimeManager:
             ):
                 yield
 
-    @contextmanager
-    def _health_probe_capacity_slot(self):
-        """独立限制健康探测，避免慢 /healthz 耗尽 Web worker。"""
-
-        with _process_slot(
-            _PROCESS_HEALTH_PROBE_SEMAPHORE,
-            self.health_probe_slot_timeout_seconds,
-            "健康探测",
-        ):
-            with self._file_capacity_slot(
-                "health-probe-slot",
-                HEALTH_PROBE_CONCURRENCY,
-                self.health_probe_slot_timeout_seconds,
-            ):
-                yield
-
     def _runtime_id(
         self,
         project_key: str,
@@ -2527,10 +2362,9 @@ class VibeHubRuntimeManager:
             "--label", f"{MANAGER_SCOPE_LABEL}={self.scope}",
             "--label", f"{RUNTIME_ID_LABEL}={runtime_id}",
             "--network", "bridge",
+            "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges=true",
-            "--ipc", "none",
-            "--cgroupns", "private",
             "--user", "65532:65532",
             "--memory", limits.memory,
             "--memory-swap", limits.memory,
@@ -2540,7 +2374,6 @@ class VibeHubRuntimeManager:
             "--cpu-period", "100000",
             "--cpu-quota", str(int(float(limits.cpus) * 100000)),
             "--pids-limit", str(limits.pids),
-            "--storage-opt", f"size={limits.writable_bytes}",
             "--ulimit", f"nproc={limits.pids}:{limits.pids}",
             "--ulimit", "nofile=1024:1024",
             "--ulimit", "core=0:0",
@@ -2614,14 +2447,11 @@ class VibeHubRuntimeManager:
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
-                with self._health_probe_capacity_slot():
-                    self._probe_runtime_health(
-                        container_name,
-                        timeout=min(2.0, max(0.1, deadline - time.monotonic())),
-                    )
+                self._probe_runtime_health(
+                    container_name,
+                    timeout=min(2.0, max(0.1, deadline - time.monotonic())),
+                )
                 return
-            except VibeHubCapacityError:
-                raise
             except (VibeHubProxyError, VibeHubRuntimeError) as exc:
                 last_error = exc
             if not self.docker.container_running(container_name):
@@ -2644,7 +2474,6 @@ class VibeHubRuntimeManager:
         self.docker.ensure_data_volume(
             data_volume, scope=self.scope, storage_key=storage_key,
         )
-        self.docker.remove_container(name)
         try:
             self.docker.run_container(self._container_args(
                 runtime_id=runtime_id,
@@ -2652,7 +2481,6 @@ class VibeHubRuntimeManager:
                 featured=featured,
                 data_volume=data_volume,
             ))
-            self.docker.verify_data_writable(name)
             self._wait_ready(name)
         except Exception:
             self.docker.remove_container(name)
@@ -2869,75 +2697,60 @@ class VibeHubRuntimeManager:
             for action in actions:
                 self._stop_and_finalize(action)
 
-    def _inspect_runnable_image(self, image_ref: str, *, featured: bool) -> ImageInfo:
+    def _inspect_runnable_image(self, image_ref: str) -> ImageInfo:
         image = self.docker.inspect_image(image_ref)
         if image.labels.get(MANAGED_IMAGE_LABEL) != "1":
             raise VibeHubImageError("只允许运行经过受管构建器标记的 VibeHub 镜像")
-        if image.volumes:
-            raise VibeHubImageError("VibeHub 镜像不得声明持久化 VOLUME")
-        budget = limits_for(featured).image_bytes
-        if image.size_bytes > budget:
-            raise VibeHubImageError(
-                f"VibeHub 镜像超过 {'40' if featured else '20'} GiB 预算"
-            )
         return image
 
-    def _ensure_image(
+    def build_latest_image(
         self,
-        image_ref: str,
+        project_key: str,
+        build_context: Path | str,
         *,
-        build_context: Path | str | None,
-        featured: bool,
-    ) -> ImageInfo:
-        if build_context is None:
-            return self._inspect_runnable_image(image_ref, featured=featured)
-        context = Path(build_context)
-        _manifest, dockerfile = _manifest_and_dockerfile(context)
-        bases = _dockerfile_base_images(dockerfile, self.allowed_base_images)
-        context_digest, _entries, _bytes = _scan_context(context)
-        resolved_bases = _inspect_build_bases(self.docker, bases)
-        source_digest = _effective_source_digest(context_digest, resolved_bases)
-        try:
-            existing = self._inspect_runnable_image(image_ref, featured=featured)
-        except VibeHubImageError:
-            existing = None
+        package_digest: str,
+        featured=False,
+    ) -> ImageBuildResult:
+        image_ref = image_reference_for(project_key, channel="latest")
+        return build_image(
+            build_context,
+            image_ref,
+            package_digest=package_digest,
+            featured=featured,
+            allowed_base_images=self.allowed_base_images,
+            docker_client=self.docker,
+            timeout_seconds=self.build_timeout_seconds,
+        )
+
+    def capture_image_tag(self, project_key: str, *, channel: str) -> str | None:
+        image_ref = image_reference_for(project_key, channel=channel)
+        image = self.docker.find_image(image_ref)
+        return image.image_id if image is not None else None
+
+    def restore_image_tag(
+        self, project_key: str, *, channel: str, image_id: str | None,
+    ) -> None:
+        image_ref = image_reference_for(project_key, channel=channel)
+        if image_id is None:
+            self.docker.remove_image_tag(image_ref)
+        else:
+            self.docker.tag_image(image_id, image_ref)
+
+    def promote_latest_to_public(
+        self, project_key: str, *, package_digest: str,
+    ) -> str | None:
+        latest_ref = image_reference_for(project_key, channel="latest")
+        public_ref = image_reference_for(project_key, channel="public")
+        latest = self._inspect_runnable_image(latest_ref)
+        expected_digest = str(package_digest or "").strip().lower()
         if (
-            existing is not None
-            and existing.labels.get(SOURCE_DIGEST_LABEL) == source_digest
+            not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+            or latest.labels.get(PACKAGE_DIGEST_LABEL) != expected_digest
         ):
-            return existing
-        with self._file_capacity_slot(
-            "build-slot",
-            BUILD_CONCURRENCY,
-            self.build_slot_timeout_seconds,
-        ):
-            # 等待宿主全局构建槽期间，作品文件或管理员维护的 base tag 都可能变化；
-            # 在槽内重新解析并绑定不可变 base image ID 后才允许命中缓存。
-            _manifest, dockerfile = _manifest_and_dockerfile(context)
-            bases = _dockerfile_base_images(dockerfile, self.allowed_base_images)
-            context_digest, _entries, _bytes = _scan_context(context)
-            resolved_bases = _inspect_build_bases(self.docker, bases)
-            source_digest = _effective_source_digest(context_digest, resolved_bases)
-            # 不同 project tag 可能在等待同一个宿主构建槽；进入后重查目标，
-            # 避免另一进程已完成相同内容时重复构建。
-            try:
-                existing = self._inspect_runnable_image(image_ref, featured=featured)
-            except VibeHubImageError:
-                existing = None
-            if existing is None or existing.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
-                build_image(
-                    context,
-                    image_ref,
-                    featured=featured,
-                    allowed_base_images=self.allowed_base_images,
-                    docker_client=self.docker,
-                    timeout_seconds=self.build_timeout_seconds,
-                    slot_timeout_seconds=self.build_slot_timeout_seconds,
-                )
-            image = self._inspect_runnable_image(image_ref, featured=featured)
-            if image.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
-                raise VibeHubImageError("VibeHub 构建缓存与作品包摘要不一致")
-            return image
+            raise VibeHubImageError("VibeHub latest 镜像与待审版本不一致")
+        previous_image_id = self.capture_image_tag(project_key, channel="public")
+        self.docker.tag_image(latest.image_id, public_ref)
+        return previous_image_id
 
     def _lease_from_state(self, token: str, lease: Mapping[str, object], runtime: Mapping[str, object]) -> RuntimeLease:
         proxy_root = str(lease["proxy_root"])
@@ -2982,15 +2795,14 @@ class VibeHubRuntimeManager:
     def acquire(
         self,
         project_key: str,
-        image_ref: str | None = None,
         *,
-        build_context: Path | str | None = None,
         featured: bool = False,
         channel: str = "public",
         base_path: str = "/api/vibehub/runtime",
+        package_digest: str,
         storage_key: str,
     ) -> RuntimeLease:
-        """取得短期租约；首次访问按需启动，同一版本的玩家共享一个容器。"""
+        """取得短期租约；只启动保存时已经构建好的受管镜像。"""
 
         key = _validate_project_key(project_key)
         selected_channel = _validate_channel(channel)
@@ -2998,32 +2810,33 @@ class VibeHubRuntimeManager:
             storage_key, channel=selected_channel,
         )
         proxy_root = _validate_proxy_root(base_path)
-        selected_image_ref = _validate_image_reference(
-            image_ref or image_reference_for(key, channel=selected_channel)
+        selected_image_ref = image_reference_for(key, channel=selected_channel)
+        image = self._inspect_runnable_image(selected_image_ref)
+        expected_digest = str(package_digest or "").strip().lower()
+        image_digest = image.labels.get(PACKAGE_DIGEST_LABEL)
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_digest) or (
+            image_digest != expected_digest
+            and not (selected_channel == "public" and image_digest is None)
+        ):
+            raise VibeHubImageError("VibeHub 镜像与当前作品版本不一致")
+        runtime_id = self._runtime_id(
+            key,
+            selected_channel,
+            image.image_id,
+            bool(featured),
+            selected_storage_key,
         )
-        self._reconcile_once()
-        self.reap_expired()
-        # 镜像构建可能持续数分钟；单独按 tag 加锁，避免把所有活跃玩家的
-        # heartbeat/release 一起卡在全局 runtime state 锁后。starting reservation
-        # 也必须在释放 tag 锁前落盘，保证跨 worker 的同版本启动与复用只有
-        # 一个明确所有者。
-        with self._locked_image_build(selected_image_ref):
-            image = self._ensure_image(
-                selected_image_ref,
-                build_context=build_context,
-                featured=bool(featured),
-            )
-            runtime_id = self._runtime_id(
-                key,
-                selected_channel,
-                image.image_id,
-                bool(featured),
-                selected_storage_key,
-            )
-            reservation_id = ""
-            with self._locked_state() as state:
-                runtime = state["runtimes"].get(runtime_id)
-                if isinstance(runtime, dict):
+        reservation_id = ""
+        ready_probe = None
+        with self._locked_state() as state:
+            runtime = state["runtimes"].get(runtime_id)
+            if isinstance(runtime, dict):
+                if self._runtime_status(runtime) == "ready":
+                    ready_probe = (
+                        self._runtime_instance_key(runtime),
+                        str(runtime.get("container_name") or ""),
+                    )
+                else:
                     return self._create_lease_locked(
                         state,
                         runtime_id,
@@ -3032,10 +2845,10 @@ class VibeHubRuntimeManager:
                         channel=selected_channel,
                         proxy_root=proxy_root,
                     )
-                if runtime is not None:
-                    raise VibeHubRuntimeError(
-                        "VibeHub runtime state 含不可信记录"
-                    )
+            if runtime is not None:
+                if ready_probe is None:
+                    raise VibeHubRuntimeError("VibeHub runtime state 含不可信记录")
+            else:
                 self._require_runtime_capacity_locked(state)
                 reservation_id = secrets.token_hex(16)
                 state["runtimes"][runtime_id] = {
@@ -3052,6 +2865,41 @@ class VibeHubRuntimeManager:
                     "container_name": self._container_name(runtime_id),
                     "inflight": {},
                 }
+
+        if ready_probe is not None:
+            expected_instance, container_name = ready_probe
+            running = self.docker.container_running(container_name)
+            dead_action = None
+            with self._locked_state() as state:
+                current = state["runtimes"].get(runtime_id)
+                if (
+                    not isinstance(current, dict)
+                    or self._runtime_instance_key(current) != expected_instance
+                ):
+                    current = None
+                elif running:
+                    return self._create_lease_locked(
+                        state,
+                        runtime_id,
+                        current,
+                        project_key=key,
+                        channel=selected_channel,
+                        proxy_root=proxy_root,
+                    )
+                else:
+                    dead_action = self._mark_stopping_locked(
+                        state, runtime_id, current,
+                    )
+            if dead_action is not None:
+                self._stop_and_finalize(dead_action)
+            return self.acquire(
+                key,
+                featured=featured,
+                channel=selected_channel,
+                base_path=proxy_root,
+                package_digest=expected_digest,
+                storage_key=selected_storage_key,
+            )
 
         try:
             started = self._start_runtime(
@@ -3161,56 +3009,13 @@ class VibeHubRuntimeManager:
         project_key: str | None = None,
         channel: str | None = None,
     ) -> RuntimeLease:
-        self._reconcile_once()
         with self._locked_state() as state:
-            _digest, lease, runtime = self._lookup_lease(
+            digest, lease, runtime = self._lookup_lease(
                 state, token, project_key=project_key, channel=channel,
             )
-            runtime_id = str(lease["runtime_id"])
-            container_name = self._container_name(runtime_id)
-            instance_key = self._runtime_instance_key(runtime)
-
-        try:
-            with self._health_probe_capacity_slot():
-                if (
-                    runtime.get("container_name") != container_name
-                    or not self.docker.container_running(container_name)
-                ):
-                    raise VibeHubRuntimeError("VibeHub heartbeat 发现容器未运行")
-                self._probe_runtime_health(
-                    container_name,
-                    timeout=min(2.0, self.request_timeout_seconds),
-                )
-        except VibeHubCapacityError:
-            # 容量拒绝不是作品故障：不续租、不 poison、不触碰容器，路由映射 429。
-            raise
-        except (VibeHubRuntimeError, VibeHubProxyError) as exc:
-            action = None
-            with self._locked_state() as state:
-                current = state["runtimes"].get(runtime_id)
-                if (
-                    isinstance(current, dict)
-                    and self._runtime_status(current) == "ready"
-                    and self._runtime_instance_key(current) == instance_key
-                ):
-                    action = self._mark_stopping_locked(
-                        state, runtime_id, current
-                    )
-            if action is not None:
-                self._stop_and_finalize(action)
-            raise VibeHubRuntimeError(
-                "VibeHub heartbeat 健康检查失败，运行实例已回收"
-            ) from exc
-
-        with self._locked_state() as state:
-            digest, lease, current = self._lookup_lease(
-                state, token, project_key=project_key, channel=channel,
-            )
-            if self._runtime_instance_key(current) != instance_key:
-                raise VibeHubLeaseError("VibeHub lease 对应运行实例已切换")
             lease["expires_at"] = float(self._clock()) + self.lease_ttl_seconds
             state["leases"][digest] = lease
-            return self._lease_from_state(token, lease, current)
+            return self._lease_from_state(token, lease, runtime)
 
     def validate_proxy_capability(
         self,
@@ -3244,7 +3049,6 @@ class VibeHubRuntimeManager:
     ) -> bool:
         """释放租约；最后一位玩家离开后进入可取消的空闲回收宽限。"""
 
-        self._reconcile_once()
         action = None
         with self._locked_state() as state:
             try:
@@ -3293,12 +3097,13 @@ class VibeHubRuntimeManager:
         return removed
 
     def _reaper_loop(self) -> None:
-        while not self._reaper_stop.wait(self.reaper_interval_seconds):
+        while not self._reaper_stop.is_set():
             try:
                 self.reap_expired()
             except Exception:
                 # 不包含 token、project 内容或 Docker 输出；具体失败会在下一轮重试。
                 _logger.exception("VibeHub 后台容器回收失败")
+            self._reaper_stop.wait(self.reaper_interval_seconds)
 
     def start_reaper(self) -> None:
         """显式启动进程内 daemon；共享 flock 保证多 worker 不会并发清理。"""
@@ -3407,7 +3212,6 @@ class VibeHubRuntimeManager:
 
         # 容量等待前先验证 capability 与共享 lease，避免伪造请求占满代理槽位。
         self._verify_token(token)
-        self._reconcile_once()
         with self._locked_state() as state:
             _digest, lease, runtime = self._lookup_lease(
                 state, token, project_key=project_key, channel=channel,
@@ -3587,20 +3391,10 @@ def _manager_kwargs_from_config(config_source) -> dict:
             "VIBEHUB_BUILD_TIMEOUT_SECONDS",
             DEFAULT_BUILD_TIMEOUT_SECONDS,
         )),
-        "build_slot_timeout_seconds": float(_config_value(
-            config_source,
-            "VIBEHUB_BUILD_SLOT_TIMEOUT_SECONDS",
-            DEFAULT_BUILD_SLOT_TIMEOUT_SECONDS,
-        )),
         "proxy_slot_timeout_seconds": float(_config_value(
             config_source,
             "VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS",
             DEFAULT_PROXY_SLOT_TIMEOUT_SECONDS,
-        )),
-        "health_probe_slot_timeout_seconds": float(_config_value(
-            config_source,
-            "VIBEHUB_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS",
-            DEFAULT_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS,
         )),
         "max_active_runtimes": _validated_max_active_runtimes(_config_value(
             config_source,
@@ -3609,11 +3403,6 @@ def _manager_kwargs_from_config(config_source) -> dict:
         )),
         "build_builder": build_builder,
         "require_dedicated_builder": require_dedicated_builder,
-        "build_cache_max_bytes": _validated_build_cache_max_bytes(_config_value(
-            config_source,
-            "VIBEHUB_BUILD_CACHE_MAX_BYTES",
-            DEFAULT_BUILD_CACHE_MAX_BYTES,
-        )),
         "base_oci_layout_root": selected_oci_root,
     }
     lease_ttl = kwargs["lease_ttl_seconds"]
@@ -3639,22 +3428,10 @@ def _manager_kwargs_from_config(config_source) -> dict:
         )
     _validated_build_timeout_seconds(kwargs["build_timeout_seconds"])
     if not (
-        math.isfinite(kwargs["build_slot_timeout_seconds"])
-        and 0 <= kwargs["build_slot_timeout_seconds"] <= 120
-    ):
-        raise ValueError("VIBEHUB_BUILD_SLOT_TIMEOUT_SECONDS 必须在 0–120 之间")
-    if not (
         math.isfinite(kwargs["proxy_slot_timeout_seconds"])
         and 0 <= kwargs["proxy_slot_timeout_seconds"] <= 10
     ):
         raise ValueError("VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS 必须在 0–10 之间")
-    if not (
-        math.isfinite(kwargs["health_probe_slot_timeout_seconds"])
-        and 0 <= kwargs["health_probe_slot_timeout_seconds"] <= 5
-    ):
-        raise ValueError(
-            "VIBEHUB_HEALTH_PROBE_SLOT_TIMEOUT_SECONDS 必须在 0–5 秒之间"
-        )
     if kwargs["require_dedicated_builder"] and not kwargs["build_builder"]:
         raise ValueError(
             "要求专属 builder 时 VIBEHUB_BUILD_BUILDER 不能为空"
@@ -3715,9 +3492,12 @@ def get_runtime_manager() -> VibeHubRuntimeManager:
     if _default_manager is None:
         with _default_manager_lock:
             if _default_manager is None:
-                kwargs = dict(_registered_manager_kwargs or {})
+                if _registered_manager_kwargs is None:
+                    from oj_modules import config as app_config
+                    kwargs = _manager_kwargs_from_config(app_config)
+                else:
+                    kwargs = dict(_registered_manager_kwargs)
                 _default_manager = VibeHubRuntimeManager(**kwargs)
-                _default_manager.start_reaper()
     return _default_manager
 
 

@@ -58,7 +58,6 @@ def test_seed_uses_normal_publish_and_featured_workflow(tmp_path, monkeypatch):
     ]
     for call in (calls[1], calls[6]):
         assert call[1] == ADMIN
-        assert call[4]["submit_for_review"] is True
     assert calls[2][2]["expected_version"] == 1
 
 
@@ -145,7 +144,6 @@ def test_existing_admin_project_is_published_when_package_changes(tmp_path, monk
     for upload_call in (calls[0], calls[2]):
         assert upload_call[1] == ADMIN
         assert upload_call[4] == {}
-        assert upload_call[5]["submit_for_review"] is True
     assert calls[1][2]["expected_version"] == 21
     assert calls[3][2]["expected_version"] == 23
 

@@ -198,7 +198,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
 6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步。结构就绪后，把 Git 跟踪的示例通过普通创建、发布和精品审核链路同步为 admin 的个人作品；仓库包变化时创建并发布新版本，slug 属于其他用户时失败关闭。随后显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程使用普通作品版本内的本地数据，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
-7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 latest/public/review tag 或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
+7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 `latest`/`public` 别名或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
 
 `deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。`vibehub_examples/` 会通过普通作品链路同步为 admin 的个人作品；同名公开包与仓库内容不同时创建并发布新版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
 
@@ -219,6 +219,9 @@ driver、节点、网络模式和持久缓存。
 社区 VibeHub 作品及版本快照位于 Git 忽略的 `uploads/vibehub/`。数据库回滚点不会自动包含
 这些文件；运维必须用同一零写入窗口为该目录制作独立、可验证的快照，并把文件快照与数据库
 备份的 run-id 绑定。恢复时必须成对恢复，不能把新数据库与旧作品树（或反之）混用。
+升级到保存时预构建后，旧的待审或开发版本必须由作者重新保存一次，生成带包摘要的 `latest`
+镜像后再审核；不得为兼容旧版本恢复玩家访问时构建。已经存在的旧 `public` tag 可继续运行到
+下次审核；缺失 tag 的作品必须重新保存和审核。
 作品运行数据位于 Docker 名称为
 `numoj-vh-data-<manager scope>-project-<数据库 id>-<通道>` 的受管 local volume；容器回收、
 镜像更新和普通存储 GC 都不会删除它。数据库备份同样不包含这些 volume。需要恢复作品运行状态时，

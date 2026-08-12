@@ -2154,10 +2154,9 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["vibehub", "create", str(fixture_zip), "--title", "Demo"],
         ["vibehub", "update", "demo-vibe", str(fixture_zip)],
         ["vibehub", "edit", "demo-vibe", "--summary", "updated"],
-        ["vibehub", "submit-review", "demo-vibe"],
         ["vibehub", "request-featured", "demo-vibe"],
         ["vibehub", "pending"],
-        ["vibehub", "review", "demo-vibe", "approve", "--note", "ok"],
+        ["vibehub", "review", "demo-vibe", "approve", "--expected-version", "1"],
         ["vibehub", "featured-pending"],
         ["vibehub", "featured-review", "demo-vibe", "approve", "--note", "ok"],
     ]

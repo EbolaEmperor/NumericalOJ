@@ -54,7 +54,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge four-step progress), submit/check appeals, and download own visible ranking submission files.
-- `vibehub`: fetch the current developer guide, list public works, inspect owned drafts, create or update complete container packages, edit versioned metadata, submit the latest version for publication review, and request featured status after publication.
+- `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, edit versioned metadata, and request featured status after publication.
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
 
@@ -126,14 +126,13 @@ python3 scripts/numoj_user.py ranking appeal-status <competition_id> <submission
 
 For a reverse-judge submission, first read `answer_endpoints` from `ranking detail` and use one of its `id` values. This list contains only enabled answer-pool endpoints; quality-gate endpoints are selected automatically by the server and are never user-selectable.
 
-Create and submit a VibeHub work. The ZIP root must contain `Dockerfile` and
-`vibehub.json`; inspect `vibehub --help` for all version and review commands:
+Create a VibeHub work. Saving automatically submits it for review. The ZIP root
+must contain `Dockerfile` and `vibehub.json`:
 
 ```bash
 python3 scripts/numoj_user.py vibehub guide -o ./vibehub-developer-guide.md
 python3 scripts/numoj_user.py vibehub create ./my-vibe.zip --title "My Vibe"
 python3 scripts/numoj_user.py vibehub mine
-python3 scripts/numoj_user.py vibehub submit-review <slug>
 python3 scripts/numoj_user.py vibehub request-featured <slug>
 ```
 

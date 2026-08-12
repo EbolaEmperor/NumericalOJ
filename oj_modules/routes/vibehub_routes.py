@@ -205,13 +205,13 @@ def runtime_acquire(slug):
             actor=user,
             upload_root=current_app.config.get("VIBEHUB_UPLOAD_ROOT"),
         )
-        project_key = f"{package['slug']}@v{package['version']}"
+        project_key = package["slug"]
         lease = get_runtime_manager().acquire(
             project_key,
-            build_context=package["package_dir"],
             featured=bool(package.get("featured")),
             channel=channel,
             base_path="/vibehub/runtime",
+            package_digest=package["package_sha256"],
             storage_key=f"project-{package['project_id']}-{channel}",
         )
     except services.VibeHubError as exc:

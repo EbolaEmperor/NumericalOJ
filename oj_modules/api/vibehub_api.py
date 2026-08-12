@@ -37,14 +37,6 @@ def _payload():
     return request.form.to_dict(flat=True)
 
 
-def _submission_payload():
-    payload = _payload()
-    value = str(payload.pop("submit_for_review", "") or "").strip().lower()
-    if value not in {"", "0", "1", "false", "true", "no", "yes", "off", "on"}:
-        raise services.VibeHubError("submit_for_review 必须是布尔值")
-    return payload, value in {"1", "true", "yes", "on"}
-
-
 def _uploaded_package():
     upload = request.files.get("package") or request.files.get("file")
     if not upload or not getattr(upload, "filename", ""):
@@ -173,10 +165,9 @@ def create_project():
         # 预检位于槽内但仍先于 request.files/form；事务内会最终重检。
         services.preflight_create_project(user)
         upload = _uploaded_package()
-        payload, submit_for_review = _submission_payload()
+        payload = _payload()
         project = services.create_project(
             user, upload, payload, upload_root=_upload_root(),
-            submit_for_review=submit_for_review,
         )
     return json_success(project=project), 201
 
@@ -186,10 +177,9 @@ def edit_project(slug):
     user = _require_user()
     with _storage_mutation_request_slot():
         services.preflight_upload_project(user, slug)
-        payload, submit_for_review = _submission_payload()
+        payload = _payload()
         project = services.edit_project(
             user, slug, payload, upload_root=_upload_root(),
-            submit_for_review=submit_for_review,
         )
     return json_success(project=project)
 
@@ -200,23 +190,11 @@ def upload_version(slug):
     with _storage_mutation_request_slot():
         services.preflight_upload_project(user, slug)
         upload = _uploaded_package()
-        payload, submit_for_review = _submission_payload()
+        payload = _payload()
         project = services.upload_new_version(
             user, slug, upload, payload, upload_root=_upload_root(),
-            submit_for_review=submit_for_review,
         )
     return json_success(project=project), 201
-
-
-@vibehub_api_bp.route("/projects/<slug>/review", methods=["POST"])
-def request_project_review(slug):
-    user = _require_user()
-    with _storage_mutation_request_slot():
-        services.preflight_owned_project(user, slug)
-        project = services.request_review(
-            user, slug, upload_root=_upload_root(),
-        )
-    return json_success(project=project)
 
 
 @vibehub_api_bp.route("/projects/<slug>/featured", methods=["POST"])
@@ -236,7 +214,9 @@ def project_cover(slug):
     package = services.resolve_project_package(
         slug, audience=view, actor=actor, upload_root=_upload_root(),
     )
-    app_dir = Path(package["package_dir"]).resolve()
+    app_dir = storage.resolve_snapshot_app(
+        package["slug"], package["version"], upload_root=_upload_root(),
+    )
     target = storage.processed_cover_path(app_dir)
     if not target.is_file():
         raise services.VibeHubNotFoundError("平台封面副本不存在")

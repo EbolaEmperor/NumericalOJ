@@ -90,9 +90,10 @@ Dockerfile 只允许一个位于首行的固定 `FROM`，以及 `RUN`、`COPY`�
 - `X-VibeHub-Session-Id`：当前玩家的匿名会话 ID。多人会共享同一个容器，内存状态必须按它隔离。
 
 玩家不能伪造这两个值。平台不会把 NumericalOJ 的 Cookie、登录身份或密钥交给作品。
-容器根文件系统可写，但容器回收后，内存、根层、`/tmp` 和 `/run/vibehub` 中的数据都会消失。
-需要跨重建保留的文件必须写到 `/data` 或 `$HOME`（固定为 `/data/home`）。同一数据库 project id
-的 `public`、`latest`、`review` 各有独立数据盘，作品不能声明 `VOLUME` 或选择宿主路径。
+容器根文件系统只读，`/tmp` 和 `/run/vibehub` 是临时内存盘。
+需要跨重建保留的文件必须写到 `/data` 或 `$HOME`（固定为 `/data/home`）。同一 project id 的
+`public`、`latest`、`review` 各有独立数据盘；`review` 复用 `latest` 镜像。作品不能声明
+`VOLUME` 或选择宿主路径。
 
 ### 请求边界
 
@@ -120,42 +121,39 @@ python3 scripts/numoj_user.py vibehub detail <slug> --view public
 python3 scripts/numoj_user.py vibehub detail <slug> --view latest
 ```
 
-### 创建并提交审核
+### 创建并自动送审
 
-`create` 先创建不可变的 v1 草稿并返回作品 `slug`，再用返回的 `slug` 提交审核：
+`create` 会在一次操作中构建不可变的 v1、更新 `latest`，并自动提交审核：
 
 ```bash
 python3 scripts/numoj_user.py vibehub create ./my-vibe.zip \
   --title "我的作品" \
   --summary "一句话简介" \
   --tags "游戏,创意"
-
-python3 scripts/numoj_user.py vibehub submit-review <slug>
 ```
 
 可用 `--slug` 指定稳定地址；只允许小写字母、数字和连字符，长度为 3–63。未指定时平台自动生成。
 `--description @README.md` 可从文件读取详细说明，`--cover-image` 可覆盖清单中的包内封面路径。
 
-### 更新并重新提交审核
+### 更新并自动重新送审
 
-上传新 ZIP 会生成递增的不可变版本，不会覆盖旧版本：
+上传新 ZIP 会构建递增的不可变版本、更新 `latest` 并自动重新送审，不会覆盖旧版本：
 
 ```bash
 python3 scripts/numoj_user.py vibehub update <slug> ./my-vibe-v2.zip
-python3 scripts/numoj_user.py vibehub submit-review <slug>
 ```
 
-只修改标题、简介、说明、标签或封面路径时使用 `edit`。这同样会生成新版本，修改后仍需提交审核：
+只修改标题、简介、说明、标签或封面路径时使用 `edit`。保存同样会准备 `latest` 镜像、生成新版本
+并自动重新送审：
 
 ```bash
 python3 scripts/numoj_user.py vibehub edit <slug> \
   --title "新的名称" \
   --description @README.md
-python3 scripts/numoj_user.py vibehub submit-review <slug>
 ```
 
-`latest` 始终指向作者最新版本，`public` 始终指向审核通过的稳定版本。更新处于审核中时，其他用户
-仍会看到旧的公开版本。
+作品只维护 `latest`、`public` 两个镜像别名；保存时构建 `latest` 并自动送审，`review` 复用
+`latest`。审核通过让 `public` 指向已确认的 `latest`，不重新构建；通过前其他用户仍看到旧版本。
 
 ### 申请精品
 
@@ -169,10 +167,10 @@ python3 scripts/numoj_user.py vibehub request-featured <slug>
 
 - 普通用户同时最多拥有 2 个未获精品资格的作品。
 - 每个用户的持久作品快照逻辑用量上限为 20 GiB；每个作品的版本数量也受站点配额限制。
-- 普通作品运行上限为 4 GiB 内存、2 CPU、256 PID、20 GiB 镜像和 4 GiB 可写根层。
-- 精品作品运行上限为 8 GiB 内存、4 CPU、512 PID、40 GiB 镜像和 8 GiB 可写根层。
+- 普通作品运行上限为 4 GiB 内存、2 CPU、256 PID 和 20 GiB 镜像。
+- 精品作品运行上限为 8 GiB 内存、4 CPU、512 PID 和 40 GiB 镜像。
 - `/tmp` 和 `/run/vibehub` 是有界 tmpfs；`/data` 持久保存，但当前没有可移植的硬配额。
-- 首位玩家打开作品时容器按需启动；最后一个玩家离开后进入 5 分钟空闲宽限，期间再次进入会复用容器并取消原回收计划；宽限到期仍无人使用才回收容器，只有 `/data` 长期保留。
+- 首位玩家打开作品时只按需启动保存阶段已经构建好的容器，不会触发镜像构建；最后一个玩家离开后进入 5 分钟空闲宽限，期间再次进入会复用容器并取消原回收计划；宽限到期仍无人使用才回收容器，只有 `/data` 长期保留。
 
 ## 提交前检查
 

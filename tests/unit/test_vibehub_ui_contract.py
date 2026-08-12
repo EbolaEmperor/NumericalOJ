@@ -52,7 +52,7 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
 
     assert all(token in gallery for token in (
         'data-vibe-filter="mine"', 'data-vibe-filter="pending"', "<dialog", "data-vibe-project-modal",
-        "data-vibe-approve-modal", "创建并提交审核", 'aria-label="创建作品"',
+        "data-vibe-approve-modal", "创建并自动送审", 'aria-label="创建作品"',
         "data-admin-review-url-template",
     ))
     assert all(token not in gallery for token in (
@@ -65,7 +65,7 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert ".vibehub-page input { font-family: inherit; }" in css
     assert ".vibehub-page input { font: inherit; }" not in css
     assert ".vibe-toolbar-link { border: 1px solid" in css
-    assert "更新并提交审核" in javascript
+    assert "保存更新并自动送审" in javascript
     assert all(token in card for token in (
         "project.play_url", "vibe-featured-mark", "fa-gem", "data-avatar-seed",
         "project.owner_username", "project.is_pending", "data-vibe-edit-project",
@@ -128,7 +128,7 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     assert 'data-size="lg"' in player
     assert 'data-color-a="#c95d32"' in player
     assert 'data-color-b="#c95d32"' in player
-    assert "首次访问需要构建游戏镜像" in player
+    assert "作品镜像已在保存时构建完成" in player
     assert ".vibe-player-loading .vibe-player-loader" in css
     assert ".vibe-player-loader i" not in css
     assert "@keyframes vibe-loader" not in css
