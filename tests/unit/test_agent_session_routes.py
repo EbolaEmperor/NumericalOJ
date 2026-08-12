@@ -1257,6 +1257,7 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     )
     current_state = {"task_id": "turn-1", "status": "Completed"}
     decorate_calls = []
+    state_calls = []
     monkeypatch.setattr(
         routes,
         "_decorate_agent_turns",
@@ -1265,7 +1266,8 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
-        lambda _task_id: current_state,
+        lambda task_id, **kwargs: state_calls.append((task_id, kwargs))
+        or current_state,
     )
     monkeypatch.setattr(
         routes,
@@ -1311,9 +1313,11 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     assert rendered[0][1]["can_retry_now"] is True
     assert rendered[0][1]["workspace_tree"] == []
     assert len(decorate_calls) == 1
+    assert state_calls == [("turn-1", {"decorate_markdown": False})]
     assert decorate_calls[0][1] == {
         "current_task_id": "turn-1",
         "current_state": current_state,
+        "include_trace": False,
     }
 
 
@@ -1341,7 +1345,10 @@ def test_detail_get_allows_retrying_specialized_generic_followup(monkeypatch):
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
-        lambda _task_id: {"task_id": "turn-2", "status": "Completed"},
+        lambda _task_id, **_kwargs: {
+            "task_id": "turn-2",
+            "status": "Completed",
+        },
     )
     monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
     rendered = []
@@ -1404,7 +1411,11 @@ def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_co
         "_decorate_agent_turns",
         lambda values, **_kwargs: values,
     )
-    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: current_state)
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_state",
+        lambda _tid, **_kwargs: current_state,
+    )
     monkeypatch.setattr(
         routes,
         "_load_agent_historical_token_usages",
@@ -1605,6 +1616,43 @@ def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
     assert turn["conclusion"] == "已完成"
 
 
+def test_decorate_turns_can_defer_full_trace_markdown(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda state: {
+            **state,
+            "execution_trace": {"trace_messages": [
+                {"kind": "thinking", "text": "很长的思考"},
+                {"kind": "assistant", "text": "已完成具体任务"},
+            ]},
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_state_markdown",
+        lambda _state: pytest.fail("折叠轨迹不应在首屏渲染 Markdown"),
+    )
+    rendered = []
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: rendered.append(text) or f"<p>{text}</p>",
+    )
+
+    turn = routes._decorate_agent_turns([{
+        "task_id": "turn-lazy",
+        "status": "Completed",
+        "user_message": "执行任务",
+        "conclusion": "笼统结论",
+    }], include_trace=False)[0]
+
+    assert turn["has_detail"] is True
+    assert turn["execution_trace"] == {}
+    assert turn["conclusion"] == "已完成具体任务"
+    assert rendered == ["执行任务", "已完成具体任务"]
+
+
 @pytest.mark.parametrize("harness", ["codex", "opencode"])
 def test_incremental_harness_trace_is_not_resume_filtered(harness):
     previous = [{"kind": "assistant", "text": "first"}]
@@ -1716,7 +1764,10 @@ def test_detail_get_marks_another_admin_session_read_only(monkeypatch):
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
-        lambda _task_id: {"task_id": "turn-1", "status": "Completed"},
+        lambda _task_id, **_kwargs: {
+            "task_id": "turn-1",
+            "status": "Completed",
+        },
     )
     monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
     rendered = []
@@ -1750,7 +1801,7 @@ def test_detail_refresh_keeps_cleanup_failed_session_blocked_over_sticky_cancel(
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
-        lambda _task_id: {
+        lambda _task_id, **_kwargs: {
             "task_id": "turn-1",
             "status": "Canceled",
             "message": "任务已由管理员终止",

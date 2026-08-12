@@ -250,6 +250,20 @@ def test_agent_detail_live_refreshes_do_not_overlap_or_poll_beside_healthy_sse()
     assert "if (!messageStream || !messageStreamHealthy)" in poll_finally
 
 
+def test_agent_detail_defers_folded_trace_until_first_expand():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+
+    assert "data-agent-lazy-trace" in template
+    assert "data-agent-lazy-trace-body" in template
+    assert "turn.has_detail|default(false)" in template
+    assert "function requestTaskState(taskId)" in controller
+    assert "function loadHistoricalTrace(details)" in controller
+    assert "function bindLazyHistoricalTraces()" in controller
+    assert "if (details.open) loadHistoricalTrace(details);" in controller
+    assert "details.dataset.agentLazyLoaded = 'true';" in controller
+
+
 def test_agent_detail_supports_durable_queue_and_soft_steering_controls():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")

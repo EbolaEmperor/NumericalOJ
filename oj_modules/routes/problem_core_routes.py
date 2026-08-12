@@ -466,6 +466,7 @@ def _decorate_agent_turns(
     *,
     current_task_id='',
     current_state=None,
+    include_trace=True,
 ):
     decorated = []
     previous_full_trace_by_harness = {}
@@ -507,7 +508,7 @@ def _decorate_agent_turns(
             previous_full_trace_by_harness[harness] = full_messages
         snapshot = (
             hydrated
-            if reuse_current_state
+            if reuse_current_state or not include_trace
             else _decorate_agent_state_markdown(hydrated)
         )
         trace = snapshot.get('execution_trace') or {}
@@ -518,7 +519,8 @@ def _decorate_agent_turns(
                 conclusion,
                 trace,
             )
-        turn['execution_trace'] = trace
+        turn['has_detail'] = bool(_agent_trace_messages(trace))
+        turn['execution_trace'] = trace if include_trace else {}
         turn['user_message_html'] = render_rich_markdown(turn.get('user_message'))
         turn['conclusion'] = conclusion
         turn['conclusion_html'] = render_rich_markdown(conclusion)
@@ -1058,14 +1060,19 @@ def _overlay_agent_session_cleanup_failure(task_id, raw_state, agent_session=Non
     return state
 
 
-def _agent_state_for_response(task_id, raw_state, agent_session=None):
-    return _decorate_agent_state_markdown(
-        _overlay_agent_session_cleanup_failure(
-            task_id,
-            raw_state,
-            agent_session=agent_session,
-        )
+def _agent_state_for_response(
+    task_id,
+    raw_state,
+    agent_session=None,
+    *,
+    decorate_markdown=True,
+):
+    state = _overlay_agent_session_cleanup_failure(
+        task_id,
+        raw_state,
+        agent_session=agent_session,
     )
+    return _decorate_agent_state_markdown(state) if decorate_markdown else state
 
 
 def _hydrate_agent_state_trace_if_needed(state):
@@ -1096,7 +1103,7 @@ def _hydrate_agent_state_trace_if_needed(state):
     return hydrate_agent_run_snapshot(state)
 
 
-def _get_agent_run_state(task_id):
+def _get_agent_run_state(task_id, *, decorate_markdown=True):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
         if not _is_agent_state_finished(state):
@@ -1115,7 +1122,8 @@ def _get_agent_run_state(task_id):
             task_id,
             _hydrate_agent_state_trace_if_needed(
                 _overlay_agent_celery_terminal(task_id, state),
-            )
+            ),
+            decorate_markdown=decorate_markdown,
         )
     state = get_agent_run_by_task_id(task_id)
     if isinstance(state, dict):
@@ -1123,13 +1131,15 @@ def _get_agent_run_state(task_id):
             task_id,
             hydrate_agent_run_snapshot(
                 _overlay_agent_celery_terminal(task_id, state),
-            )
+            ),
+            decorate_markdown=decorate_markdown,
         )
     return _agent_state_for_response(
         task_id,
         hydrate_agent_run_snapshot(
             _build_agent_state_from_async_result(task_id),
-        )
+        ),
+        decorate_markdown=decorate_markdown,
     )
 
 
@@ -2836,19 +2846,17 @@ def admin_agent_task_detail(session_id):
 
     raw_turns = get_agent_session_turns(session_id)
     current_task_id = str(agent_session.get('current_task_id') or session_id)
-    current_state = _get_agent_run_state(current_task_id)
+    current_state = _get_agent_run_state(
+        current_task_id,
+        decorate_markdown=False,
+    )
     if current_state:
-        # _get_agent_run_state 已完成轨迹 hydrate 和 Markdown 清洗；这里
-        # 只叠加已读取的会话清理状态，避免将整条轨迹再渲染一次。
-        overlayed_state = _overlay_agent_session_cleanup_failure(
+        # 首屏只需要状态、用量与 conclude；折叠的完整轨迹在用户展开时
+        # 经现有状态接口加载，避免 Agent 运行期间反复阻塞 Web worker。
+        current_state = _overlay_agent_session_cleanup_failure(
             current_task_id,
             current_state,
             agent_session=agent_session,
-        )
-        current_state = (
-            _decorate_agent_state_markdown(overlayed_state)
-            if overlayed_state.get('status') != current_state.get('status')
-            else overlayed_state
         )
     else:
         current_state = _agent_state_for_response(
@@ -2862,11 +2870,13 @@ def admin_agent_task_detail(session_id):
                 'execution_trace': {},
             },
             agent_session=agent_session,
+            decorate_markdown=False,
         )
     turns = _decorate_agent_turns(
         raw_turns,
         current_task_id=current_task_id,
         current_state=current_state,
+        include_trace=False,
     )
     try:
         steer_records = list_agent_session_messages(
@@ -2948,17 +2958,16 @@ def admin_agent_task_detail(session_id):
     can_retry_now = bool(
         can_retry and agent_status_is_terminal(agent_session.get('status'))
     )
-    page_current_state = current_state
+    page_current_state = dict(current_state)
+    page_current_state.pop('execution_trace', None)
+    page_current_state.pop('conclusion_html', None)
+    page_current_state.pop('final_response_html', None)
     if agent_status_is_terminal(current_state.get('status')):
-        # 已结束轮次的轨迹和 conclude 已经渲染在 turns 中，首屏 JSON 只保留
-        # 状态、恢复点与会话用量，避免把整份轨迹再传一遍。
-        page_current_state = dict(current_state)
+        # 已结束轮次的 conclude 已经渲染在 turns 中，首屏 JSON 只保留
+        # 状态、恢复点与会话用量。
         for key in (
-            'execution_trace',
             'conclusion',
-            'conclusion_html',
             'final_response',
-            'final_response_html',
         ):
             page_current_state.pop(key, None)
     response = current_app.make_response(render_template(

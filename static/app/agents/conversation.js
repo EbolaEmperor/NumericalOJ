@@ -1283,7 +1283,7 @@
     }
   }
 
-  function fetchState(taskId, generation) {
+  function requestTaskState(taskId) {
     return global.fetch(taskUrl(root.dataset.statusUrlTemplate, taskId), {
       headers: {'Accept': 'application/json'},
       credentials: 'same-origin',
@@ -1296,9 +1296,50 @@
         }
         return payload.state;
       });
-    }).then(function (state) {
+    });
+  }
+
+  function fetchState(taskId, generation) {
+    return requestTaskState(taskId).then(function (state) {
       applyState(state, taskId, generation);
       return state;
+    });
+  }
+
+  function loadHistoricalTrace(details) {
+    if (!details || details.dataset.agentLazyLoaded === 'true'
+        || details.dataset.agentLazyLoading === 'true') return;
+    var taskId = asText(details.dataset.agentTaskId).trim();
+    var body = details.querySelector('[data-agent-lazy-trace-body]');
+    if (!taskId || !body) return;
+    details.dataset.agentLazyLoading = 'true';
+    body.replaceChildren(createElement('div', 'agent-workspace-empty', '正在加载工作详情…'));
+    requestTaskState(taskId).then(function (state) {
+      var messages = traceMessages(state);
+      body.replaceChildren();
+      if (!messages.length) {
+        body.appendChild(createElement('div', 'agent-workspace-empty', '本轮没有可展示的工作详情。'));
+      } else {
+        messages.forEach(function (message) {
+          body.appendChild(traceEvent(message || {}));
+        });
+        enhanceMarkdown(body);
+      }
+      details.dataset.agentLazyLoaded = 'true';
+    }).catch(function () {
+      body.replaceChildren(createElement(
+        'div', 'agent-workspace-empty', '工作详情加载失败，请收起后重试。'
+      ));
+    }).finally(function () {
+      delete details.dataset.agentLazyLoading;
+    });
+  }
+
+  function bindLazyHistoricalTraces() {
+    root.querySelectorAll('[data-agent-lazy-trace]').forEach(function (details) {
+      details.addEventListener('toggle', function () {
+        if (details.open) loadHistoricalTrace(details);
+      });
     });
   }
 
@@ -2543,6 +2584,7 @@
   bindStopButton();
   bindQueueControls();
   bindWorkspaceAndFiles();
+  bindLazyHistoricalTraces();
   paintSessionAvatars();
   renderHeaderTokenUsage(currentState && currentState.session_token_usage);
   messageState = Object.assign({

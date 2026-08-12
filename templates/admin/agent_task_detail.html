@@ -252,14 +252,19 @@
 
             {% if not (is_running and turn.task_id == current_task_id) %}
             <section class="agent-response">
-              {% if detail_messages %}
-                <details class="agent-turn-details">
+              {% if detail_messages or turn.has_detail|default(false) %}
+                <details class="agent-turn-details"
+                         {% if not detail_messages %}data-agent-lazy-trace data-agent-task-id="{{ turn.task_id }}"{% endif %}>
                   <summary>
                     <span><i class="fas fa-chevron-right" aria-hidden="true"></i>工作详情</span>
                     {% if turn.duration %}<small>{{ turn.duration }}</small>{% endif %}
                   </summary>
-                  <div class="agent-turn-trace">
-                    {% for message in detail_messages %}{{ trace_message(message) }}{% endfor %}
+                  <div class="agent-turn-trace"{% if not detail_messages %} data-agent-lazy-trace-body{% endif %}>
+                    {% if detail_messages %}
+                      {% for message in detail_messages %}{{ trace_message(message) }}{% endfor %}
+                    {% else %}
+                      <div class="agent-workspace-empty" data-agent-lazy-trace-status>展开后加载工作详情</div>
+                    {% endif %}
                   </div>
                 </details>
               {% endif %}
