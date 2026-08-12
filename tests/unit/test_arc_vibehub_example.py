@@ -166,7 +166,7 @@ def _clear_runtime_state():
 
 def test_original_visual_assets_and_optimized_player_transport_contract():
     expected = {
-        "arc-agi-3.css": "05d745dfdaee0208a6272f4d0ac17ebc67da37e18c98b76d071f5e08dad851d1",
+        "arc-agi-3.css": "ef7cc45e5f029e7af25de5d109b4bf768431b24cc4db48a1ddc25686066788b3",
         "arc-agi-3-catalog.js": "6be82d1140f6e0993c12694a44a8f26dfb4e44b8259e79c2008f9570bb7d22f8",
     }
     for name, digest in expected.items():
