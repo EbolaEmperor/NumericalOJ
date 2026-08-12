@@ -23,7 +23,8 @@ if str(ROOT) not in sys.path:
 
 from deploy.prepare_arc_agi_3 import ArcPublicSetError, _validate_cached_set
 from oj_modules.infrastructure.mysql import get_db_connection
-from oj_modules.vibehub import services
+from oj_modules.vibehub import services, storage
+from oj_modules.vibehub.runtime import get_runtime_manager
 
 
 EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3")
@@ -155,6 +156,46 @@ def _remove_legacy_storage(upload_root: Path, slug: str) -> None:
     shutil.rmtree(legacy)
 
 
+def _ensure_existing_images(admin: dict, slug: str, upload_root: Path) -> None:
+    """从现有快照补齐保存时预构建引入的 latest/public 镜像。"""
+
+    packages = {
+        channel: services.resolve_project_package(
+            slug,
+            audience=channel,
+            actor=admin,
+            upload_root=upload_root,
+        )
+        for channel in ("latest", "public")
+    }
+    manager = get_runtime_manager()
+    latest = packages["latest"]
+    manager.build_channel_image(
+        slug,
+        storage.resolve_snapshot_app(
+            slug, latest["version"], upload_root=upload_root,
+        ),
+        channel="latest",
+        package_digest=latest["package_sha256"],
+        featured=bool(latest.get("featured")),
+    )
+    public = packages["public"]
+    if public["package_sha256"] == latest["package_sha256"]:
+        manager.promote_latest_to_public(
+            slug, package_digest=public["package_sha256"],
+        )
+        return
+    manager.build_channel_image(
+        slug,
+        storage.resolve_snapshot_app(
+            slug, public["version"], upload_root=upload_root,
+        ),
+        channel="public",
+        package_digest=public["package_sha256"],
+        featured=bool(public.get("featured")),
+    )
+
+
 def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> list[str]:
     admin, projects = _load_state()
     arc_set = _validated_arc_set(arc_set)
@@ -180,6 +221,7 @@ def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> li
                 if _package_sha256(package) == _public_package_sha256(
                     projects[slug], slug,
                 ):
+                    _ensure_existing_images(admin, slug, upload_root)
                     status = "unchanged"
                 else:
                     updated = services.upload_new_version(

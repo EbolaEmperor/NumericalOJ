@@ -90,16 +90,72 @@ def test_existing_admin_projects_with_same_package_are_unchanged(tmp_path, monke
         lambda *_args, **_kwargs: pytest.fail("相同内容不得重复升版"),
     )
     removed = []
+    ensured = []
     monkeypatch.setattr(
         seed,
         "_remove_legacy_storage",
         lambda _root, slug: removed.append(slug),
+    )
+    monkeypatch.setattr(
+        seed,
+        "_ensure_existing_images",
+        lambda actor, slug, root: ensured.append((actor, slug, root)),
     )
 
     result = seed.seed_examples(tmp_path, tmp_path / "uploads", tmp_path / "arc")
 
     assert result == ["circle-cat: unchanged", "arc-agi-3: unchanged"]
     assert removed == list(seed.EXAMPLE_SLUGS)
+    assert ensured == [
+        (ADMIN, slug, tmp_path / "uploads") for slug in seed.EXAMPLE_SLUGS
+    ]
+
+
+def test_ensure_existing_images_builds_latest_and_restores_public_alias(
+    tmp_path, monkeypatch,
+):
+    calls = []
+
+    class Manager:
+        def build_channel_image(self, slug, app_dir, **kwargs):
+            calls.append(("build", slug, app_dir, kwargs))
+
+        def promote_latest_to_public(self, slug, **kwargs):
+            calls.append(("promote", slug, kwargs))
+
+    package = {
+        "slug": "arc-agi-3",
+        "version": 4,
+        "package_sha256": "a" * 64,
+        "featured": True,
+    }
+    monkeypatch.setattr(
+        seed.services,
+        "resolve_project_package",
+        lambda *_args, **_kwargs: dict(package),
+    )
+    monkeypatch.setattr(seed, "get_runtime_manager", lambda: Manager())
+    monkeypatch.setattr(
+        seed.storage,
+        "resolve_snapshot_app",
+        lambda slug, version, **_kwargs: tmp_path / slug / str(version) / "app",
+    )
+
+    seed._ensure_existing_images(ADMIN, "arc-agi-3", tmp_path / "uploads")
+
+    assert calls == [
+        (
+            "build",
+            "arc-agi-3",
+            tmp_path / "arc-agi-3" / "4" / "app",
+            {
+                "channel": "latest",
+                "package_digest": "a" * 64,
+                "featured": True,
+            },
+        ),
+        ("promote", "arc-agi-3", {"package_digest": "a" * 64}),
+    ]
 
 
 def test_existing_admin_project_is_published_when_package_changes(tmp_path, monkeypatch):
