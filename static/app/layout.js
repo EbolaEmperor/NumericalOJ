@@ -80,6 +80,10 @@
 
     function applyState(collapsed) {
       const effective = media.matches && collapsed;
+      document.documentElement.classList.toggle(
+        'numoj-sidebar-prefers-collapsed',
+        collapsed
+      );
       shell.classList.toggle('is-sidebar-collapsed', effective);
       toggle.setAttribute('aria-expanded', effective ? 'false' : 'true');
       toggle.setAttribute('aria-label', effective ? '展开侧边栏' : '收起侧边栏');

@@ -98,7 +98,9 @@ vendor 依赖和前端产物，再把运行所需文件一起放进 ZIP。
 支持普通 HTTP/1.1 的 `GET`、`HEAD`、`POST`、`PUT`、`PATCH`、`DELETE` 和 `OPTIONS`，
 不支持 WebSocket、CONNECT 或外联。请求体和响应体默认各最多 16 MiB，单次请求默认最多 15 秒。
 作品运行在不含 `allow-same-origin` 的 sandbox iframe 中，不能读取站点页面、浏览器 Cookie 或控制
-顶层窗口。
+顶层窗口。用户主动点击的 HTTPS 外部链接可以在不受 sandbox 限制的新标签页中打开；这只影响
+浏览器导航，作品脚本的跨站请求仍由 `connect-src 'self'` 禁止，容器本身也仍使用
+`--network none`。
 
 ## 使用 CLI 管理作品
 

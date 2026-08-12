@@ -224,14 +224,15 @@ RUNTIME_CORS_REQUEST_HEADERS = ("Content-Type", "Range")
 _ALLOWED_METHODS = frozenset((*RUNTIME_CORS_METHODS, "OPTIONS"))
 
 _PROXY_CSP = (
-    "sandbox allow-scripts allow-forms allow-modals allow-downloads; "
+    "sandbox allow-scripts allow-forms allow-modals allow-downloads "
+    "allow-popups allow-popups-to-escape-sandbox; "
     "default-src 'self' data: blob:; "
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:; media-src 'self' data: blob:; "
     "font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; "
     "frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; "
-    "navigate-to 'self'"
+    "navigate-to 'self' https:"
 )
 
 _logger = logging.getLogger(__name__)

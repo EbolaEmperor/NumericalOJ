@@ -115,9 +115,10 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     assert "vibehub-player-shell" in player
     assert (
         'sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock '
-        'allow-downloads"'
+        'allow-downloads allow-popups allow-popups-to-escape-sandbox"'
     ) in player
     assert "allow-same-origin" not in player
+    assert "allow-top-navigation" not in player
     assert "VIBEHUB / SANDBOX" not in player
     assert "data-vibe-player-toolbar" not in player
     assert "data-vibe-reload" not in player
