@@ -142,6 +142,7 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `VIBEHUB_BUILD_CACHE_MAX_BYTES` | int | `4294967296` | 显式运维清理专属 builder 时使用的保留缓存阈值，严格范围 256 MiB–100 GiB；玩家访问和离开不会触发 prune。 |
 | `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
 | `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
+| `VIBEHUB_IDLE_GRACE_SECONDS` | float | `300` | 最后一个玩家离开后的容器空闲宽限，范围 0–3600 秒；宽限内同版本玩家返回会复用容器并取消原回收截止时间。 |
 | `VIBEHUB_REAPER_INTERVAL_SECONDS` | float | `15` | 后台过期回收间隔，必须小于 lease TTL。 |
 | `VIBEHUB_STORAGE_GC_INTERVAL_SECONDS` | float | `900` | 退役版本快照与过期上传暂存的后台回收周期，范围 60–86400 秒；Web worker 启动后会先立即执行一轮。 |
 | `VIBEHUB_REQUEST_TIMEOUT_SECONDS` | float | `15` | relay HTTP 端到端单请求总时限，范围 0.1–120 秒。 |
@@ -170,10 +171,11 @@ driver 才会落实；Docker Desktop/containerd 等环境可能只接受参数�
 精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
 跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
 TTL 回收旧容器。每个作品的 latest、public、review 通道分别使用稳定的受管镜像 tag，内容
-变化由 source digest 触发重建，旧运行容器继续绑定原 image ID。最后一个玩家离开后只回收
-运行容器，稳定镜像 tag、旧受管镜像和 BuildKit 构建缓存均长期保留；再次访问相同内容会直接
-复用镜像，不重新构建。无人游玩时没有作品容器占用 CPU 或内存，磁盘缓存与运行资源的生命周期
-彼此独立。运行容器使用 Docker `none`
+变化由 source digest 触发重建，旧运行容器继续绑定原 image ID。最后一个玩家离开后，运行容器
+进入默认 5 分钟的空闲宽限；同版本玩家在截止前返回会直接复用容器并取消原回收计划，截止后仍
+无人使用才由 reaper 删除容器。稳定镜像 tag、旧受管镜像和 BuildKit 构建缓存均长期保留，再次
+访问相同内容不重新构建。宽限到期后无人游玩时没有作品容器占用 CPU 或内存，磁盘缓存与运行
+资源的生命周期彼此独立。运行容器使用 Docker `none`
 日志驱动，不会把不可信作品的 stdout/stderr 持久写入宿主日志；平台只记录受控的生命周期
 与代理元数据。运行容器总上限、构建槽、代理槽和健康探测槽都通过 runtime root 中的 `flock` 与
 原子 state 跨 worker 共享，不会因增加 Web worker 而成倍放大宿主资源占用。

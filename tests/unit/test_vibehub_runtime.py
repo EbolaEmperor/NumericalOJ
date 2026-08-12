@@ -232,6 +232,7 @@ def _hold_capacity_locks(runtime_root, lock_names, ready, release):
 
 def _manager(monkeypatch, tmp_path, *, docker=None, clock=lambda: 100.0, **kwargs):
     kwargs.setdefault("proxy_transport", "docker-exec")
+    kwargs.setdefault("idle_grace_seconds", 0)
     manager = runtime.VibeHubRuntimeManager(
         tmp_path / "runtime",
         docker_client=docker or _FakeDocker(),
@@ -811,7 +812,7 @@ def test_data_volume_persists_after_container_recreation(monkeypatch, short_tmp)
     assert len(docker.data_write_checks) == 2
 
 
-def test_shared_leases_start_once_and_last_release_immediately_removes_container(
+def test_zero_idle_grace_starts_once_and_last_release_removes_container(
     monkeypatch,
     short_tmp,
 ):
@@ -832,6 +833,50 @@ def test_shared_leases_start_once_and_last_release_immediately_removes_container
     assert docker.stopped == []
     assert manager.release(second.token) is True
     assert docker.stopped == [first.container_name]
+
+
+def test_idle_grace_reuses_container_and_cancels_scheduled_cleanup(
+    monkeypatch,
+    short_tmp,
+):
+    now = [100.0]
+    docker = _FakeDocker()
+    manager = _manager(
+        monkeypatch,
+        short_tmp,
+        docker=docker,
+        clock=lambda: now[0],
+        idle_grace_seconds=300,
+    )
+
+    first = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    assert manager.release(first.token) is True
+
+    state = manager._load_state()
+    idle_runtime = next(iter(state["runtimes"].values()))
+    assert idle_runtime["status"] == "ready"
+    assert idle_runtime["idle_deadline"] == 400.0
+    assert docker.stopped == []
+
+    now[0] = 399.0
+    second = manager.acquire("demo@v1", "numoj-vibehub:demo")
+    active_runtime = next(iter(manager._load_state()["runtimes"].values()))
+    assert "idle_deadline" not in active_runtime
+    assert second.container_name == first.container_name
+    assert len(docker.run_commands) == 1
+
+    assert manager.release(second.token) is True
+    assert next(iter(
+        manager._load_state()["runtimes"].values()
+    ))["idle_deadline"] == 699.0
+    now[0] = 698.0
+    assert manager.reap_expired() == 0
+    assert docker.stopped == []
+
+    now[0] = 700.0
+    assert manager.reap_expired() >= 1
+    assert docker.stopped == [first.container_name]
+    assert manager._load_state()["runtimes"] == {}
 
 
 def test_active_runtime_limit_is_global_but_allows_existing_runtime_reuse(
@@ -1351,6 +1396,7 @@ def test_composition_root_configuration_exposes_limits(short_tmp):
             "VIBEHUB_RUNTIME_ROOT": str(short_tmp / "configured"),
             "VIBEHUB_ALLOWED_BASE_IMAGES": ["local/base:locked"],
             "VIBEHUB_LEASE_TTL_SECONDS": 120,
+            "VIBEHUB_IDLE_GRACE_SECONDS": 240,
             "VIBEHUB_REAPER_INTERVAL_SECONDS": 20,
             "VIBEHUB_REQUEST_TIMEOUT_SECONDS": 7,
             "VIBEHUB_REQUEST_MAX_BYTES": 1234,
@@ -1368,6 +1414,7 @@ def test_composition_root_configuration_exposes_limits(short_tmp):
         assert runtime.get_runtime_manager() is manager
         assert manager.allowed_base_images == ("local/base:locked",)
         assert manager.lease_ttl_seconds == 120
+        assert manager.idle_grace_seconds == 240
         assert manager.reaper_interval_seconds == 20
         assert manager.request_max_bytes == 1234
         assert manager.response_max_bytes == 5678
@@ -1411,7 +1458,17 @@ def test_active_runtime_limit_default_and_maximum(short_tmp):
     })
 
     assert defaults["max_active_runtimes"] == 8
+    assert defaults["idle_grace_seconds"] == 300
     assert maximum["max_active_runtimes"] == 64
+
+
+@pytest.mark.parametrize("value", (-1, 3600.001, float("inf"), float("nan")))
+def test_idle_grace_configuration_rejects_unsafe_values(short_tmp, value):
+    with pytest.raises(ValueError, match="VIBEHUB_IDLE_GRACE_SECONDS"):
+        runtime._manager_kwargs_from_config({
+            "VIBEHUB_RUNTIME_ROOT": str(short_tmp / "configured"),
+            "VIBEHUB_IDLE_GRACE_SECONDS": value,
+        })
 
 
 @pytest.mark.parametrize("value", (0, 1, "true", None))

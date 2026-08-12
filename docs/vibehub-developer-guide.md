@@ -168,7 +168,7 @@ python3 scripts/numoj_user.py vibehub request-featured <slug>
 - 普通作品运行上限为 4 GiB 内存、2 CPU、256 PID、20 GiB 镜像和 4 GiB 可写根层。
 - 精品作品运行上限为 8 GiB 内存、4 CPU、512 PID、40 GiB 镜像和 8 GiB 可写根层。
 - `/tmp` 和 `/run/vibehub` 是有界 tmpfs；`/data` 持久保存，但当前没有可移植的硬配额。
-- 首位玩家打开作品时容器按需启动；最后一个玩家离开后容器会被回收，只有 `/data` 保留。
+- 首位玩家打开作品时容器按需启动；最后一个玩家离开后进入 5 分钟空闲宽限，期间再次进入会复用容器并取消原回收计划；宽限到期仍无人使用才回收容器，只有 `/data` 长期保留。
 
 ## 提交前检查
 
