@@ -1266,7 +1266,12 @@ def test_proxy_overwrites_session_headers_and_strips_oj_credentials_and_cookies(
     )
     assert "x-secret" not in response_headers
     assert response_headers["location"] == first.proxy_base_path + "/next"
-    assert "sandbox" in response_headers["content-security-policy"]
+    proxy_csp = response_headers["content-security-policy"]
+    assert "sandbox" in proxy_csp
+    assert "allow-popups allow-popups-to-escape-sandbox" in proxy_csp
+    assert "navigate-to 'self' https:" in proxy_csp
+    assert "connect-src 'self'" in proxy_csp
+    assert "connect-src 'self' https:" not in proxy_csp
 
 
 def test_proxy_hot_path_trusts_relay_instead_of_running_docker_inspect(

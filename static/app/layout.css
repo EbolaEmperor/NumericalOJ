@@ -1160,7 +1160,8 @@
     transition: width 180ms ease, flex-basis 180ms ease;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-sidebar {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-sidebar,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-sidebar {
     width: var(--numoj-sidebar-collapsed-width);
     flex-basis: var(--numoj-sidebar-collapsed-width);
   }
@@ -1395,7 +1396,8 @@
     display: none;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-brand {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-brand,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-brand {
     justify-content: center;
     padding-inline: 12px;
   }
@@ -1404,32 +1406,42 @@
   .numoj-site-shell.is-sidebar-collapsed .numoj-nav-label,
   .numoj-site-shell.is-sidebar-collapsed .numoj-nav-count,
   .numoj-site-shell.is-sidebar-collapsed .numoj-nav-group h2,
-  .numoj-site-shell.is-sidebar-collapsed .numoj-user-summary {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-user-summary,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-brand-copy,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-nav-label,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-nav-count,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-nav-group h2,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-user-summary {
     display: none;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-nav-item {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-nav-item,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-nav-item {
     width: calc(100% - 26px);
     justify-content: center;
     margin-inline: 13px;
     padding-inline: 0;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-nav-dot {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-nav-dot,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-nav-dot {
     position: absolute;
     top: 5px;
     right: 5px;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-sidebar-footer {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-sidebar-footer,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-sidebar-footer {
     justify-content: center;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-collapse-expanded {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-collapse-expanded,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-collapse-expanded {
     display: none;
   }
 
-  .numoj-site-shell.is-sidebar-collapsed .numoj-collapse-collapsed {
+  .numoj-site-shell.is-sidebar-collapsed .numoj-collapse-collapsed,
+  html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-collapse-collapsed {
     display: inline-flex;
   }
 

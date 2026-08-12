@@ -50,6 +50,9 @@ CLASS_LOGO = (
 ).read_text(encoding="utf-8")
 LAYOUT_CSS = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
 LAYOUT_JS = (ROOT / "static" / "app" / "layout.js").read_text(encoding="utf-8")
+SIDEBAR_STATE_JS = (
+    ROOT / "static" / "app" / "sidebar-state.js"
+).read_text(encoding="utf-8")
 IDENTICON_JS = (
     ROOT / "static" / "app" / "identicon.js"
 ).read_text(encoding="utf-8")
@@ -92,9 +95,11 @@ def test_layout_loads_shared_static_assets_instead_of_inline_app_code():
         assert BASE_LAYOUT.count(asset) == 1
 
     assert "filename='app/layout.css'" in SITE_LAYOUT
+    assert "filename='app/sidebar-state.js'" in SITE_LAYOUT
     assert "filename='app/identicon.js'" in SITE_LAYOUT
     assert "filename='app/class-select.js'" in SITE_LAYOUT
     assert "filename='app/layout.js'" in SITE_LAYOUT
+    assert SITE_LAYOUT.index("app/sidebar-state.js") < SITE_LAYOUT.index("app/layout.css")
     assert SITE_LAYOUT.index("app/class-select.js") < SITE_LAYOUT.index("app/layout.js")
     assert SITE_LAYOUT.index("app/identicon.js") < SITE_LAYOUT.index("app/layout.js")
     for layout in (BASE_LAYOUT, SITE_LAYOUT, EMBEDDED_LAYOUT):
@@ -407,10 +412,20 @@ def test_account_modals_keep_the_approved_ui_v2_contract():
 
 def test_desktop_sidebar_width_and_collapsed_items_share_one_center_axis():
     assert "--numoj-sidebar-width: 186px;" in LAYOUT_CSS
-    collapsed_rule = LAYOUT_CSS.split(
-        ".numoj-site-shell.is-sidebar-collapsed .numoj-nav-item {",
-        1,
-    )[1].split("}", 1)[0]
+    collapsed_rule = _braced_block(
+        LAYOUT_CSS,
+        ".numoj-site-shell.is-sidebar-collapsed .numoj-nav-item",
+    )
     assert "width: calc(100% - 26px);" in collapsed_rule
     assert "margin-inline: 13px;" in collapsed_rule
     assert "justify-content: center;" in collapsed_rule
+
+
+def test_desktop_sidebar_persisted_state_is_applied_before_first_paint():
+    assert "numoj.desktopSidebarCollapsed" in SIDEBAR_STATE_JS
+    assert "numoj-sidebar-prefers-collapsed" in SIDEBAR_STATE_JS
+    assert "document.documentElement.classList.toggle(" in LAYOUT_JS
+    assert (
+        "html.numoj-sidebar-prefers-collapsed .numoj-site-shell .numoj-sidebar"
+        in LAYOUT_CSS
+    )
