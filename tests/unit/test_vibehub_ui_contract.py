@@ -62,6 +62,8 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert 'class="vibe-toolbar-link"' in gallery
     assert "fa-book-open" in gallery
     assert css.count("font-size: .66rem") >= 2
+    assert ".vibehub-page input { font-family: inherit; }" in css
+    assert ".vibehub-page input { font: inherit; }" not in css
     assert ".vibe-toolbar-link { border: 1px solid" in css
     assert "更新并提交审核" in javascript
     assert all(token in card for token in (
