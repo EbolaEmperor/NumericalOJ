@@ -1484,39 +1484,132 @@ body.arc-help-liquid-open .modal-backdrop.show {
 }
 
 @media (max-width: 1320px) {
+  .arc-hub {
+    padding-right: clamp(18px, 3vw, 40px);
+    padding-left: clamp(18px, 3vw, 40px);
+  }
+
+  .arc-catalog-deck {
+    grid-template-columns: 50px minmax(0, 1fr) 50px;
+    gap: clamp(8px, 1.2vw, 16px);
+  }
+
   .arc-catalog-page {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: clamp(10px, 1.5vw, 20px);
+  }
+
+  .arc-game-card {
+    padding-top: 26px;
+  }
+
+  .arc-card-number {
+    font-size: 0.66rem;
+  }
+
+  .arc-card-preview {
+    box-shadow: 5px 5px 0 var(--arc-ink);
+  }
+
+  .arc-game-card.arc-accent-0 .arc-card-preview,
+  .arc-game-card.arc-accent-1 .arc-card-preview,
+  .arc-game-card.arc-accent-2 .arc-card-preview,
+  .arc-game-card.arc-accent-3 .arc-card-preview {
+    border-top-width: 7px;
+  }
+
+  .arc-card-play {
+    right: 7px;
+    bottom: 7px;
+    width: 28px;
+    height: 28px;
+  }
+
+  .arc-card-copy {
+    margin-top: 12px;
+    gap: 3px 7px;
+  }
+
+  .arc-card-copy h2 {
+    font-size: clamp(0.98rem, 1.7vw, 1.5rem);
+  }
+
+  .arc-card-copy p,
+  .arc-card-copy span {
+    font-size: 0.64rem;
   }
 }
 
 @media (max-width: 991.98px) {
   .arc-hub {
-    padding: 70px 22px 36px;
+    padding: 52px 12px 30px;
   }
 
   .arc-catalog-deck {
-    grid-template-columns: 48px minmax(0, 1fr) 48px;
-    gap: 12px;
+    grid-template-columns: 38px minmax(0, 1fr) 38px;
+    gap: 6px;
   }
 
   .arc-catalog-page {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: clamp(6px, 1.2vw, 10px);
+  }
+
+  .arc-game-card {
+    padding-top: 28px;
+  }
+
+  .arc-card-number {
+    font-size: 0.7rem;
+  }
+
+  .arc-card-preview {
+    box-shadow: 6px 6px 0 var(--arc-ink);
+  }
+
+  .arc-game-card.arc-accent-0 .arc-card-preview,
+  .arc-game-card.arc-accent-1 .arc-card-preview,
+  .arc-game-card.arc-accent-2 .arc-card-preview,
+  .arc-game-card.arc-accent-3 .arc-card-preview {
+    border-top-width: 8px;
+  }
+
+  .arc-card-play {
+    right: 9px;
+    bottom: 9px;
+    width: 32px;
+    height: 32px;
+  }
+
+  .arc-card-copy {
+    margin-top: 15px;
+    gap: 4px 10px;
+  }
+
+  .arc-card-copy h2 {
+    font-size: clamp(1.1rem, 2.5vw, 1.55rem);
+  }
+
+  .arc-card-copy p,
+  .arc-card-copy span {
+    font-size: 0.68rem;
   }
 
   .arc-page-button {
-    top: calc(50vh - 27px);
-    width: 48px;
-    height: 48px;
+    top: calc(50vh - 22px);
+    width: 38px;
+    height: 38px;
+    box-shadow: 3px 3px 0 var(--arc-ink);
   }
 
   .arc-page-button > span {
-    width: 30px;
-    height: 30px;
+    width: 26px;
+    height: 26px;
+    font-size: 0.76rem;
   }
 
   .arc-page-button::before {
-    width: 36px;
-    height: 36px;
+    width: 31px;
+    height: 31px;
   }
 
   .arc-player {
@@ -1534,39 +1627,88 @@ body.arc-help-liquid-open .modal-backdrop.show {
 
 @media (max-width: 575.98px) {
   .arc-hub {
-    padding-right: 10px;
-    padding-left: 10px;
+    padding-right: 4px;
+    padding-left: 4px;
   }
 
   .arc-hub-hero,
   .arc-hub-footer {
-    margin-right: 12px;
-    margin-left: 12px;
+    margin-right: 4px;
+    margin-left: 4px;
   }
 
   .arc-catalog-deck {
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
-    gap: 5px;
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
+    gap: 4px;
   }
 
   .arc-catalog-page {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .arc-game-card {
-    display: grid;
-    padding-top: 26px;
-    grid-template-columns: minmax(106px, 42%) 1fr;
-    gap: 14px;
+    padding-top: 22px;
+  }
+
+  .arc-game-card:hover {
+    transform: translateY(-4px);
+  }
+
+  .arc-card-number {
+    font-size: 0.58rem;
+  }
+
+  .arc-card-preview {
+    border-width: 2px;
+    box-shadow: 4px 4px 0 var(--arc-ink);
+  }
+
+  .arc-game-card.arc-accent-0 .arc-card-preview,
+  .arc-game-card.arc-accent-1 .arc-card-preview,
+  .arc-game-card.arc-accent-2 .arc-card-preview,
+  .arc-game-card.arc-accent-3 .arc-card-preview {
+    border-top-width: 6px;
+  }
+
+  .arc-card-play {
+    right: 6px;
+    bottom: 6px;
+    width: 26px;
+    height: 26px;
+    font-size: 0.7rem;
   }
 
   .arc-card-copy {
-    align-content: center;
-    grid-template-columns: 1fr;
+    display: block;
+    margin-top: 10px;
+  }
+
+  .arc-card-copy h2,
+  .arc-card-copy p,
+  .arc-card-copy span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .arc-card-copy p {
+    margin-top: 2px;
     text-align: left;
+  }
+
+  .arc-card-copy span {
+    display: block;
+    margin-top: 2px;
+  }
+
+  .arc-card-copy h2 {
+    font-size: clamp(0.85rem, 3.5vw, 1.1rem);
+  }
+
+  .arc-card-copy p,
+  .arc-card-copy span {
+    font-size: 0.55rem;
   }
 
   .arc-hub-footer {
@@ -1640,22 +1782,22 @@ body.arc-help-liquid-open .modal-backdrop.show {
   }
 
   .arc-page-button {
-    top: calc(50vh - 23px);
-    width: 40px;
-    height: 40px;
-    margin-top: 120px;
+    top: calc(50vh - 20px);
+    width: 36px;
+    height: 36px;
+    margin-top: 110px;
     box-shadow: 3px 3px 0 var(--arc-ink);
   }
 
   .arc-page-button > span {
-    width: 26px;
-    height: 26px;
-    font-size: 0.76rem;
+    width: 24px;
+    height: 24px;
+    font-size: 0.7rem;
   }
 
   .arc-page-button::before {
-    width: 31px;
-    height: 31px;
+    width: 29px;
+    height: 29px;
   }
 
   .arc-stage-header {
