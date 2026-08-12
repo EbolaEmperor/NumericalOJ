@@ -139,7 +139,7 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `VIBEHUB_ALLOWED_BASE_IMAGES` | string[] | `["numericaloj-vibehub-runtime:1"]` | 唯一允许出现在用户 Dockerfile 外部 `FROM` 中、且必须已在本机预置的镜像。 |
 | `VIBEHUB_BUILD_BUILDER` | string/空 | 开发为空；生产 `numoj-vibehub` | 正式部署自动创建缺失的 VibeHub 专属 Buildx builder；已有实例只校验、不替换。 |
 | `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | 开发 `false`；生产 `true` | 正式部署始终拒绝复用普通 builder。 |
-| `VIBEHUB_BUILD_CACHE_MAX_BYTES` | int | `4294967296` | 专属 builder 的最大保留缓存，严格范围 256 MiB–100 GiB；构建后仅对该 builder 执行按量 prune。 |
+| `VIBEHUB_BUILD_CACHE_MAX_BYTES` | int | `4294967296` | 显式运维清理专属 builder 时使用的保留缓存阈值，严格范围 256 MiB–100 GiB；玩家访问和离开不会触发 prune。 |
 | `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
 | `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
 | `VIBEHUB_REAPER_INTERVAL_SECONDS` | float | `15` | 后台过期回收间隔，必须小于 lease TTL。 |
@@ -170,9 +170,10 @@ driver 才会落实；Docker Desktop/containerd 等环境可能只接受参数�
 精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
 跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
 TTL 回收旧容器。每个作品的 latest、public、review 通道分别使用稳定的受管镜像 tag，内容
-变化由 source digest 触发重建，旧运行容器继续绑定原 image ID；最后一个玩家离开并完成
-容器回收后，运行器会在同 tag 锁下确认没有其它 starting/ready 实例引用相同 image ID，随后
-精确删除该稳定 tag 并只 prune 带 VibeHub label 的 dangling image。运行容器使用 Docker `none`
+变化由 source digest 触发重建，旧运行容器继续绑定原 image ID。最后一个玩家离开后只回收
+运行容器，稳定镜像 tag、旧受管镜像和 BuildKit 构建缓存均长期保留；再次访问相同内容会直接
+复用镜像，不重新构建。无人游玩时没有作品容器占用 CPU 或内存，磁盘缓存与运行资源的生命周期
+彼此独立。运行容器使用 Docker `none`
 日志驱动，不会把不可信作品的 stdout/stderr 持久写入宿主日志；平台只记录受控的生命周期
 与代理元数据。运行容器总上限、构建槽、代理槽和健康探测槽都通过 runtime root 中的 `flock` 与
 原子 state 跨 worker 共享，不会因增加 Web worker 而成倍放大宿主资源占用。
@@ -194,8 +195,10 @@ staging。安装快照后、DB commit 前崩溃所留的未提交 `vN`、clone �
 目录消耗宿主文件系统的 bind 窗口；持久数据只进入平台命名并核验 label 的 local volume。
 生产构建只接受全部 node 都为 running、
 `docker-container` driver 且 builder 容器 `HostConfig.NetworkMode=none` 的专属 builder；已核验的
-daemon base image 通过本地受管 OCI layout named context 注入，不能访问 registry。构建成功后只
-清理受管 dangling image 和该专属 builder 的缓存，绝不执行全局 `docker builder prune`。
+daemon base image 通过本地受管 OCI layout named context 注入，不能访问 registry。玩家访问、
+作品构建和容器回收都不会自动清理受管镜像或专属 builder 缓存；如未来需要释放磁盘，只能由
+显式运维操作按 VibeHub label 与专属 builder 范围清理，绝不执行全局
+`docker builder prune`。
 生产 `deploy.sh` 会在停服前只读核验 builder 的 driver、全部节点状态及其容器
 `NetworkMode=none`，再把候选 daemon image 通过 `docker image save` 流式转换为标准 OCI
 layout；转换器不解包路径、不导入模块、不运行镜像内容，并复核 config ID、每层 diff-id、全部
