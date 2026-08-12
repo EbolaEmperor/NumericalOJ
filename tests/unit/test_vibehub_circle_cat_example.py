@@ -74,6 +74,18 @@ def test_historical_layout_rules_and_local_assets_are_unchanged(circle_app):
     assert circle_app.Handler.extensions_map[".woff2"] == "font/woff2"
 
 
+def test_served_index_embeds_styles_and_solid_icon_font(circle_app):
+    document = circle_app._embedded_index_document().decode("utf-8")
+
+    assert '<link rel="stylesheet"' not in document
+    assert 'data-vibehub-asset="bootstrap"' in document
+    assert 'data-vibehub-asset="fontawesome"' in document
+    assert ".btn-dark{" in document
+    assert '.fa-cat:before{content:"\\f6be"' in document
+    assert "data:font/woff2;base64," in document
+    assert "../webfonts/" not in document
+
+
 def test_local_board_and_custom_victory_dialog_contract():
     index = (PACKAGE / "static" / "index.html").read_text(encoding="utf-8")
     setup = index[

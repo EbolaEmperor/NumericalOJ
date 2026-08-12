@@ -253,6 +253,34 @@ def test_catalog_and_player_keep_original_dom_and_only_use_relative_runtime_urls
     assert "url_for(" not in index + player
 
 
+def test_rendered_pages_inline_frontend_assets_for_the_opaque_sandbox(
+    monkeypatch,
+):
+    games = tuple(_game_spec(f"g{index:03d}") for index in range(25))
+    monkeypatch.setattr(arc_app, "load_catalog", lambda: games)
+    monkeypatch.setattr(arc_app, "_runtime_game", lambda game: game)
+
+    index = arc_app.render_index()
+    player = arc_app.render_game(games[0])
+    not_found = arc_app.render_not_found()
+
+    for page in (index, player, not_found):
+        assert '<link rel="stylesheet"' not in page
+        assert "<script src=" not in page
+        assert 'data-vibehub-inline-asset="vendor/bootstrap/bootstrap.min.css"' in page
+        assert 'data-vibehub-inline-asset="vendor/fontawesome/css/all.min.css"' in page
+        assert "data:font/woff2;base64," in page
+        assert "../webfonts/" not in page
+
+    assert 'data-vibehub-inline-asset="arc-agi-3-catalog.js"' in index
+    assert 'data-vibehub-inline-asset="vendor/bootstrap/bootstrap.bundle.min.js"' in index
+    assert 'data-vibehub-inline-asset="arc-agi-3.js"' in player
+    assert "data:image/svg+xml;base64," in index
+    assert "model-family-logos/openai.svg" not in index
+    assert 'src="./preview/g000.png"' in index
+    assert 'data-start-url="../api/games/g000/start"' in player
+
+
 def test_reset_preview_is_rendered_from_the_real_game_frame_inside_the_container(
     monkeypatch,
 ):
