@@ -255,6 +255,7 @@ def _catalog_pages(games):
             slug = game["slug"]
             title = html.escape(game["title"])
             input_label = html.escape(game["input_label"])
+            # Safari/WebKit 在沙箱 iframe 内可能永远不会触发懒加载图片。
             lines.extend([
                 "        <a",
                 f'          class="arc-game-card arc-accent-{(game_number - 1) % 4}"',
@@ -262,7 +263,7 @@ def _catalog_pages(games):
                 "        >",
                 f'          <span class="arc-card-number">{game_number:02d}</span>',
                 '          <div class="arc-card-preview">',
-                f'            <img src="./preview/{slug}.png" alt="{title} 初始画面预览" loading="lazy">',
+                f'            <img src="./preview/{slug}.png" alt="{title} 初始画面预览">',
                 '            <span class="arc-card-play" aria-hidden="true">',
                 '              <i class="fas fa-arrow-right"></i>',
                 "            </span>",

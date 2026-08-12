@@ -24,7 +24,7 @@ HISTORICAL_DOM_HASHES = {
     "not-found.html": "54b47ce22dba3d96fcd0057201db58ceb50250b3a55c6feb47fa90e3007d9417",
 }
 HISTORICAL_CATALOG_DOM_HASH = (
-    "d725458590b59595363187a5227c7747a71ccc8609b63c8caa39e0cb173040b6"
+    "7ec28fe5927ed0ff4605d48f2923a12e147b342c2ab6c90ef7a1e800945ae538"
 )
 SPEC = importlib.util.spec_from_file_location("arc_vibehub_example", PACKAGE / "app.py")
 arc_app = importlib.util.module_from_spec(SPEC)
@@ -275,6 +275,7 @@ def test_rendered_pages_inline_frontend_assets_for_the_opaque_sandbox(
     assert "data:image/svg+xml;base64," in index
     assert "model-family-logos/openai.svg" not in index
     assert 'src="./preview/g000.png"' in index
+    assert 'loading="lazy"' not in index
     assert 'data-start-url="../api/games/g000/start"' in player
 
 
