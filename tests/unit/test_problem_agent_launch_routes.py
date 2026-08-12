@@ -1511,3 +1511,105 @@ def test_agent_run_state_prefers_persisted_completion_over_stale_cache_and_celer
 
     assert state["status"] == "Completed"
     assert state["message"] == "测试数据已发布"
+
+
+def test_agent_run_state_reuses_worker_projected_redis_trace(monkeypatch):
+    trace = {
+        "status": "running",
+        "trace_messages": [{"kind": "thinking", "text": "正在分析"}],
+        "trace_files": [],
+        "token_usage": None,
+    }
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_snapshot",
+        lambda _task_id: {
+            "task_id": "task-cached-trace",
+            "status": "Running",
+            "execution_trace": trace,
+        },
+    )
+    monkeypatch.setattr(routes, "get_agent_run_by_task_id", lambda _task_id: None)
+    monkeypatch.setattr(routes, "_agent_solve_problem_task", None)
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda _state: pytest.fail("Redis 已有轨迹时不应再次读取磁盘"),
+    )
+
+    state = routes._get_agent_run_state("task-cached-trace")
+
+    assert state["execution_trace"]["trace_messages"][0]["text"] == "正在分析"
+
+
+def test_agent_run_stream_skips_duplicate_snapshot_before_markdown(monkeypatch):
+    running = {
+        "task_id": "task-stream-dedup",
+        "status": "Running",
+        "execution_trace": {
+            "status": "running",
+            "trace_id": "trace-1",
+            "trace_messages": [{"kind": "thinking", "text": "正在分析"}],
+            "trace_files": [],
+            "token_usage": None,
+        },
+    }
+    completed = {
+        **running,
+        "status": "Completed",
+        "execution_trace": {
+            **running["execution_trace"],
+            "status": "passed",
+            "trace_messages": [{"kind": "assistant", "text": "已经完成"}],
+        },
+    }
+
+    class PubSub:
+        def __init__(self):
+            self.snapshots = iter((running, completed))
+
+        def get_message(self, **_kwargs):
+            return {
+                "type": "message",
+                "data": json.dumps(next(self.snapshots)),
+            }
+
+        def close(self):
+            pass
+
+    rendered = []
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _task_id: running)
+    monkeypatch.setattr(
+        routes,
+        "_subscribe_agent_run_events",
+        lambda _task_id: PubSub(),
+    )
+    hydrated = []
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda state: hydrated.append(state) or state,
+    )
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: rendered.append(text) or f"<p>{text}</p>",
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_run_stream/task-stream-dedup"
+    ):
+        body = routes.admin_agent_run_stream(
+            "task-stream-dedup"
+        ).get_data(as_text=True)
+
+    assert body.count("event: status") == 2
+    assert "event: done" in body
+    assert [state["status"] for state in hydrated] == ["Completed"]
+    assert rendered == ["已经完成", "已经完成"]

@@ -461,19 +461,34 @@ def _decorate_agent_state_markdown(raw_state):
     return state
 
 
-def _decorate_agent_turns(turns):
+def _decorate_agent_turns(
+    turns,
+    *,
+    current_task_id='',
+    current_state=None,
+):
     decorated = []
     previous_full_trace_by_harness = {}
+    current_task_id = str(current_task_id or '').strip()
     for raw_turn in turns or []:
         turn = dict(raw_turn)
-        hydrated = hydrate_agent_run_snapshot({
-            'task_id': turn.get('task_id'),
-            'harness': turn.get('harness'),
-            'endpoint_id': turn.get('endpoint_id'),
-            'endpoint_model': turn.get('endpoint_model'),
-            'status': turn.get('status'),
-            'message': turn.get('conclusion') or '',
-        })
+        reuse_current_state = bool(
+            isinstance(current_state, dict)
+            and current_task_id
+            and str(turn.get('task_id') or '').strip() == current_task_id
+        )
+        hydrated = (
+            current_state
+            if reuse_current_state
+            else hydrate_agent_run_snapshot({
+                'task_id': turn.get('task_id'),
+                'harness': turn.get('harness'),
+                'endpoint_id': turn.get('endpoint_id'),
+                'endpoint_model': turn.get('endpoint_model'),
+                'status': turn.get('status'),
+                'message': turn.get('conclusion') or '',
+            })
+        )
         harness = _agent_trace_harness(hydrated, turn.get('harness'))
         full_messages = list(_agent_trace_messages(
             hydrated.get('execution_trace') if isinstance(hydrated, dict) else None
@@ -490,7 +505,11 @@ def _decorate_agent_turns(turns):
             and full_messages
         ):
             previous_full_trace_by_harness[harness] = full_messages
-        snapshot = _decorate_agent_state_markdown(hydrated)
+        snapshot = (
+            hydrated
+            if reuse_current_state
+            else _decorate_agent_state_markdown(hydrated)
+        )
         trace = snapshot.get('execution_trace') or {}
         conclusion = str(turn.get('conclusion') or '').strip()
         if agent_status_is_terminal(turn.get('status')):
@@ -1049,6 +1068,34 @@ def _agent_state_for_response(task_id, raw_state, agent_session=None):
     )
 
 
+def _hydrate_agent_state_trace_if_needed(state):
+    """Redis 快照已含 worker 投影的轨迹时避免再次读取整个 journal。"""
+
+    if not isinstance(state, dict):
+        return hydrate_agent_run_snapshot(state)
+    trace = state.get('execution_trace')
+    expected_status = {
+        'running': 'running',
+        'pending': 'pending',
+        'completed': 'passed',
+        'failed': 'error',
+        'canceled': 'error',
+        'cancelled': 'error',
+        'cleanupfailed': 'error',
+        'cleanup_failed': 'error',
+    }.get(str(state.get('status') or '').strip().lower(), 'pending')
+    if (
+        expected_status in {'running', 'pending'}
+        and isinstance(trace, dict)
+        and trace.get('status') == expected_status
+    ):
+        snapshot = dict(state)
+        snapshot.pop('events', None)
+        snapshot.pop('token_pricing', None)
+        return snapshot
+    return hydrate_agent_run_snapshot(state)
+
+
 def _get_agent_run_state(task_id):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
@@ -1066,7 +1113,7 @@ def _get_agent_run_state(task_id):
                 state = {**state, **persisted}
         return _agent_state_for_response(
             task_id,
-            hydrate_agent_run_snapshot(
+            _hydrate_agent_state_trace_if_needed(
                 _overlay_agent_celery_terminal(task_id, state),
             )
         )
@@ -1668,6 +1715,33 @@ def admin_agent_run_stream(task_id):
             ),
         )
 
+    def _source_snapshot_marker(snapshot):
+        """在 Markdown 渲染前识别 worker 重复发布的同一份轨迹。"""
+
+        trace = snapshot.get("execution_trace") or {}
+        messages = trace.get("trace_messages") or []
+        files = trace.get("trace_files") or []
+        usage = trace.get("token_usage") or {}
+        last_message = messages[-1] if messages else {}
+        return (
+            snapshot.get("status"),
+            snapshot.get("message"),
+            snapshot.get("latest_submission_id"),
+            snapshot.get("updated_at"),
+            trace.get("trace_id"),
+            len(messages),
+            _agent_trace_message_signature(last_message),
+            usage.get("request_count"),
+            usage.get("input_total_tokens"),
+            usage.get("input_cached_tokens"),
+            usage.get("output_tokens"),
+            usage.get("cost_rmb"),
+            tuple(
+                (item.get("path"), item.get("size"))
+                for item in files if isinstance(item, dict)
+            ),
+        )
+
     @stream_with_context
     def generate():
         historical_usages = ()
@@ -1772,6 +1846,7 @@ def admin_agent_run_stream(task_id):
                 yield _encode_sse("done", first_payload)
                 return
             last_marker = _snapshot_marker(first_payload)
+            last_source_marker = _source_snapshot_marker(first_payload)
 
             if pubsub is None:
                 while True:
@@ -1814,13 +1889,17 @@ def admin_agent_run_stream(task_id):
                 if not isinstance(snapshot, dict):
                     continue
 
+                source_marker = _source_snapshot_marker(snapshot)
+                if source_marker == last_source_marker:
+                    continue
                 snapshot = _agent_state_for_response(
                     task_id,
-                    hydrate_agent_run_snapshot(snapshot)
+                    _hydrate_agent_state_trace_if_needed(snapshot)
                 )
                 snapshot = with_session_projection(snapshot)
                 yield _encode_sse("status", snapshot)
                 last_marker = _snapshot_marker(snapshot)
+                last_source_marker = source_marker
                 if _is_agent_state_finished(snapshot):
                     yield _encode_sse("done", snapshot)
                     return
@@ -2756,7 +2835,39 @@ def admin_agent_task_detail(session_id):
         )
 
     raw_turns = get_agent_session_turns(session_id)
-    turns = _decorate_agent_turns(raw_turns)
+    current_task_id = str(agent_session.get('current_task_id') or session_id)
+    current_state = _get_agent_run_state(current_task_id)
+    if current_state:
+        # _get_agent_run_state 已完成轨迹 hydrate 和 Markdown 清洗；这里
+        # 只叠加已读取的会话清理状态，避免将整条轨迹再渲染一次。
+        overlayed_state = _overlay_agent_session_cleanup_failure(
+            current_task_id,
+            current_state,
+            agent_session=agent_session,
+        )
+        current_state = (
+            _decorate_agent_state_markdown(overlayed_state)
+            if overlayed_state.get('status') != current_state.get('status')
+            else overlayed_state
+        )
+    else:
+        current_state = _agent_state_for_response(
+            current_task_id,
+            {
+                'task_id': current_task_id,
+                'session_id': session_id,
+                'status': agent_session.get('status') or 'Pending',
+                'message': agent_session.get('message') or '任务排队中',
+                'native_session_id': agent_session.get('native_session_id') or '',
+                'execution_trace': {},
+            },
+            agent_session=agent_session,
+        )
+    turns = _decorate_agent_turns(
+        raw_turns,
+        current_task_id=current_task_id,
+        current_state=current_state,
+    )
     try:
         steer_records = list_agent_session_messages(
             session_id,
@@ -2780,22 +2891,6 @@ def admin_agent_task_detail(session_id):
             str(turn.get('task_id') or ''),
             [],
         )
-    current_task_id = str(agent_session.get('current_task_id') or session_id)
-    current_state = _get_agent_run_state(current_task_id) or (
-        _agent_state_for_response(current_task_id, {
-            'task_id': current_task_id,
-            'session_id': session_id,
-            'status': agent_session.get('status') or 'Pending',
-            'message': agent_session.get('message') or '任务排队中',
-            'native_session_id': agent_session.get('native_session_id') or '',
-            'execution_trace': {},
-        })
-    )
-    current_state = _agent_state_for_response(
-        current_task_id,
-        current_state,
-        agent_session=agent_session,
-    )
     # 持久 run 快照带有 endpoint_id，能为每个历史轮次按规范价格重建成本；
     # 不能直接拿用于展示的 turn 简版状态汇总，否则 priced 会话会被误判未定价。
     current_state = dict(current_state)
@@ -2825,14 +2920,9 @@ def admin_agent_task_detail(session_id):
             'steer_unavailable_reason': '消息队列状态暂不可用',
             'session_token_usage': current_state.get('session_token_usage'),
         }
-    try:
-        workspace_tree = (
-            []
-            if agent_session.get('is_legacy')
-            else build_agent_workspace_tree(session_id)
-        )
-    except (ValueError, OSError):
-        workspace_tree = []
+    # Workspace 目录可能在 Agent 运行中持续变化；首屏不同步
+    # 遍历它，由前端在页面框架返回后通过 workspace 路由异步加载。
+    workspace_tree = []
     owns_session = (
         str(agent_session.get('requested_by') or '')
         == str(user.get('username') or '')
@@ -2858,12 +2948,25 @@ def admin_agent_task_detail(session_id):
     can_retry_now = bool(
         can_retry and agent_status_is_terminal(agent_session.get('status'))
     )
+    page_current_state = current_state
+    if agent_status_is_terminal(current_state.get('status')):
+        # 已结束轮次的轨迹和 conclude 已经渲染在 turns 中，首屏 JSON 只保留
+        # 状态、恢复点与会话用量，避免把整份轨迹再传一遍。
+        page_current_state = dict(current_state)
+        for key in (
+            'execution_trace',
+            'conclusion',
+            'conclusion_html',
+            'final_response',
+            'final_response_html',
+        ):
+            page_current_state.pop(key, None)
     response = current_app.make_response(render_template(
         'admin/agent_task_detail.html',
         user=user,
         agent_session=agent_session,
         turns=turns,
-        current_state=current_state,
+        current_state=page_current_state,
         agent_message_state=agent_message_state,
         agent_message_urls={
             'state': f'/admin/agent_tasks/{quote(session_id, safe="")}/state',

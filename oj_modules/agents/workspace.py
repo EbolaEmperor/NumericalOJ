@@ -758,6 +758,17 @@ def get_agent_workspace_usage(session_id) -> AgentWorkspaceUsage:
     return check_agent_workspace_quota(session_id)
 
 
+def get_existing_agent_workspace_path(session_id) -> Path:
+    """安全验证并返回已有 workspace 路径，不扫描目录配额。"""
+
+    with _open_existing_session_directories(session_id) as (
+        safe_session_id,
+        _session_fd,
+        _workspace_fd,
+    ):
+        return _workspace_root() / "sessions" / safe_session_id / "workspace"
+
+
 def ensure_agent_workspace(session_id) -> Path:
     """创建并验证 ``AGENT_WORKSPACE_ROOT/sessions/<id>/workspace``。"""
 
@@ -1932,6 +1943,7 @@ __all__ = [
     "merge_agent_temporary_redaction_candidates",
     "check_agent_workspace_quota",
     "get_agent_workspace_usage",
+    "get_existing_agent_workspace_path",
     "write_agent_workspace_file",
     "save_agent_attachments",
     "remove_agent_attachments",

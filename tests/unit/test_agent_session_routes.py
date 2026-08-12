@@ -1246,7 +1246,7 @@ def test_specialized_testdata_launch_creates_a_resumable_user_session(
     }
 
 
-def test_detail_get_renders_new_conversation_page_with_workspace(monkeypatch):
+def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     _patch_admin(monkeypatch)
     agent_session = _session()
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: agent_session)
@@ -1255,16 +1255,29 @@ def test_detail_get_renders_new_conversation_page_with_workspace(monkeypatch):
         "get_agent_session_turns",
         lambda _sid: [{"task_id": "turn-1", "status": "Completed"}],
     )
-    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda turns: turns)
+    current_state = {"task_id": "turn-1", "status": "Completed"}
+    decorate_calls = []
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_turns",
+        lambda turns, **kwargs: decorate_calls.append((turns, kwargs)) or turns,
+    )
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
-        lambda _task_id: {"task_id": "turn-1", "status": "Completed"},
+        lambda _task_id: current_state,
+    )
+    monkeypatch.setattr(
+        routes,
+        "_agent_state_for_response",
+        lambda *_args, **_kwargs: pytest.fail(
+            "当前轮状态已预装饰，详情页不应再渲染"
+        ),
     )
     monkeypatch.setattr(
         routes,
         "build_agent_workspace_tree",
-        lambda _sid: [{"name": "answer.py", "type": "file"}],
+        lambda _sid: pytest.fail("Agent 详情首屏不应同步扫描 workspace"),
     )
     rendered = []
     monkeypatch.setattr(
@@ -1296,9 +1309,12 @@ def test_detail_get_renders_new_conversation_page_with_workspace(monkeypatch):
     assert rendered[0][1]["can_resume"] is True
     assert rendered[0][1]["can_retry"] is True
     assert rendered[0][1]["can_retry_now"] is True
-    assert rendered[0][1]["workspace_tree"] == [
-        {"name": "answer.py", "type": "file"},
-    ]
+    assert rendered[0][1]["workspace_tree"] == []
+    assert len(decorate_calls) == 1
+    assert decorate_calls[0][1] == {
+        "current_task_id": "turn-1",
+        "current_state": current_state,
+    }
 
 
 def test_detail_get_allows_retrying_specialized_generic_followup(monkeypatch):
@@ -1317,7 +1333,11 @@ def test_detail_get_allows_retrying_specialized_generic_followup(monkeypatch):
             "base_native_session_id": "native-after-solve",
         }],
     )
-    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda turns: turns)
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_turns",
+        lambda turns, **_kwargs: turns,
+    )
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
@@ -1379,7 +1399,11 @@ def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_co
     }
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: agent_session)
     monkeypatch.setattr(routes, "get_agent_session_turns", lambda _sid: turns)
-    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda values: values)
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_turns",
+        lambda values, **_kwargs: values,
+    )
     monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: current_state)
     monkeypatch.setattr(
         routes,
@@ -1539,6 +1563,48 @@ def test_ordered_pi_turns_render_only_each_resume_trace_delta_and_keep_nonempty_
     }
 
 
+def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
+    current_state = {
+        "task_id": "turn-current",
+        "harness": "codex",
+        "status": "Completed",
+        "execution_trace": {"trace_messages": [{
+            "kind": "assistant",
+            "text": "已完成",
+            "html": "<p>已完成</p>",
+        }]},
+    }
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda _state: pytest.fail("当前轮不应重复 hydrate"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_state_markdown",
+        lambda _state: pytest.fail("当前轮不应重复渲染轨迹 Markdown"),
+    )
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: f"<p>{text or ''}</p>",
+    )
+
+    turn = routes._decorate_agent_turns(
+        [{
+            "task_id": "turn-current",
+            "harness": "codex",
+            "status": "Completed",
+            "user_message": "继续",
+        }],
+        current_task_id="turn-current",
+        current_state=current_state,
+    )[0]
+
+    assert turn["execution_trace"] == current_state["execution_trace"]
+    assert turn["conclusion"] == "已完成"
+
+
 @pytest.mark.parametrize("harness", ["codex", "opencode"])
 def test_incremental_harness_trace_is_not_resume_filtered(harness):
     previous = [{"kind": "assistant", "text": "first"}]
@@ -1642,7 +1708,11 @@ def test_detail_get_marks_another_admin_session_read_only(monkeypatch):
     agent_session["requested_by"] = "another-admin"
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: agent_session)
     monkeypatch.setattr(routes, "get_agent_session_turns", lambda _sid: [])
-    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda turns: turns)
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_turns",
+        lambda turns, **_kwargs: turns,
+    )
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
@@ -1672,7 +1742,11 @@ def test_detail_refresh_keeps_cleanup_failed_session_blocked_over_sticky_cancel(
     agent_session["message"] = "容器清理状态未知"
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: agent_session)
     monkeypatch.setattr(routes, "get_agent_session_turns", lambda _sid: [])
-    monkeypatch.setattr(routes, "_decorate_agent_turns", lambda turns: turns)
+    monkeypatch.setattr(
+        routes,
+        "_decorate_agent_turns",
+        lambda turns, **_kwargs: turns,
+    )
     monkeypatch.setattr(
         routes,
         "_get_agent_run_state",
