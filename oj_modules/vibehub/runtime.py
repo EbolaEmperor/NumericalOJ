@@ -2703,15 +2703,16 @@ class VibeHubRuntimeManager:
             raise VibeHubImageError("只允许运行经过受管构建器标记的 VibeHub 镜像")
         return image
 
-    def build_latest_image(
+    def build_channel_image(
         self,
         project_key: str,
         build_context: Path | str,
         *,
+        channel: str,
         package_digest: str,
         featured=False,
     ) -> ImageBuildResult:
-        image_ref = image_reference_for(project_key, channel="latest")
+        image_ref = image_reference_for(project_key, channel=channel)
         return build_image(
             build_context,
             image_ref,
@@ -2720,6 +2721,22 @@ class VibeHubRuntimeManager:
             allowed_base_images=self.allowed_base_images,
             docker_client=self.docker,
             timeout_seconds=self.build_timeout_seconds,
+        )
+
+    def build_latest_image(
+        self,
+        project_key: str,
+        build_context: Path | str,
+        *,
+        package_digest: str,
+        featured=False,
+    ) -> ImageBuildResult:
+        return self.build_channel_image(
+            project_key,
+            build_context,
+            channel="latest",
+            package_digest=package_digest,
+            featured=featured,
         )
 
     def capture_image_tag(self, project_key: str, *, channel: str) -> str | None:
