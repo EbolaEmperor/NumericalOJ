@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""首次部署时把示例种入 admin 的普通 VibeHub 作品。"""
+"""部署时把内置示例幂等同步为 admin 的普通 VibeHub 作品。"""
 
 from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import hashlib
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -27,6 +29,8 @@ from oj_modules.vibehub import services
 
 EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3")
 EXPECTED_ARC_GAME_COUNT = 25
+DETERMINISTIC_ZIP_MTIME = "1980-01-01T00:00:00Z"
+DETERMINISTIC_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 class ExampleSeedError(RuntimeError):
@@ -43,8 +47,11 @@ def _load_state() -> tuple[dict, dict[str, dict]]:
             )
             admin = cursor.fetchone()
             cursor.execute(
-                """SELECT slug, owner_id, public_version_id
-                FROM vibehub_projects WHERE slug IN (%s, %s)""",
+                """SELECT p.slug, p.owner_id, p.public_version_id,
+                       v.package_sha256 AS public_package_sha256
+                FROM vibehub_projects AS p
+                LEFT JOIN vibehub_versions AS v ON v.id = p.public_version_id
+                WHERE p.slug IN (%s, %s)""",
                 EXAMPLE_SLUGS,
             )
             projects = {row["slug"]: row for row in (cursor.fetchall() or [])}
@@ -69,19 +76,50 @@ def _append_arc_data(package, source: Path) -> None:
     with zipfile.ZipFile(package, "a", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(source.rglob("*")):
             if path.is_file():
-                archive.write(path, Path("offline_data") / path.relative_to(source))
+                archive_path = (Path("offline_data") / path.relative_to(source)).as_posix()
+                info = zipfile.ZipInfo(archive_path, DETERMINISTIC_ZIP_DATE_TIME)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = (stat.S_IFREG | 0o644) << 16
+                with path.open("rb") as source_file, archive.open(info, "w") as target:
+                    shutil.copyfileobj(source_file, target)
 
 
 def _write_package(package, repository_root: Path, slug: str, arc_set: Path) -> None:
     source = f"HEAD:vibehub_examples/{slug}"
     subprocess.run(
-        ["git", "-C", str(repository_root), "archive", "--format=zip", source],
+        [
+            "git",
+            "-C",
+            str(repository_root),
+            "archive",
+            "--format=zip",
+            f"--mtime={DETERMINISTIC_ZIP_MTIME}",
+            source,
+        ],
         check=True,
+        env={**os.environ, "TZ": "UTC"},
         stdout=package,
     )
     if slug == "arc-agi-3":
         _append_arc_data(package, arc_set)
     package.seek(0)
+
+
+def _package_sha256(package) -> str:
+    digest = hashlib.sha256()
+    package.seek(0)
+    while chunk := package.read(1024 * 1024):
+        digest.update(chunk)
+    package.seek(0)
+    return digest.hexdigest()
+
+
+def _public_package_sha256(existing: dict, slug: str) -> str:
+    value = str(existing.get("public_package_sha256") or "").strip().lower()
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise ExampleSeedError(f"slug {slug} 的公开版本缺少有效内容哈希")
+    return value
 
 
 def _remove_legacy_storage(upload_root: Path, slug: str) -> None:
@@ -109,20 +147,41 @@ def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> li
             raise ExampleSeedError(f"slug {slug} 不属于 admin")
         if not existing.get("public_version_id"):
             raise ExampleSeedError(f"slug {slug} 已存在但尚未完成首次发布")
+        _public_package_sha256(existing, slug)
 
     results = []
     with ExitStack() as stack:
         packages = {}
         for slug in EXAMPLE_SLUGS:
-            if slug not in projects:
-                package = stack.enter_context(tempfile.TemporaryFile())
-                _write_package(package, repository_root, slug, arc_set)
-                packages[slug] = package
+            package = stack.enter_context(tempfile.TemporaryFile())
+            _write_package(package, repository_root, slug, arc_set)
+            packages[slug] = package
 
         for slug in EXAMPLE_SLUGS:
             _remove_legacy_storage(upload_root, slug)
             if slug in projects:
-                status = "unchanged"
+                package = packages[slug]
+                if _package_sha256(package) == _public_package_sha256(
+                    projects[slug], slug,
+                ):
+                    status = "unchanged"
+                else:
+                    updated = services.upload_new_version(
+                        admin,
+                        slug,
+                        package,
+                        {},
+                        upload_root=upload_root,
+                        submit_for_review=True,
+                    )
+                    services.review_submission(
+                        admin,
+                        slug,
+                        "approve",
+                        expected_version=updated["latest_version"],
+                        upload_root=upload_root,
+                    )
+                    status = "updated"
             else:
                 created = services.create_project(
                     admin,
@@ -146,7 +205,7 @@ def seed_examples(repository_root: Path, upload_root: Path, arc_set: Path) -> li
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="种入 admin 的 VibeHub 示例作品。")
+    parser = argparse.ArgumentParser(description="同步 admin 的 VibeHub 示例作品。")
     parser.add_argument("--repository-root", type=Path, default=ROOT)
     parser.add_argument("--upload-root", type=Path, default=ROOT / "uploads/vibehub")
     parser.add_argument("--arc-set", type=Path, required=True)
@@ -168,7 +227,7 @@ def main(argv=None) -> int:
         OSError,
         subprocess.SubprocessError,
     ) as exc:
-        print(f"VibeHub 示例种入失败：{exc}", file=sys.stderr)
+        print(f"VibeHub 示例同步失败：{exc}", file=sys.stderr)
         return 1
     return 0
 

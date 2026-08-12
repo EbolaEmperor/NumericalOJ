@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+from functools import lru_cache
 from http.server import SimpleHTTPRequestHandler
 import json
 import os
 from pathlib import Path
+import re
 import socketserver
 import sqlite3
 import unicodedata
@@ -23,6 +26,13 @@ MAX_JSON_BYTES = 16 * 1024
 MAX_TURN_COUNT = 121
 DISPLAY_NAME_MAX_LENGTH = 24
 
+_BOOTSTRAP_LINK = (
+    '  <link rel="stylesheet" href="vendor/bootstrap/bootstrap.min.css">'
+)
+_FONTAWESOME_LINK = (
+    '  <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">'
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS circle_cat_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +43,49 @@ CREATE TABLE IF NOT EXISTS circle_cat_records (
 CREATE INDEX IF NOT EXISTS idx_circle_cat_user_turn
     ON circle_cat_records (username, turn_count);
 """
+
+
+@lru_cache(maxsize=1)
+def _embedded_index_document():
+    """把页面依赖的样式和图标字体嵌入首页，避免代理子请求丢失资源。"""
+
+    document = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    bootstrap_css = (
+        STATIC_ROOT / "vendor" / "bootstrap" / "bootstrap.min.css"
+    ).read_text(encoding="utf-8")
+    fontawesome_css = (
+        STATIC_ROOT / "vendor" / "fontawesome" / "css" / "all.min.css"
+    ).read_text(encoding="utf-8")
+    font_bytes = (
+        STATIC_ROOT
+        / "vendor"
+        / "fontawesome"
+        / "webfonts"
+        / "fa-solid-900.woff2"
+    ).read_bytes()
+
+    # 当前作品只使用实心图标。移除 Font Awesome 其余字体声明，确保嵌入页
+    # 不会继续尝试请求包内并不存在的 brands、regular 或 ttf 文件。
+    fontawesome_css = re.sub(r"@font-face\{[^{}]*\}", "", fontawesome_css)
+    font_data = base64.b64encode(font_bytes).decode("ascii")
+    solid_font_face = (
+        '@font-face{font-family:"Font Awesome 6 Free";font-style:normal;'
+        "font-weight:900;font-display:block;"
+        f'src:url(data:font/woff2;base64,{font_data}) format("woff2")}}'
+    )
+    fontawesome_css = solid_font_face + fontawesome_css
+
+    if document.count(_BOOTSTRAP_LINK) != 1 or document.count(_FONTAWESOME_LINK) != 1:
+        raise RuntimeError("围住小猫首页的本地样式入口不完整")
+    document = document.replace(
+        _BOOTSTRAP_LINK,
+        f'  <style data-vibehub-asset="bootstrap">{bootstrap_css}</style>',
+    )
+    document = document.replace(
+        _FONTAWESOME_LINK,
+        f'  <style data-vibehub-asset="fontawesome">{fontawesome_css}</style>',
+    )
+    return document.encode("utf-8")
 
 
 def _connect_database():
@@ -172,6 +225,15 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_index(self, *, include_body=True):
+        body = _embedded_index_document()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if include_body:
+            self.wfile.write(body)
+
     def _read_json(self):
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -197,9 +259,16 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/leaderboard":
             self._send_json(_leaderboard_response(parse_qs(parsed.query)))
             return
-        if parsed.path == "/":
-            self.path = "/index.html"
+        if parsed.path in {"/", "/index.html"}:
+            self._send_index()
+            return
         super().do_GET()
+
+    def do_HEAD(self):
+        if urlsplit(self.path).path in {"/", "/index.html"}:
+            self._send_index(include_body=False)
+            return
+        super().do_HEAD()
 
     def do_POST(self):
         parsed = urlsplit(self.path)

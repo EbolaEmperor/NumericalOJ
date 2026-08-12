@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+from functools import cache
 from http.server import SimpleHTTPRequestHandler
 import html
 import importlib.util
@@ -74,6 +76,24 @@ _sessions = {}
 _sessions_lock = threading.Lock()
 _reset_cache = {}
 
+_INLINE_STYLESHEETS = frozenset({
+    "vendor/bootstrap/bootstrap.min.css",
+    "vendor/fontawesome/css/all.min.css",
+    "vendor/model-family/model-family-logos.css",
+    "arc-agi-3.css",
+})
+_INLINE_SCRIPTS = frozenset({
+    "vendor/bootstrap/bootstrap.bundle.min.js",
+    "arc-agi-3-catalog.js",
+    "arc-agi-3.js",
+})
+_STYLESHEET_TAG_RE = re.compile(
+    r'<link rel="stylesheet" href="(?P<path>(?:\./|\.\./)[^"]+)">'
+)
+_SCRIPT_TAG_RE = re.compile(
+    r'<script src="(?P<path>(?:\./|\.\./)[^"]+)"></script>'
+)
+
 
 def load_catalog():
     global _catalog_cache
@@ -117,6 +137,102 @@ def find_game(slug):
 
 def _template(name):
     return (STATIC_ROOT / name).read_text(encoding="utf-8")
+
+
+def _static_asset_name(relative_url):
+    name = relative_url
+    while name.startswith("../"):
+        name = name[3:]
+    return name.removeprefix("./")
+
+
+@cache
+def _data_uri(name, content_type):
+    encoded = base64.b64encode((STATIC_ROOT / name).read_bytes()).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def _inline_fontawesome_fonts(stylesheet):
+    """只保留当前页面使用的 Font Awesome 6 字体，并嵌入响应。"""
+
+    solid = _data_uri(
+        "vendor/fontawesome/webfonts/fa-solid-900.woff2", "font/woff2",
+    )
+    brands = _data_uri(
+        "vendor/fontawesome/webfonts/fa-brands-400.woff2", "font/woff2",
+    )
+
+    def replace_font_face(match):
+        rule = match.group(0)
+        if 'font-family:"Font Awesome 6 Brands"' in rule:
+            source = brands
+        elif (
+            'font-family:"Font Awesome 6 Free"' in rule
+            and "font-weight:900" in rule
+        ):
+            source = solid
+        else:
+            return ""
+        return re.sub(
+            r"src:[^}]+",
+            f'src:url("{source}") format("woff2")',
+            rule,
+            count=1,
+        )
+
+    return re.sub(r"@font-face\{[^{}]*\}", replace_font_face, stylesheet)
+
+
+@cache
+def _inline_stylesheet(name):
+    stylesheet = (STATIC_ROOT / name).read_text(encoding="utf-8")
+    if name == "vendor/fontawesome/css/all.min.css":
+        stylesheet = _inline_fontawesome_fonts(stylesheet)
+    elif name == "vendor/model-family/model-family-logos.css":
+        for family in ("openai", "claude"):
+            source = f"model-family-logos/{family}.svg"
+            stylesheet = stylesheet.replace(
+                f'url("{source}")',
+                f'url("{_data_uri(f"vendor/model-family/{source}", "image/svg+xml")}")',
+            )
+    if "</style" in stylesheet.lower():
+        raise ArcAppError("内联样式包含无效结束标签")
+    return stylesheet
+
+
+@cache
+def _inline_script(name):
+    javascript = (STATIC_ROOT / name).read_text(encoding="utf-8")
+    if "</script" in javascript.lower():
+        raise ArcAppError("内联脚本包含无效结束标签")
+    return javascript
+
+
+def _inline_frontend_assets(content):
+    """消除沙箱页面首屏对额外 CSS、JS 和字体请求的依赖。"""
+
+    def replace_stylesheet(match):
+        name = _static_asset_name(match.group("path"))
+        if name not in _INLINE_STYLESHEETS:
+            raise ArcAppError("页面引用了未登记的样式资源")
+        return (
+            f'<style data-vibehub-inline-asset="{html.escape(name, quote=True)}">\n'
+            f"{_inline_stylesheet(name)}\n"
+            "</style>"
+        )
+
+    def replace_script(match):
+        name = _static_asset_name(match.group("path"))
+        if name not in _INLINE_SCRIPTS:
+            raise ArcAppError("页面引用了未登记的脚本资源")
+        return (
+            f'<script data-vibehub-inline-asset="{html.escape(name, quote=True)}">\n'
+            f"{_inline_script(name)}\n"
+            "</script>"
+        )
+
+    content = _STYLESHEET_TAG_RE.sub(replace_stylesheet, content)
+    return _SCRIPT_TAG_RE.sub(replace_script, content)
 
 
 def _catalog_pages(games):
@@ -179,12 +295,13 @@ def _runtime_game(game):
 
 def render_index():
     games = tuple(_runtime_game(game) for game in load_catalog())
-    return (
+    content = (
         _template("index.html")
         .replace("__TOTAL_GAMES__", str(len(games)))
         .replace("__FIRST_PAGE_END__", str(min(15, len(games))))
         .replace("      <!-- ARC_CATALOG_PAGES -->", _catalog_pages(games))
     )
+    return _inline_frontend_assets(content)
 
 
 def render_game(game):
@@ -202,11 +319,12 @@ def render_game(game):
     output = _template("game.html")
     for token, value in values.items():
         output = output.replace(token, value)
-    return output
+    return _inline_frontend_assets(output)
 
 
 def render_not_found():
-    return _template("not-found.html").replace("__CATALOG_URL__", "../")
+    content = _template("not-found.html").replace("__CATALOG_URL__", "../")
+    return _inline_frontend_assets(content)
 
 
 def load_game_class(spec):
