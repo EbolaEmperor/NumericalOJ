@@ -1865,9 +1865,6 @@ class VibeHubRuntimeManager:
         self.state_path = self.runtime_root / "state.json"
         self.lock_path = self.runtime_root / "state.lock"
         self.secret_path = self.runtime_root / "lease.key"
-        self.build_cleanup_pending_path = (
-            self.runtime_root / "build-cleanup.pending"
-        )
         self.build_builder = str(build_builder or "").strip()
         if self.build_builder and not _DOCKER_NAME_RE.fullmatch(self.build_builder):
             raise ValueError("VIBEHUB_BUILD_BUILDER 名称无效")
@@ -1959,55 +1956,6 @@ class VibeHubRuntimeManager:
         self._prepare_runtime_root()
         self._secret = self._load_or_create_secret()
         self.scope = hashlib.sha256(os.fspath(self.runtime_root).encode("utf-8")).hexdigest()[:16]
-
-    def _build_cleanup_is_pending(self) -> bool:
-        try:
-            info = self.build_cleanup_pending_path.lstat()
-        except FileNotFoundError:
-            return False
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or self.build_cleanup_pending_path.is_symlink()
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) & 0o077
-            or info.st_size > 64
-        ):
-            raise VibeHubRuntimeError(
-                "VibeHub build cleanup marker 类型、属主或权限无效"
-            )
-        return True
-
-    def _mark_build_cleanup_pending(self) -> None:
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_TRUNC
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        fd = os.open(self.build_cleanup_pending_path, flags, 0o600)
-        try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-                raise VibeHubRuntimeError(
-                    "VibeHub build cleanup marker 属主或类型无效"
-                )
-            os.fchmod(fd, 0o600)
-            os.write(fd, b"pending\n")
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-    def _clear_build_cleanup_pending(self) -> None:
-        if not self._build_cleanup_is_pending():
-            return
-        self.build_cleanup_pending_path.unlink()
-
-    def _cleanup_build_artifacts(self) -> None:
-        """只清受管 dangling images 与专属 builder cache。"""
-
-        self.docker.prune_managed_dangling_images()
-        self.docker.prune_dedicated_build_cache()
-        self._clear_build_cleanup_pending()
 
     def _prepare_runtime_root(self) -> None:
         self.runtime_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -2497,43 +2445,10 @@ class VibeHubRuntimeManager:
         return runtime_id, operation_id, stopping
 
     def _stop_and_finalize(self, action: tuple[str, str, dict]) -> None:
-        """锁外删除容器/闲置 tag，再用 operation_id 做短锁 CAS 提交。"""
+        """锁外删除闲置容器，再用 operation_id 做短锁 CAS 提交。"""
 
         runtime_id, operation_id, runtime = action
         self._stop_runtime(runtime_id, runtime)
-        image_ref = str(runtime.get("image_ref") or "")
-        image_id = str(runtime.get("image_id") or "")
-        if image_ref or image_id:
-            if (
-                not _IMAGE_REFERENCE_RE.fullmatch(image_ref)
-                or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id)
-            ):
-                raise VibeHubRuntimeError(
-                    "VibeHub stopping state 中的镜像身份无效"
-                )
-            # 与 build 使用相同锁序。在 tombstone/CAS 提交前保持 stopping，
-            # 新 acquire 不能拿到同一实例；tag 已被新 build 更新时精确跳过。
-            with self._locked_image_build(image_ref):
-                with self._locked_state() as state:
-                    image_still_in_use = any(
-                        candidate_id != runtime_id
-                        and isinstance(candidate, dict)
-                        and self._runtime_status(candidate) in {"starting", "ready"}
-                        and candidate.get("image_ref") == image_ref
-                        and candidate.get("image_id") == image_id
-                        for candidate_id, candidate in state["runtimes"].items()
-                    )
-                if not image_still_in_use:
-                    with self._file_capacity_slot(
-                        "build-slot",
-                        BUILD_CONCURRENCY,
-                        self.build_slot_timeout_seconds,
-                    ):
-                        self.docker.remove_managed_image_reference(
-                            image_ref,
-                            image_id,
-                        )
-                        self.docker.prune_managed_dangling_images()
         with self._locked_state() as state:
             current = state["runtimes"].get(runtime_id)
             if (
@@ -2669,7 +2584,6 @@ class VibeHubRuntimeManager:
         if (
             existing is not None
             and existing.labels.get(SOURCE_DIGEST_LABEL) == source_digest
-            and not self._build_cleanup_is_pending()
         ):
             return existing
         with self._file_capacity_slot(
@@ -2690,12 +2604,7 @@ class VibeHubRuntimeManager:
                 existing = self._inspect_runnable_image(image_ref, featured=featured)
             except VibeHubImageError:
                 existing = None
-            if self._build_cleanup_is_pending():
-                self._cleanup_build_artifacts()
             if existing is None or existing.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
-                # 先落 marker 再替换稳定 tag。即使 worker 在 build 成功后崩溃，
-                # 下一次缓存命中也会先补做清理，不会让 dangling layer 无限增长。
-                self._mark_build_cleanup_pending()
                 build_image(
                     context,
                     image_ref,
@@ -2708,8 +2617,6 @@ class VibeHubRuntimeManager:
             image = self._inspect_runnable_image(image_ref, featured=featured)
             if image.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
                 raise VibeHubImageError("VibeHub 构建缓存与作品包摘要不一致")
-            if self._build_cleanup_is_pending():
-                self._cleanup_build_artifacts()
             return image
 
     def _lease_from_state(self, token: str, lease: Mapping[str, object], runtime: Mapping[str, object]) -> RuntimeLease:

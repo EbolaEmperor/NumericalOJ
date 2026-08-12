@@ -1740,9 +1740,7 @@ def test_base_image_id_change_invalidates_cached_project_image(monkeypatch, tmp_
     )]
 
 
-def test_successful_build_cleanup_failure_leaves_marker_and_cached_retry(
-    short_tmp,
-):
+def test_successful_build_preserves_image_and_builder_caches(short_tmp):
     package = _write_package(short_tmp / "package")
 
     class CleanupDocker(_FakeDocker):
@@ -1750,7 +1748,6 @@ def test_successful_build_cleanup_failure_leaves_marker_and_cached_retry(
             super().__init__()
             self.project_digest = None
             self.builds = 0
-            self.fail_first_prune = True
 
         def inspect_image(self, reference):
             if reference == runtime.DEFAULT_BASE_IMAGE:
@@ -1772,10 +1769,10 @@ def test_successful_build_cleanup_failure_leaves_marker_and_cached_retry(
             self.project_digest = source_digest
 
         def prune_managed_dangling_images(self):
-            self.managed_image_prunes += 1
-            if self.fail_first_prune:
-                self.fail_first_prune = False
-                raise runtime.VibeHubImageError("prune failed")
+            pytest.fail("作品构建不得自动清理镜像")
+
+        def prune_dedicated_build_cache(self):
+            pytest.fail("作品构建不得自动清理 BuildKit 缓存")
 
     docker = CleanupDocker()
     manager = runtime.VibeHubRuntimeManager(
@@ -1784,28 +1781,28 @@ def test_successful_build_cleanup_failure_leaves_marker_and_cached_retry(
         proxy_transport="docker-exec",
     )
 
-    with pytest.raises(runtime.VibeHubImageError, match="prune failed"):
-        manager._ensure_image(
-            "numoj-vibehub:test",
-            build_context=package,
-            featured=False,
-        )
-    assert manager.build_cleanup_pending_path.is_file()
-
-    image = manager._ensure_image(
+    first = manager._ensure_image(
+        "numoj-vibehub:test",
+        build_context=package,
+        featured=False,
+    )
+    second = manager._ensure_image(
         "numoj-vibehub:test",
         build_context=package,
         featured=False,
     )
 
-    assert image.image_id == _APP_ID
+    assert first.image_id == _APP_ID
+    assert second.image_id == _APP_ID
     assert docker.builds == 1
-    assert docker.managed_image_prunes == 2
-    assert docker.build_cache_prunes == 1
-    assert not manager.build_cleanup_pending_path.exists()
+    assert docker.managed_image_prunes == 0
+    assert docker.build_cache_prunes == 0
 
 
-def test_last_release_reclaims_exact_idle_image_tag(monkeypatch, short_tmp):
+def test_last_release_removes_container_but_preserves_cached_image(
+    monkeypatch,
+    short_tmp,
+):
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
     lease = manager.acquire(
@@ -1816,14 +1813,14 @@ def test_last_release_reclaims_exact_idle_image_tag(monkeypatch, short_tmp):
 
     assert manager.release(lease.token) is True
 
-    assert docker.removed_image_references == [
-        ("numoj-vibehub:demo", _APP_ID),
-    ]
-    assert docker.managed_image_prunes == 1
+    assert docker.stopped == [lease.container_name]
+    assert lease.container_name not in docker.running
+    assert docker.removed_image_references == []
+    assert docker.managed_image_prunes == 0
     assert manager._load_state()["runtimes"] == {}
 
 
-def test_old_runtime_cleanup_cannot_delete_image_before_new_version_start(
+def test_concurrent_version_switch_keeps_shared_image_cache(
     monkeypatch,
     short_tmp,
 ):
@@ -1884,42 +1881,31 @@ def test_old_runtime_cleanup_cannot_delete_image_before_new_version_start(
     assert docker.removed_image_references == []
 
     assert new_manager.release(new_lease.token) is True
-    assert docker.removed_image_references == [
-        ("numoj-vibehub:demo", _APP_ID),
-    ]
+    assert docker.removed_image_references == []
 
 
-def test_idle_image_cleanup_failure_keeps_stopping_tombstone_for_retry(
+def test_idle_release_never_invokes_image_cleanup(
     monkeypatch,
     short_tmp,
 ):
     class RetryDocker(_FakeDocker):
         def __init__(self):
             super().__init__()
-            self.fail_first_prune = True
 
         def prune_managed_dangling_images(self):
-            self.managed_image_prunes += 1
-            if self.fail_first_prune:
-                self.fail_first_prune = False
-                raise runtime.VibeHubImageError("prune failed")
+            pytest.fail("玩家离开不得自动清理镜像")
+
+        def remove_managed_image_reference(self, reference, expected_image_id):
+            pytest.fail("玩家离开不得删除稳定镜像 tag")
 
     docker = RetryDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
     lease = manager.acquire("demo@v1", "numoj-vibehub:demo")
 
-    with pytest.raises(runtime.VibeHubImageError, match="prune failed"):
-        manager.release(lease.token)
-    state = manager._load_state()
-    tombstone = next(iter(state["runtimes"].values()))
-    assert tombstone["status"] == "stopping"
-    assert state["leases"] == {}
-
-    manager._clock = lambda: 200.0
-    manager.reap_expired()
-
+    assert manager.release(lease.token) is True
+    assert docker.stopped == [lease.container_name]
     assert manager._load_state()["runtimes"] == {}
-    assert docker.managed_image_prunes == 2
+    assert docker.managed_image_prunes == 0
 
 
 def test_request_target_nfc_normalizes_unicode_and_preserves_valid_percent_encoding():
