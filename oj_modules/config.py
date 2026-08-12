@@ -281,7 +281,7 @@ _CODE_DEFAULTS: dict[str, str] = {
 if os.environ.get("NUMOJ_ENVIRONMENT", "development").strip().lower() == "production":
     _CODE_DEFAULTS.update(
         {
-            "VIBEHUB_BUILD_BUILDER": '"numoj-vibehub"',
+            "VIBEHUB_BUILD_BUILDER": '"numoj-vibehub-online"',
             "VIBEHUB_REQUIRE_DEDICATED_BUILDER": "true",
         }
     )
@@ -501,7 +501,7 @@ JUDGER_TARGET_ARCH = _env_str("JUDGER_TARGET_ARCH")
 JUDGER_NUMERIC_BACKEND = _env_str("JUDGER_NUMERIC_BACKEND")
 JUDGER_ENABLE_MKL = _env_optional_bool("JUDGER_ENABLE_MKL")
 
-# VibeHub 离线构建、UDS 代理与短期容器
+# VibeHub 构建、UDS 代理与短期容器
 VIBEHUB_RUNTIME_ROOT = _env_str("VIBEHUB_RUNTIME_ROOT")
 VIBEHUB_ALLOWED_BASE_IMAGES = _env_str_list("VIBEHUB_ALLOWED_BASE_IMAGES")
 VIBEHUB_BUILD_BUILDER = _env_str("VIBEHUB_BUILD_BUILDER")

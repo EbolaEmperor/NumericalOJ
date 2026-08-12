@@ -189,12 +189,15 @@ def test_player_route_overrides_global_csp_and_confines_iframe(monkeypatch):
         for directive in response.headers["Content-Security-Policy"].split(";")
         if (parts := directive.strip().split())
     }
-    for name in ("frame-src", "child-src", "connect-src"):
-        assert directives[name] == ["'self'"]
+    for name in ("frame-src", "child-src"):
+        assert directives[name] == ["*", "data:", "blob:"]
+    assert directives["connect-src"] == [
+        "*", "data:", "blob:", "http:", "https:", "ws:", "wss:",
+    ]
     assert directives["script-src"] == ["'self'"]
     assert "'self'" in directives["style-src"]
     assert directives["object-src"] == ["'none'"]
-    assert "https:" not in response.headers["Content-Security-Policy"]
+    assert "https:" in response.headers["Content-Security-Policy"]
 
 
 def test_runtime_proxy_is_the_only_capability_public_route_contract():
@@ -218,7 +221,7 @@ def test_runtime_failure_logs_the_bounded_buildkit_cause_but_keeps_http_generic(
     caplog,
 ):
     error = vibehub_runtime.VibeHubImageError(
-        "VibeHub 镜像离线构建失败",
+        "VibeHub 镜像构建失败",
         buildkit_diagnostic="ERROR: buildkit returned a concrete failure",
         buildkit_returncode=1,
         buildkit_stderr_truncated=True,
@@ -616,7 +619,7 @@ def test_legacy_game_bookmarks_redirect_and_old_apis_are_gone():
         assert response.get_json()["code"] == "legacy_game_retired"
 
 
-def test_bundled_examples_are_complete_valid_offline_packages():
+def test_bundled_examples_are_complete_valid_packages():
     for slug in ("circle-cat", "arc-agi-3"):
         package = ROOT / "vibehub_examples" / slug
         manifest = validate_manifest(package)

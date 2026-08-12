@@ -1,6 +1,6 @@
-"""VibeHub 不可信作品的离线镜像构建、按需容器和 UDS HTTP 代理。
+"""VibeHub 不可信作品的镜像构建、按需容器和 UDS HTTP 代理。
 
-作品容器没有网络命名空间中的可用接口，也不发布端口。应用只允许在容器内有界
+作品容器可以主动访问网络，但不发布端口。应用只允许在容器内有界
 ``/run/vibehub`` tmpfs 中创建 ``app.sock``，宿主通过受信任的 ``docker exec`` relay
 转发经过净化和限额的 HTTP 请求。容器根层可写但随实例销毁；平台只把按数据库
 project id 与通道隔离的受管 Docker volume 挂到 ``/data``，作品不能选择宿主路径。
@@ -50,6 +50,7 @@ RUNTIME_ID_LABEL = "com.numericaloj.vibehub.runtime-id"
 SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
 MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
 DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
+RUNTIME_ABI = "network-bridge-v1"
 
 DEFAULT_BASE_IMAGE = "numericaloj-vibehub-runtime:1"
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "tmp" / "vibehub_runtime"
@@ -226,13 +227,13 @@ _ALLOWED_METHODS = frozenset((*RUNTIME_CORS_METHODS, "OPTIONS"))
 _PROXY_CSP = (
     "sandbox allow-scripts allow-forms allow-modals allow-downloads "
     "allow-popups allow-popups-to-escape-sandbox; "
-    "default-src 'self' data: blob:; "
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; media-src 'self' data: blob:; "
-    "font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; "
-    "frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; "
-    "navigate-to 'self' https:"
+    "default-src * data: blob:; "
+    "script-src * data: blob: 'unsafe-inline' 'unsafe-eval'; "
+    "style-src * data: blob: 'unsafe-inline'; "
+    "img-src * data: blob:; media-src * data: blob:; "
+    "font-src * data: blob:; connect-src * data: blob: http: https: ws: wss:; "
+    "worker-src * data: blob:; frame-src * data: blob:; "
+    "object-src * data: blob:; base-uri *; form-action *; navigate-to *"
 )
 
 _logger = logging.getLogger(__name__)
@@ -277,7 +278,7 @@ class VibeHubRuntimeError(RuntimeError):
 
 
 class VibeHubPackageError(VibeHubRuntimeError):
-    """作品构建上下文或 Dockerfile 不符合离线构建契约。"""
+    """作品构建上下文或 Dockerfile 不符合平台契约。"""
 
 
 class VibeHubImageError(VibeHubRuntimeError):
@@ -858,12 +859,12 @@ def _logical_dockerfile_lines(text: str) -> list[str]:
 def _dockerfile_base_images(text: str, allowed_base_images: Iterable[str]) -> tuple[str, ...]:
     allowed = {_validate_image_reference(item) for item in allowed_base_images}
     if not allowed:
-        raise VibeHubPackageError("未配置任何离线 VibeHub 基础镜像")
+        raise VibeHubPackageError("未配置任何 VibeHub 基础镜像")
     logical_lines = _logical_dockerfile_lines(text)
     if len(logical_lines) > _MAX_DOCKERFILE_INSTRUCTIONS:
         raise VibeHubPackageError("Dockerfile 指令数量超限")
     allowed_instructions = frozenset({
-        "FROM", "COPY", "CMD", "ENTRYPOINT", "WORKDIR", "ENV", "LABEL",
+        "FROM", "RUN", "COPY", "CMD", "ENTRYPOINT", "WORKDIR", "ENV", "LABEL",
     })
     external_bases: list[str] = []
     copy_count = 0
@@ -879,8 +880,8 @@ def _dockerfile_base_images(text: str, allowed_base_images: Iterable[str]) -> tu
             raise VibeHubPackageError("Dockerfile 指令内容不能为空")
         if instruction not in allowed_instructions:
             raise VibeHubPackageError(
-                "VibeHub MVP Dockerfile 仅允许 FROM、COPY、CMD、ENTRYPOINT、"
-                "WORKDIR、ENV 和 LABEL"
+                "VibeHub MVP Dockerfile 仅允许 FROM、RUN、COPY、CMD、"
+                "ENTRYPOINT、WORKDIR、ENV 和 LABEL"
             )
         if instruction == "FROM":
             from_count += 1
@@ -893,7 +894,7 @@ def _dockerfile_base_images(text: str, allowed_base_images: Iterable[str]) -> tu
                 raise VibeHubPackageError("VibeHub Dockerfile 禁止多阶段构建和 stage 别名")
             source = parts[0]
             if source not in allowed:
-                raise VibeHubPackageError(f"基础镜像不在离线白名单：{source}")
+                raise VibeHubPackageError(f"基础镜像不在白名单：{source}")
             external_bases.append(source)
         if instruction == "COPY":
             copy_count += 1
@@ -1281,10 +1282,10 @@ class DockerCLI:
             if (
                 actual_name != container_name
                 or running is not True
-                or network_mode != "none"
+                or network_mode != "bridge"
             ):
                 raise VibeHubImageError(
-                    "VibeHub builder node 必须运行且 HostConfig.NetworkMode=none"
+                    "VibeHub builder node 必须运行且 HostConfig.NetworkMode=bridge"
                 )
 
     @staticmethod
@@ -1559,11 +1560,11 @@ class DockerCLI:
             for context in self._base_oci_build_contexts(resolved_bases):
                 command.extend(["--build-context", context])
             command.extend([
-                "--network", "none",
+                "--network", "default",
                 "--pull=false",
                 # 当前生产 Buildx 不支持 build 子命令的 --resource；资源参数
-                # 只能用于 legacy docker build。作品 Dockerfile 禁止 RUN，且
-                # 专属 builder 由全局单构建槽串行使用，不能把未知参数传给
+                # 只能用于 legacy docker build。专属 builder 由全局单构建槽串行
+                # 使用，不能把未知参数传给
                 # Buildx 使构建在客户端解析阶段直接失败。
                 "--ulimit", "nofile=1024:1024",
                 "--shm-size", "64m",
@@ -1571,7 +1572,7 @@ class DockerCLI:
         else:
             command = ["docker", "build"]
             command.extend([
-                "--network", "none",
+                "--network", "default",
                 "--pull=false",
                 "--force-rm",
                 "--memory", limits.memory,
@@ -1594,7 +1595,7 @@ class DockerCLI:
         result = self._run(command, timeout=timeout, env=environment)
         initial_detail = f"{result.stdout}\n{result.stderr}".strip()
         # Docker Desktop/Colima 可能启用了 BuildKit 却没有可用 buildx 插件。仅对
-        # 这个可精确识别的客户端安装问题回退 legacy builder；命令中的离线网络、
+        # 这个可精确识别的客户端安装问题回退 legacy builder；命令中的
         # 资源、ulimit 和基础镜像预检保持完全相同。其它构建错误一律不降级。
         if (
             result.returncode != 0
@@ -1609,7 +1610,7 @@ class DockerCLI:
         lowered = detail.lower()
         if result.returncode != 0:
             raise VibeHubImageError(
-                "VibeHub 镜像离线构建失败",
+                "VibeHub 镜像构建失败",
                 buildkit_diagnostic=_safe_buildkit_diagnostic(
                     f"{result.stdout}\n{result.stderr}",
                     package_dir=package_dir,
@@ -1878,7 +1879,7 @@ def build_image(
     timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     slot_timeout_seconds: float = DEFAULT_BUILD_SLOT_TIMEOUT_SECONDS,
 ) -> ImageBuildResult:
-    """在无网络且基础镜像已预置的前提下构建一个受管作品镜像。"""
+    """使用已预置的受信基础镜像构建一个受管作品镜像。"""
 
     timeout_seconds = _validated_build_timeout_seconds(timeout_seconds)
     root = Path(package_dir)
@@ -2054,6 +2055,24 @@ def _sanitize_response(
         except ValueError:
             return None
         if parsed_location.scheme or parsed_location.netloc or raw_value.startswith("//"):
+            external_location = parsed_location
+            if raw_value.startswith("//"):
+                try:
+                    external_location = urlsplit("http:" + raw_value)
+                except ValueError:
+                    return None
+            if (
+                external_location.scheme.lower() in {"http", "https"}
+                and external_location.netloc
+                and external_location.hostname
+                and external_location.username is None
+                and external_location.password is None
+            ):
+                try:
+                    external_location.port
+                except ValueError:
+                    return None
+                return raw_value
             return None
         origin = "http://vibehub.internal"
         resolved = urlsplit(urljoin(origin + request_target, raw_value))
@@ -2497,7 +2516,8 @@ class VibeHubRuntimeManager:
         storage_key: str,
     ) -> str:
         payload = (
-            f"{project_key}\0{channel}\0{image_id}\0{int(featured)}\0{storage_key}"
+            f"{RUNTIME_ABI}\0{project_key}\0{channel}\0{image_id}\0"
+            f"{int(featured)}\0{storage_key}"
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:40]
 
@@ -2531,7 +2551,7 @@ class VibeHubRuntimeManager:
             "--label", f"{MANAGED_CONTAINER_LABEL}=1",
             "--label", f"{MANAGER_SCOPE_LABEL}={self.scope}",
             "--label", f"{RUNTIME_ID_LABEL}={runtime_id}",
-            "--network", "none",
+            "--network", "bridge",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges=true",
             "--ipc", "none",
@@ -2663,6 +2683,7 @@ class VibeHubRuntimeManager:
             self.docker.remove_container(name)
             raise
         return {
+            "runtime_abi": RUNTIME_ABI,
             "project_key": project_key,
             "channel": channel,
             "image_ref": image.reference,
@@ -2859,6 +2880,15 @@ class VibeHubRuntimeManager:
 
             actions: list[tuple[str, str, dict]] = []
             with self._locked_state() as state:
+                for runtime_id, runtime in list(state["runtimes"].items()):
+                    if (
+                        _RUNTIME_ID_RE.fullmatch(runtime_id)
+                        and isinstance(runtime, dict)
+                        and runtime.get("runtime_abi") != RUNTIME_ABI
+                    ):
+                        actions.append(
+                            self._mark_stopping_locked(state, runtime_id, runtime)
+                        )
                 for runtime_id, name in candidates:
                     if runtime_id in state["runtimes"]:
                         continue
@@ -2877,7 +2907,7 @@ class VibeHubRuntimeManager:
     def _inspect_runnable_image(self, image_ref: str, *, featured: bool) -> ImageInfo:
         image = self.docker.inspect_image(image_ref)
         if image.labels.get(MANAGED_IMAGE_LABEL) != "1":
-            raise VibeHubImageError("只允许运行经过离线构建器标记的 VibeHub 镜像")
+            raise VibeHubImageError("只允许运行经过受管构建器标记的 VibeHub 镜像")
         if image.volumes:
             raise VibeHubImageError("VibeHub 镜像不得声明持久化 VOLUME")
         budget = limits_for(featured).image_bytes
@@ -3044,6 +3074,7 @@ class VibeHubRuntimeManager:
                 self._require_runtime_capacity_locked(state)
                 reservation_id = secrets.token_hex(16)
                 state["runtimes"][runtime_id] = {
+                    "runtime_abi": RUNTIME_ABI,
                     "status": "starting",
                     "reservation_id": reservation_id,
                     "reservation_deadline": (

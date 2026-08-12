@@ -1,6 +1,6 @@
 # VibeHub 开发者手册
 
-VibeHub 接受一个包含前端、后端和运行声明的完整 ZIP 程序包。作品在无网络的隔离容器中运行，
+VibeHub 接受一个包含前端、后端和运行声明的完整 ZIP 程序包。作品在可联网的隔离容器中运行，
 通过 Unix domain socket 提供 HTTP/1.1 服务。本手册只说明作品协议和 NumOJ CLI 工作流。
 
 ## CLI 准备
@@ -54,7 +54,7 @@ my-vibe/
 1280×720、严格 16:9、最多 400 KiB 的安全封面；原图不会被改写。原图不得超过 16 MiB、
 8192×8192 或 1600 万像素。
 
-### Dockerfile 与离线依赖
+### Dockerfile 与网络依赖
 
 作品镜像必须基于平台提供的受信任基础镜像。最小 Dockerfile：
 
@@ -64,13 +64,14 @@ COPY --chown=65532:65532 . /app
 CMD ["python", "/app/app.py"]
 ```
 
-Dockerfile 只允许一个位于首行的固定 `FROM`，以及 `COPY`、`CMD`、`ENTRYPOINT`、`WORKDIR`、
-`ENV`、`LABEL`。禁止 `RUN`、`ADD`、`USER`、`VOLUME`、`ONBUILD`、`HEALTHCHECK`、多阶段构建、
+Dockerfile 只允许一个位于首行的固定 `FROM`，以及 `RUN`、`COPY`、`CMD`、`ENTRYPOINT`、
+`WORKDIR`、`ENV`、`LABEL`。禁止 `ADD`、`USER`、`VOLUME`、`ONBUILD`、`HEALTHCHECK`、多阶段构建、
 外部 frontend 和 `COPY --from`。`COPY` flag 只允许精确的 `--chown=65532:65532`，目标必须
 位于 `/app`。
 
-构建完全离线，不会下载基础镜像、依赖、字体或前端资源。请先在可信开发机生成 lockfile、
-vendor 依赖和前端产物，再把运行所需文件一起放进 ZIP。
+构建步骤可以访问网络，因此可在 `RUN` 中下载或安装依赖。默认基础镜像带 pip，且构建步骤以
+非 root 用户运行；Python 依赖可安装到 `/app/vendor` 并用 `PYTHONPATH` 引用。基础镜像仍由
+平台预置；建议使用 lockfile 和精确版本，保证重建结果可复现。
 
 ## 容器运行协议
 
@@ -78,8 +79,8 @@ vendor 依赖和前端产物，再把运行所需文件一起放进 ZIP。
 `/run/vibehub/app.sock`。启动前删除自己遗留的同名 socket，再以运行 UID 65532 bind；
 `GET /healthz` 必须快速返回 `200`。
 
-不要监听 `0.0.0.0`、`127.0.0.1` 或任意 TCP 端口。容器使用 `--network none`，端口不会被
-转发，也不能访问公网、局域网、CDN 或包仓库。
+不要监听 `0.0.0.0`、`127.0.0.1` 或任意 TCP 端口；平台只通过 UDS 访问作品，不发布容器端口。
+容器可以主动访问公网、局域网、CDN 和包仓库。
 
 ### 基础路径与玩家会话
 
@@ -96,11 +97,12 @@ vendor 依赖和前端产物，再把运行所需文件一起放进 ZIP。
 ### 请求边界
 
 支持普通 HTTP/1.1 的 `GET`、`HEAD`、`POST`、`PUT`、`PATCH`、`DELETE` 和 `OPTIONS`，
-不支持 WebSocket、CONNECT 或外联。请求体和响应体默认各最多 16 MiB，单次请求默认最多 15 秒。
+平台代理作品自身接口时不支持 WebSocket 或 CONNECT。请求体和响应体默认各最多 16 MiB，
+单次请求默认最多 15 秒。作品后端可直接访问外部网络；前端也可加载外部资源、调用
+HTTP(S) API 或连接外部 WebSocket。跨域 fetch/WebSocket 仍受对方服务器 CORS/Origin 策略与浏览器
+混合内容规则影响。
 作品运行在不含 `allow-same-origin` 的 sandbox iframe 中，不能读取站点页面、浏览器 Cookie 或控制
-顶层窗口。用户主动点击的 HTTPS 外部链接可以在不受 sandbox 限制的新标签页中打开；这只影响
-浏览器导航，作品脚本的跨站请求仍由 `connect-src 'self'` 禁止，容器本身也仍使用
-`--network none`。
+顶层窗口。这一隔离边界不禁止作品联网。
 
 ## 使用 CLI 管理作品
 
@@ -177,7 +179,7 @@ python3 scripts/numoj_user.py vibehub request-featured <slug>
 1. ZIP 根目录直接包含 `Dockerfile` 和 `vibehub.json`，没有额外外层目录。
 2. 程序包不含密钥、隐私数据、符号链接、FIFO、socket 或超大文件。
 3. `cover_image` 指向包内真实 PNG、JPEG 或 WebP，主体位于 16:9 中央安全区。
-4. 所有依赖和前端资源已随包提供，不依赖网络下载。
+4. 需要联网安装的依赖使用 lockfile 或精确版本。
 5. 容器以非 root 身份在 `VIBEHUB_SOCKET` 上提供 HTTP/1.1，`GET /healthz` 返回 `200`。
 6. 所有 URL 尊重 `X-VibeHub-Base-Path`，多人状态按 `X-VibeHub-Session-Id` 隔离。
 7. 需要持久化的数据只写入 `/data` 或 `$HOME`，临时数据写入 `/tmp`。

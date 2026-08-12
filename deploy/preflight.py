@@ -235,7 +235,7 @@ def ensure_vibehub_builder(
     config_loader: Callable[[], ModuleType] | None = None,
     command_runner=None,
 ) -> str:
-    """创建缺失的离线 builder，然后执行完整的只读校验。"""
+    """创建缺失的联网 builder，然后执行完整的只读校验。"""
 
     loader = config_loader or _load_project_config
     config = loader()
@@ -258,7 +258,7 @@ def ensure_vibehub_builder(
             "--node", node_name,
             "--driver", "docker-container",
             "--driver-opt", f"image={VIBEHUB_BUILDKIT_IMAGE}",
-            "--driver-opt", "network=none",
+            "--driver-opt", "network=bridge",
             "--bootstrap",
             "default",
         ]
@@ -292,7 +292,7 @@ def validate_vibehub_builder(
     config_loader: Callable[[], ModuleType] | None = None,
     command_runner=None,
 ) -> str:
-    """只读证明生产 Buildx builder 专属、可用且其所有节点完全断网。"""
+    """只读证明生产 Buildx builder 专属、可用且其所有节点可联网。"""
 
     loader = config_loader or _load_project_config
     config = loader()
@@ -352,10 +352,10 @@ def validate_vibehub_builder(
             raise PreflightError("VibeHub builder 节点容器未运行")
         if (
             not isinstance(host_config, dict)
-            or host_config.get("NetworkMode") != "none"
+            or host_config.get("NetworkMode") != "bridge"
         ):
             raise PreflightError(
-                "VibeHub builder 节点容器必须使用 network=none"
+                "VibeHub builder 节点容器必须使用 network=bridge"
             )
     return builder
 
