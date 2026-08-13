@@ -123,6 +123,13 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `JUDGER_CASE_INPUT_MAX_BYTES` | int | `67108864` |
 | `JUDGER_STDOUT_MAX_BYTES` | int | `1048576` |
 | `JUDGER_STDERR_MAX_BYTES` | int | `1048576` |
+| `LEAN4_DOCKER_IMAGE` | string | `numericaloj-lean4:latest` |
+| `LEAN4_INTERACTIVE_MEM_LIMIT` | string | `1g` |
+| `LEAN4_INTERACTIVE_CPU_LIMIT` | string | `1` |
+| `LEAN4_INTERACTIVE_PIDS_LIMIT` | int | `128` |
+| `LEAN4_INTERACTIVE_MAX_SESSIONS` | int | `8` |
+| `LEAN4_INTERACTIVE_IDLE_SECONDS` | int | `600` |
+| `LEAN4_INTERACTIVE_TIMEOUT_SECONDS` | int | `60` |
 | `OJ_ROOT_PATH` | string/空 | 空 |
 | `JUDGER_RUN_ROOT` | string/空 | 空 |
 | `JUDGER_TIMEOUT_KILL_AFTER_SEC` | float | `1.0` |

@@ -1,0 +1,525 @@
+/* Lean 4 证明工作台：代码区保持 Monaco 深色，目标区使用清晰的纸面式层次。 */
+.problem-detail-page.is-lean-workbench .problem-code-submit-form {
+  --lean-ink: #18181b;
+  --lean-muted: #71717a;
+  --lean-line: #e4e4e7;
+  --lean-soft: #f4f4f5;
+  --lean-accent: #f97316;
+  --lean-good: #168255;
+  --lean-warn: #b6680b;
+  --lean-error: #c93b36;
+}
+
+.problem-detail-page.is-lean-workbench .lean-workbench-card,
+.problem-detail-page.is-lean-workbench .lean-workbench-card > .card-body,
+.problem-detail-page.is-lean-workbench .lean-workbench {
+  height: 100%;
+  min-height: 0;
+}
+
+.lean-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.85fr);
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.lean-source-pane,
+.lean-inspector {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.lean-source-pane {
+  background: #1e1e1e;
+}
+
+.lean-pane-bar {
+  display: flex;
+  min-height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--numoj-mono);
+  font-size: 0.66rem;
+}
+
+.lean-source-bar {
+  padding: 0 12px;
+  background: #252526;
+  color: #a1a1aa;
+}
+
+.lean-file-name {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  color: #d4d4d8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lean-file-mark {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  place-items: center;
+  border: 1px solid rgba(251, 146, 60, 0.48);
+  border-radius: 4px;
+  color: #fb923c;
+  font-family: Georgia, serif;
+  font-size: 0.76rem;
+  line-height: 1;
+}
+
+.lean-cursor-position {
+  flex: 0 0 auto;
+  color: #71717a;
+  font-variant-numeric: tabular-nums;
+}
+
+.lean-editor-body {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.problem-detail-page.is-lean-workbench .lean-editor-body .problem-editor-desktop-shell {
+  height: 100%;
+}
+
+.problem-detail-page.is-lean-workbench .lean-editor-body .numoj-code-textarea-fallback {
+  height: 100%;
+  min-height: 0;
+  padding: 16px;
+  resize: none;
+  background: #1e1e1e;
+  color: #d4d4d8;
+  outline: 0;
+}
+
+.lean-inspector {
+  border-left: 1px solid var(--lean-line);
+  background-color: #fafaf9;
+  background-image: radial-gradient(circle, rgba(113, 113, 122, 0.12) 0.65px, transparent 0.75px);
+  background-size: 14px 14px;
+  color: var(--lean-ink);
+}
+
+.lean-inspector-bar {
+  padding: 0 10px 0 4px;
+  border-bottom-color: var(--lean-line);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.lean-inspector-tabs {
+  display: flex;
+  height: 100%;
+  align-items: stretch;
+}
+
+.lean-inspector-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--lean-muted);
+  font: inherit;
+  letter-spacing: 0.02em;
+}
+
+.lean-inspector-tab::after {
+  position: absolute;
+  right: 9px;
+  bottom: -1px;
+  left: 9px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  content: "";
+}
+
+.lean-inspector-tab:hover {
+  color: var(--lean-ink);
+}
+
+.lean-inspector-tab:focus-visible {
+  outline: 2px solid rgba(249, 115, 22, 0.3);
+  outline-offset: -3px;
+}
+
+.lean-inspector-tab.is-active {
+  color: var(--lean-ink);
+  font-weight: 700;
+}
+
+.lean-inspector-tab.is-active::after {
+  background: var(--lean-accent);
+}
+
+.lean-tab-count {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 99px;
+  background: var(--lean-soft);
+  color: var(--lean-muted);
+  font-size: 0.58rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.lean-inspector-tab[data-lean-tab="problems"].has-errors .lean-tab-count {
+  background: #feeceb;
+  color: var(--lean-error);
+}
+
+.lean-check-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--lean-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lean-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: #a1a1aa;
+}
+
+.lean-check-status[data-state="checking"] .lean-status-dot {
+  background: var(--lean-accent);
+  animation: lean-status-pulse 900ms ease-in-out infinite;
+}
+
+.lean-check-status[data-state="ready"] {
+  color: var(--lean-good);
+}
+
+.lean-check-status[data-state="ready"] .lean-status-dot {
+  background: var(--lean-good);
+}
+
+.lean-check-status[data-state="problems"],
+.lean-check-status[data-state="problems"] .lean-status-dot {
+  color: var(--lean-warn);
+}
+
+.lean-check-status[data-state="problems"] .lean-status-dot {
+  background: var(--lean-warn);
+}
+
+.lean-check-status[data-state="offline"],
+.lean-check-status[data-state="offline"] .lean-status-dot {
+  color: var(--lean-error);
+}
+
+.lean-check-status[data-state="offline"] .lean-status-dot {
+  background: var(--lean-error);
+}
+
+.lean-inspector-body {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.lean-inspector-panel {
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 12px;
+  scrollbar-color: #d4d4d8 transparent;
+}
+
+.lean-inspector-panel[hidden] {
+  display: none !important;
+}
+
+.lean-panel-empty {
+  display: grid;
+  min-height: 190px;
+  align-content: center;
+  justify-items: center;
+  gap: 7px;
+  padding: 24px 14px;
+  color: var(--lean-muted);
+  text-align: center;
+}
+
+.lean-panel-empty[hidden] {
+  display: none;
+}
+
+.lean-panel-empty strong {
+  color: #52525b;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.lean-panel-empty > span:last-child {
+  max-width: 220px;
+  font-size: 0.67rem;
+  line-height: 1.55;
+}
+
+.lean-empty-glyph {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 4px;
+  place-items: center;
+  border: 1px solid var(--lean-line);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--lean-accent);
+  font: 600 1.05rem/1 var(--numoj-mono);
+  box-shadow: 0 7px 20px rgba(24, 24, 27, 0.06);
+}
+
+.lean-empty-glyph.is-check {
+  color: var(--lean-good);
+}
+
+.lean-goal-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lean-goal-card {
+  overflow: hidden;
+  border: 1px solid var(--lean-line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 22px rgba(24, 24, 27, 0.055);
+}
+
+.lean-goal-heading {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--lean-line);
+  background: #f7f7f6;
+  color: var(--lean-muted);
+  font: 600 0.59rem/1.2 var(--numoj-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.lean-goal-code,
+.lean-goal-hypotheses,
+.lean-goal-target {
+  margin: 0;
+  padding: 10px 11px;
+  color: #27272a;
+  font: 0.69rem/1.55 var(--numoj-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.lean-goal-hypotheses {
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #dededb;
+  color: #52525b;
+}
+
+.lean-goal-target {
+  position: relative;
+  padding-left: 29px;
+  color: #18181b;
+  font-weight: 600;
+}
+
+.lean-goal-target::before {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: var(--lean-accent);
+  content: "⊢";
+  font-weight: 800;
+}
+
+.lean-problem-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lean-problem-item {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--lean-line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 6px 18px rgba(24, 24, 27, 0.04);
+  cursor: pointer;
+}
+
+.lean-problem-item:hover {
+  border-color: #c7c7cc;
+}
+
+.lean-problem-severity {
+  width: 7px;
+  height: 7px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--lean-error);
+}
+
+.lean-problem-item[data-severity="warning"] .lean-problem-severity {
+  background: var(--lean-warn);
+}
+
+.lean-problem-item[data-severity="info"] .lean-problem-severity,
+.lean-problem-item[data-severity="hint"] .lean-problem-severity {
+  background: #3276b1;
+}
+
+.lean-problem-message {
+  margin: 0;
+  color: #3f3f46;
+  font: 0.68rem/1.5 var(--numoj-mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.lean-problem-location {
+  display: block;
+  margin-top: 5px;
+  color: var(--lean-muted);
+  font: 0.58rem/1.3 var(--numoj-mono);
+}
+
+.lean-inspector-footer {
+  display: flex;
+  min-height: 27px;
+  flex: 0 0 27px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px;
+  border-top: 1px solid var(--lean-line);
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--lean-muted);
+  font: 0.57rem/1 var(--numoj-mono);
+}
+
+.lean-inspector-footer > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.lean-inspector-footer kbd {
+  padding: 1px 3px;
+  border: 1px solid #d4d4d8;
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: #fafafa;
+  color: #52525b;
+  font: inherit;
+  box-shadow: none;
+}
+
+@keyframes lean-status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.78); }
+}
+
+@media (min-width: 992px) {
+  .problem-detail-page.is-lean-workbench .problem-detail-row {
+    grid-template-columns: minmax(330px, 0.72fr) minmax(0, 1.28fr);
+  }
+}
+
+@media (max-width: 1199.98px) and (min-width: 992px) {
+  .lean-workbench {
+    grid-template-columns: minmax(0, 1.2fr) minmax(240px, 0.8fr);
+  }
+}
+
+@media (max-width: 991.98px) {
+  .problem-detail-page.is-lean-workbench .lean-workbench-card > .card-body {
+    height: auto;
+  }
+
+  .lean-workbench {
+    height: min(820px, 88svh);
+    min-height: 660px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(390px, 1.45fr) minmax(250px, 0.85fr);
+  }
+
+  .lean-inspector {
+    border-top: 1px solid var(--lean-line);
+    border-left: 0;
+  }
+
+  .problem-detail-page.is-lean-workbench .lean-editor-body .problem-editor-desktop-shell,
+  .problem-detail-page.is-lean-workbench .lean-editor-body .numoj-code-textarea-fallback {
+    height: 100%;
+    min-height: 0;
+  }
+}
+
+@media (max-width: 479.98px) {
+  .lean-workbench {
+    height: 760px;
+    min-height: 0;
+    grid-template-rows: 440px 320px;
+  }
+
+  .lean-inspector-bar {
+    padding-right: 7px;
+  }
+
+  .lean-inspector-tab {
+    gap: 4px;
+    padding-inline: 7px;
+  }
+
+  .lean-check-status {
+    max-width: 88px;
+  }
+
+  .lean-inspector-footer > span:first-child {
+    display: none;
+  }
+
+  .lean-inspector-footer {
+    justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lean-check-status[data-state="checking"] .lean-status-dot {
+    animation: none;
+  }
+}

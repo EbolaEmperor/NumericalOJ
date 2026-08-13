@@ -493,6 +493,7 @@ def run_in_container(
     extra_ro_mounts=None,
     measure_time=False,
     workdir="/sandbox",
+    docker_image=None,
 ):
     """在一次性 Docker 容器的只读 sandbox 中执行可信命令。
 
@@ -504,6 +505,7 @@ def run_in_container(
         extra_ro_mounts: 额外只读挂载列表，每项为 (host_path, container_path)
         measure_time: True 时在容器内部测量命令 wall time，不包含 docker run 启动耗时
         workdir: 本次短生命周期容器的工作目录
+        docker_image: 可选的独立运行镜像；为空时使用普通判题镜像
 
     Returns:
         _RunResult(returncode, stdout, stderr)
@@ -532,7 +534,7 @@ def run_in_container(
             if os.path.exists(host_path):
                 docker_cmd.extend(["-v", f"{os.path.abspath(host_path)}:{container_path}:ro"])
 
-    docker_cmd.append(_image())
+    docker_cmd.append(str(docker_image or _image()))
     docker_cmd.extend(_wrap_timed_cmd(cmd) if measure_time else cmd)
 
     proc = None

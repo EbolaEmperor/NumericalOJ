@@ -23,7 +23,8 @@
     {'value': 'matlab', 'label': 'MATLAB'},
     {'value': 'c', 'label': 'C'},
     {'value': 'cpp', 'label': 'C++'},
-    {'value': 'python', 'label': 'Python'}
+    {'value': 'python', 'label': 'Python'},
+    {'value': 'lean4', 'label': 'Lean 4'}
   ] %}
   {% set programming_mode_options = [
     {'value': '1', 'label': '传统交互'},
@@ -82,7 +83,7 @@
     <!-- 时限 -->
     <div class="col-md-6" id="timeLimitField">
       <label for="timeLimitInput" class="form-label">
-        <i class="fas fa-stopwatch me-2"></i> 测试点时限 (毫秒 ms)
+        <i class="fas fa-stopwatch me-2"></i> <span id="timeLimitLabelText">测试点时限 (毫秒 ms)</span>
       </label>
       <input type="number" class="form-control" id="timeLimitInput" name="time_limit" value="2000" required>
     </div>
@@ -413,25 +414,25 @@
 
   <div class="row mb-3">
     <div id="programmingFields" class="col-md-6">
-      <label class="form-label"><i class="fas fa-code me-2"></i> 初始代码 (可选)</label>
+      <label class="form-label"><i class="fas fa-code me-2"></i> <span id="initialCodeLabelText">初始代码 (可选)</span></label>
       <div class="card numoj-form-code-editor-card">
         <div class="card-body p-0">
           <textarea id="initialCode" name="initial_code" style="display:none;"></textarea>
           <div id="initialCodeEditorBox" class="numoj-form-code-editor"></div>
         </div>
       </div>
-      <small class="text-muted">这段代码会在提交页面的代码编辑框中预先显示。</small>
+      <small class="text-muted" id="initialCodeHelpText">这段代码会在提交页面的代码编辑框中预先显示。</small>
     </div>
 
     <div id="testLibFields" class="col-md-6">
-      <label class="form-label"><i class="fas fa-code me-2"></i> 交互库代码 (可选)</label>
+      <label class="form-label"><i class="fas fa-code me-2"></i> <span id="testCodeLabelText">交互库代码 (可选)</span></label>
       <div class="card numoj-form-code-editor-card">
         <div class="card-body p-0">
           <textarea id="testCode" name="test_code" style="display:none;"></textarea>
           <div id="testCodeEditorBox" class="numoj-form-code-editor"></div>
         </div>
       </div>
-      <small class="text-muted">
+      <small class="text-muted" id="testCodeHelpText">
         这段代码用作交互库/评测模板。学生代码将会粘贴到 <code>%%user_code_here</code> 所在位置。
       </small>
     </div>
@@ -453,22 +454,97 @@
 
 <script>
   const problemTypeSelect = document.getElementById('problemTypeSelect');
+  const leanStarter = `import Mathlib.Data.Nat.Basic
+
+namespace Submission
+
+lemma add_zero_helper (n : Nat) : n + 0 = n := by
+  simp
+
+theorem answer : ∀ n : Nat, n + 0 = n := by
+  intro n
+  exact add_zero_helper n
+
+end Submission
+`;
+  const leanVerifier = JSON.stringify({
+    target: '∀ n : Nat, n + 0 = n',
+    entry: 'Submission.answer',
+    imports: ['Mathlib.Data.Nat.Basic']
+  }, null, 2);
 
   function syncVisibility() {
     const isProgramming = (problemTypeSelect.value === '1');
+    const languageSelect = document.getElementById('langSelect');
+    const isLean = isProgramming && languageSelect && languageSelect.value === 'lean4';
     document.getElementById('programmingFields').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('testLibFields').style.display = isProgramming ? 'block' : 'none';
-    document.getElementById('forbiddenFuncDiv').style.display = isProgramming ? 'block' : 'none';
-    document.getElementById('programmingGradingFields').style.display = isProgramming ? 'block' : 'none';
+    document.getElementById('forbiddenFuncDiv').style.display = (isProgramming && !isLean) ? 'block' : 'none';
+    document.getElementById('programmingGradingFields').style.display = (isProgramming && !isLean) ? 'block' : 'none';
     document.getElementById('writtenAssignmentFields').style.display = isProgramming ? 'none' : 'block';
     document.getElementById('langField').style.display = isProgramming ? 'block' : 'none';
     document.getElementById('programmingConfigFields').style.display = isProgramming ? 'flex' : 'none';
     _toggleProgrammingImageFields(document.getElementById('programmingGradingModeSelect').value);
     _toggleAiGradingFields(document.getElementById('writtenGradingModeSelect').value);
+    syncLeanFields(isLean);
+  }
+
+  function syncLeanFields(isLean) {
+    document.getElementById('timeLimitLabelText').textContent = isLean
+      ? '证明验证时限 (毫秒 ms)'
+      : '测试点时限 (毫秒 ms)';
+    document.getElementById('initialCodeLabelText').textContent = isLean
+      ? '完整 Submission.lean 初始文件'
+      : '初始代码 (可选)';
+    document.getElementById('initialCodeHelpText').textContent = isLean
+      ? '学生提交整份 Lean 文件，可以在其中自由定义辅助引理。'
+      : '这段代码会在提交页面的代码编辑框中预先显示。';
+    document.getElementById('testCodeLabelText').textContent = isLean
+      ? 'Lean 4 验证配置 (JSON)'
+      : '交互库代码 (可选)';
+    document.getElementById('testCodeHelpText').textContent = isLean
+      ? '配置 target（目标类型）、entry（学生定理全名）和 imports（预装模块）；建议按需导入具体 Mathlib 模块。'
+      : '这段代码用作交互库/评测模板。学生代码将会粘贴到 %%user_code_here 所在位置。';
+
+    const initial = document.getElementById('initialCode');
+    const test = document.getElementById('testCode');
+    if (!isLean) {
+      if (initial && initial.value === leanStarter) {
+        initial.value = '';
+        window.initialCodeEditor?.setValue?.('');
+      }
+      if (test && test.value === leanVerifier) {
+        test.value = '';
+        window.testCodeEditor?.setValue?.('');
+      }
+      return;
+    }
+    const timeLimit = document.getElementById('timeLimitInput');
+    if (timeLimit && timeLimit.value === '2000') timeLimit.value = '10000';
+    if (initial && !initial.value.trim()) {
+      initial.value = leanStarter;
+      if (window.initialCodeEditor && window.initialCodeEditor.setValue) {
+        window.initialCodeEditor.setValue(leanStarter);
+      }
+    }
+    if (test && !test.value.trim()) {
+      test.value = leanVerifier;
+      if (window.testCodeEditor && window.testCodeEditor.setValue) {
+        window.testCodeEditor.setValue(leanVerifier);
+      }
+    }
   }
   document.addEventListener('DOMContentLoaded', function() {
-    syncVisibility();
-    problemTypeSelect.addEventListener('change', syncVisibility);
+    const initializeForm = function() {
+      syncVisibility();
+      problemTypeSelect.addEventListener('change', syncVisibility);
+      document.getElementById('langSelect').addEventListener('change', syncVisibility);
+    };
+    if (window.NumOJProblemFormEditorsReady) {
+      window.NumOJProblemFormEditorsReady.finally(initializeForm);
+    } else {
+      initializeForm();
+    }
     document.getElementById('programmingGradingModeSelect').addEventListener('change', function() {
       _toggleProgrammingImageFields(this.value);
     });

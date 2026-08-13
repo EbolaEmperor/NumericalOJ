@@ -41,6 +41,17 @@
         };
   }
 
+  function specForDescriptor(spec, descriptor) {
+    if (
+      spec.language === "lean4" &&
+      descriptor.documentId === "test-code" &&
+      runtime
+    ) {
+      return runtime.forLanguage("json");
+    }
+    return spec;
+  }
+
   function revealTextarea(descriptor) {
     descriptor.host.hidden = true;
     descriptor.textarea.hidden = false;
@@ -57,6 +68,9 @@
       getValue: function () {
         return descriptor.textarea.value;
       },
+      setValue: function (value) {
+        descriptor.textarea.value = value || "";
+      },
       setLanguage: function () {},
       layout: function () {},
     };
@@ -65,6 +79,7 @@
   function ensureSemanticProvider(monaco, spec) {
     if (
       !spec.language ||
+      spec.language === "lean4" ||
       semanticProviders[spec.language] ||
       !window.NumOJSemanticTokens
     ) {
@@ -97,10 +112,11 @@
     var spec = currentSpec();
     ensureSemanticProvider(monaco, spec);
     editors = descriptors.map(function (descriptor) {
+      var descriptorSpec = specForDescriptor(spec, descriptor);
       descriptor.host.hidden = false;
       var model = monaco.editor.createModel(
         descriptor.textarea.value || "",
-        spec.monacoLanguage,
+        descriptorSpec.monacoLanguage,
         monaco.Uri.parse(
           "inmemory://problem-form/" + descriptor.documentId
         )
@@ -112,6 +128,7 @@
           theme: theme,
           ariaLabel: descriptor.ariaLabel,
           wordWrap: "on",
+          tabSize: descriptorSpec.language === "lean4" || descriptorSpec.language === "json" ? 2 : 4,
         })
       );
       runtime.protectEditorInput(
@@ -125,9 +142,13 @@
         getValue: function () {
           return instance.getValue();
         },
+        setValue: function (value) {
+          instance.setValue(value || "");
+        },
         setLanguage: function (nextSpec) {
-          ensureSemanticProvider(monaco, nextSpec);
-          monaco.editor.setModelLanguage(model, nextSpec.monacoLanguage);
+          var nextDescriptorSpec = specForDescriptor(nextSpec, descriptor);
+          ensureSemanticProvider(monaco, nextDescriptorSpec);
+          monaco.editor.setModelLanguage(model, nextDescriptorSpec.monacoLanguage);
         },
         layout: function () {
           instance.layout();
@@ -144,15 +165,16 @@
     if (desktop || !window.CodeMirror) return false;
     var spec = currentSpec();
     editors = descriptors.map(function (descriptor) {
+      var descriptorSpec = specForDescriptor(spec, descriptor);
       descriptor.host.hidden = false;
       var instance = window.CodeMirror(descriptor.host, {
         value: descriptor.textarea.value || "",
-        mode: spec.codeMirrorMode,
+        mode: descriptorSpec.codeMirrorMode,
         theme: "eclipse",
         lineNumbers: true,
         lineWrapping: true,
-        indentUnit: 4,
-        tabSize: 4,
+        indentUnit: descriptorSpec.language === "lean4" || descriptorSpec.language === "json" ? 2 : 4,
+        tabSize: descriptorSpec.language === "lean4" || descriptorSpec.language === "json" ? 2 : 4,
         matchBrackets: true,
         autofocus: descriptor.autofocus,
         extraKeys: {
@@ -173,8 +195,14 @@
         getValue: function () {
           return instance.getValue();
         },
+        setValue: function (value) {
+          instance.setValue(value || "");
+        },
         setLanguage: function (nextSpec) {
-          instance.setOption("mode", nextSpec.codeMirrorMode);
+          instance.setOption(
+            "mode",
+            specForDescriptor(nextSpec, descriptor).codeMirrorMode
+          );
         },
         layout: function () {
           instance.refresh();
