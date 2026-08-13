@@ -53,6 +53,7 @@ from oj_modules.routes.editor_language_routes import (
     editor_language_bp,
     init_editor_language_module,
 )
+from oj_modules.routes.lean_routes import lean_bp, init_lean_module
 from oj_modules.routes.problem_core_routes import (
     init_problem_core_module,
     problem_core_bp,
@@ -205,6 +206,7 @@ app.register_blueprint(admin_user_bp)
 app.register_blueprint(homework_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(editor_language_bp)
+app.register_blueprint(lean_bp)
 app.register_blueprint(problem_core_bp)
 app.register_blueprint(ai_detection_bp)
 app.register_blueprint(game_bp)
@@ -429,6 +431,7 @@ init_auth_module(rds)
 # 初始化 AI 模块（ask_ai_code_marks 限流依赖 Redis）
 init_ai_module(rds)
 init_editor_language_module(rds)
+init_lean_module(rds)
 # 初始化 submission 状态快照缓存（Redis）
 init_submission_snapshot_cache(rds, blocking_client=rds_blocking)
 # 初始化 agent 运行状态缓存（Redis）

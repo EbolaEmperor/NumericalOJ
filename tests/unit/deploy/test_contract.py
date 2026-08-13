@@ -85,10 +85,12 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         '"$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" '
         "docker/agent_judge" in script
     )
+    assert '"$LEAN4_STABLE" "$LEAN4_CANDIDATE" docker/lean4' in script
     assert 'build_candidate_image' in script
-    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 2
+    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 3
     assert "numericaloj-judger:deploy-*" in script
     assert "numericaloj-agent-judge:deploy-*" in script
+    assert "numericaloj-lean4:deploy-*" in script
     assert "numericaloj-vibehub-runtime:deploy-*" in script
     assert 'remove_stale_candidate_tags' in script
     assert 'docker image prune --force --filter "label=$MANAGED_IMAGE_LABEL"' in script
@@ -194,6 +196,7 @@ def test_deploy_detects_and_uses_daemon_docker_build_cache():
     assert 'DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"' in script
     assert "JUDGER_STABLE='numericaloj-judger:latest'" in script
     assert "AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'" in script
+    assert "LEAN4_STABLE='numericaloj-lean4:latest'" in script
     assert "VIBEHUB_RUNTIME_STABLE='numericaloj-vibehub-runtime:1'" in script
     assert (
         'VIBEHUB_RUNTIME_CANDIDATE="numericaloj-vibehub-runtime:deploy-$RUN_ID"'

@@ -30,6 +30,13 @@ from oj_modules.problems.testdata import TestdataValidationError, import_testdat
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
 ALLOWED_EXTENSIONS = {'zip'}
+LEAN4_DEFAULT_CONFIG = {
+    "target": "∀ n : Nat, n + 0 = n",
+    "entry": "Submission.answer",
+    "imports": ["Mathlib.Data.Nat.Basic"],
+}
+
+
 def _problem_llm_form_context(bindings=None):
     return {
         "llm_endpoint_bindings": dict(bindings or {}),
@@ -177,6 +184,36 @@ def parse_programming_grading_prompt_from_form(form):
     return text
 
 
+def normalize_lean4_problem_config(raw):
+    """规范管理员保存在 ``test_code`` 中的 Lean 题目契约。"""
+    text = str(raw or '').strip()
+    payload = json.loads(text) if text else dict(LEAN4_DEFAULT_CONFIG)
+    if not isinstance(payload, dict):
+        raise ValueError("Lean 4 验证配置必须是 JSON 对象")
+
+    target = str(payload.get("target") or '').strip()
+    entry = str(payload.get("entry") or '').strip()
+    imports = payload.get("imports") or ["Mathlib.Data.Nat.Basic"]
+    if not target:
+        raise ValueError("Lean 4 验证配置缺少 target")
+    if not entry:
+        raise ValueError("Lean 4 验证配置缺少 entry")
+    if not isinstance(imports, list) or not all(
+        isinstance(item, str) and item.strip() for item in imports
+    ):
+        raise ValueError("Lean 4 验证配置的 imports 必须是模块名数组")
+
+    return json.dumps(
+        {
+            "target": target,
+            "entry": entry,
+            "imports": [item.strip() for item in imports],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
     user = current_user()
@@ -200,6 +237,20 @@ def add_problem():
         lang = (request.form.get('lang') or 'matlab').strip().lower()
         time_limit_ms = parse_time_limit_ms_from_form(request.form)
         submission_limit = int(request.form.get('submission_limit', 10))
+        if lang == 'lean4':
+            try:
+                test_code = normalize_lean4_problem_config(test_code)
+            except (ValueError, json.JSONDecodeError) as exc:
+                if _wants_json_response():
+                    return jsonify(success=False, message=str(exc)), 400
+                return render_template(
+                    'problems/create.html',
+                    user=user,
+                    error_message=str(exc),
+                    default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
+                    **_problem_llm_form_context(),
+                ), 400
+            programming_grading_mode = 1
         try:
             llm_endpoint_bindings = problem_llm_bindings_from_form(
                 request.form,
@@ -293,6 +344,28 @@ def edit_problem(problem_id):
         default_mode = problem.get('written_grading_mode', 1)
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
         new_written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
+        if new_lang == 'lean4':
+            try:
+                new_test_code = normalize_lean4_problem_config(new_test_code)
+            except (ValueError, json.JSONDecodeError) as exc:
+                if _wants_json_response():
+                    return jsonify(success=False, message=str(exc)), 400
+                problem_for_form = dict(problem)
+                problem_for_form.update({
+                    'title': new_title,
+                    'content': new_content,
+                    'initial_code': new_initial_code,
+                    'test_code': new_test_code,
+                    'lang': new_lang,
+                })
+                return render_template(
+                    'problems/edit.html',
+                    problem=problem_for_form,
+                    user=user,
+                    error_message=str(exc),
+                    **_problem_llm_form_context(problem.get('llm_endpoint_bindings')),
+                ), 400
+            new_programming_grading_mode = 1
         try:
             new_llm_endpoint_bindings = problem_llm_bindings_from_form(
                 request.form,

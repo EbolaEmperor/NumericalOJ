@@ -14,6 +14,7 @@ from oj_modules.judging.programming import (
     build_programming_source,
     compare_float_strings,
 )
+from oj_modules.judging.lean_proof import evaluate_lean_proof
 
 from oj_modules.ai.grading import evaluate_program_output_image_with_ai
 from oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
@@ -341,6 +342,49 @@ def register_evaluate_submission_task(celery_app):
             )
             lang = (problem.get('lang') or 'matlab').strip().lower()
             test_code = problem.get('test_code') or ''
+
+            if lang in ('lean', 'lean4'):
+                proof_result = evaluate_lean_proof(
+                    submission_id=int(submission_id),
+                    source=raw_submission_code,
+                    test_code=test_code,
+                    time_limit_ms=int(problem.get('time_limit_ms') or 10000),
+                )
+                proof_status = proof_result.get('status') or 'Error'
+                proof_final_status = (
+                    proof_status
+                    if proof_status in ('Accepted', 'Compile Error', 'Error')
+                    else 'Unaccepted'
+                )
+                proof_axioms = proof_result.get('axioms') or []
+                proof_point = {
+                    "status": proof_status,
+                    "stderr": str(proof_result.get('stderr') or ''),
+                    "stdout": "",
+                    "comment": (
+                        "Lean 4 已验证目标定理。"
+                        + (
+                            " 使用公理：" + ", ".join(proof_axioms)
+                            if proof_axioms
+                            else " 未使用额外公理。"
+                        )
+                        if proof_status == 'Accepted'
+                        else "Lean 4 证明未通过。"
+                    ),
+                    "time": int(proof_result.get('time') or 0),
+                    "has_output_image": False,
+                    "test_index": 1,
+                    "proof_stage": "kernel_check",
+                    "axioms": proof_axioms,
+                }
+                _finalize_programming_submission(
+                    submission=submission,
+                    problem_id=problem_id,
+                    test_point_statuses=[proof_point],
+                    score=1 if proof_status == 'Accepted' else 0,
+                    final_status=proof_final_status,
+                )
+                return
 
             user_files = []
 

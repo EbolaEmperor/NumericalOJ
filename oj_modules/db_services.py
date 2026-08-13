@@ -1324,7 +1324,11 @@ def create_problem(
 ):
     conn = get_db_connection()
     try:
-        max_score = (0 if int(type) == 1 else 5)
+        max_score = (
+            1
+            if int(type) == 1 and str(lang or '').strip().lower() == 'lean4'
+            else (0 if int(type) == 1 else 5)
+        )
         use_programming_mode = 1
         use_programming_output_filename = "output.png"
         use_programming_prompt = ""
@@ -1497,6 +1501,22 @@ def update_problem(
         if new_written_grading_prompt is not None:
             prompt_val = str(new_written_grading_prompt or "").strip()
         with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT lang, max_score FROM problems WHERE id=%s",
+                (problem_id,),
+            )
+            current_score_row = cursor.fetchone()
+            if not current_score_row:
+                raise LookupError("题目不存在")
+            old_lang = str(current_score_row.get("lang") or '').strip().lower()
+            normalized_new_lang = str(new_lang or '').strip().lower()
+            if normalized_new_lang == 'lean4':
+                next_max_score = 1
+            elif old_lang == 'lean4':
+                next_max_score = 0
+            else:
+                next_max_score = current_score_row.get("max_score")
+
             assignments = [
                 "title=%s",
                 "content=%s",
@@ -1511,6 +1531,7 @@ def update_problem(
                 "programming_grading_prompt=%s",
                 "written_grading_mode=%s",
                 "written_grading_prompt=%s",
+                "max_score=%s",
             ]
             values = [
                 new_title,
@@ -1526,6 +1547,7 @@ def update_problem(
                 programming_prompt_val if programming_prompt_val is not None else "",
                 mode_val if mode_val is not None else 1,
                 prompt_val if prompt_val is not None else "",
+                next_max_score,
             ]
             if new_llm_endpoint_bindings is not _UNSET:
                 cursor.execute(

@@ -5,10 +5,13 @@
 {% block head %}
   {{ super() }}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
+  {% if problem.type == 1 and (problem.lang or '')|lower in ('lean', 'lean4') %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/lean-workbench.css') }}">
+  {% endif %}
   {% if problem.type == 2 %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-written-submit.css') }}">
   {% endif %}
-  {% if user and user.is_admin == 1 and problem.type == 1 %}
+  {% if user and user.is_admin == 1 and problem.type == 1 and ((problem.lang or '')|lower) not in ('lean', 'lean4') %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-agent-launch.css') }}">
   {% endif %}
@@ -17,6 +20,7 @@
 
 {% block content %}
 {% set plang = (problem.lang or 'matlab')|lower %}
+{% set is_lean4 = problem.type == 1 and plang in ('lean', 'lean4') %}
 {% set lang_label = language_label(plang)|trim %}
 {% set tl_ms = (problem.time_limit_ms or 2000) %}
 {% set programming_mode = (problem.programming_grading_mode or 1)|int %}
@@ -39,7 +43,7 @@
   'Error': 'ER'
 } %}
 
-<div class="problem-detail-page">
+<div class="problem-detail-page{% if is_lean4 %} is-lean-workbench{% endif %}">
 <nav class="numoj-breadcrumb d-flex" aria-label="面包屑导航">
   {% if request.args.get('source') == 'library' and user.is_admin == 1 %}
     <a href="{{ url_for('problem_core.problem_library') }}">总题库</a>
@@ -70,7 +74,7 @@
           </div>
           {% if user and user.is_admin == 1 %}
           <div class="problem-admin-actions mt-2">
-            {% if problem.type == 1 %}
+            {% if problem.type == 1 and not is_lean4 %}
             <button
               type="button"
               class="btn btn-outline-primary"
@@ -89,9 +93,11 @@
             <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
               <i class="fas fa-pencil-alt me-1"></i> 编辑
             </a>
+            {% if not is_lean4 %}
             <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
               <i class="fas fa-cloud-upload-alt me-1"></i> 上传
             </button>
+            {% endif %}
             <button type="button" class="btn btn-outline-danger" id="btnRejudge">
               <i class="fas fa-redo-alt me-1"></i> 重测
             </button>
@@ -183,7 +189,7 @@
         <div class="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar">
           <label for="codeEditor" class="form-label mb-0 code-label-wrap">
             <span class="code-title-line">
-              <i class="fas fa-code me-2"></i> 代码
+              <i class="fas {{ 'fa-square-root-alt' if is_lean4 else 'fa-code' }} me-2"></i> {{ 'Submission.lean' if is_lean4 else '代码' }}
             </span>
             <span class="code-meta-line">
               <span class="badge bg-secondary">
@@ -211,19 +217,35 @@
               </button>
               {% if user.is_admin != 1 %}
                 <button type="submit" class="btn btn-outline-primary" {% if not can_submit %}disabled{% endif %}>
-                  <i class="fas fa-paper-plane me-2"></i> {% if can_submit %}提交{% else %}已达上限{% endif %}
+                  <i class="fas fa-paper-plane me-2"></i> {% if can_submit %}{{ '提交证明' if is_lean4 else '提交' }}{% else %}已达上限{% endif %}
                 </button>
               {% else %}
                 <button type="submit" class="btn btn-outline-primary">
-                  <i class="fas fa-paper-plane me-2"></i> 提交
+                  <i class="fas fa-paper-plane me-2"></i> {{ '提交证明' if is_lean4 else '提交' }}
                 </button>
               {% endif %}
             </div>
           </div>
         </div>
 
-        <div class="card problem-editor-card">
+        <div class="card problem-editor-card{% if is_lean4 %} lean-workbench-card{% endif %}">
           <div class="card-body p-0">
+            {% if is_lean4 %}
+            <div
+              class="lean-workbench"
+              id="leanWorkbench"
+              data-problem-id="{{ problem.id }}"
+              data-check-url="/api/lean/check">
+              <section class="lean-source-pane" aria-label="Lean 4 证明文件编辑器">
+                <header class="lean-pane-bar lean-source-bar">
+                  <span class="lean-file-name">
+                    <span class="lean-file-mark" aria-hidden="true">λ</span>
+                    Submission.lean
+                  </span>
+                  <span class="lean-cursor-position" id="leanCursorPosition">Ln 1, Col 1</span>
+                </header>
+                <div class="lean-editor-body">
+            {% endif %}
             <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
             <div
               id="desktopEditorShell"
@@ -242,6 +264,74 @@
               </div>
               <div id="monacoEditorContainer" data-language="{{ plang }}" hidden></div>
             </div>
+            {% if is_lean4 %}
+                </div>
+              </section>
+              <aside class="lean-inspector" aria-label="Lean 证明状态">
+                <header class="lean-pane-bar lean-inspector-bar">
+                  <div class="lean-inspector-tabs" role="tablist" aria-label="证明检查结果">
+                    <button
+                      type="button"
+                      class="lean-inspector-tab is-active"
+                      id="leanGoalsTab"
+                      role="tab"
+                      aria-selected="true"
+                      aria-controls="leanGoalsPanel"
+                      data-lean-tab="goals">
+                      Goals <span class="lean-tab-count" id="leanGoalCount">0</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="lean-inspector-tab"
+                      id="leanProblemsTab"
+                      role="tab"
+                      aria-selected="false"
+                      aria-controls="leanProblemsPanel"
+                      data-lean-tab="problems">
+                      Problems <span class="lean-tab-count" id="leanProblemCount">0</span>
+                    </button>
+                  </div>
+                  <span class="lean-check-status" id="leanCheckStatus" data-state="idle" role="status" aria-live="polite">
+                    <span class="lean-status-dot" aria-hidden="true"></span>
+                    <span data-lean-status-text>准备中</span>
+                  </span>
+                </header>
+                <div class="lean-inspector-body">
+                  <section
+                    class="lean-inspector-panel is-active"
+                    id="leanGoalsPanel"
+                    role="tabpanel"
+                    aria-labelledby="leanGoalsTab"
+                    data-lean-panel="goals">
+                    <div class="lean-panel-empty" id="leanGoalsEmpty">
+                      <span class="lean-empty-glyph" aria-hidden="true">⊢</span>
+                      <strong>等待证明状态</strong>
+                      <span>把光标放在 tactic 中，这里会显示当前目标。</span>
+                    </div>
+                    <div class="lean-goal-list" id="leanGoalList"></div>
+                  </section>
+                  <section
+                    class="lean-inspector-panel"
+                    id="leanProblemsPanel"
+                    role="tabpanel"
+                    aria-labelledby="leanProblemsTab"
+                    data-lean-panel="problems"
+                    hidden>
+                    <div class="lean-panel-empty" id="leanProblemsEmpty">
+                      <span class="lean-empty-glyph is-check" aria-hidden="true">✓</span>
+                      <strong>暂时没有问题</strong>
+                      <span>Lean 的错误与警告会列在这里。</span>
+                    </div>
+                    <ol class="lean-problem-list" id="leanProblemList"></ol>
+                  </section>
+                </div>
+                <footer class="lean-inspector-footer">
+                  <span><kbd>Ctrl</kbd><span aria-hidden="true">+</span><kbd>Space</kbd> 补全符号</span>
+                  <span id="leanDocumentVersion">v0</span>
+                </footer>
+              </aside>
+            </div>
+            {% endif %}
           </div>
         </div>
       </form>
@@ -307,7 +397,7 @@
 </div>
 
 {% if user and user.is_admin == 1 %}
-{% if problem.type == 1 %}
+{% if problem.type == 1 and not is_lean4 %}
 {% macro agent_launch_picker(prefix, kind, label) -%}
 <div class="agent-launch-field">
   <label class="agent-launch-field-label" id="{{ prefix }}Label" for="{{ prefix }}Trigger">{{ label }}</label>
@@ -470,6 +560,7 @@
 {% endif %}
 {% endif %}
 <!-- 上传数据模态框 & 重测进度模态框：保持不变 -->
+{% if not is_lean4 %}
 <div class="modal fade" id="uploadDataModal" tabindex="-1" aria-labelledby="uploadDataModalLabel" aria-hidden="true">
   <div class="modal-dialog">
     <form method="POST" action="{{ url_for('admin_problem.upload_testdata', problem_id=problem.id) }}" enctype="multipart/form-data">
@@ -493,6 +584,7 @@
     </form>
   </div>
 </div>
+{% endif %}
 
 <div class="modal fade" id="rejudgeProgressModal" tabindex="-1" aria-labelledby="rejudgeProgressLabel" aria-hidden="true">
   <div class="modal-dialog">
@@ -766,6 +858,9 @@
 {% if problem.type == 1 and programming_mode != 3 %}
 {% set monaco_all_breakpoints = true %}
 {% include 'components/editor/monaco.html' %}
+{% if is_lean4 %}
+<script defer src="{{ url_for('static', filename='app/lean-workbench.js') }}"></script>
+{% endif %}
 <script defer src="{{ url_for('static', filename='app/problem-editor.js') }}"></script>
 {% endif %}
 {% if problem.type == 2 %}
@@ -958,7 +1053,7 @@
 
 {% block scripts %}
   {{ super() }}
-  {% if user and user.is_admin == 1 and problem.type == 1 %}
+  {% if user and user.is_admin == 1 and problem.type == 1 and ((problem.lang or '')|lower) not in ('lean', 'lean4') %}
   <script src="{{ url_for('static', filename='app/problem-agent-launch.js') }}"></script>
   {% endif %}
   {# 标准编程题由上方 Monaco 组件加载语义客户端；其余分支在这里补齐一次。 #}

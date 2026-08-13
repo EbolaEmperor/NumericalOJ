@@ -12,13 +12,15 @@
   'MATLAB' if (plang or 'matlab') == 'matlab' 
   else 'C++' if (plang or '') == 'cpp' 
   else 'C' if (plang or '') == 'c' 
+  else 'Lean 4' if (plang or '') in ('lean', 'lean4')
   else 'Python' %}
 {% set max_score = test_points | length %}
+{% set is_lean4_submission = submission.problem_type == 1 and (plang or '') in ('lean', 'lean4') %}
 {% set header_max_score = 5 if submission.problem_type == 2 else max_score %}
 {% set normalized_status = (submission.status or 'Unknown') | lower | replace(' ', '-') %}
 
 <div class="submission-detail-page" data-math-curve-stroke-scale="1.2">
-  <section class="submission-detail-primary" aria-label="{{ '提交代码' if submission.problem_type == 1 else '书面作业 PDF' }}">
+  <section class="submission-detail-primary" aria-label="{{ 'Lean 4 提交文件' if is_lean4_submission else ('提交代码' if submission.problem_type == 1 else '书面作业 PDF') }}">
     {% if submission.problem_type == 1 %}
       <div class="submission-code-surface" id="submissionEditorShell" aria-busy="true">
         <div class="submission-editor-loading" id="submissionEditorLoading">
@@ -145,18 +147,18 @@
     {% endif %}
   </aside>
 
-  <aside class="submission-detail-results" aria-label="{{ '测试点详情' if submission.problem_type == 1 else '批改详情' }}">
+  <aside class="submission-detail-results" aria-label="{{ '证明验证详情' if is_lean4_submission else ('测试点详情' if submission.problem_type == 1 else '批改详情') }}">
     {% if submission.problem_type == 1 %}
       <section class="submission-detail-section">
         <header class="submission-detail-section-heading">
           <div>
-            <span>TEST POINTS</span>
+            <span>{{ 'PROOF CHECK' if is_lean4_submission else 'TEST POINTS' }}</span>
           </div>
         </header>
 
         <div id="judgingStatus" class="submission-judging-state d-none" role="status">
           <span class="math-curve-loader" data-math-curve-loader data-size="md">
-            <span class="math-curve-loader__label" id="judgingText">正在编译和初始化...</span>
+            <span class="math-curve-loader__label" id="judgingText">{{ '正在启动 Lean 4 验证...' if is_lean4_submission else '正在编译和初始化...' }}</span>
           </span>
         </div>
 
@@ -165,17 +167,17 @@
         <div class="submission-test-detail d-none" id="testPointDetailPanel">
           <header>
             <span>SELECTED</span>
-            <strong id="testPointDetailTitle">测试点详情</strong>
+            <strong id="testPointDetailTitle">{{ '证明验证详情' if is_lean4_submission else '测试点详情' }}</strong>
           </header>
-          <div id="testPointDetailHint" class="submission-test-detail-hint">点击上方方块查看该测试点详情。</div>
+          <div id="testPointDetailHint" class="submission-test-detail-hint">{{ '查看 Lean kernel 验证结果。' if is_lean4_submission else '点击上方方块查看该测试点详情。' }}</div>
           <div id="testPointDetailMeta" class="submission-test-detail-meta d-none"></div>
 
           <section id="testPointDetailErrorWrap" class="submission-test-detail-block d-none">
-            <h3>错误信息</h3>
+            <h3>{{ 'Lean 4 错误' if is_lean4_submission else '错误信息' }}</h3>
             <pre id="testPointDetailErrorText" class="tp-detail-pre"></pre>
           </section>
           <section id="testPointDetailOutputWrap" class="submission-test-detail-block d-none">
-            <h3>程序输出</h3>
+            <h3>{{ '验证输出' if is_lean4_submission else '程序输出' }}</h3>
             <pre id="testPointDetailOutputText" class="tp-detail-pre"></pre>
           </section>
           <section id="testPointDetailCommentWrap" class="submission-test-detail-block d-none">
@@ -332,6 +334,7 @@
   });
 
   const submissionId = {{ submission.id }};
+  const isLean4Submission = {{ is_lean4_submission | tojson }};
   const initialTestPoints = {{ (test_points or []) | tojson }};
   const testPointGridEl = document.getElementById('testPointGrid');
   const testPointDetailPanelEl = document.getElementById('testPointDetailPanel');
@@ -462,9 +465,13 @@
 
   function clearTestPointDetail(hintText, keepVisible) {
     setTestPointDetailVisible(!!keepVisible);
-    if (testPointDetailTitleEl) testPointDetailTitleEl.textContent = '测试点详情';
+    if (testPointDetailTitleEl) {
+      testPointDetailTitleEl.textContent = isLean4Submission ? '证明验证详情' : '测试点详情';
+    }
     if (testPointDetailHintEl) {
-      testPointDetailHintEl.textContent = hintText || '点击上方方块查看该测试点详情。';
+      testPointDetailHintEl.textContent = hintText || (isLean4Submission
+        ? '查看 Lean kernel 验证结果。'
+        : '点击上方方块查看该测试点详情。');
       testPointDetailHintEl.classList.remove('d-none');
     }
     if (testPointDetailMetaEl) {
@@ -476,7 +483,9 @@
     if (testPointDetailOutputWrapEl) testPointDetailOutputWrapEl.classList.add('d-none');
     if (testPointDetailOutputTextEl) testPointDetailOutputTextEl.textContent = '';
     if (testPointDetailCommentWrapEl) testPointDetailCommentWrapEl.classList.add('d-none');
-    if (testPointDetailCommentLabelEl) testPointDetailCommentLabelEl.textContent = '评语';
+    if (testPointDetailCommentLabelEl) {
+      testPointDetailCommentLabelEl.textContent = isLean4Submission ? '验证说明' : '评语';
+    }
     if (testPointDetailCommentTextEl) testPointDetailCommentTextEl.textContent = '';
     if (testPointDetailImageWrapEl) testPointDetailImageWrapEl.classList.add('d-none');
     if (testPointDetailImageEl) {
@@ -542,7 +551,9 @@
     const hasImage = !!tp.has_output_image;
 
     if (testPointDetailTitleEl) {
-      testPointDetailTitleEl.textContent = `测试点 #${index + 1} (${statusShort})`;
+      testPointDetailTitleEl.textContent = isLean4Submission
+        ? `Lean kernel 验证 (${statusShort})`
+        : `测试点 #${index + 1} (${statusShort})`;
     }
     if (testPointDetailHintEl) {
       testPointDetailHintEl.classList.add('d-none');
@@ -570,11 +581,13 @@
 
     if (comment) {
       testPointDetailCommentWrapEl.classList.remove('d-none');
-      testPointDetailCommentLabelEl.textContent = hasImage ? 'AI 评语' : '评测说明';
+      testPointDetailCommentLabelEl.textContent = isLean4Submission
+        ? '验证说明'
+        : (hasImage ? 'AI 评语' : '评测说明');
       testPointDetailCommentTextEl.textContent = comment;
     } else {
       testPointDetailCommentWrapEl.classList.add('d-none');
-      testPointDetailCommentLabelEl.textContent = '评语';
+      testPointDetailCommentLabelEl.textContent = isLean4Submission ? '验证说明' : '评语';
       testPointDetailCommentTextEl.textContent = '';
     }
 
@@ -601,7 +614,9 @@
     const hasOmniAnalysisShown = !!(testPointDetailOmniWrapEl && !testPointDetailOmniWrapEl.classList.contains('d-none'));
 
     if (!stderr && !stdout && !comment && !hasImage && !hasOmniAnalysisShown && testPointDetailHintEl) {
-      testPointDetailHintEl.textContent = '该测试点暂无更多详情。';
+      testPointDetailHintEl.textContent = isLean4Submission
+        ? '该证明暂无更多验证详情。'
+        : '该测试点暂无更多详情。';
       testPointDetailHintEl.classList.remove('d-none');
     }
   }
@@ -646,7 +661,12 @@
 
     if (!testPoints.length) {
       selectedTestPointIndex = null;
-      clearTestPointDetail('判题中，暂时没有可展示的测试点结果。', false);
+      clearTestPointDetail(
+        isLean4Submission
+          ? '证明验证中，结果稍后显示。'
+          : '判题中，暂时没有可展示的测试点结果。',
+        false
+      );
       return;
     }
 
@@ -655,16 +675,22 @@
       card.type = 'button';
       const stateClass = testPointStateClass(tp.status);
       card.className = `test-point-card ${stateClass}`;
-      card.title = `测试点 #${idx + 1} · ${tp.status || 'Unknown'}`;
+      card.title = isLean4Submission
+        ? `证明验证 · ${tp.status || 'Unknown'}`
+        : `测试点 #${idx + 1} · ${tp.status || 'Unknown'}`;
       card.setAttribute(
         'aria-label',
-        `测试点 ${idx + 1}，${tp.status || 'Unknown'}`
+        isLean4Submission
+          ? `证明验证，${tp.status || 'Unknown'}`
+          : `测试点 ${idx + 1}，${tp.status || 'Unknown'}`
       );
       card.setAttribute('aria-pressed', 'false');
 
       const idxEl = document.createElement('span');
       idxEl.className = 'tp-index';
-      idxEl.textContent = String(idx + 1).padStart(2, '0');
+      idxEl.textContent = isLean4Submission
+        ? '⊢'
+        : String(idx + 1).padStart(2, '0');
       card.appendChild(idxEl);
 
       if (stateClass === 'is-active') {

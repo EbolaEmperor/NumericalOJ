@@ -68,6 +68,8 @@ def _source_ext_for_problem(problem):
         return ".c"
     if lang in ("python", "py"):
         return ".py"
+    if lang in ("lean", "lean4"):
+        return ".lean"
     return ".m"
 
 

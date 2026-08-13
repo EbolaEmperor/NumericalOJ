@@ -28,6 +28,8 @@
       };
   const monacoLanguage = languageSpec.monacoLanguage;
   let editorAdapter = null;
+  let monacoEditorInstance = null;
+  let leanWorkbenchController = null;
 
   function revealMonacoEditor(instance) {
     window.requestAnimationFrame(function () {
@@ -55,13 +57,15 @@
     const editorTheme = runtime
       ? await runtime.prepareMonaco(monaco)
       : 'vs-dark';
-    window.NumOJSemanticTokens.register(monaco, {
+    if (language !== 'lean' && language !== 'lean4') {
+      window.NumOJSemanticTokens.register(monaco, {
         language,
         monacoLanguage,
         problemId: document.getElementById('problemMeta')?.dataset.problemId
       }).catch(function (error) {
-      console.warn('语言服务初始化失败，已保留 TextMate 着色。', error);
+        console.warn('语言服务初始化失败，已保留 TextMate 着色。', error);
       });
+    }
     editorHost.hidden = false;
     const instance = monaco.editor.create(editorHost, runtime
       ? runtime.monacoOptions({
@@ -70,7 +74,8 @@
           theme: editorTheme,
           ariaLabel: '代码编辑器',
           fontSize: PROBLEM_EDITOR_FONT_SIZE,
-          lineHeight: PROBLEM_EDITOR_LINE_HEIGHT
+          lineHeight: PROBLEM_EDITOR_LINE_HEIGHT,
+          tabSize: (language === 'lean' || language === 'lean4') ? 2 : 4
         })
       : {
       value: textarea.value,
@@ -88,7 +93,7 @@
       roundedSelection: false,
       scrollBeyondLastLine: false,
       smoothScrolling: true,
-      tabSize: 4,
+      tabSize: (language === 'lean' || language === 'lean4') ? 2 : 4,
       insertSpaces: true,
       detectIndentation: false,
       wordWrap: 'on',
@@ -99,6 +104,7 @@
       contextmenu: true,
       find: { addExtraSpaceOnTop: false }
     });
+    monacoEditorInstance = instance;
     textarea.hidden = true;
     revealMonacoEditor(instance);
     return {
@@ -130,6 +136,17 @@
   // 保持现有管理员造数据逻辑可复用统一编辑器接口。
   window.editor = editorAdapter;
 
+  if (
+    (language === 'lean' || language === 'lean4') &&
+    window.NumOJLeanWorkbench
+  ) {
+    leanWorkbenchController = window.NumOJLeanWorkbench.attach({
+      monaco: window.NumericalOJMonaco,
+      editor: monacoEditorInstance,
+      textarea: textarea
+    });
+  }
+
   form?.addEventListener('submit', function () {
     textarea.value = editorAdapter.getValue();
   });
@@ -149,6 +166,7 @@
         if (!data.success) throw new Error(data.message || '加载失败');
         editorAdapter.setValue(data.code || '');
         editorAdapter.focus();
+        leanWorkbenchController?.checkNow();
       })
       .catch(error => {
         alert(error.message || '请求失败，请稍后再试');

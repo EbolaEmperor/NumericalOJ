@@ -171,7 +171,7 @@ def submit_context(problem_id):
 
 def _problem_form_options():
     return {
-        "languages": ["matlab", "c", "cpp", "python"],
+        "languages": ["matlab", "c", "cpp", "python", "lean4"],
         "problem_types": [
             {"value": "1", "label": "编程题"},
             {"value": "2", "label": "书面题"},

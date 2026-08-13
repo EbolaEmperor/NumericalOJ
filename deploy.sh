@@ -30,9 +30,11 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 DOCKER_BUILDER="${NUMOJ_DOCKER_BUILDER:-default}"
 JUDGER_STABLE='numericaloj-judger:latest'
 AGENT_JUDGE_STABLE='numericaloj-agent-judge:latest'
+LEAN4_STABLE='numericaloj-lean4:latest'
 VIBEHUB_RUNTIME_STABLE='numericaloj-vibehub-runtime:1'
 JUDGER_CANDIDATE="numericaloj-judger:deploy-$RUN_ID"
 AGENT_JUDGE_CANDIDATE="numericaloj-agent-judge:deploy-$RUN_ID"
+LEAN4_CANDIDATE="numericaloj-lean4:deploy-$RUN_ID"
 VIBEHUB_RUNTIME_CANDIDATE="numericaloj-vibehub-runtime:deploy-$RUN_ID"
 MANAGED_IMAGE_LABEL='org.numericaloj.deploy-managed=true'
 VIBEHUB_MANAGED_IMAGE_LABEL='com.numericaloj.vibehub.image=1'
@@ -180,6 +182,7 @@ cleanup() {
     fi
   fi
   docker image rm "$JUDGER_CANDIDATE" "$AGENT_JUDGE_CANDIDATE" \
+    "$LEAN4_CANDIDATE" \
     "$VIBEHUB_RUNTIME_CANDIDATE" \
     >/dev/null 2>&1 || true
   if [[ "$exit_code" -ne 0 ]]; then
@@ -305,6 +308,7 @@ remove_stale_candidate_tags() {
   for reference in \
       'numericaloj-judger:deploy-*' \
       'numericaloj-agent-judge:deploy-*' \
+      'numericaloj-lean4:deploy-*' \
       'numericaloj-vibehub-runtime:deploy-*'; do
     tags="$(
       docker image ls \
@@ -329,6 +333,9 @@ docker_source_digest() {
       ;;
     docker/agent_judge)
       inputs=(Dockerfile report run_harness)
+      ;;
+    docker/lean4)
+      inputs=(Dockerfile run_lean_judge.sh run_lean_lsp.sh)
       ;;
     *)
       printf '没有定义 Docker 构建输入清单：%s\n' "$context" >&2
@@ -365,9 +372,27 @@ build_candidate_image() {
     docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null || true
   )"
   if [[ -z "$stable_id" ]]; then
-    printf '未检测到稳定镜像 %s；为避免冷构建，拒绝继续部署。\n' \
-      "$stable" >&2
-    return 1
+    if [[ "$context" != 'docker/lean4' ]]; then
+      printf '未检测到稳定镜像 %s；为避免冷构建，拒绝继续部署。\n' \
+        "$stable" >&2
+      return 1
+    fi
+    source_digest="$(docker_source_digest "$context")" || return 1
+    printf '首次构建 Lean 4 独立镜像：%s\n' "$candidate"
+    DOCKER_BUILDKIT=1 docker build \
+      --builder "$DOCKER_BUILDER" \
+      --build-arg BUILDKIT_INLINE_CACHE=1 \
+      --label "$MANAGED_IMAGE_LABEL" \
+      --label "$SOURCE_IMAGE_LABEL=$source_digest" \
+      --tag "$candidate" \
+      "$context"
+    candidate_source_digest="$(image_source_digest "$candidate")"
+    if [[ "$candidate_source_digest" != "$source_digest" ]]; then
+      printf 'Lean 4 候选镜像缺少预期的构建输入指纹：%s\n' \
+        "$candidate" >&2
+      return 1
+    fi
+    return 0
   fi
 
   source_digest="$(docker_source_digest "$context")" || return 1
@@ -546,6 +571,9 @@ build_candidate_image \
   'node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5' \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
+build_candidate_image \
+  "$LEAN4_STABLE" "$LEAN4_CANDIDATE" docker/lean4 \
+  'debian:bookworm-slim' 'elan-init.sh' 'lake exe cache get'
 
 phase='准备判题器官方头文件工具链'
 "$CANDIDATE_PYTHON" -B deploy/prepare_editor_toolchain.py \
@@ -830,6 +858,7 @@ phase='种入 VibeHub 示例作品'
 phase='切换判题镜像'
 docker tag "$JUDGER_CANDIDATE" "$JUDGER_STABLE"
 docker tag "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_STABLE"
+docker tag "$LEAN4_CANDIDATE" "$LEAN4_STABLE"
 
 wait_for_programs() {
   local config="$1"

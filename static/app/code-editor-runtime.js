@@ -28,6 +28,12 @@
       codeMirrorMode: "octave",
       label: "MATLAB / Octave",
     },
+    lean4: {
+      language: "lean4",
+      monacoLanguage: "lean4",
+      codeMirrorMode: null,
+      label: "Lean 4",
+    },
     javascript: {
       language: "javascript",
       monacoLanguage: "javascript",
@@ -122,6 +128,7 @@
     pyw: "python",
     pyi: "python",
     m: "matlab",
+    lean: "lean4",
     js: "javascript",
     mjs: "javascript",
     cjs: "javascript",
@@ -237,6 +244,7 @@
     var normalized = String(value || "").toLowerCase();
     if (normalized === "py") normalized = "python";
     if (normalized === "octave") normalized = "matlab";
+    if (normalized === "lean") normalized = "lean4";
     if (normalized === "js") normalized = "javascript";
     if (normalized === "ts") normalized = "typescript";
     if (normalized === "c#" || normalized === "cs") normalized = "csharp";
@@ -273,6 +281,9 @@
     if (
       !monaco ||
       !monaco.languages ||
+      typeof monaco.languages.register !== "function" ||
+      typeof monaco.languages.setLanguageConfiguration !== "function" ||
+      typeof monaco.languages.setMonarchTokensProvider !== "function" ||
       monaco.languages.getLanguages().some(function (item) {
         return item.id === "matlab";
       })
@@ -342,6 +353,105 @@
         commentBlock: [
           [/%\}/, "comment", "@pop"],
           [/./, "comment"],
+        ],
+      },
+    });
+  }
+
+  function registerLean4(monaco) {
+    if (
+      !monaco ||
+      !monaco.languages ||
+      typeof monaco.languages.register !== "function" ||
+      typeof monaco.languages.setLanguageConfiguration !== "function" ||
+      typeof monaco.languages.setMonarchTokensProvider !== "function" ||
+      monaco.languages.getLanguages().some(function (item) {
+        return item.id === "lean4";
+      })
+    ) {
+      return;
+    }
+
+    monaco.languages.register({
+      id: "lean4",
+      extensions: [".lean"],
+      aliases: ["Lean 4", "lean4", "lean"],
+    });
+    monaco.languages.setLanguageConfiguration("lean4", {
+      comments: {
+        lineComment: "--",
+        blockComment: ["/-", "-/"],
+      },
+      brackets: [["(", ")"], ["[", "]"], ["{", "}"]],
+      autoClosingPairs: [
+        { open: "(", close: ")" },
+        { open: "[", close: "]" },
+        { open: "{", close: "}" },
+        { open: '"', close: '"', notIn: ["string", "comment"] },
+        { open: "`", close: "`", notIn: ["string", "comment"] },
+      ],
+      surroundingPairs: [
+        { open: "(", close: ")" },
+        { open: "[", close: "]" },
+        { open: "{", close: "}" },
+        { open: '"', close: '"' },
+      ],
+      indentationRules: {
+        increaseIndentPattern:
+          /(?:\b(?:by|do|where|match|with|then|else)\s*$|:=\s*$|=>\s*$)/,
+        decreaseIndentPattern: /^\s*(?:end\b|\|)/,
+      },
+      wordPattern:
+        /(?:[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Nd}_'\u2080-\u209f\u2070-\u207f]*)/u,
+    });
+    monaco.languages.setMonarchTokensProvider("lean4", {
+      defaultToken: "",
+      tokenPostfix: ".lean4",
+      keywords: [
+        "abbrev", "axiom", "class", "def", "deriving", "do", "else",
+        "end", "example", "export", "extends", "extern", "final", "from",
+        "fun", "if", "import", "in", "include", "inductive", "infix",
+        "infixl", "infixr", "instance", "let", "macro", "match", "mutual",
+        "namespace", "noncomputable", "notation", "omit", "opaque", "open",
+        "partial", "private", "protected", "public", "return", "section",
+        "structure", "syntax", "then", "theorem", "universe", "variable",
+        "where", "with",
+      ],
+      tacticKeywords: [
+        "apply", "assumption", "by", "cases", "constructor", "contradiction",
+        "decide", "exact", "first", "fun_prop", "have", "induction", "intro",
+        "left", "omega", "rfl", "right", "ring", "simp", "simpa", "specialize",
+        "subst", "tauto", "trivial", "use", " · ",
+      ],
+      constants: ["Prop", "Type", "Sort", "True", "False"],
+      tokenizer: {
+        root: [
+          [/\/-/, "comment", "@comment"],
+          [/--.*$/, "comment"],
+          [/"/, "string", "@string"],
+          [/`[^`\s]+/, "string.escape"],
+          [/[0-9]+(?:\.[0-9]+)?/, "number"],
+          [/[\p{L}\p{Nl}_][\p{L}\p{Nl}\p{Nd}_'\u2080-\u209f\u2070-\u207f]*/u, {
+            cases: {
+              "@keywords": "keyword",
+              "@tacticKeywords": "keyword.flow",
+              "@constants": "type.identifier",
+              "@default": "identifier",
+            },
+          }],
+          [/[{}()[\]]/, "@brackets"],
+          [/[,:;.]/, "delimiter"],
+          [/[!#$%&*+\-./:<=>?@\\^|~\u2190-\u22ff]+/, "operator"],
+        ],
+        comment: [
+          [/\/-/, "comment", "@push"],
+          [/-\//, "comment", "@pop"],
+          [/./, "comment"],
+        ],
+        string: [
+          [/[^\\"]+/, "string"],
+          [/\\./, "string.escape"],
+          [/"/, "string", "@pop"],
         ],
       },
     });
@@ -439,6 +549,7 @@
 
   async function prepareMonaco(monaco) {
     registerMatlab(monaco);
+    registerLean4(monaco);
     if (typeof monaco.prepareTextMateHighlighting !== "function") {
       return "vs-dark";
     }
@@ -506,6 +617,7 @@
     monacoOptions: monacoOptions,
     prepareMonaco: prepareMonaco,
     protectEditorInput: protectEditorInput,
+    registerLean4: registerLean4,
     registerMatlab: registerMatlab,
   });
 })();
