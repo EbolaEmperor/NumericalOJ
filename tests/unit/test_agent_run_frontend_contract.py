@@ -55,7 +55,6 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     for modifier in ("harness", "endpoint", "role"):
         assert f"agent-composer-choice--{modifier}" in template
 
-    assert "@media (min-width: 640.02px)" in styles
     assert "width: fit-content;" in styles
     assert ".agent-composer-choice--harness { max-width: 150px; }" in styles
     assert ".agent-composer-choice--endpoint { max-width: 260px; }" in styles
@@ -81,11 +80,10 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     compact = styles.split("@media (max-width: 640px)", 1)[1].split(
         "@media (max-width: 575.98px)", 1
     )[0]
-    assert (
-        "grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.3fr) "
-        "minmax(0, 0.95fr);"
-    ) in compact
-    assert "grid-column: 1 / -1; grid-row: 1;" not in compact
+    assert "display: flex;" in compact
+    assert "grid-template-columns:" not in compact
+    assert "grid-column:" not in compact
+    assert "flex-wrap: nowrap;" in compact
     assert "max-width: calc(100vw - 32px);" in compact
 
     endpoint_mobile_menu = _css_rule(

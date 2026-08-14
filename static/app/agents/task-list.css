@@ -222,24 +222,22 @@
 .agent-choice--endpoint .rk-choice-menu { width: 290px; }
 .agent-choice--role .rk-choice-menu { width: 280px; }
 
-@media (min-width: 640.02px) {
-  .agent-composer-choice,
-  .agent-composer-choice > .agent-choice {
-    width: fit-content;
-  }
+.agent-composer-choice,
+.agent-composer-choice > .agent-choice {
+  width: fit-content;
+}
 
-  .agent-composer-choice > .agent-choice {
-    max-width: 100%;
-  }
+.agent-composer-choice > .agent-choice {
+  max-width: 100%;
+}
 
-  .agent-composer-choice--harness { max-width: 150px; }
-  .agent-composer-choice--endpoint { max-width: 260px; }
-  .agent-composer-choice--role { max-width: 160px; }
+.agent-composer-choice--harness { max-width: 150px; }
+.agent-composer-choice--endpoint { max-width: 260px; }
+.agent-composer-choice--role { max-width: 160px; }
 
-  .agent-choice .rk-choice-trigger {
-    width: auto;
-    max-width: 100%;
-  }
+.agent-choice .rk-choice-trigger {
+  width: auto;
+  max-width: 100%;
 }
 
 .agent-composer-actions {
@@ -547,22 +545,16 @@
 
 @media (max-width: 640px) {
   .agent-composer-footer {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .agent-composer-controls {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.3fr) minmax(0, 0.95fr);
+    display: flex;
+    align-items: center;
     gap: 4px;
   }
 
-  .agent-composer-choice--harness,
-  .agent-composer-choice--endpoint,
-  .agent-composer-choice--role {
-    width: auto;
+  .agent-composer-controls {
+    display: flex;
     min-width: 0;
+    flex: 1 1 auto;
+    gap: 4px;
   }
 
   .agent-choice .rk-choice-menu {
@@ -584,8 +576,8 @@
   }
 
   .agent-composer-actions {
-    grid-column: 2;
-    justify-self: end;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
   }
 }
 
