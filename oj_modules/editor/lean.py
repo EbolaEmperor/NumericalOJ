@@ -28,10 +28,77 @@ from oj_modules.editor.language_server import (
 LEAN_SOURCE_MAX_BYTES = 8 * 1024 * 1024
 _WORKSPACE_URI = "file:///workspace"
 _DEFAULT_DOCUMENT_PATH = "Submission.lean"
+_SEMANTIC_HISTORY_LIMIT = 4
+
+
+class LeanSourceStateError(ValueError):
+    """The browser's cursor-only request no longer matches this session."""
 
 
 def _document_uri(path: str) -> str:
     return f"{_WORKSPACE_URI}/{path}"
+
+
+def _normalized_document_source(source: str) -> str:
+    """Match Lean's CRLF normalization before computing LSP edit ranges."""
+
+    return source.replace("\r\n", "\n")
+
+
+def _utf16_position(source: str, offset: int) -> dict[str, int]:
+    line_start = source.rfind("\n", 0, offset) + 1
+    return {
+        "line": source.count("\n", 0, offset),
+        "character": len(source[line_start:offset].encode("utf-16-le")) // 2,
+    }
+
+
+def _incremental_content_change(old: str, new: str) -> dict[str, Any]:
+    """Return one exact LSP range edit from ``old`` to ``new``."""
+
+    prefix = 0
+    prefix_limit = min(len(old), len(new))
+    while prefix < prefix_limit and old[prefix] == new[prefix]:
+        prefix += 1
+
+    suffix = 0
+    suffix_limit = min(len(old) - prefix, len(new) - prefix)
+    while suffix < suffix_limit and old[-suffix - 1] == new[-suffix - 1]:
+        suffix += 1
+
+    old_end = len(old) - suffix
+    new_end = len(new) - suffix
+    return {
+        "range": {
+            "start": _utf16_position(old, prefix),
+            "end": _utf16_position(old, old_end),
+        },
+        "text": new[prefix:new_end],
+    }
+
+
+def _semantic_token_edit(old: list[int], new: list[int]) -> dict[str, Any]:
+    """Describe ``new`` as one tuple-aligned splice over ``old``."""
+
+    prefix = 0
+    prefix_limit = min(len(old), len(new))
+    while prefix < prefix_limit and old[prefix] == new[prefix]:
+        prefix += 1
+    prefix -= prefix % 5
+
+    suffix = 0
+    suffix_limit = min(len(old) - prefix, len(new) - prefix)
+    while suffix < suffix_limit and old[-suffix - 1] == new[-suffix - 1]:
+        suffix += 1
+    suffix -= suffix % 5
+
+    old_end = len(old) - suffix
+    new_end = len(new) - suffix
+    return {
+        "start": prefix,
+        "deleteCount": old_end - prefix,
+        "data": list(new[prefix:new_end]),
+    }
 
 
 @dataclass
@@ -57,12 +124,18 @@ class LeanLanguageServerSession:
         self._open_documents: set[str] = set()
         self._document_versions: dict[str, int] = {}
         self._document_digests: dict[str, str] = {}
+        self._document_sources: dict[str, str] = {}
+        self._diagnostics_ready_versions: dict[str, int] = {}
         self._workspace_digests: dict[str, str] = {}
-        self._compiled_digests: dict[str, str] = {}
+        self._dependency_build_attempts: dict[str, str] = {}
+        self._source_paths: tuple[str, ...] = ()
+        self._source_state_id: str | None = None
         self._diagnostics: dict[str, list[dict[str, Any]]] = {}
         self._processing: dict[str, list[dict[str, Any]]] = {}
         self._semantic_legend: dict[str, list[str]] | None = None
         self._semantic_tokens: dict[str, dict[str, Any]] = {}
+        self._semantic_history: dict[str, list[dict[str, Any]]] = {}
+        self._goal_cache: dict[str, dict[str, Any]] = {}
         self._container_name = (
             f"numoj-lean-lsp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         )
@@ -219,6 +292,7 @@ class LeanLanguageServerSession:
         sources: dict[str, str] | str,
         active_file: str | dict[str, int],
         position: dict[str, int] | None = None,
+        known_semantic_result_id: str | None = None,
     ) -> dict[str, Any]:
         if isinstance(sources, str):
             position = active_file if isinstance(active_file, dict) else None
@@ -231,7 +305,64 @@ class LeanLanguageServerSession:
                 "Lean 4", "该 Lean 4 文档正在解析"
             )
         try:
-            return self._check_locked(sources, active_file, position)
+            return self._check_locked(
+                sources,
+                active_file,
+                position,
+                known_semantic_result_id,
+            )
+        finally:
+            self._lock.release()
+
+    def check_source(
+        self,
+        sources: dict[str, str] | str,
+        active_file: str | dict[str, int],
+        position: dict[str, int] | None = None,
+        known_semantic_result_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.check(
+            sources,
+            active_file,
+            position,
+            known_semantic_result_id,
+        )
+
+    def check_cursor(
+        self,
+        source_state_id: str,
+        document_version: int,
+        active_file: str,
+        position: dict[str, int],
+        known_semantic_result_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not self._lock.acquire(blocking=False):
+            raise LanguageServiceBusyError(
+                "Lean 4", "该 Lean 4 文档正在解析"
+            )
+        try:
+            if (
+                self._source_state_id is None
+                or source_state_id != self._source_state_id
+                or active_file not in self._open_documents
+                or self._document_versions.get(active_file)
+                != document_version
+            ):
+                raise LeanSourceStateError("Lean 4 源码状态已失效，请重新同步")
+            self.last_used = time.monotonic()
+            return self._document_response_locked(
+                active_file,
+                position,
+                known_semantic_result_id,
+                include_workspace_details=False,
+            )
+        except (
+            LanguageServiceProtocolError,
+            LanguageServiceTimeoutError,
+            LanguageServiceUnavailableError,
+        ):
+            self._reset_locked()
+            raise
         finally:
             self._lock.release()
 
@@ -240,6 +371,7 @@ class LeanLanguageServerSession:
         sources: dict[str, str],
         active_file: str,
         position: dict[str, int],
+        known_semantic_result_id: str | None,
     ) -> dict[str, Any]:
         if not sources or active_file not in sources:
             raise ValueError("Lean 4 当前文件无效")
@@ -258,143 +390,128 @@ class LeanLanguageServerSession:
         self.last_used = time.monotonic()
         try:
             self._start_locked()
-            self._sync_workspace_locked(sources)
+            workspace_changed = self._sync_workspace_locked(sources)
             dependencies_changed = self._compile_dependencies_locked(
                 sources, active_file
             )
             if dependencies_changed:
                 self._close_documents_locked()
-
-            for path, source in sources.items():
+            for path in workspace_changed:
+                if path == active_file:
+                    continue
                 uri = _document_uri(path)
-                digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
-                if path not in self._open_documents:
-                    version = self._document_versions.get(path, 0) + 1
-                    self._document_versions[path] = version
-                    self._document_digests[path] = digest
-                    self._diagnostics[uri] = []
-                    self._processing[uri] = []
-                    self._semantic_tokens.pop(path, None)
-                    self._notify_locked(
-                        "textDocument/didOpen",
-                        {
-                            "textDocument": {
-                                "uri": uri,
-                                "languageId": "lean4",
-                                "version": version,
-                                "text": source,
-                            },
-                            "dependencyBuildMode": "never",
-                        },
-                    )
-                    self._open_documents.add(path)
-                elif digest != self._document_digests.get(path):
-                    version = self._document_versions[path] + 1
-                    self._document_versions[path] = version
-                    self._document_digests[path] = digest
-                    self._diagnostics[uri] = []
-                    self._processing[uri] = []
-                    self._semantic_tokens.pop(path, None)
-                    self._notify_locked(
-                        "textDocument/didChange",
-                        {
-                            "textDocument": {
-                                "uri": uri,
-                                "version": version,
-                            },
-                            "contentChanges": [{"text": source}],
-                        },
-                    )
+                self._diagnostics.pop(uri, None)
+                self._processing.pop(uri, None)
 
-            active_uri = _document_uri(active_file)
-            active_version = self._document_versions[active_file]
-            active_digest = self._document_digests[active_file]
+            self._source_paths = tuple(sources)
+            self._source_state_id = self._workspace_state_id()
+            self._open_or_change_document_locked(
+                active_file,
+                sources[active_file],
+            )
+            return self._document_response_locked(
+                active_file,
+                position,
+                known_semantic_result_id,
+            )
+        except (
+            LanguageServiceProtocolError,
+            LanguageServiceTimeoutError,
+            LanguageServiceUnavailableError,
+        ):
+            self._reset_locked()
+            raise
+
+    def _workspace_state_id(self) -> str:
+        digest = hashlib.sha256()
+        for path, source_digest in sorted(self._workspace_digests.items()):
+            digest.update(path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(source_digest.encode("ascii"))
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _open_or_change_document_locked(self, path: str, source: str) -> None:
+        for open_path in sorted(self._open_documents - {path}):
+            self._close_document_locked(open_path)
+
+        uri = _document_uri(path)
+        document_source = _normalized_document_source(source)
+        digest = hashlib.sha256(document_source.encode("utf-8")).hexdigest()
+        if path not in self._open_documents:
+            version = self._document_versions.get(path, 0) + 1
+            self._document_versions[path] = version
+            self._document_digests[path] = digest
+            self._document_sources[path] = document_source
+            self._diagnostics[uri] = []
+            self._processing[uri] = []
+            self._diagnostics_ready_versions.pop(path, None)
+            self._goal_cache.pop(path, None)
+            self._notify_locked(
+                "textDocument/didOpen",
+                {
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "lean4",
+                        "version": version,
+                        "text": document_source,
+                    },
+                    "dependencyBuildMode": "never",
+                },
+            )
+            self._open_documents.add(path)
+            return
+        if digest == self._document_digests.get(path):
+            return
+
+        version = self._document_versions[path] + 1
+        old_source = self._document_sources[path]
+        self._document_versions[path] = version
+        self._document_digests[path] = digest
+        self._document_sources[path] = document_source
+        self._diagnostics[uri] = []
+        self._processing[uri] = []
+        self._diagnostics_ready_versions.pop(path, None)
+        self._goal_cache.pop(path, None)
+        self._notify_locked(
+            "textDocument/didChange",
+            {
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [
+                    _incremental_content_change(old_source, document_source)
+                ],
+            },
+        )
+
+    def _document_response_locked(
+        self,
+        active_file: str,
+        position: dict[str, int],
+        known_semantic_result_id: str | None,
+        *,
+        include_workspace_details: bool = True,
+    ) -> dict[str, Any]:
+        active_uri = _document_uri(active_file)
+        active_version = self._document_versions[active_file]
+        if self._diagnostics_ready_versions.get(active_file) != active_version:
             self._request_locked(
                 "textDocument/waitForDiagnostics",
                 {"uri": active_uri, "version": active_version},
             )
-            if active_file not in self._semantic_tokens:
-                semantic_response = self._request_locked(
-                    "textDocument/semanticTokens/full",
-                    {"textDocument": {"uri": active_uri}},
-                )
-                if semantic_response is None:
-                    semantic_data: list[int] = []
-                elif isinstance(semantic_response, dict) and isinstance(
-                    semantic_response.get("data"), list
-                ):
-                    semantic_data = semantic_response["data"]
-                else:
-                    raise LanguageServiceProtocolError(
-                        "Lean 4", "Lean 4 语义高亮响应格式无效"
-                    )
-                if len(semantic_data) % 5 != 0 or not all(
-                    isinstance(value, int)
-                    and not isinstance(value, bool)
-                    and 0 <= value <= 2_147_483_647
-                    for value in semantic_data
-                ):
-                    raise LanguageServiceProtocolError(
-                        "Lean 4", "Lean 4 语义高亮数据无效"
-                    )
-                assert self._semantic_legend is not None
-                token_type_count = len(self._semantic_legend["tokenTypes"])
-                if any(
-                    semantic_data[index + 3] >= token_type_count
-                    for index in range(0, len(semantic_data), 5)
-                ):
-                    raise LanguageServiceProtocolError(
-                        "Lean 4", "Lean 4 语义高亮类型无效"
-                    )
-                modifier_count = len(
-                    self._semantic_legend["tokenModifiers"]
-                )
-                if any(
-                    semantic_data[index + 4] >= 1 << modifier_count
-                    for index in range(0, len(semantic_data), 5)
-                ):
-                    raise LanguageServiceProtocolError(
-                        "Lean 4", "Lean 4 语义高亮修饰符无效"
-                    )
-                self._semantic_tokens[active_file] = {
-                    "legend": {
-                        "tokenTypes": list(
-                            self._semantic_legend["tokenTypes"]
-                        ),
-                        "tokenModifiers": list(
-                            self._semantic_legend["tokenModifiers"]
-                        ),
-                    },
-                    "data": list(semantic_data),
-                    "result_id": f"{active_version}:{active_digest[:12]}",
-                }
-            plain_goal = self._request_locked(
-                "$/lean/plainGoal",
-                {
-                    "textDocument": {"uri": active_uri},
-                    "position": position,
-                },
-            )
-            goals: list[str] = []
-            rendered = ""
-            if plain_goal is not None:
-                if not isinstance(plain_goal, dict):
-                    raise LanguageServiceProtocolError(
-                        "Lean 4", "Lean 4 goal 响应格式无效"
-                    )
-                raw_goals = plain_goal.get("goals", [])
-                if not isinstance(raw_goals, list) or not all(
-                    isinstance(goal, str) for goal in raw_goals
-                ):
-                    raise LanguageServiceProtocolError(
-                        "Lean 4", "Lean 4 goal 列表格式无效"
-                    )
-                goals = list(raw_goals)
-                rendered = str(plain_goal.get("rendered") or "")
+            self._diagnostics_ready_versions[active_file] = active_version
 
+        semantic_tokens = self._semantic_response_locked(
+            active_file,
+            known_semantic_result_id,
+        )
+        goals, rendered = self._goal_response_locked(active_file, position)
+
+        diagnostics = None
+        processing = None
+        if include_workspace_details:
             diagnostics = []
             processing = []
-            for path in sources:
+            for path in self._source_paths:
                 uri = _document_uri(path)
                 diagnostics.extend(
                     {**item, "path": path, "uri": uri}
@@ -404,33 +521,178 @@ class LeanLanguageServerSession:
                     {**item, "path": path, "uri": uri}
                     for item in self._processing.get(uri, [])
                 )
-            semantic_tokens = self._semantic_tokens[active_file]
-            return {
-                "goals": goals,
-                "goal_rendered": rendered,
-                "diagnostics": diagnostics,
-                "processing": processing,
-                "document_version": active_version,
-                "semantic_tokens": {
-                    "legend": {
-                        "tokenTypes": list(
-                            semantic_tokens["legend"]["tokenTypes"]
-                        ),
-                        "tokenModifiers": list(
-                            semantic_tokens["legend"]["tokenModifiers"]
-                        ),
-                    },
-                    "data": list(semantic_tokens["data"]),
-                    "result_id": semantic_tokens["result_id"],
-                },
-            }
-        except (
-            LanguageServiceProtocolError,
-            LanguageServiceTimeoutError,
-            LanguageServiceUnavailableError,
+        assert self._source_state_id is not None
+        return {
+            "source_state_id": self._source_state_id,
+            "goals": goals,
+            "goal_rendered": rendered,
+            "diagnostics": diagnostics,
+            "processing": processing,
+            "document_version": active_version,
+            "semantic_tokens": semantic_tokens,
+        }
+
+    def _semantic_response_locked(
+        self,
+        active_file: str,
+        known_result_id: str | None,
+    ) -> dict[str, Any] | None:
+        active_uri = _document_uri(active_file)
+        active_version = self._document_versions[active_file]
+        active_digest = self._document_digests[active_file]
+        semantic_tokens = self._semantic_tokens.get(active_file)
+        if (
+            semantic_tokens is None
+            or semantic_tokens["document_version"] != active_version
         ):
-            self._reset_locked()
-            raise
+            semantic_response = self._request_locked(
+                "textDocument/semanticTokens/full",
+                {"textDocument": {"uri": active_uri}},
+            )
+            if semantic_response is None:
+                semantic_data: list[int] = []
+            elif isinstance(semantic_response, dict) and isinstance(
+                semantic_response.get("data"), list
+            ):
+                semantic_data = semantic_response["data"]
+            else:
+                raise LanguageServiceProtocolError(
+                    "Lean 4", "Lean 4 语义高亮响应格式无效"
+                )
+            self._validate_semantic_data(semantic_data)
+            assert self._semantic_legend is not None
+            semantic_tokens = {
+                "legend": {
+                    "tokenTypes": list(self._semantic_legend["tokenTypes"]),
+                    "tokenModifiers": list(
+                        self._semantic_legend["tokenModifiers"]
+                    ),
+                },
+                "data": list(semantic_data),
+                "result_id": f"{active_version}:{active_digest[:12]}",
+                "document_version": active_version,
+            }
+            self._semantic_tokens[active_file] = semantic_tokens
+            history = self._semantic_history.setdefault(active_file, [])
+            history.append(
+                {
+                    "result_id": semantic_tokens["result_id"],
+                    "data": list(semantic_data),
+                }
+            )
+            del history[:-_SEMANTIC_HISTORY_LIMIT]
+
+        result_id = semantic_tokens["result_id"]
+        if known_result_id == result_id:
+            return None
+
+        legend = {
+            "tokenTypes": list(semantic_tokens["legend"]["tokenTypes"]),
+            "tokenModifiers": list(
+                semantic_tokens["legend"]["tokenModifiers"]
+            ),
+        }
+        if known_result_id:
+            previous = next(
+                (
+                    snapshot
+                    for snapshot in reversed(
+                        self._semantic_history.get(active_file, [])
+                    )
+                    if snapshot["result_id"] == known_result_id
+                ),
+                None,
+            )
+            if previous is not None:
+                return {
+                    "legend": legend,
+                    "result_id": result_id,
+                    "previous_result_id": known_result_id,
+                    "edits": [
+                        _semantic_token_edit(
+                            previous["data"],
+                            semantic_tokens["data"],
+                        )
+                    ],
+                }
+        return {
+            "legend": legend,
+            "data": list(semantic_tokens["data"]),
+            "result_id": result_id,
+        }
+
+    def _validate_semantic_data(self, semantic_data: list[Any]) -> None:
+        if len(semantic_data) % 5 != 0 or not all(
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 2_147_483_647
+            for value in semantic_data
+        ):
+            raise LanguageServiceProtocolError(
+                "Lean 4", "Lean 4 语义高亮数据无效"
+            )
+        assert self._semantic_legend is not None
+        token_type_count = len(self._semantic_legend["tokenTypes"])
+        if any(
+            semantic_data[index + 3] >= token_type_count
+            for index in range(0, len(semantic_data), 5)
+        ):
+            raise LanguageServiceProtocolError(
+                "Lean 4", "Lean 4 语义高亮类型无效"
+            )
+        modifier_count = len(self._semantic_legend["tokenModifiers"])
+        if any(
+            semantic_data[index + 4] >= 1 << modifier_count
+            for index in range(0, len(semantic_data), 5)
+        ):
+            raise LanguageServiceProtocolError(
+                "Lean 4", "Lean 4 语义高亮修饰符无效"
+            )
+
+    def _goal_response_locked(
+        self,
+        active_file: str,
+        position: dict[str, int],
+    ) -> tuple[list[str], str]:
+        active_version = self._document_versions[active_file]
+        cache_key = (
+            active_version,
+            position.get("line"),
+            position.get("character"),
+        )
+        cached = self._goal_cache.get(active_file)
+        if cached is not None and cached["key"] == cache_key:
+            return list(cached["goals"]), cached["rendered"]
+
+        plain_goal = self._request_locked(
+            "$/lean/plainGoal",
+            {
+                "textDocument": {"uri": _document_uri(active_file)},
+                "position": position,
+            },
+        )
+        goals: list[str] = []
+        rendered = ""
+        if plain_goal is not None:
+            if not isinstance(plain_goal, dict):
+                raise LanguageServiceProtocolError(
+                    "Lean 4", "Lean 4 goal 响应格式无效"
+                )
+            raw_goals = plain_goal.get("goals", [])
+            if not isinstance(raw_goals, list) or not all(
+                isinstance(goal, str) for goal in raw_goals
+            ):
+                raise LanguageServiceProtocolError(
+                    "Lean 4", "Lean 4 goal 列表格式无效"
+                )
+            goals = list(raw_goals)
+            rendered = str(plain_goal.get("rendered") or "")
+        self._goal_cache[active_file] = {
+            "key": cache_key,
+            "goals": list(goals),
+            "rendered": rendered,
+        }
+        return goals, rendered
 
     def _sync_workspace_locked(self, sources: dict[str, str]) -> set[str]:
         digests = {
@@ -469,18 +731,8 @@ class LeanLanguageServerSession:
                 ["tar", "-xf", "-", "-C", "/workspace"],
                 input_bytes=archive.getvalue(),
             )
-            self._run_docker_exec(
-                [
-                    "rm",
-                    "-f",
-                    *[
-                        f"/workspace/{path[:-5]}.olean"
-                        for path in sorted(changed)
-                    ],
-                ]
-            )
         for path in changed:
-            self._compiled_digests.pop(path, None)
+            self._dependency_build_attempts.pop(path, None)
         self._workspace_digests = digests
         return changed
 
@@ -533,11 +785,11 @@ class LeanLanguageServerSession:
             if path == active_file:
                 break
             expected = cumulative.hexdigest()
-            if self._compiled_digests.get(path) == expected:
+            if self._dependency_build_attempts.get(path) == expected:
                 continue
             source_path = f"/workspace/{path}"
             output_path = f"/workspace/{path[:-5]}.olean"
-            result = self._run_docker_exec(
+            self._run_docker_exec(
                 [
                     "sh",
                     "-c",
@@ -551,23 +803,28 @@ class LeanLanguageServerSession:
                 check=False,
             )
             rebuilt = True
-            if result.returncode == 0:
-                self._compiled_digests[path] = expected
-            else:
-                self._compiled_digests.pop(path, None)
+            self._dependency_build_attempts[path] = expected
         return rebuilt
+
+    def _close_document_locked(self, path: str) -> None:
+        if path not in self._open_documents:
+            return
+        uri = _document_uri(path)
+        self._notify_locked(
+            "textDocument/didClose",
+            {"textDocument": {"uri": uri}},
+        )
+        self._open_documents.remove(path)
+        self._document_digests.pop(path, None)
+        self._document_sources.pop(path, None)
+        self._diagnostics_ready_versions.pop(path, None)
+        self._diagnostics.pop(uri, None)
+        self._processing.pop(uri, None)
+        self._goal_cache.pop(path, None)
 
     def _close_documents_locked(self) -> None:
         for path in sorted(self._open_documents):
-            self._notify_locked(
-                "textDocument/didClose",
-                {"textDocument": {"uri": _document_uri(path)}},
-            )
-        self._open_documents.clear()
-        self._document_digests.clear()
-        self._diagnostics.clear()
-        self._processing.clear()
-        self._semantic_tokens.clear()
+            self._close_document_locked(path)
 
     def _handle_notification(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -774,12 +1031,18 @@ class LeanLanguageServerSession:
         self._open_documents.clear()
         self._document_versions.clear()
         self._document_digests.clear()
+        self._document_sources.clear()
+        self._diagnostics_ready_versions.clear()
         self._workspace_digests.clear()
-        self._compiled_digests.clear()
+        self._dependency_build_attempts.clear()
+        self._source_paths = ()
+        self._source_state_id = None
         self._diagnostics.clear()
         self._processing.clear()
         self._semantic_legend = None
         self._semantic_tokens.clear()
+        self._semantic_history.clear()
+        self._goal_cache.clear()
         if process is not None:
             if process.stdin is not None:
                 try:
@@ -807,12 +1070,13 @@ class LeanInteractiveService:
         self._lock = threading.Lock()
         self._sessions: dict[str, LeanLanguageServerSession] = {}
 
-    def check(
+    def check_source(
         self,
         session_key: str,
         sources: dict[str, str] | str,
         active_file: str | dict[str, int],
         position: dict[str, int] | None = None,
+        known_semantic_result_id: str | None = None,
     ) -> dict[str, Any]:
         expired: list[LeanLanguageServerSession] = []
         with self._lock:
@@ -839,7 +1103,61 @@ class LeanInteractiveService:
             session.last_used = now
         for old_session in expired:
             old_session.close()
-        return session.check(sources, active_file, position)
+        return session.check_source(
+            sources,
+            active_file,
+            position,
+            known_semantic_result_id,
+        )
+
+    def check(
+        self,
+        session_key: str,
+        sources: dict[str, str] | str,
+        active_file: str | dict[str, int],
+        position: dict[str, int] | None = None,
+        known_semantic_result_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.check_source(
+            session_key,
+            sources,
+            active_file,
+            position,
+            known_semantic_result_id,
+        )
+
+    def check_cursor(
+        self,
+        session_key: str,
+        source_state_id: str,
+        document_version: int,
+        active_file: str,
+        position: dict[str, int],
+        known_semantic_result_id: str | None = None,
+    ) -> dict[str, Any]:
+        expired: list[LeanLanguageServerSession] = []
+        with self._lock:
+            now = time.monotonic()
+            idle_seconds = float(
+                getattr(_cfg, "LEAN4_INTERACTIVE_IDLE_SECONDS", 600)
+            )
+            for key, candidate in list(self._sessions.items()):
+                if now - candidate.last_used >= idle_seconds:
+                    expired.append(self._sessions.pop(key))
+            session = self._sessions.get(session_key)
+            if session is not None:
+                session.last_used = now
+        for old_session in expired:
+            old_session.close()
+        if session is None:
+            raise LeanSourceStateError("Lean 4 源码状态已失效，请重新同步")
+        return session.check_cursor(
+            source_state_id,
+            document_version,
+            active_file,
+            position,
+            known_semantic_result_id,
+        )
 
     def close(self) -> None:
         with self._lock:
