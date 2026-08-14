@@ -135,24 +135,28 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
     ):
         assert site.count(f"{{% include 'components/layout/{name}.html' %}}") == 1
 
-    editor_include = "{% include 'components/editor/codemirror.html' %}"
+    monaco_include = "{% include 'components/editor/monaco.html' %}"
     consumers = {
+        "admin/agent_task_detail.html",
         "problems/create.html",
         "problems/edit.html",
+        "problems/detail.html",
         "submissions/detail.html",
         "repository/index.html",
     }
     for name in consumers:
         source = (TEMPLATES / name).read_text(encoding="utf-8")
-        assert source.count(editor_include) == 1
+        assert source.count(monaco_include) == 1
+        assert "components/editor/codemirror.html" not in source
 
-    problem_detail = (TEMPLATES / "problems" / "detail.html").read_text(
-        encoding="utf-8"
+    assert not (TEMPLATES / "components" / "editor" / "codemirror.html").exists()
+    assert not any(
+        path.is_file()
+        for path in (ROOT / "static" / "codemirror").rglob("*")
     )
-    assert editor_include not in problem_detail
 
 
-def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
+def test_all_code_surfaces_share_monaco_at_every_breakpoint():
     monaco_include = "{% include 'components/editor/monaco.html' %}"
     for name in (
         "problems/create.html",
@@ -160,6 +164,7 @@ def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
         "problems/detail.html",
         "submissions/detail.html",
         "repository/index.html",
+        "admin/agent_task_detail.html",
     ):
         source = (TEMPLATES / name).read_text(encoding="utf-8")
         assert source.count(monaco_include) == 1
@@ -183,11 +188,20 @@ def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
     submission_editor = (
         ROOT / "static" / "app" / "submissions" / "detail.js"
     ).read_text(encoding="utf-8")
+    repository_editor = (
+        ROOT / "static" / "app" / "repository" / "workbench.js"
+    ).read_text(encoding="utf-8")
     monaco_component = (
         TEMPLATES / "components" / "editor" / "monaco.html"
     ).read_text(encoding="utf-8")
-    codemirror_component = (
-        TEMPLATES / "components" / "editor" / "codemirror.html"
+    editor_styles = (
+        ROOT / "static" / "styles" / "code-editor.css"
+    ).read_text(encoding="utf-8")
+    submission_styles = (
+        ROOT / "static" / "app" / "submissions" / "detail.css"
+    ).read_text(encoding="utf-8")
+    repository_styles = (
+        ROOT / "static" / "styles" / "repository" / "workbench.css"
     ).read_text(encoding="utf-8")
 
     for source in (create, edit):
@@ -201,16 +215,38 @@ def test_all_code_editing_surfaces_share_the_adaptive_dark_plus_runtime():
     assert "function registerMatlab(monaco)" in editor_runtime
     assert "function registerMatlab(monaco)" not in problem_editor
     assert "function registerMatlab(monaco)" not in submission_editor
-    assert "{% set monaco_all_breakpoints = true %}" in detail
-    assert "var allBreakpoints =" in monaco_component
-    assert "if (!allBreakpoints && !window.matchMedia" in monaco_component
     assert "window.NumOJMonacoReady" in problem_editor
-    assert "window.NumOJCodeMirrorReady" not in problem_editor
-    assert "createCodeMirrorAdapter" not in problem_editor
     assert "}, 8000);" in monaco_component
-    assert "}, 8000);" in codemirror_component
     assert "TEXTMATE_INITIAL_WAIT_MS = 250" in editor_runtime
     assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
+
+    for source in (
+        monaco_component,
+        problem_editor,
+        form_editor,
+        submission_editor,
+        repository_editor,
+    ):
+        assert "matchMedia" not in source
+
+    for source in (
+        create,
+        edit,
+        detail,
+        monaco_component,
+        problem_editor,
+        form_editor,
+        submission_editor,
+        repository_editor,
+        editor_runtime,
+        editor_styles,
+        submission_styles,
+        repository_styles,
+    ):
+        assert "codemirror" not in source.lower()
+
+    assert "monaco_all_breakpoints" not in monaco_component
+    assert "monaco_all_breakpoints" not in detail
 
 
 def test_non_credential_text_fields_opt_out_of_password_managers():
@@ -283,7 +319,7 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "problem-editor-actions" in detail
     assert "problem-heading-layout" in detail
     assert "problem-heading-info" in detail
-    assert 'id="desktopEditorShell"' in detail
+    assert 'id="problemEditorShell"' in detail
     assert 'id="monacoEditorLoading"' in detail
     assert "代码编辑器正在加载" in detail
     assert 'data-size="lg"' in detail
@@ -295,14 +331,33 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert 'class="numoj-breadcrumb d-flex"' in detail
     assert 'class="numoj-problem-kickers d-flex"' in detail
     assert 'id="codeMirrorContainer"' not in detail
-    assert "{% set monaco_all_breakpoints = true %}" in detail
+    assert "monaco_all_breakpoints" not in detail
+    assert "filename='app/problem-detail-layout.js'" in detail
+
+    outer_splitter = detail.split('class="problem-detail-splitter"', 1)[1].split(
+        "</div>", 1
+    )[0]
+    lean_splitter = detail.split('class="lean-workbench-splitter"', 1)[1].split(
+        "</div>", 1
+    )[0]
+    for splitter in (outer_splitter, lean_splitter):
+        assert 'role="separator"' in splitter
+        assert 'tabindex="0"' in splitter
+        assert 'aria-orientation="vertical"' in splitter
+        assert 'aria-valuemin="20"' in splitter
+        assert 'aria-valuemax="80"' in splitter
+        assert "aria-valuenow=" in splitter
+    assert 'aria-controls="problemStatementPane problemSubmissionPane"' in outer_splitter
+    assert 'aria-controls="leanSourcePane leanInspectorPane"' in lean_splitter
+    assert "data-problem-detail-splitter" in outer_splitter
+    assert "data-lean-workbench-splitter" in lean_splitter
     for status, abbreviation in (
         ("Accepted", "AC"),
         ("Unaccepted", "WA"),
         ("Compile Error", "CE"),
     ):
         assert f"'{status}': '{abbreviation}'" in detail
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in layout
+    assert "--problem-detail-statement-width" in layout
     assert ".numoj-content.problem-detail-content-shell" in layout
     assert ".submission-status.accepted" in layout
     assert ".submission-status.unaccepted" in layout
@@ -413,9 +468,10 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "submission-detail-problem-title" not in detail
     assert "<dt>题目</dt>" in detail
     assert "submissionMonacoContainer" in detail
+    assert "submissionCodeMirrorContainer" not in detail
     assert 'data-problem-id="{{ submission.problem_id }}"' in detail
     assert "{% include 'components/editor/monaco.html' %}" in detail
-    assert "{% include 'components/editor/codemirror.html' %}" in detail
+    assert "components/editor/codemirror.html" not in detail
     assert "filename='app/submissions/detail.css'" in detail
     assert "filename='app/submissions/detail.js'" in detail
     assert 'class="submission-detail-disclosure submission-prompt-card" open' in detail
@@ -438,7 +494,9 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert 'return "dark-plus"' in editor_runtime
     assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
     assert "window.NumOJMonacoReady" in detail_js
-    assert "window.NumOJCodeMirrorReady" in detail_js
+    assert "window.NumOJCodeMirrorReady" not in detail_js
+    assert "createCodeMirrorEditor" not in detail_js
+    assert "matchMedia" not in detail_js
     assert "window.NumOJSemanticTokens.register(monaco" in detail_js
     assert "submissionSemanticLoading" in detail
     assert "updateSemanticLoading(1)" in detail_js

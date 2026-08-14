@@ -27,7 +27,6 @@
 
   if (!form || !languageSelect || !descriptors.length) return;
 
-  var desktop = window.matchMedia("(min-width: 992px)").matches;
   var editors = [];
   var semanticProviders = Object.create(null);
 
@@ -37,7 +36,6 @@
       : {
           language: String(languageSelect.value || "matlab").toLowerCase(),
           monacoLanguage: String(languageSelect.value || "matlab").toLowerCase(),
-          codeMirrorMode: null,
         };
   }
 
@@ -106,7 +104,7 @@
 
   async function createMonacoEditors() {
     var monaco = window.NumericalOJMonaco;
-    if (!desktop || !monaco || !runtime) return false;
+    if (!monaco || !runtime) return false;
 
     var theme = await runtime.prepareMonaco(monaco);
     var spec = currentSpec();
@@ -170,66 +168,12 @@
     return true;
   }
 
-  function createCodeMirrorEditors() {
-    if (desktop || !window.CodeMirror) return false;
-    var spec = currentSpec();
-    editors = descriptors.map(function (descriptor) {
-      var descriptorSpec = specForDescriptor(spec, descriptor);
-      descriptor.host.hidden = false;
-      var instance = window.CodeMirror(descriptor.host, {
-        value: descriptor.textarea.value || "",
-        mode: descriptorSpec.codeMirrorMode,
-        theme: "eclipse",
-        lineNumbers: true,
-        lineWrapping: true,
-        indentUnit: descriptorSpec.language === "lean4" || descriptorSpec.language === "json" ? 2 : 4,
-        tabSize: descriptorSpec.language === "lean4" || descriptorSpec.language === "json" ? 2 : 4,
-        matchBrackets: true,
-        autofocus: descriptor.autofocus,
-        extraKeys: {
-          Tab: "indentMore",
-          "Shift-Tab": "indentLess",
-        },
-      });
-      instance.setSize(null, "100%");
-      if (runtime) {
-        runtime.protectEditorInput(
-          instance.getInputField(),
-          descriptor.documentId,
-          descriptor.ariaLabel
-        );
-      }
-      return {
-        kind: "codemirror",
-        getValue: function () {
-          return instance.getValue();
-        },
-        setValue: function (value) {
-          instance.setValue(value || "");
-        },
-        setLanguage: function (nextSpec) {
-          instance.setOption(
-            "mode",
-            specForDescriptor(nextSpec, descriptor).codeMirrorMode
-          );
-        },
-        layout: function () {
-          instance.refresh();
-        },
-      };
-    });
-    return true;
-  }
-
   async function initialize() {
     var created = false;
     try {
-      if (desktop && window.NumOJMonacoReady) {
+      if (window.NumOJMonacoReady) {
         await window.NumOJMonacoReady;
         created = await createMonacoEditors();
-      } else if (!desktop && window.NumOJCodeMirrorReady) {
-        await window.NumOJCodeMirrorReady;
-        created = createCodeMirrorEditors();
       }
     } catch (error) {
       console.error("题目代码编辑器初始化失败，已降级到文本框。", error);

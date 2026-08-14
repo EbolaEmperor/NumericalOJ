@@ -167,11 +167,6 @@
             aria-label="代码仓库编辑器"
             hidden
           ></div>
-          <div
-            class="repository-codemirror-container"
-            id="repositoryCodeMirrorContainer"
-            hidden
-          ></div>
           <textarea
             id="repositoryCodeEditor"
             name="repository_source"
@@ -339,8 +334,6 @@
   </dialog>
 </section>
 
-{% set codemirror_mobile_only = true %}
-{% include 'components/editor/codemirror.html' %}
 {% include 'components/editor/monaco.html' %}
 {% endblock %}
 

@@ -447,8 +447,6 @@
   <button type="submit" class="btn btn-outline-success"><i class="fas fa-check"></i> 确认添加</button>
 </form>
 
-{% set codemirror_mobile_only = true %}
-{% include 'components/editor/codemirror.html' %}
 {% include 'components/editor/monaco.html' %}
 <script src="{{ url_for('static', filename='app/problem-form-editors.js') }}"></script>
 

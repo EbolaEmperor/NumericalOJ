@@ -105,8 +105,9 @@ def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
     ).read_text(encoding="utf-8")
 
     assert "{% include 'components/editor/monaco.html' %}" in template
-    assert "{% set codemirror_mobile_only = true %}" in template
+    assert "components/editor/codemirror.html" not in template
     assert 'id="repositoryMonacoContainer"' in template
+    assert "repositoryCodeMirrorContainer" not in template
     assert "await runtime.prepareMonaco(monaco)" in source
     assert "runtime.monacoOptions({" in source
     assert "context: 'repository'" in source
@@ -117,6 +118,10 @@ def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
     assert "semanticHighlighting.enabled" in runtime
     assert 'monaco.editor.setTheme("dark-plus")' in runtime
     assert 'h: "cpp"' in runtime
+    assert "createCodeMirrorEditor" not in source
+    assert "NumOJCodeMirrorReady" not in source
+    assert "codeMirrorMode" not in source
+    assert "matchMedia" not in source
 
 
 def test_repository_boot_does_not_wait_for_editor_assets_before_file_actions():

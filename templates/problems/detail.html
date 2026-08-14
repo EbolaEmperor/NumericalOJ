@@ -57,7 +57,7 @@
   <!-- 隐藏的元数据，避免在 <script> 内直接注入 Jinja -->
   <div id="problemMeta" data-problem-id="{{ problem.id }}" style="display:none"></div>
   <!-- 左侧：题面描述 -->
-  <div class="col-md-6 mb-3 problem-col-left">
+  <div class="col-md-6 mb-3 problem-col-left" id="problemStatementPane">
     <div class="problem-header mb-3">
       <div class="problem-heading-layout{% if last_submissions and last_submissions|length > 0 %} has-recent-submissions{% endif %}">
         <div class="problem-heading-info">
@@ -142,8 +142,21 @@
     </div>
   </div>
 
+  <div
+    class="problem-detail-splitter"
+    id="problemDetailSplitter"
+    role="separator"
+    tabindex="0"
+    aria-label="调整题面与作答区宽度"
+    aria-orientation="vertical"
+    aria-controls="problemStatementPane problemSubmissionPane"
+    aria-valuemin="20"
+    aria-valuemax="80"
+    aria-valuenow="{{ 36 if is_lean4 else 50 }}"
+    data-problem-detail-splitter></div>
+
   <!-- 右侧：提交作业 -->
-  <div class="col-md-6 problem-col-right">
+  <div class="col-md-6 problem-col-right" id="problemSubmissionPane">
     {% if problem.type == 1 and programming_mode == 3 %}
       <form action="{{ url_for('problem_core.submit_solution', problem_id=problem.id) }}" method="POST" class="mb-4 problem-submit-form problem-prompt-submit-form">
         <div class="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar">
@@ -238,7 +251,7 @@
               id="leanWorkbench"
               data-problem-id="{{ problem.id }}"
               data-check-url="/api/lean/check">
-              <section class="lean-source-pane" aria-label="Lean 4 证明文件编辑器">
+              <section class="lean-source-pane" id="leanSourcePane" aria-label="Lean 4 证明文件编辑器">
                 <header class="lean-pane-bar lean-source-bar">
                   <span class="lean-file-name">
                     <span class="lean-file-mark" aria-hidden="true">λ</span>
@@ -256,8 +269,8 @@
             {% endif %}
             <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
             <div
-              id="desktopEditorShell"
-              class="problem-editor-desktop-shell"
+              id="problemEditorShell"
+              class="problem-editor-shell"
               data-editor-state="loading"
               aria-busy="true">
               <div id="monacoEditorLoading" class="problem-editor-loading-state">
@@ -275,7 +288,19 @@
             {% if is_lean4 %}
                 </div>
               </section>
-              <aside class="lean-inspector" aria-label="Lean 证明状态">
+              <div
+                class="lean-workbench-splitter"
+                id="leanWorkbenchSplitter"
+                role="separator"
+                tabindex="0"
+                aria-label="调整代码与证明状态宽度"
+                aria-orientation="vertical"
+                aria-controls="leanSourcePane leanInspectorPane"
+                aria-valuemin="20"
+                aria-valuemax="80"
+                aria-valuenow="63"
+                data-lean-workbench-splitter></div>
+              <aside class="lean-inspector" id="leanInspectorPane" aria-label="Lean 证明状态">
                 <header class="lean-pane-bar lean-inspector-bar">
                   <div class="lean-inspector-tabs" role="tablist" aria-label="证明检查结果">
                     <button
@@ -866,7 +891,6 @@
 </style>
 
 {% if problem.type == 1 and programming_mode != 3 %}
-{% set monaco_all_breakpoints = true %}
 {% include 'components/editor/monaco.html' %}
 {% if is_lean4 %}
 <script defer src="{{ url_for('static', filename='app/lean-workbench.js') }}"></script>
@@ -876,11 +900,13 @@
 {% if problem.type == 2 %}
 <script src="{{ url_for('static', filename='app/problem-written-submit.js') }}"></script>
 {% endif %}
+<script defer src="{{ url_for('static', filename='app/problem-detail-layout.js') }}"></script>
 
 <script>
 (function() {
   const titleEl = document.getElementById('problemTitleHeading');
   if (!titleEl) return;
+  let titleFitFrame = 0;
 
   function fitProblemTitleSingleLine() {
     const isMobile = window.innerWidth <= 768;
@@ -900,8 +926,19 @@
     }
   }
 
-  requestAnimationFrame(fitProblemTitleSingleLine);
-  window.addEventListener('resize', fitProblemTitleSingleLine);
+  function scheduleProblemTitleFit() {
+    if (titleFitFrame) cancelAnimationFrame(titleFitFrame);
+    titleFitFrame = requestAnimationFrame(function() {
+      titleFitFrame = 0;
+      fitProblemTitleSingleLine();
+    });
+  }
+
+  scheduleProblemTitleFit();
+  window.addEventListener('resize', scheduleProblemTitleFit);
+  new ResizeObserver(function() {
+    scheduleProblemTitleFit();
+  }).observe(titleEl.parentElement);
 })();
 </script>
 

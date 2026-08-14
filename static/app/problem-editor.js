@@ -9,7 +9,7 @@
   if (!textarea) return;
 
   const editorHost = document.getElementById('monacoEditorContainer');
-  const editorShell = document.getElementById('desktopEditorShell');
+  const editorShell = document.getElementById('problemEditorShell');
   const editorLoading = document.getElementById('monacoEditorLoading');
   const form = textarea.closest('form');
   const language = (editorHost?.dataset.language || 'matlab').toLowerCase();
@@ -20,11 +20,7 @@
         language,
         monacoLanguage: language === 'py' ? 'python'
           : language === 'octave' ? 'matlab'
-          : language,
-        codeMirrorMode: language === 'cpp' ? 'text/x-c++src'
-          : language === 'c' ? 'text/x-csrc'
-          : (language === 'python' || language === 'py') ? 'python'
-          : 'octave'
+          : language
       };
   const monacoLanguage = languageSpec.monacoLanguage;
   let editorAdapter = null;

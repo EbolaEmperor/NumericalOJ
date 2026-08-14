@@ -19,7 +19,10 @@
 
 .lean-workbench {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.85fr);
+  grid-template-columns:
+    minmax(0, var(--lean-source-width, 63%))
+    7px
+    minmax(0, 1fr);
   overflow: hidden;
   background: #1e1e1e;
 }
@@ -109,7 +112,7 @@
   overflow: hidden;
 }
 
-.problem-detail-page.is-lean-workbench .lean-editor-body .problem-editor-desktop-shell {
+.problem-detail-page.is-lean-workbench .lean-editor-body .problem-editor-shell {
   height: 100%;
 }
 
@@ -123,8 +126,45 @@
   outline: 0;
 }
 
+.lean-workbench-splitter {
+  position: relative;
+  z-index: 5;
+  width: 7px;
+  min-width: 7px;
+  height: 100%;
+  background: #fafaf9;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.lean-workbench-splitter::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--lean-line);
+  content: "";
+  transition:
+    left 100ms ease,
+    width 100ms ease,
+    background-color 100ms ease;
+}
+
+.lean-workbench-splitter:hover::after,
+.lean-workbench-splitter:focus-visible::after,
+.lean-workbench-splitter.is-dragging::after {
+  left: 2px;
+  width: 3px;
+  background: rgba(249, 115, 22, 0.66);
+}
+
+.lean-workbench-splitter:focus-visible {
+  outline: 0;
+}
+
 .lean-inspector {
-  border-left: 1px solid var(--lean-line);
+  border-left: 0;
   background-color: #fafaf9;
   background-image: radial-gradient(circle, rgba(113, 113, 122, 0.12) 0.65px, transparent 0.75px);
   background-size: 14px 14px;
@@ -472,13 +512,7 @@
 
 @media (min-width: 992px) {
   .problem-detail-page.is-lean-workbench .problem-detail-row {
-    grid-template-columns: minmax(330px, 0.72fr) minmax(0, 1.28fr);
-  }
-}
-
-@media (max-width: 1199.98px) and (min-width: 992px) {
-  .lean-workbench {
-    grid-template-columns: minmax(0, 1.2fr) minmax(240px, 0.8fr);
+    --problem-detail-statement-width: 36%;
   }
 }
 
@@ -494,12 +528,16 @@
     grid-template-rows: minmax(390px, 1.45fr) minmax(250px, 0.85fr);
   }
 
+  .lean-workbench-splitter {
+    display: none;
+  }
+
   .lean-inspector {
     border-top: 1px solid var(--lean-line);
     border-left: 0;
   }
 
-  .problem-detail-page.is-lean-workbench .lean-editor-body .problem-editor-desktop-shell,
+  .problem-detail-page.is-lean-workbench .lean-editor-body .problem-editor-shell,
   .problem-detail-page.is-lean-workbench .lean-editor-body .numoj-code-textarea-fallback {
     height: 100%;
     min-height: 0;
