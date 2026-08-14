@@ -243,6 +243,7 @@ def test_problem_heading_keeps_kickers_and_problem_number_left_aligned():
 def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     repo = Path(__file__).resolve().parents[2]
     detail = (repo / "templates/problems/detail.html").read_text()
+    markdown_css = (repo / "static/app/markdown-rendering.css").read_text()
 
     assert (
         'class="problem-content numoj-markdown '
@@ -255,6 +256,12 @@ def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     assert detail.index("vendor/mermaid/mermaid.min.js") < detail.index(
         "app/markdown-rendering.js"
     )
+
+    inline_math_rule = _braced_block(
+        markdown_css,
+        '.numoj-markdown mjx-container[jax="CHTML"]:not([display="true"])',
+    )
+    assert "vertical-align: 0.08em;" in inline_math_rule
 
 
 def test_written_problem_upload_keeps_the_file_contract_with_drag_drop_ui():

@@ -11,6 +11,14 @@
 }
 
 /*
+ * MathJax 3 CHTML 的零行高盒子在 Safari 中会让行内公式显得略低于正文。
+ * 只补偿行内公式的视觉基线，块级公式继续使用 MathJax 自己的垂直布局。
+ */
+.numoj-markdown mjx-container[jax="CHTML"]:not([display="true"]) {
+  vertical-align: 0.08em;
+}
+
+/*
  * 常规题与打榜赛题面共用同一组代码样式。
  * 页面模板只提供语义 class，不再各自覆盖块级代码的画布与间距。
  */

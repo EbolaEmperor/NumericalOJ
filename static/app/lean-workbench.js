@@ -4,7 +4,7 @@
   if (window.NumOJLeanWorkbench) return;
 
   var SOURCE_DEBOUNCE_MS = 700;
-  var CURSOR_DEBOUNCE_MS = 160;
+  var CURSOR_DEBOUNCE_MS = 250;
   var symbolProviderRegistered = false;
   var LEAN_SYMBOLS = {
     "\\all": "∀",
@@ -164,14 +164,104 @@
   function createSemanticTokenBridge(monaco, model) {
     var registration = null;
     var legend = null;
+    var rawLegend = null;
     var legendSignature = "";
     var cachedData = new Uint32Array(0);
     var cachedVersion = 0;
     var cachedResultId = "";
     var generation = 0;
+    var servedSerial = 0;
     var hasCachedData = false;
+    var stale = false;
+    var servedResults = new Map();
     var listeners = new Set();
     var disposed = false;
+
+    function singleTokenEdit(previous, next) {
+      var prefix = 0;
+      var sharedLength = Math.min(previous.length, next.length);
+      while (prefix < sharedLength && previous[prefix] === next[prefix]) {
+        prefix += 1;
+      }
+      var suffix = 0;
+      while (
+        suffix < sharedLength - prefix &&
+        previous[previous.length - 1 - suffix] ===
+          next[next.length - 1 - suffix]
+      ) {
+        suffix += 1;
+      }
+      if (prefix === previous.length && prefix === next.length) return [];
+      return [{
+        start: prefix,
+        deleteCount: previous.length - prefix - suffix,
+        data: next.slice(prefix, next.length - suffix)
+      }];
+    }
+
+    function applyTokenEdits(previous, edits) {
+      if (!Array.isArray(edits)) return null;
+      var normalized = edits.map(function (edit) {
+        var data = edit && edit.data;
+        var deleteCount = edit && edit.deleteCount;
+        if (deleteCount === undefined && edit) {
+          deleteCount = edit.delete_count;
+        }
+        if (data === undefined || data === null) data = [];
+        if (
+          !edit ||
+          !Number.isInteger(edit.start) ||
+          !Number.isInteger(deleteCount) ||
+          edit.start < 0 ||
+          deleteCount < 0 ||
+          !Array.isArray(data) ||
+          !data.every(function (item) {
+            return Number.isInteger(item) && item >= 0;
+          })
+        ) {
+          return null;
+        }
+        return {
+          start: edit.start,
+          deleteCount: deleteCount,
+          data: Uint32Array.from(data)
+        };
+      });
+      if (normalized.some(function (edit) { return edit === null; })) {
+        return null;
+      }
+      normalized.sort(function (left, right) {
+        return left.start - right.start;
+      });
+      var outputLength = previous.length;
+      var previousEnd = 0;
+      for (var index = 0; index < normalized.length; index += 1) {
+        var edit = normalized[index];
+        if (
+          edit.start < previousEnd ||
+          edit.start + edit.deleteCount > previous.length
+        ) {
+          return null;
+        }
+        previousEnd = edit.start + edit.deleteCount;
+        outputLength += edit.data.length - edit.deleteCount;
+      }
+      if (outputLength < 0 || outputLength % 5 !== 0) return null;
+
+      var output = new Uint32Array(outputLength);
+      var sourceOffset = 0;
+      var outputOffset = 0;
+      normalized.forEach(function (edit) {
+        var unchanged = previous.subarray(sourceOffset, edit.start);
+        output.set(unchanged, outputOffset);
+        outputOffset += unchanged.length;
+        output.set(edit.data, outputOffset);
+        outputOffset += edit.data.length;
+        sourceOffset = edit.start + edit.deleteCount;
+      });
+      output.set(previous.subarray(sourceOffset), outputOffset);
+      return output;
+    }
 
     function subscribe(listener) {
       listeners.add(listener);
@@ -205,7 +295,7 @@
           },
           provideDocumentSemanticTokens: function (
             requestedModel,
-            _lastResultId,
+            lastResultId,
             cancellationToken
           ) {
             if (
@@ -215,45 +305,93 @@
             ) {
               return null;
             }
-            if (!hasCachedData || cachedVersion !== model.getVersionId()) {
+            if (!hasCachedData) {
               return { data: new Uint32Array(0) };
             }
+            if (stale || cachedVersion !== model.getVersionId()) {
+              throw new Error("Lean semantic tokens busy");
+            }
+            servedSerial += 1;
+            var resultId = "lean4:" + (cachedResultId || cachedVersion) + ":" +
+              generation + ":" + servedSerial;
+            var previous = servedResults.get(String(lastResultId || ""));
+            var next = new Uint32Array(cachedData);
+            servedResults.set(resultId, next);
+            if (previous) {
+              return {
+                edits: singleTokenEdit(previous, next),
+                resultId: resultId
+              };
+            }
             return {
-              data: new Uint32Array(cachedData),
-              resultId: "lean4:" + cachedVersion + ":" + generation
+              data: next,
+              resultId: resultId
             };
           },
-          releaseDocumentSemanticTokens: function () {}
+          releaseDocumentSemanticTokens: function (resultId) {
+            servedResults.delete(String(resultId || ""));
+          }
         }
       );
     }
 
     function accept(version, payload) {
-      var rawLegend = payload && payload.legend;
+      var unchanged = payload === null || payload === "unchanged" || (
+        payload && (
+          payload.unchanged === true || payload.kind === "unchanged"
+        )
+      );
+      if (unchanged) {
+        if (!hasCachedData) return false;
+        var changedVersion = cachedVersion !== version || stale;
+        cachedVersion = version;
+        stale = false;
+        if (changedVersion) {
+          generation += 1;
+          if (registration) fireChange();
+        }
+        return true;
+      }
+
+      var nextLegend = payload && payload.legend || rawLegend;
       var rawData = payload && payload.data;
+      var deltaEdits = payload && payload.edits;
+      var isDelta = Array.isArray(deltaEdits);
+      var nextData = null;
+      if (isDelta) {
+        if (
+          !hasCachedData ||
+          String(payload.previous_result_id || "") !== cachedResultId
+        ) {
+          return false;
+        }
+        nextData = applyTokenEdits(cachedData, deltaEdits);
+      } else if (Array.isArray(rawData)) {
+        nextData = Uint32Array.from(rawData);
+      }
       if (
         disposed ||
         version !== model.getVersionId() ||
-        !rawLegend ||
-        !Array.isArray(rawLegend.tokenTypes) ||
-        !rawLegend.tokenTypes.length ||
-        !rawLegend.tokenTypes.every(function (item) {
+        !nextLegend ||
+        !Array.isArray(nextLegend.tokenTypes) ||
+        !nextLegend.tokenTypes.length ||
+        !nextLegend.tokenTypes.every(function (item) {
           return typeof item === "string";
         }) ||
-        !Array.isArray(rawLegend.tokenModifiers) ||
-        !rawLegend.tokenModifiers.every(function (item) {
+        !Array.isArray(nextLegend.tokenModifiers) ||
+        !nextLegend.tokenModifiers.every(function (item) {
           return typeof item === "string";
         }) ||
-        !Array.isArray(rawData) ||
-        rawData.length % 5 !== 0 ||
-        !rawData.every(function (item) {
+        !nextData ||
+        nextData.length % 5 !== 0 ||
+        !nextData.every(function (item) {
           return Number.isInteger(item) && item >= 0;
         })
       ) {
         return false;
       }
 
-      var signature = JSON.stringify(rawLegend);
+      var signature = JSON.stringify(nextLegend);
       var resultId = String(payload.result_id || "");
       if (
         registration &&
@@ -264,18 +402,24 @@
         return true;
       }
 
-      cachedData = Uint32Array.from(rawData);
+      cachedData = nextData;
       cachedVersion = version;
       cachedResultId = resultId;
       hasCachedData = true;
+      stale = false;
       generation += 1;
+      rawLegend = {
+        tokenTypes: nextLegend.tokenTypes.slice(),
+        tokenModifiers: nextLegend.tokenModifiers.slice()
+      };
 
       if (registration && legendSignature !== signature) {
         registration.dispose();
         registration = null;
+        servedResults.clear();
       }
       if (!registration) {
-        registerProvider(rawLegend, signature);
+        registerProvider(nextLegend, signature);
       } else {
         fireChange();
       }
@@ -283,23 +427,23 @@
     }
 
     function invalidate() {
-      if (disposed || !hasCachedData) return;
-      cachedData = new Uint32Array(0);
-      cachedVersion = 0;
-      cachedResultId = "";
-      hasCachedData = false;
+      if (disposed || !hasCachedData || stale) return;
+      stale = true;
       generation += 1;
-      if (registration) fireChange();
     }
 
     return {
       accept: accept,
       invalidate: invalidate,
+      getResultId: function () {
+        return cachedResultId;
+      },
       dispose: function () {
         if (disposed) return;
         disposed = true;
         if (registration) registration.dispose();
         registration = null;
+        servedResults.clear();
         listeners.clear();
       }
     };
@@ -338,8 +482,19 @@
     var requestSerial = 0;
     var activeController = null;
     var requestInFlight = false;
-    var queuedCheck = false;
+    var inFlightRequestFingerprint = "";
+    var inFlightRequestKind = "";
+    var lastCompletedRequestFingerprints = { source: "", cursor: "" };
+    var queuedSourceCheck = false;
+    var queuedCursorCheck = false;
+    var queuedCursorPosition = null;
     var sourceChangePending = false;
+    var sourceStateId = "";
+    var forceSemanticResync = false;
+    var lastDiagnostics = [];
+    var clientSessionId = window.crypto && window.crypto.randomUUID
+      ? window.crypto.randomUUID()
+      : Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
     var suppressChanges = false;
     var disposed = false;
     var disposables = [];
@@ -410,6 +565,7 @@
         fallbackVersion: 1,
         model: null,
         semanticTokens: null,
+        documentVersion: null,
         viewState: null,
         treeRow: null,
         dirtyDot: null,
@@ -456,6 +612,41 @@
         };
       }
       return { line: 0, character: 0 };
+    }
+
+    function samePosition(left, right) {
+      return left.line === right.line && left.character === right.character;
+    }
+
+    function sourceFingerprint() {
+      return workspace.revision + "|" + workspace.files.map(function (file) {
+        var state = states.get(file.path);
+        return state.mode === "writable"
+          ? state.path + ":" + (
+              state.model ? state.model.getVersionId() : state.fallbackVersion
+            )
+          : state.path + ":readonly";
+      }).join("|");
+    }
+
+    function requestFingerprint(kind, state, path, version, position) {
+      var location = position.line + ":" + position.character;
+      if (kind === "cursor") {
+        return [
+          "cursor",
+          sourceStateId,
+          state && state.documentVersion,
+          path,
+          location
+        ].join("|");
+      }
+      return [
+        "source",
+        sourceFingerprint(),
+        path,
+        version,
+        location
+      ].join("|");
     }
 
     function writableFiles() {
@@ -750,16 +941,19 @@
       updateCursorLabel();
       updateVersionLabel();
       if (shouldCheck) {
-        sourceChangePending = false;
+        sourceChangePending = true;
         window.clearTimeout(sourceTimer);
-        sourceTimer = window.setTimeout(checkDocument, 40);
+        window.clearTimeout(cursorTimer);
+        sourceTimer = window.setTimeout(function () {
+          checkDocument("source");
+        }, 40);
       }
       return true;
     }
 
     function revealDiagnostic(diagnostic) {
       var path = diagnosticPath(diagnostic);
-      switchFile(path, false);
+      switchFile(path, true);
       if (!editor) return;
       var range = diagnosticRange(diagnostic);
       editor.setPosition({
@@ -850,23 +1044,102 @@
       });
     }
 
-    async function checkDocument() {
+    async function checkDocument(requestKind) {
+      var requestedKind = requestKind === "cursor" ? "cursor" : "source";
       window.clearTimeout(sourceTimer);
       window.clearTimeout(cursorTimer);
       if (requestInFlight) {
-        queuedCheck = true;
+        if (requestedKind === "source") {
+          var pendingState = currentState();
+          var pendingFingerprint = requestFingerprint(
+            "source",
+            pendingState,
+            activePath,
+            currentVersion(),
+            currentPosition()
+          );
+          if (pendingFingerprint !== inFlightRequestFingerprint) {
+            queuedSourceCheck = true;
+          }
+        } else {
+          queuedCursorPosition = currentPosition();
+          var cursorState = currentState();
+          var cursorFingerprint = requestFingerprint(
+            "cursor",
+            cursorState,
+            activePath,
+            currentVersion(),
+            queuedCursorPosition
+          );
+          if (
+            inFlightRequestKind !== "cursor" ||
+            cursorFingerprint !== inFlightRequestFingerprint
+          ) {
+            queuedCursorCheck = true;
+          } else {
+            queuedCursorCheck = false;
+            queuedCursorPosition = null;
+          }
+        }
         return;
       }
-      sourceChangePending = false;
-      requestInFlight = true;
+      var kind = requestedKind;
+      var requestedState = currentState();
+      if (
+        kind === "cursor" &&
+        (
+          sourceChangePending ||
+          !sourceStateId ||
+          !requestedState ||
+          requestedState.documentVersion === null
+        )
+      ) {
+        kind = "source";
+      }
+      if (kind === "source") sourceChangePending = false;
       var requestedPath = activePath;
       var requestedVersion = currentVersion();
       var requestedPosition = currentPosition();
+      var requestedFingerprint = sourceFingerprint();
+      var currentRequestFingerprint = requestFingerprint(
+        kind,
+        requestedState,
+        requestedPath,
+        requestedVersion,
+        requestedPosition
+      );
+      if (lastCompletedRequestFingerprints[kind] === currentRequestFingerprint) {
+        return;
+      }
+      requestInFlight = true;
+      inFlightRequestKind = kind;
+      inFlightRequestFingerprint = currentRequestFingerprint;
       var serial = ++requestSerial;
       activeController = new AbortController();
       setStatus("checking", "正在检查");
 
       try {
+        var knownSemanticResultId = requestedState && requestedState.semanticTokens
+          ? requestedState.semanticTokens.getResultId()
+          : "";
+        var requestPayload = {
+          request_kind: kind,
+          client_session_id: clientSessionId,
+          problem_id: problemId,
+          revision: workspace.revision,
+          active_file: requestedPath,
+          version: requestedVersion,
+          position: requestedPosition,
+          known_semantic_result_id: forceSemanticResync
+            ? ""
+            : knownSemanticResultId
+        };
+        if (kind === "source") {
+          requestPayload.files = writableFiles();
+        } else {
+          requestPayload.source_state_id = sourceStateId;
+          requestPayload.document_version = requestedState.documentVersion;
+        }
         var response = await fetch(checkUrl, {
           method: "POST",
           credentials: "same-origin",
@@ -875,14 +1148,7 @@
             "Content-Type": "application/json",
             "X-Requested-With": "XMLHttpRequest"
           },
-          body: JSON.stringify({
-            problem_id: problemId,
-            revision: workspace.revision,
-            files: writableFiles(),
-            active_file: requestedPath,
-            version: requestedVersion,
-            position: requestedPosition
-          }),
+          body: JSON.stringify(requestPayload),
           signal: activeController.signal,
           mathCurveLoader: false
         });
@@ -890,35 +1156,94 @@
         if (
           serial !== requestSerial ||
           requestedPath !== activePath ||
-          requestedVersion !== currentVersion()
+          requestedVersion !== currentVersion() ||
+          (kind === "source" && requestedFingerprint !== sourceFingerprint())
         ) return;
         if (Number.isFinite(Number(payload.version)) &&
             Number(payload.version) !== requestedVersion) return;
         if (!response.ok || !payload.success) {
+          if (payload.code === "resync_required") {
+            sourceStateId = "";
+            if (requestedState) requestedState.documentVersion = null;
+            forceSemanticResync = true;
+            lastCompletedRequestFingerprints.source = "";
+            lastCompletedRequestFingerprints.cursor = "";
+            queuedSourceCheck = true;
+            setStatus("checking", "正在重新同步 Lean");
+            return;
+          }
           if (payload.code === "service_busy" &&
               requestedVersion === currentVersion()) {
             setStatus("checking", "正在等待 Lean");
-            sourceTimer = window.setTimeout(checkDocument, 500);
+            sourceTimer = window.setTimeout(function () {
+              checkDocument(kind);
+            }, 500);
             return;
           }
           throw new Error(payload.message || "Lean 服务暂时不可用");
         }
 
-        var diagnostics = normalizedDiagnostics(payload.diagnostics);
-        var requestedState = states.get(requestedPath);
-        if (requestedState && requestedState.semanticTokens) {
-          requestedState.semanticTokens.accept(
+        if (kind === "source") {
+          sourceStateId = String(payload.source_state_id || "");
+        }
+        if (Number.isFinite(Number(payload.document_version))) {
+          requestedState.documentVersion = Number(payload.document_version);
+        }
+        if (
+          requestedState &&
+          requestedState.semanticTokens &&
+          Object.prototype.hasOwnProperty.call(payload, "semantic_tokens")
+        ) {
+          var accepted = requestedState.semanticTokens.accept(
             requestedVersion,
             payload.semantic_tokens
           );
+          if (!accepted) {
+            forceSemanticResync = true;
+            lastCompletedRequestFingerprints.source = "";
+            queuedSourceCheck = true;
+          } else {
+            forceSemanticResync = false;
+          }
         }
-        renderGoals(payload.goals);
-        renderDiagnostics(diagnostics, true);
+        if (kind === "source" && payload.diagnostics !== null &&
+            Object.prototype.hasOwnProperty.call(payload, "diagnostics")) {
+          lastDiagnostics = normalizedDiagnostics(payload.diagnostics);
+          renderDiagnostics(lastDiagnostics, true);
+        }
+        if (samePosition(requestedPosition, currentPosition())) {
+          renderGoals(payload.goals);
+          if (kind === "source") {
+            queuedCursorCheck = false;
+            queuedCursorPosition = null;
+          }
+        } else if (
+          requestedPath === activePath &&
+          requestedVersion === currentVersion()
+        ) {
+          queuedCursorCheck = true;
+          queuedCursorPosition = currentPosition();
+        }
         updateVersionLabel();
         setStatus(
-          diagnostics.length ? "problems" : "ready",
-          diagnostics.length ? diagnostics.length + " 个问题" : "已同步"
+          lastDiagnostics.length ? "problems" : "ready",
+          lastDiagnostics.length ? lastDiagnostics.length + " 个问题" : "已同步"
         );
+        if (!forceSemanticResync) {
+          lastCompletedRequestFingerprints[kind] = currentRequestFingerprint;
+          if (
+            kind === "source" &&
+            samePosition(requestedPosition, currentPosition())
+          ) {
+            lastCompletedRequestFingerprints.cursor = requestFingerprint(
+              "cursor",
+              requestedState,
+              requestedPath,
+              requestedVersion,
+              requestedPosition
+            );
+          }
+        }
       } catch (error) {
         if (error && error.name === "AbortError") return;
         if (serial !== requestSerial) return;
@@ -936,10 +1261,22 @@
         activateTab("problems");
       } finally {
         requestInFlight = false;
+        inFlightRequestKind = "";
+        inFlightRequestFingerprint = "";
         activeController = null;
-        if (queuedCheck) {
-          queuedCheck = false;
-          window.setTimeout(checkDocument, 0);
+        if (queuedSourceCheck) {
+          queuedSourceCheck = false;
+          queuedCursorCheck = false;
+          queuedCursorPosition = null;
+          window.setTimeout(function () {
+            checkDocument("source");
+          }, 0);
+        } else if (queuedCursorCheck) {
+          queuedCursorCheck = false;
+          queuedCursorPosition = null;
+          window.setTimeout(function () {
+            checkDocument("cursor");
+          }, 0);
         }
       }
     }
@@ -949,14 +1286,18 @@
       window.clearTimeout(sourceTimer);
       window.clearTimeout(cursorTimer);
       setStatus("idle", "等待检查");
-      sourceTimer = window.setTimeout(checkDocument, SOURCE_DEBOUNCE_MS);
+      sourceTimer = window.setTimeout(function () {
+        checkDocument("source");
+      }, SOURCE_DEBOUNCE_MS);
     }
 
     function scheduleCursorCheck() {
       updateCursorLabel();
       if (sourceChangePending) return;
       window.clearTimeout(cursorTimer);
-      cursorTimer = window.setTimeout(checkDocument, CURSOR_DEBOUNCE_MS);
+      cursorTimer = window.setTimeout(function () {
+        checkDocument("cursor");
+      }, CURSOR_DEBOUNCE_MS);
     }
 
     if (editor && monaco && monaco.editor) {
@@ -1001,7 +1342,9 @@
     }
     updateCursorLabel();
     updateVersionLabel();
-    sourceTimer = window.setTimeout(checkDocument, 80);
+    sourceTimer = window.setTimeout(function () {
+      checkDocument("source");
+    }, 80);
 
     function setWritableFiles(files) {
       var values = files;
@@ -1069,7 +1412,11 @@
         disposed = true;
         window.clearTimeout(sourceTimer);
         window.clearTimeout(cursorTimer);
-        queuedCheck = false;
+        queuedSourceCheck = false;
+        queuedCursorCheck = false;
+        queuedCursorPosition = null;
+        inFlightRequestKind = "";
+        inFlightRequestFingerprint = "";
         requestSerial += 1;
         if (activeController) activeController.abort();
         disposables.forEach(function (disposable) {

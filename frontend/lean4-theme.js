@@ -38,6 +38,8 @@ const lean4DarkPlus = Object.freeze({
       scope: [
         "keyword.control.tactic.lean4",
         "keyword.other.definitioncommand.lean4",
+        "keyword.other.lean4",
+        "storage.modifier.lean4",
       ],
       settings: { foreground: "#C586C0" },
     },

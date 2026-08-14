@@ -189,6 +189,7 @@ const monaco = {{
   }}
 }};
 const bridge = NumOJLeanWorkbench.createSemanticTokenBridge(monaco, model);
+if (bridge.accept(3, null)) process.exit(21);
 const first = {{
   legend: {{
     tokenTypes: ["keyword", "function", "leanSorryLike"],
@@ -205,18 +206,78 @@ let result = provider.provideDocumentSemanticTokens(model, null, {{
   isCancellationRequested: false
 }});
 if (!(result.data instanceof Uint32Array) || result.data[8] !== 1) process.exit(4);
+const firstProviderResultId = result.resultId;
 bridge.accept(3, first);
 if (refreshes !== 0) process.exit(5);
 version = 4;
 bridge.invalidate();
-if (refreshes !== 1) process.exit(6);
-result = provider.provideDocumentSemanticTokens(model, null, {{
+if (refreshes !== 0) process.exit(6);
+let busy = false;
+try {{
+  provider.provideDocumentSemanticTokens(model, null, {{
+    isCancellationRequested: false
+  }});
+}} catch (error) {{
+  busy = String(error && error.message || "").includes("busy");
+}}
+if (!busy) process.exit(7);
+if (bridge.accept(3, first)) process.exit(8);
+const second = {{
+  ...first,
+  data: [0, 0, 7, 0, 0, 0, 8, 9, 1, 1],
+  result_id: "2:def"
+}};
+if (!bridge.accept(4, second)) process.exit(9);
+if (refreshes !== 1) process.exit(10);
+result = provider.provideDocumentSemanticTokens(model, firstProviderResultId, {{
   isCancellationRequested: false
 }});
-if (result.data.length !== 0) process.exit(7);
-if (bridge.accept(3, first)) process.exit(8);
-if (!bridge.accept(4, {{...first, result_id: "2:def"}})) process.exit(9);
-if (refreshes !== 2) process.exit(10);
+if (
+  !Array.isArray(result.edits) ||
+  result.edits.length !== 1 ||
+  result.edits[0].start !== 7 ||
+  result.edits[0].deleteCount !== 1 ||
+  !(result.edits[0].data instanceof Uint32Array) ||
+  result.edits[0].data[0] !== 9
+) process.exit(13);
+const secondProviderResultId = result.resultId;
+version = 5;
+bridge.invalidate();
+if (bridge.getResultId() !== "2:def") process.exit(14);
+if (!bridge.accept(5, {{
+  previous_result_id: "2:def",
+  result_id: "3:ghi",
+  edits: [{{start: 7, deleteCount: 1, data: [10]}}]
+}})) process.exit(15);
+result = provider.provideDocumentSemanticTokens(model, secondProviderResultId, {{
+  isCancellationRequested: false
+}});
+if (
+  result.edits.length !== 1 ||
+  result.edits[0].start !== 7 ||
+  result.edits[0].deleteCount !== 1 ||
+  result.edits[0].data[0] !== 10
+) process.exit(16);
+const thirdProviderResultId = result.resultId;
+version = 6;
+bridge.invalidate();
+if (!bridge.accept(6, null)) process.exit(17);
+result = provider.provideDocumentSemanticTokens(model, thirdProviderResultId, {{
+  isCancellationRequested: false
+}});
+if (!Array.isArray(result.edits) || result.edits.length !== 0) process.exit(18);
+provider.releaseDocumentSemanticTokens(result.resultId);
+result = provider.provideDocumentSemanticTokens(model, result.resultId, {{
+  isCancellationRequested: false
+}});
+if (!(result.data instanceof Uint32Array) || result.data[7] !== 10) process.exit(20);
+version = 7;
+bridge.invalidate();
+if (bridge.accept(7, {{
+  previous_result_id: "wrong-result",
+  result_id: "4:jkl",
+  edits: []
+}})) process.exit(19);
 if (provider.provideDocumentSemanticTokens(model, null, {{
   isCancellationRequested: true
 }}) !== null) process.exit(11);
@@ -231,6 +292,40 @@ if (!registrationDisposed) process.exit(12);
     )
 
 
+def test_lean4_workbench_separates_source_and_cursor_requests():
+    source = (
+        ROOT / "static" / "app" / "lean-workbench.js"
+    ).read_text()
+
+    assert 'request_kind: kind' in source
+    assert 'client_session_id: clientSessionId' in source
+    assert 'requestPayload.files = writableFiles();' in source
+    assert 'requestPayload.source_state_id = sourceStateId;' in source
+    assert 'requestPayload.document_version = requestedState.documentVersion;' in source
+    assert 'known_semantic_result_id:' in source
+    assert 'payload.code === "resync_required"' in source
+    assert 'inFlightRequestFingerprint' in source
+    assert 'lastCompletedRequestFingerprints[kind]' in source
+    assert 'lastCompletedRequestFingerprints.cursor = requestFingerprint(' in source
+    assert 'lastCompletedRequestFingerprints.source = "";' in source
+    assert 'checkDocument("source")' in source
+    assert 'checkDocument("cursor")' in source
+    assert 'kind === "source" && payload.diagnostics !== null' in source
+
+
+def test_lean4_lexical_and_semantic_themes_use_the_same_core_colors():
+    lexical_theme = (ROOT / "frontend" / "lean4-theme.js").read_text()
+    semantic_theme = (ROOT / "frontend" / "monaco" / "editor.js").read_text()
+
+    assert '"keyword.other.lean4"' in lexical_theme
+    assert '"storage.modifier.lean4"' in lexical_theme
+    assert 'settings: { foreground: "#C586C0" }' in lexical_theme
+    assert '{ token: "lean4.keyword", foreground: "C586C0" }' in semantic_theme
+    assert '{ token: "lean4.modifier", foreground: "C586C0" }' in semantic_theme
+    assert '{ token: "lean4.operator", foreground: "D7BA7D" }' in semantic_theme
+    assert '{ token: "lean4.function", foreground: "DCDCAA" }' in semantic_theme
+
+
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_lean4_markdown_highlighter_uses_structural_scopes():
     asset = ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
@@ -241,6 +336,7 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
 (async function() {{
   const source = [
     "/-! Fibonacci docs -/",
+    "import Mathlib",
     "namespace Mathlib.Data.Nat",
     "structure {{u}} Box where",
     "structure Point where",
@@ -271,6 +367,7 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
   if (!has("Nat.", "#4EC9B0", 0) || !has("fib", "#DCDCAA", 0)) process.exit(5);
   if (!has("fib_add", "#DCDCAA", 2)) process.exit(6);
   if (!has("by", "#C586C0", 0) || !has("simpa", "#C586C0", 0)) process.exit(7);
+  if (!has("import", "#C586C0", 0) || !has("namespace", "#C586C0", 0)) process.exit(16);
   if (!has("=", "#D7BA7D", 0)) process.exit(8);
   for (const operator of ["<;>", "-", "×", "^", "%", "·"]) {{
     if (!has(operator, "#D7BA7D", 0)) process.exit(14);
