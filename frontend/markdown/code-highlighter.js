@@ -6,6 +6,7 @@ import cpp from "@shikijs/langs/cpp";
 import matlab from "@shikijs/langs/matlab";
 import python from "@shikijs/langs/python";
 import darkPlus from "@shikijs/themes/dark-plus";
+import lean4 from "../lean4-grammar.js";
 
 let highlighterPromise;
 
@@ -29,12 +30,14 @@ const LANGUAGE_ALIASES = Object.freeze({
   m: "matlab",
   matlab: "matlab",
   octave: "matlab",
+  lean: "lean4",
+  lean4: "lean4",
 });
 
 function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighterCore({
-      langs: [bash, c, cpp, matlab, python],
+      langs: [bash, c, cpp, lean4, matlab, python],
       themes: [darkPlus],
       engine: createJavaScriptRegexEngine(),
     }).catch((error) => {

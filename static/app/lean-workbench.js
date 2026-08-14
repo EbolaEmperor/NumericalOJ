@@ -69,6 +69,15 @@
   function registerSymbolCompletions(monaco) {
     if (symbolProviderRegistered || !monaco || !monaco.languages) return;
     symbolProviderRegistered = true;
+    var officialSymbols = typeof monaco.getLean4UnicodeAbbreviations === "function"
+      ? monaco.getLean4UnicodeAbbreviations()
+      : null;
+    var symbols = officialSymbols
+      ? Object.keys(officialSymbols).reduce(function (result, abbreviation) {
+          result["\\" + abbreviation] = officialSymbols[abbreviation];
+          return result;
+        }, {})
+      : LEAN_SYMBOLS;
     monaco.languages.registerCompletionItemProvider("lean4", {
       triggerCharacters: ["\\"],
       provideCompletionItems: function (model, position) {
@@ -76,20 +85,27 @@
           0,
           position.column - 1
         );
-        var match = before.match(/\\[A-Za-z]*$/);
+        var match = before.match(/\\[^\\\s]*$/);
         if (!match) return { suggestions: [] };
         var typed = match[0];
         var startColumn = position.column - typed.length;
-        var suggestions = Object.keys(LEAN_SYMBOLS)
+        var suggestions = Object.keys(symbols)
           .filter(function (command) {
             return command.indexOf(typed) === 0;
           })
           .map(function (command) {
+            var replacement = String(symbols[command]);
+            var usesCursor = replacement.indexOf("$CURSOR") !== -1;
             return {
-              label: command + "  " + LEAN_SYMBOLS[command],
+              label: command + "  " + replacement.replace("$CURSOR", "▏"),
               filterText: command,
-              insertText: LEAN_SYMBOLS[command],
-              detail: "Lean Unicode symbol",
+              insertText: usesCursor
+                ? replacement.replace("$CURSOR", "$0")
+                : replacement,
+              insertTextRules: usesCursor
+                ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+                : undefined,
+              detail: "Lean Unicode abbreviation",
               kind: monaco.languages.CompletionItemKind.Text,
               range: new monaco.Range(
                 position.lineNumber,

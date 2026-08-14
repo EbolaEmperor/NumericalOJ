@@ -407,6 +407,7 @@
     monaco.languages.setMonarchTokensProvider("lean4", {
       defaultToken: "",
       tokenPostfix: ".lean4",
+      unicode: true,
       keywords: [
         "abbrev", "axiom", "class", "def", "deriving", "do", "else",
         "end", "example", "export", "extends", "extern", "final", "from",
@@ -418,10 +419,14 @@
         "where", "with",
       ],
       tacticKeywords: [
-        "apply", "assumption", "by", "cases", "constructor", "contradiction",
-        "decide", "exact", "first", "fun_prop", "have", "induction", "intro",
-        "left", "omega", "rfl", "right", "ring", "simp", "simpa", "specialize",
-        "subst", "tauto", "trivial", "use", " · ",
+        "aesop", "all_goals", "apply", "apply_assumption", "assumption", "by",
+        "by_cases", "by_contra", "case", "cases", "change", "constructor",
+        "contradiction", "decide", "exact", "exact_mod_cast", "exfalso", "first",
+        "fun_prop", "generalize", "have", "induction", "infer_instance", "intro",
+        "intros", "left", "linarith", "next", "norm_num", "obtain", "omega",
+        "rcases", "refine", "repeat", "rfl", "right", "ring", "ring_nf", "rintro",
+        "rw", "simp", "simp_all", "simpa", "specialize", "subst", "tauto",
+        "trivial", "use",
       ],
       constants: ["Prop", "Type", "Sort", "True", "False"],
       tokenizer: {

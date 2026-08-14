@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 import { build } from "esbuild";
 
 const outputDirectory = "static/vendor/monaco";
@@ -31,3 +31,8 @@ await build({
   outfile: `${outputDirectory}/editor.worker.js`,
   format: "iife",
 });
+
+await copyFile(
+  "node_modules/@leanprover/unicode-input/LICENSE",
+  `${outputDirectory}/lean4-unicode-input.LICENSE`,
+);

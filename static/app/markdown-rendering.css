@@ -78,7 +78,7 @@
 }
 
 /*
- * 仅编辑器支持的四组文章语言切到与 Monaco Dark+ 完全相同的画布；
+ * 编辑器支持的文章语言切到与 Monaco Dark+ 完全相同的画布；
  * 其他语言继续沿用既有 GitHub Dark Pygments 主题。
  */
 .numoj-markdown
@@ -94,7 +94,9 @@
     .language-python3,
     .language-m,
     .language-matlab,
-    .language-octave
+    .language-octave,
+    .language-lean,
+    .language-lean4
   ) {
   background: #1e1e1e;
   color: #d4d4d4;
@@ -113,7 +115,9 @@
     .language-python3,
     .language-m,
     .language-matlab,
-    .language-octave
+    .language-octave,
+    .language-lean,
+    .language-lean4
   )
   pre {
   border-color: #3e3e42;

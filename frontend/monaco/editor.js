@@ -60,6 +60,11 @@ import xml from "@shikijs/langs/xml";
 import yaml from "@shikijs/langs/yaml";
 import darkPlus from "@shikijs/themes/dark-plus";
 import { shikiToMonaco, textmateThemeToMonacoTheme } from "@shikijs/monaco";
+import lean4 from "../lean4-grammar.js";
+import {
+  attachLean4UnicodeInput as attachUnicodeInput,
+  getLean4UnicodeAbbreviations,
+} from "../lean4-unicode-input.js";
 import "monaco-editor/languages/definitions/bat/register.js";
 import "monaco-editor/languages/definitions/clojure/register.js";
 import "monaco-editor/languages/definitions/coffee/register.js";
@@ -159,8 +164,8 @@ export function prepareTextMateHighlighting() {
       langs: [
         asm, bat, c, cmake, clojure, coffeescript, cpp, csharp, css, dart,
         dockerfile, elixir, erlang, fsharp, go, graphql, groovy, haskell,
-        html, ini, java, javascript, json, jsx, julia, kotlin, latex, less,
-        lua, makefile, matlab, objectiveC, pascal, perl, php, powershell,
+        html, ini, java, javascript, json, jsx, julia, kotlin, latex, lean4,
+        less, lua, makefile, matlab, objectiveC, pascal, perl, php, powershell,
         protobuf, python, r, ruby, rust, scala, scheme, scss, shellscript,
         solidity, sql, swift, systemVerilog, tcl, toml, tsx, typescript,
         vb, verilog, xml, yaml,
@@ -179,5 +184,11 @@ export function prepareTextMateHighlighting() {
   }
   return textMateReadyPromise;
 }
+
+export function attachLean4UnicodeInput(editor) {
+  return attachUnicodeInput(monaco, editor);
+}
+
+export { getLean4UnicodeAbbreviations };
 
 export * from "monaco-editor/editor/editor.main.js";

@@ -104,6 +104,12 @@
       contextmenu: true,
       find: { addExtraSpaceOnTop: false }
     });
+    if (
+      (language === 'lean' || language === 'lean4') &&
+      typeof monaco.attachLean4UnicodeInput === 'function'
+    ) {
+      monaco.attachLean4UnicodeInput(instance);
+    }
     monacoEditorInstance = instance;
     textarea.hidden = true;
     revealMonacoEditor(instance);
