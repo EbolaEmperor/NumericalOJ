@@ -9,6 +9,7 @@
     "test:frontend": "node --test tests/frontend/*.test.cjs"
   },
   "devDependencies": {
+    "@leanprover/unicode-input": "0.1.12",
     "@shikijs/monaco": "4.3.1",
     "esbuild": "0.25.9",
     "mermaid": "11.16.0",

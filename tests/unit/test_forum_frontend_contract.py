@@ -292,6 +292,7 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
         'from "@shikijs/langs/cpp"',
         'from "@shikijs/langs/python"',
         'from "@shikijs/langs/matlab"',
+        'from "../lean4-grammar.js"',
         'from "@shikijs/themes/dark-plus"',
         "let highlighterPromise;",
         "highlighter.codeToTokens",
@@ -319,6 +320,8 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
         "language-m",
         "language-matlab",
         "language-octave",
+        "language-lean",
+        "language-lean4",
     ):
         assert language_class in MARKDOWN_JAVASCRIPT
         assert language_class in MARKDOWN_CSS
@@ -346,7 +349,7 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
         assert contract in MARKDOWN_JAVASCRIPT
 
     target_canvas = MARKDOWN_CSS.split(
-        "仅编辑器支持的四组文章语言",
+        "编辑器支持的文章语言",
         1,
     )[1].split(".numoj-markdown .numoj-code-frame", 1)[0]
     assert "background: #1e1e1e;" in target_canvas

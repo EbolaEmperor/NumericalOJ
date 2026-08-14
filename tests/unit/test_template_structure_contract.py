@@ -345,6 +345,9 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert '{ token: "class", foreground: "4EC9B0" }' in monaco_entry
     assert '{ token: "method", foreground: "DCDCAA" }' in monaco_entry
     assert 'from "@shikijs/langs/cpp"' in monaco_entry
+    assert 'from "../lean4-grammar.js"' in monaco_entry
+    assert 'from "../lean4-unicode-input.js"' in monaco_entry
+    assert "attachLean4UnicodeInput(instance)" in editor
     assert 'from "@shikijs/themes/dark-plus"' in monaco_entry
     assert "createJavaScriptRegexEngine()" in monaco_entry
     assert "numoj-light" not in editor

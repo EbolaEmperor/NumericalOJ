@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
     "frontend/markdown/code-highlighter.js",
+    "frontend/lean4-grammar.js",
+    "frontend/lean4-unicode-input.js",
     "static/app/auth.js",
     "static/app/class-select.js",
     "static/app/class-picker.js",
@@ -71,6 +73,11 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
       ["#569CD6", "#DCDCAA", "#9CDCFE", "#C586C0"],
     ],
     ["octave", "function y = solve(x)\\n  y = x;\\nend", ["#569CD6"]],
+    [
+      "lean4",
+      "theorem answer (n : Nat) : n + 0 = n := by\\n  simpa -- done\\n\\nsorry",
+      ["#569CD6", "#DCDCAA", "#B5CEA8", "#C586C0", "#6A9955", "#F44747"],
+    ],
   ];
   for (const sample of samples) {{
     const language = sample[0];
@@ -95,6 +102,58 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
     }}
   }}
 }})().catch(function() {{ process.exit(3); }});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_lean4_monarch_fallback_enables_unicode_identifiers():
+    asset = ROOT / "static" / "app" / "code-editor-runtime.js"
+    script = f"""
+global.window = global;
+let leanDefinition = null;
+const monaco = {{
+  languages: {{
+    getLanguages: function() {{ return []; }},
+    register: function() {{}},
+    setLanguageConfiguration: function() {{}},
+    setMonarchTokensProvider: function(language, definition) {{
+      if (language === "lean4") leanDefinition = definition;
+    }}
+  }}
+}};
+require({str(asset)!r});
+NumOJCodeEditorRuntime.registerLean4(monaco);
+if (!leanDefinition || leanDefinition.unicode !== true) process.exit(1);
+if (!leanDefinition.keywords.includes("theorem")) process.exit(2);
+if (!leanDefinition.tacticKeywords.includes("simpa")) process.exit(3);
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_lean4_uses_official_unicode_abbreviations():
+    asset = ROOT / "frontend" / "lean4-unicode-input.js"
+    script = f"""
+const {{ pathToFileURL }} = require("url");
+(async function() {{
+  const input = await import(pathToFileURL({str(asset)!r}).href);
+  const symbols = input.getLean4UnicodeAbbreviations();
+  if (symbols.alpha !== "α") process.exit(1);
+  if (symbols.forall !== "∀") process.exit(2);
+  if (symbols["<>"] !== "⟨$CURSOR⟩") process.exit(3);
+  if (Object.keys(symbols).length < 1_800) process.exit(4);
+}})().catch(function() {{ process.exit(5); }});
 """
     subprocess.run(
         [NODE, "-e", script],

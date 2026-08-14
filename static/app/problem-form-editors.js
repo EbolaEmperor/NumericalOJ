@@ -131,6 +131,10 @@
           tabSize: descriptorSpec.language === "lean4" || descriptorSpec.language === "json" ? 2 : 4,
         })
       );
+      var unicodeInput = descriptorSpec.language === "lean4"
+        && typeof monaco.attachLean4UnicodeInput === "function"
+        ? monaco.attachLean4UnicodeInput(instance)
+        : null;
       runtime.protectEditorInput(
         instance.getDomNode() &&
           instance.getDomNode().querySelector("textarea.inputarea"),
@@ -149,6 +153,11 @@
           var nextDescriptorSpec = specForDescriptor(nextSpec, descriptor);
           ensureSemanticProvider(monaco, nextDescriptorSpec);
           monaco.editor.setModelLanguage(model, nextDescriptorSpec.monacoLanguage);
+          if (unicodeInput) unicodeInput.dispose();
+          unicodeInput = nextDescriptorSpec.language === "lean4"
+            && typeof monaco.attachLean4UnicodeInput === "function"
+            ? monaco.attachLean4UnicodeInput(instance)
+            : null;
         },
         layout: function () {
           instance.layout();

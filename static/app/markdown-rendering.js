@@ -60,6 +60,8 @@
     ["language-m", "matlab"],
     ["language-matlab", "matlab"],
     ["language-octave", "matlab"],
+    ["language-lean", "lean4"],
+    ["language-lean4", "lean4"],
   ]);
 
   let mermaidRenderer = null;

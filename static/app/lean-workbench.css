@@ -85,6 +85,23 @@
   font-variant-numeric: tabular-nums;
 }
 
+.lean-source-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.lean-unicode-hint {
+  padding: 2px 6px;
+  border: 1px solid rgba(161, 161, 170, 0.2);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #a1a1aa;
+  cursor: help;
+  letter-spacing: 0.01em;
+}
+
 .lean-editor-body {
   position: relative;
   min-height: 0;
@@ -507,6 +524,10 @@
 
   .lean-check-status {
     max-width: 88px;
+  }
+
+  .lean-unicode-hint {
+    display: none;
   }
 
   .lean-inspector-footer > span:first-child {
