@@ -293,12 +293,17 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
         'from "@shikijs/langs/python"',
         'from "@shikijs/langs/matlab"',
         'from "../lean4-grammar.js"',
-        'from "@shikijs/themes/dark-plus"',
+        'from "../lean4-theme.js"',
         "let highlighterPromise;",
         "highlighter.codeToTokens",
         "LANGUAGE_ALIASES",
     ):
         assert contract in CODE_HIGHLIGHTER_ENTRY
+
+    lean_theme = (ROOT / "frontend" / "lean4-theme.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'from "@shikijs/themes/dark-plus"' in lean_theme
 
     for language_class in (
         "language-bash",

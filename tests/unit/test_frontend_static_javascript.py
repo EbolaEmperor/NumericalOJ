@@ -13,6 +13,7 @@ NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
     "frontend/markdown/code-highlighter.js",
     "frontend/lean4-grammar.js",
+    "frontend/lean4-theme.js",
     "frontend/lean4-unicode-input.js",
     "static/app/auth.js",
     "static/app/class-select.js",
@@ -20,6 +21,7 @@ JAVASCRIPT_ASSETS = (
     "static/app/choice-picker.js",
     "static/app/code-editor-runtime.js",
     "static/app/editor-semantic-tokens.js",
+    "static/app/lean-workbench.js",
     "static/app/markdown-rendering.js",
     "static/app/model-family.js",
     "static/app/problem-editor.js",
@@ -76,7 +78,10 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
     [
       "lean4",
       "theorem answer (n : Nat) : n + 0 = n := by\\n  simpa -- done\\n\\nsorry",
-      ["#569CD6", "#DCDCAA", "#B5CEA8", "#C586C0", "#6A9955", "#F44747"],
+      [
+        "#DCDCAA", "#9CDCFE", "#4EC9B0", "#D7BA7D", "#B5CEA8",
+        "#C586C0", "#6A9955", "#F44747",
+      ],
     ],
   ];
   for (const sample of samples) {{
@@ -154,6 +159,123 @@ const {{ pathToFileURL }} = require("url");
   if (symbols["<>"] !== "⟨$CURSOR⟩") process.exit(3);
   if (Object.keys(symbols).length < 1_800) process.exit(4);
 }})().catch(function() {{ process.exit(5); }});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_lean4_semantic_token_bridge_tracks_monaco_model_version():
+    asset = ROOT / "static" / "app" / "lean-workbench.js"
+    script = f"""
+global.window = global;
+require({str(asset)!r});
+let version = 3;
+let provider = null;
+let registrationDisposed = false;
+const model = {{getVersionId: function() {{ return version; }}}};
+const monaco = {{
+  languages: {{
+    registerDocumentSemanticTokensProvider: function(language, value) {{
+      if (language !== "lean4") process.exit(1);
+      provider = value;
+      return {{dispose: function() {{ registrationDisposed = true; }}}};
+    }}
+  }}
+}};
+const bridge = NumOJLeanWorkbench.createSemanticTokenBridge(monaco, model);
+const first = {{
+  legend: {{
+    tokenTypes: ["keyword", "function", "leanSorryLike"],
+    tokenModifiers: ["declaration"]
+  }},
+  data: [0, 0, 7, 0, 0, 0, 8, 6, 1, 1],
+  result_id: "1:abc"
+}};
+if (!bridge.accept(3, first) || !provider) process.exit(2);
+if (provider.getLegend().tokenTypes[1] !== "lean4.function") process.exit(3);
+let refreshes = 0;
+provider.onDidChange(function() {{ refreshes += 1; }});
+let result = provider.provideDocumentSemanticTokens(model, null, {{
+  isCancellationRequested: false
+}});
+if (!(result.data instanceof Uint32Array) || result.data[8] !== 1) process.exit(4);
+bridge.accept(3, first);
+if (refreshes !== 0) process.exit(5);
+version = 4;
+bridge.invalidate();
+if (refreshes !== 1) process.exit(6);
+result = provider.provideDocumentSemanticTokens(model, null, {{
+  isCancellationRequested: false
+}});
+if (result.data.length !== 0) process.exit(7);
+if (bridge.accept(3, first)) process.exit(8);
+if (!bridge.accept(4, {{...first, result_id: "2:def"}})) process.exit(9);
+if (refreshes !== 2) process.exit(10);
+if (provider.provideDocumentSemanticTokens(model, null, {{
+  isCancellationRequested: true
+}}) !== null) process.exit(11);
+bridge.dispose();
+if (!registrationDisposed) process.exit(12);
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_lean4_markdown_highlighter_uses_structural_scopes():
+    asset = ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
+    script = f"""
+const fs = require("fs");
+const vm = require("vm");
+vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
+(async function() {{
+  const source = [
+    "/-! Fibonacci docs -/",
+    "namespace Mathlib.Data.Nat",
+    "structure {{u}} Box where",
+    "structure Point where",
+    "  x : Nat",
+    "  y : ℕ",
+    "theorem fib_add (n : Nat) : Nat.fib n = Nat.fib n := by",
+    "  simpa <;> first | rfl | exact n - 1 × 2 ^ 3 % 2",
+    "#check Mathlib.Data.Nat.Basic",
+    "· exact n",
+    "sorry"
+  ].join("\\n");
+  const result = await NumOJMarkdownCodeHighlighter.tokenize(source, "lean4");
+  const tokens = result.tokens.flat();
+  function has(content, color, style) {{
+    return tokens.some(function(token) {{
+      return token.content === content &&
+        String(token.color).toUpperCase() === color &&
+        Number(token.fontStyle || 0) === style;
+    }});
+  }}
+  if (!has("/-! Fibonacci docs -/", "#6A9955", 1)) process.exit(1);
+  if (!has("Point", "#4EC9B0", 2)) process.exit(2);
+  if (!has("Box", "#4EC9B0", 2)) process.exit(11);
+  if (!has("Mathlib.Data.Nat", "#4EC9B0", 2)) process.exit(12);
+  if (!has("Mathlib.Data.Nat.Basic", "#4EC9B0", 0)) process.exit(13);
+  if (!has("x", "#9CDCFE", 0) || !has("n", "#9CDCFE", 0)) process.exit(3);
+  if (!has("Nat", "#4EC9B0", 0) || !has("ℕ", "#4EC9B0", 0)) process.exit(4);
+  if (!has("Nat.", "#4EC9B0", 0) || !has("fib", "#DCDCAA", 0)) process.exit(5);
+  if (!has("fib_add", "#DCDCAA", 2)) process.exit(6);
+  if (!has("by", "#C586C0", 0) || !has("simpa", "#C586C0", 0)) process.exit(7);
+  if (!has("=", "#D7BA7D", 0)) process.exit(8);
+  for (const operator of ["<;>", "-", "×", "^", "%", "·"]) {{
+    if (!has(operator, "#D7BA7D", 0)) process.exit(14);
+  }}
+  if (!has("sorry", "#F44747", 4)) process.exit(9);
+}})().catch(function() {{ process.exit(15); }});
 """
     subprocess.run(
         [NODE, "-e", script],

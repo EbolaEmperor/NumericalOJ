@@ -58,9 +58,9 @@ import vb from "@shikijs/langs/vb";
 import verilog from "@shikijs/langs/verilog";
 import xml from "@shikijs/langs/xml";
 import yaml from "@shikijs/langs/yaml";
-import darkPlus from "@shikijs/themes/dark-plus";
 import { shikiToMonaco, textmateThemeToMonacoTheme } from "@shikijs/monaco";
 import lean4 from "../lean4-grammar.js";
+import darkPlus from "../lean4-theme.js";
 import {
   attachLean4UnicodeInput as attachUnicodeInput,
   getLean4UnicodeAbbreviations,
@@ -156,6 +156,55 @@ const darkPlusSemanticRules = [
   { token: "modifier", foreground: "569CD6" },
   { token: "label", foreground: "C8C8C8" },
   { token: "comment", foreground: "6A9955" },
+  { token: "lean4.keyword", foreground: "C586C0" },
+  { token: "lean4.variable", foreground: "9CDCFE" },
+  { token: "lean4.variable.readonly", foreground: "4FC1FF" },
+  { token: "lean4.parameter", foreground: "9CDCFE", fontStyle: "italic" },
+  { token: "lean4.property", foreground: "4FC1FF" },
+  { token: "lean4.function", foreground: "DCDCAA" },
+  {
+    token: "lean4.function.declaration",
+    foreground: "FFD580",
+    fontStyle: "bold",
+  },
+  {
+    token: "lean4.function.definition",
+    foreground: "FFD580",
+    fontStyle: "bold",
+  },
+  { token: "lean4.namespace", foreground: "4EC9B0" },
+  {
+    token: "lean4.namespace.declaration",
+    foreground: "4EC9B0",
+    fontStyle: "bold",
+  },
+  { token: "lean4.type", foreground: "4EC9B0" },
+  {
+    token: "lean4.type.declaration",
+    foreground: "4EC9B0",
+    fontStyle: "bold",
+  },
+  { token: "lean4.class", foreground: "4EC9B0" },
+  { token: "lean4.class.declaration", foreground: "4EC9B0", fontStyle: "bold" },
+  { token: "lean4.struct", foreground: "4EC9B0" },
+  { token: "lean4.struct.declaration", foreground: "4EC9B0", fontStyle: "bold" },
+  { token: "lean4.enum", foreground: "4EC9B0" },
+  { token: "lean4.interface", foreground: "4EC9B0" },
+  { token: "lean4.typeParameter", foreground: "4EC9B0", fontStyle: "italic" },
+  { token: "lean4.enumMember", foreground: "4FC1FF" },
+  { token: "lean4.method", foreground: "DCDCAA" },
+  { token: "lean4.macro", foreground: "D7BA7D" },
+  { token: "lean4.modifier", foreground: "569CD6" },
+  { token: "lean4.operator", foreground: "CE9178" },
+  { token: "lean4.decorator", foreground: "D7BA7D" },
+  { token: "lean4.comment", foreground: "6A9955", fontStyle: "italic" },
+  { token: "lean4.string", foreground: "CE9178" },
+  { token: "lean4.number", foreground: "B5CEA8" },
+  {
+    token: "lean4.leanSorryLike",
+    foreground: "F44747",
+    fontStyle: "bold underline",
+  },
 ];
 
 export function prepareTextMateHighlighting() {

@@ -161,6 +161,150 @@
     parent.appendChild(block);
   }
 
+  function createSemanticTokenBridge(monaco, model) {
+    var registration = null;
+    var legend = null;
+    var legendSignature = "";
+    var cachedData = new Uint32Array(0);
+    var cachedVersion = 0;
+    var cachedResultId = "";
+    var generation = 0;
+    var hasCachedData = false;
+    var listeners = new Set();
+    var disposed = false;
+
+    function subscribe(listener) {
+      listeners.add(listener);
+      return {
+        dispose: function () {
+          listeners.delete(listener);
+        }
+      };
+    }
+
+    function fireChange() {
+      listeners.forEach(function (listener) {
+        listener();
+      });
+    }
+
+    function registerProvider(rawLegend, signature) {
+      legend = {
+        tokenTypes: rawLegend.tokenTypes.map(function (tokenType) {
+          return "lean4." + tokenType;
+        }),
+        tokenModifiers: rawLegend.tokenModifiers.slice()
+      };
+      legendSignature = signature;
+      registration = monaco.languages.registerDocumentSemanticTokensProvider(
+        "lean4",
+        {
+          onDidChange: subscribe,
+          getLegend: function () {
+            return legend;
+          },
+          provideDocumentSemanticTokens: function (
+            requestedModel,
+            _lastResultId,
+            cancellationToken
+          ) {
+            if (
+              disposed ||
+              requestedModel !== model ||
+              (cancellationToken && cancellationToken.isCancellationRequested)
+            ) {
+              return null;
+            }
+            if (!hasCachedData || cachedVersion !== model.getVersionId()) {
+              return { data: new Uint32Array(0) };
+            }
+            return {
+              data: new Uint32Array(cachedData),
+              resultId: "lean4:" + cachedVersion + ":" + generation
+            };
+          },
+          releaseDocumentSemanticTokens: function () {}
+        }
+      );
+    }
+
+    function accept(version, payload) {
+      var rawLegend = payload && payload.legend;
+      var rawData = payload && payload.data;
+      if (
+        disposed ||
+        version !== model.getVersionId() ||
+        !rawLegend ||
+        !Array.isArray(rawLegend.tokenTypes) ||
+        !rawLegend.tokenTypes.length ||
+        !rawLegend.tokenTypes.every(function (item) {
+          return typeof item === "string";
+        }) ||
+        !Array.isArray(rawLegend.tokenModifiers) ||
+        !rawLegend.tokenModifiers.every(function (item) {
+          return typeof item === "string";
+        }) ||
+        !Array.isArray(rawData) ||
+        rawData.length % 5 !== 0 ||
+        !rawData.every(function (item) {
+          return Number.isInteger(item) && item >= 0;
+        })
+      ) {
+        return false;
+      }
+
+      var signature = JSON.stringify(rawLegend);
+      var resultId = String(payload.result_id || "");
+      if (
+        registration &&
+        cachedVersion === version &&
+        cachedResultId === resultId &&
+        legendSignature === signature
+      ) {
+        return true;
+      }
+
+      cachedData = Uint32Array.from(rawData);
+      cachedVersion = version;
+      cachedResultId = resultId;
+      hasCachedData = true;
+      generation += 1;
+
+      if (registration && legendSignature !== signature) {
+        registration.dispose();
+        registration = null;
+      }
+      if (!registration) {
+        registerProvider(rawLegend, signature);
+      } else {
+        fireChange();
+      }
+      return true;
+    }
+
+    function invalidate() {
+      if (disposed || !hasCachedData) return;
+      cachedData = new Uint32Array(0);
+      cachedVersion = 0;
+      cachedResultId = "";
+      hasCachedData = false;
+      generation += 1;
+      if (registration) fireChange();
+    }
+
+    return {
+      accept: accept,
+      invalidate: invalidate,
+      dispose: function () {
+        if (disposed) return;
+        disposed = true;
+        if (registration) registration.dispose();
+        registration = null;
+        listeners.clear();
+      }
+    };
+  }
+
   function attach(options) {
     var settings = options || {};
     var root = document.getElementById("leanWorkbench");
@@ -192,6 +336,10 @@
     var queuedCheck = false;
     var sourceChangePending = false;
     var disposables = [];
+    var semanticTokens = monaco && model && monaco.languages &&
+      monaco.languages.registerDocumentSemanticTokensProvider
+      ? createSemanticTokenBridge(monaco, model)
+      : null;
 
     registerSymbolCompletions(monaco);
 
@@ -435,6 +583,9 @@
         var diagnostics = Array.isArray(payload.diagnostics)
           ? payload.diagnostics
           : [];
+        if (semanticTokens) {
+          semanticTokens.accept(requestedVersion, payload.semantic_tokens);
+        }
         renderGoals(payload.goals);
         renderDiagnostics(diagnostics, true);
         updateVersionLabel();
@@ -483,6 +634,7 @@
 
     if (editor && model) {
       disposables.push(model.onDidChangeContent(function () {
+        if (semanticTokens) semanticTokens.invalidate();
         updateVersionLabel();
         scheduleSourceCheck();
       }));
@@ -509,6 +661,7 @@
         queuedCheck = false;
         requestSerial += 1;
         if (activeController) activeController.abort();
+        if (semanticTokens) semanticTokens.dispose();
         disposables.forEach(function (disposable) {
           if (disposable && disposable.dispose) disposable.dispose();
         });
@@ -519,5 +672,8 @@
     return controller;
   }
 
-  window.NumOJLeanWorkbench = Object.freeze({ attach: attach });
+  window.NumOJLeanWorkbench = Object.freeze({
+    attach: attach,
+    createSemanticTokenBridge: createSemanticTokenBridge
+  });
 })();
