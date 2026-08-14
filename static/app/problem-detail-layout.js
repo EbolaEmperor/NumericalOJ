@@ -10,6 +10,7 @@
   if (!page || !row || !outerSplitter) return;
 
   var desktop = global.matchMedia("(min-width: 992px)");
+  var isLeanWorkbench = page.classList.contains("is-lean-workbench");
   var layoutFrame = 0;
 
   function clamp(value, minimum, maximum) {
@@ -192,10 +193,12 @@
     container: row,
     splitter: outerSplitter,
     propertyName: "--problem-detail-statement-width",
-    storageKey: "numoj.problemDetail.statementRatio",
-    defaultRatio: page.classList.contains("is-lean-workbench") ? 0.36 : 0.5,
+    storageKey: isLeanWorkbench
+      ? "numoj.problemDetail.leanStatementRatio"
+      : "numoj.problemDetail.statementRatio",
+    defaultRatio: isLeanWorkbench ? 0.36 : 0.5,
     minimumFirst: 280,
-    minimumSecond: page.classList.contains("is-lean-workbench") ? 480 : 340,
+    minimumSecond: isLeanWorkbench ? 480 : 340,
     firstLabel: "题面",
     secondLabel: "作答区",
   });
