@@ -69,6 +69,8 @@ Do not use commands that launch external model/API work, large judging workloads
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
+For Lean 4 problem-package configuration, publication, workspace, and administrator submission workflows, read [references/lean4-problems.md](references/lean4-problems.md) before acting.
+
 For publication review work, use `vibehub pending` with `vibehub review`.
 Featured status has no application queue: use `vibehub featured <slug> on|off`
 to set or unset it directly. Run each command's `--help` before changing state.

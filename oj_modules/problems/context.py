@@ -27,6 +27,7 @@ from oj_modules.problems.catalog import (
     get_today_submission_counts,
     get_user_classes_cached,
 )
+from oj_modules.problems.lean_workspace import get_current_lean_workspace
 from oj_modules.shared.markdown import render_rich_markdown
 
 
@@ -268,7 +269,23 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
 
     # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
     last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)
+    lean_workspace = None
+    if (
+        int(problem.get("type") or 0) == 1
+        and str(problem.get("lang") or "").strip().lower() in {"lean", "lean4"}
+    ):
+        lean_workspace = get_current_lean_workspace(problem_id)
     initial_code = problem.get('initial_code', '')
+    if lean_workspace:
+        default_file = lean_workspace.get("default_file")
+        initial_code = next(
+            (
+                item.get("content") or ""
+                for item in lean_workspace.get("files") or []
+                if item.get("path") == default_file
+            ),
+            "",
+        )
 
     submission_limit = problem.get('submission_limit', 10)
     remaining_submissions = (
@@ -288,6 +305,7 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
         "user": user,
         "last_submissions": last_submissions,
         "initial_code": initial_code,
+        "lean_workspace": lean_workspace,
         "remaining_submissions": remaining_submissions,
         "can_submit": can_submit_flag,
         "homework": homework,

@@ -132,13 +132,26 @@ def problem_detail(problem_id):
     problem_type = int(raw_problem.get("type") or 1)
     written_mode = int(raw_problem.get("written_grading_mode") or 1)
     programming_mode = int(raw_problem.get("programming_grading_mode") or 1)
-    submit_input_name = "prompt" if problem_type == 1 and programming_mode == 3 else ("code" if problem_type == 1 else "file")
+    is_lean4 = (
+        problem_type == 1
+        and str(raw_problem.get("lang") or "").strip().lower() in {"lean", "lean4"}
+    )
+    submit_input_name = (
+        "lean_workspace"
+        if is_lean4
+        else "prompt"
+        if problem_type == 1 and programming_mode == 3
+        else "code"
+        if problem_type == 1
+        else "file"
+    )
     return json_success(
         problem=problem,
         rendered_content=context["rendered_content"],
         user=public_user(user),
         last_submissions=context["last_submissions"],
         initial_code=context["initial_code"],
+        lean_workspace=context.get("lean_workspace"),
         remaining_submissions=context["remaining_submissions"],
         can_submit=context["can_submit"],
         submit={
@@ -147,7 +160,15 @@ def problem_detail(problem_id):
             "problem_type": problem_type,
             "programming_grading_mode": programming_mode if problem_type == 1 else None,
             "input_name": submit_input_name,
-            "input_kind": "prompt" if submit_input_name == "prompt" else ("code" if submit_input_name == "code" else "file"),
+            "input_kind": (
+                "lean_workspace"
+                if submit_input_name == "lean_workspace"
+                else "prompt"
+                if submit_input_name == "prompt"
+                else "code"
+                if submit_input_name == "code"
+                else "file"
+            ),
             "accept": None if problem_type == 1 else (".zip" if written_mode == 3 else ".pdf"),
             "help_text": (
                 "请提交 prompt，说明解题思路、算法或数据结构及关键边界处理；后台会先审查 prompt，通过后生成代码并评测。"
@@ -266,6 +287,7 @@ def problem_edit_form(problem_id):
         user=public_user(user),
         problem=to_jsonable(api_problem),
         form=form,
+        lean_workspace=context.get("lean_workspace"),
         action=f"/admin/edit_problem/{problem_id}",
         method="POST",
         options=_problem_form_options(),

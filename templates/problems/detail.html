@@ -95,7 +95,16 @@
             <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
               <i class="fas fa-pencil-alt me-1"></i> 编辑
             </a>
-            {% if not is_lean4 %}
+            {% if is_lean4 %}
+            <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadLeanWorkspaceModal">
+              <i class="fas fa-folder-open me-1"></i> {{ '更新题目包' if lean_workspace else '上传题目包' }}
+            </button>
+            {% if lean_workspace %}
+            <a href="{{ url_for('admin_problem.download_lean_workspace', problem_id=problem.id) }}" class="btn btn-outline-secondary">
+              <i class="fas fa-download me-1"></i> v{{ lean_workspace.revision_number }}
+            </a>
+            {% endif %}
+            {% else %}
             <button type="button" class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#uploadDataModal">
               <i class="fas fa-cloud-upload-alt me-1"></i> 上传
             </button>
@@ -204,7 +213,7 @@
         <div class="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar">
           <label for="codeEditor" class="form-label mb-0 code-label-wrap">
             <span class="code-title-line">
-              <i class="fas {{ 'fa-square-root-alt' if is_lean4 else 'fa-code' }} me-2"></i> {{ 'Submission.lean' if is_lean4 else '代码' }}
+              <i class="fas {{ 'fa-square-root-alt' if is_lean4 else 'fa-code' }} me-2"></i> {{ 'Lean 4 工作区' if is_lean4 else '代码' }}
             </span>
             <span class="code-meta-line">
               <span class="badge bg-secondary">
@@ -251,11 +260,16 @@
               id="leanWorkbench"
               data-problem-id="{{ problem.id }}"
               data-check-url="/api/lean/check">
+              {% if lean_workspace|default(none) %}
+              <script type="application/json" id="leanWorkspaceData">{{ lean_workspace|tojson }}</script>
+              {% endif %}
+              <input type="hidden" id="leanWorkspaceInput" name="lean_workspace" value="">
               <section class="lean-source-pane" id="leanSourcePane" aria-label="Lean 4 证明文件编辑器">
                 <header class="lean-pane-bar lean-source-bar">
                   <span class="lean-file-name">
                     <span class="lean-file-mark" aria-hidden="true">λ</span>
-                    Submission.lean
+                    <span class="lean-active-file-name" id="leanActiveFileName">Submission.lean</span>
+                    <span class="lean-active-file-mode" id="leanActiveFileMode">可写</span>
                   </span>
                   <span class="lean-source-meta">
                     <span
@@ -267,7 +281,7 @@
                 </header>
                 <div class="lean-editor-body">
             {% endif %}
-            <textarea id="codeEditor" name="code">{{ initial_code }}</textarea>
+            <textarea id="codeEditor"{% if not is_lean4 %} name="code"{% endif %}>{{ initial_code }}</textarea>
             <div
               id="problemEditorShell"
               class="problem-editor-shell"
@@ -301,6 +315,13 @@
                 aria-valuenow="63"
                 data-lean-workbench-splitter></div>
               <aside class="lean-inspector" id="leanInspectorPane" aria-label="Lean 证明状态">
+                <section class="lean-file-explorer" aria-label="Lean 工作区文件">
+                  <header class="lean-file-explorer-bar">
+                    <span>Files</span>
+                    <span class="lean-file-count" id="leanFileCount">0</span>
+                  </header>
+                  <div class="lean-file-tree" id="leanFileTree" role="tree"></div>
+                </section>
                 <header class="lean-pane-bar lean-inspector-bar">
                   <div class="lean-inspector-tabs" role="tablist" aria-label="证明检查结果">
                     <button
@@ -592,6 +613,31 @@
   </div>
 </div>
 {% endif %}
+{% endif %}
+{% if is_lean4 %}
+<div class="modal fade" id="uploadLeanWorkspaceModal" tabindex="-1" aria-labelledby="uploadLeanWorkspaceModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('admin_problem.upload_lean_workspace', problem_id=problem.id) }}" enctype="multipart/form-data">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="uploadLeanWorkspaceModalLabel"><i class="fas fa-folder-tree me-2"></i>发布 Lean 4 题目包</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </div>
+        <div class="modal-body">
+          <label for="leanPackageZip" class="form-label">选择 ZIP 文件</label>
+          <input class="form-control" type="file" id="leanPackageZip" name="lean_package_zip" accept=".zip" required>
+          <div class="form-text mt-2">
+            ZIP 根目录需包含 <code>numoj-lean.json</code>。上传后会发布不可变新版本；已有提交仍绑定原版本。
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-outline-primary"><i class="fas fa-cloud-upload-alt me-2"></i>发布</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
 {% endif %}
 {% endif %}
 <!-- 上传数据模态框 & 重测进度模态框：保持不变 -->

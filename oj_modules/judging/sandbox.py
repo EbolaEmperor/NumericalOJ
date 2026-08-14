@@ -494,6 +494,8 @@ def run_in_container(
     measure_time=False,
     workdir="/sandbox",
     docker_image=None,
+    run_dir_read_only=True,
+    memory_limit=None,
 ):
     """在一次性 Docker 容器的只读 sandbox 中执行可信命令。
 
@@ -506,6 +508,8 @@ def run_in_container(
         measure_time: True 时在容器内部测量命令 wall time，不包含 docker run 启动耗时
         workdir: 本次短生命周期容器的工作目录
         docker_image: 可选的独立运行镜像；为空时使用普通判题镜像
+        run_dir_read_only: 默认只读；仅可信构建阶段可显式挂载为可写
+        memory_limit: 可选的单次容器内存上限；为空时使用普通判题默认值
 
     Returns:
         _RunResult(returncode, stdout, stderr)
@@ -516,7 +520,7 @@ def run_in_container(
         "--name", container_name,
         "--network", _network(),
         "--security-opt", "no-new-privileges",
-        "--memory", _mem_limit(),
+        "--memory", str(memory_limit or _mem_limit()),
         "--cpus", _cpu_limit(),
         "--pids-limit", _pids_limit(),
         "--read-only",
@@ -524,7 +528,7 @@ def run_in_container(
         *_thread_env_flags(),
         "-e", "HOME=/home/runner",
         "-v",
-        f"{os.path.abspath(run_dir)}:/sandbox:ro",
+        f"{os.path.abspath(run_dir)}:/sandbox:{'ro' if run_dir_read_only else 'rw'}",
         "--user", _runner_identity(),
         "-w", str(workdir or "/sandbox"),
     ]

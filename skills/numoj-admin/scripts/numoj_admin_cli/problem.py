@@ -7,7 +7,8 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin
 
@@ -56,6 +57,8 @@ _WRITTEN_LLM_ENDPOINT_KEYS = frozenset({
 })
 _PROMPTLY_LLM_ENDPOINT_KEYS = frozenset({"review_endpoint_id", "code_generation_endpoint_id"})
 _OUTPUT_IMAGE_LLM_ENDPOINT_KEYS = frozenset({"output_image_grading_endpoint_id"})
+
+LEAN_MANIFEST_FILENAME = "numoj-lean.json"
 
 
 def parse_problem_llm_endpoint_id(raw: str) -> Optional[int]:
@@ -351,6 +354,8 @@ def necessary_problem_detail_payload(payload: Any) -> Any:
     for key in ("initial_code", "last_submissions", "remaining_submissions", "can_submit"):
         if key in payload:
             necessary[key] = payload[key]
+    if isinstance(payload.get("lean_workspace"), dict):
+        necessary["lean_workspace"] = _lean_workspace_summary(payload["lean_workspace"])
     submit = payload.get("submit")
     if isinstance(submit, dict):
         necessary_submit = {
@@ -360,6 +365,136 @@ def necessary_problem_detail_payload(payload: Any) -> Any:
         }
         necessary["submit"] = necessary_submit
     return necessary
+
+
+def _lean_workspace_from_payload(payload: Any) -> Dict[str, Any]:
+    workspace = payload.get("lean_workspace") if isinstance(payload, dict) else None
+    if not isinstance(workspace, dict) or not workspace.get("revision"):
+        raise CliError("This problem does not have a Lean 4 workspace.")
+    if not isinstance(workspace.get("files"), list):
+        raise CliError("The server returned an invalid Lean 4 workspace.")
+    return workspace
+
+
+def _lean_relative_path(raw_path: Any) -> PurePosixPath:
+    path = PurePosixPath(str(raw_path or ""))
+    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise CliError(f"Invalid Lean workspace path: {raw_path!r}")
+    return path
+
+
+def _lean_manifest(problem_id: int, workspace: Dict[str, Any]) -> Dict[str, Any]:
+    ordered = sorted(
+        workspace.get("files") or [],
+        key=lambda item: int(item.get("build_order") or 0),
+    )
+    return {
+        "schema_version": int(workspace.get("schema_version") or 1),
+        "problem_id": int(problem_id),
+        "revision": str(workspace["revision"]),
+        "default_file": str(workspace.get("default_file") or ""),
+        "files": [
+            {"path": str(item.get("path") or ""), "mode": str(item.get("mode") or "")}
+            for item in ordered
+        ],
+        "build_order": [str(item.get("path") or "") for item in ordered],
+        "verification": dict(workspace.get("verification") or {}),
+    }
+
+
+def _write_lean_workspace(
+    *, problem_id: int, workspace: Dict[str, Any], directory: str, force: bool
+) -> Dict[str, Any]:
+    root = Path(directory).expanduser().resolve()
+    manifest = _lean_manifest(problem_id, workspace)
+    outputs = [root / LEAN_MANIFEST_FILENAME]
+    for item in workspace.get("files") or []:
+        outputs.append(root.joinpath(*_lean_relative_path(item.get("path")).parts))
+    existing = [path for path in outputs if path.exists()]
+    if existing and not force:
+        raise CliError(
+            f"Refusing to overwrite {existing[0]}; pass --force to replace the initialized workspace."
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    for item in workspace.get("files") or []:
+        target = root.joinpath(*_lean_relative_path(item.get("path")).parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(item.get("content") or ""), encoding="utf-8")
+    (root / LEAN_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "success": True,
+        "problem_id": int(problem_id),
+        "revision": manifest["revision"],
+        "path": str(root),
+        "default_file": manifest["default_file"],
+        "files": manifest["files"],
+    }
+
+
+def _read_lean_submission(directory: str, *, problem_id: int) -> Dict[str, Any]:
+    root = Path(directory).expanduser().resolve()
+    manifest_path = root / LEAN_MANIFEST_FILENAME
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise CliError(f"Lean workspace is missing {manifest_path}.") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CliError(f"Cannot read Lean workspace manifest {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict) or not str(manifest.get("revision") or "").strip():
+        raise CliError("Run problem lean-init first; the workspace manifest has no server revision.")
+    manifest_problem_id = manifest.get("problem_id")
+    if manifest_problem_id is not None and int(manifest_problem_id) != int(problem_id):
+        raise CliError(
+            f"This workspace belongs to problem {manifest_problem_id}, not problem {problem_id}."
+        )
+    descriptors = manifest.get("files")
+    if not isinstance(descriptors, list):
+        raise CliError("Lean workspace manifest.files must be an array.")
+    files: Dict[str, str] = {}
+    for descriptor in descriptors:
+        if not isinstance(descriptor, dict) or descriptor.get("mode") != "writable":
+            continue
+        relative = _lean_relative_path(descriptor.get("path"))
+        source = root.joinpath(*relative.parts)
+        try:
+            files[relative.as_posix()] = source.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CliError(f"Cannot read writable Lean file {source}: {exc}") from exc
+    if not files:
+        raise CliError("Lean workspace manifest does not declare any writable files.")
+    return {"revision": str(manifest["revision"]), "files": files}
+
+
+def _lean_workspace_summary(workspace: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: workspace[key]
+        for key in ("revision_id", "revision_number", "revision", "default_file", "created")
+        if key in workspace
+    } | {
+        "files": [
+            {"path": item.get("path"), "mode": item.get("mode")}
+            for item in workspace.get("files") or []
+        ]
+    }
+
+
+def _validate_readable_lean_zip(raw_path: str) -> str:
+    path = Path(raw_path).expanduser()
+    if not path.is_file():
+        raise CliError(f"File not found: {path}")
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            corrupt_member = archive.testzip()
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise CliError(f"Cannot read Lean 4 problem-package ZIP {path}: {exc}") from exc
+    if corrupt_member:
+        raise CliError(
+            f"Lean 4 problem-package ZIP contains a corrupt member: {corrupt_member}"
+        )
+    return str(path)
 
 
 def _omit_text_fields(row: Any, fields: Iterable[str]) -> Any:
@@ -441,10 +576,34 @@ def problem_submit(args: argparse.Namespace) -> None:
     context = context_resp.json() if response_is_json(context_resp) else {}
     input_kind = ((context.get("submit") or {}).get("input_kind") or "").strip().lower()
 
-    if input_kind == "file":
+    workspace_directory = getattr(args, "workspace", None)
+    if input_kind == "lean_workspace":
+        if not workspace_directory:
+            raise CliError("This Lean 4 problem requires --workspace.")
+        if any(
+            getattr(args, key, None)
+            for key in ("file", "code", "code_file", "prompt", "prompt_file")
+        ):
+            raise CliError("This Lean 4 problem accepts a workspace directory, not code, prompt, or a file upload.")
+        submission = _read_lean_submission(
+            workspace_directory,
+            problem_id=args.problem_id,
+        )
+        resp = client.request(
+            "POST",
+            f"/submit/{args.problem_id}",
+            data={
+                "lean_workspace": json.dumps(
+                    submission,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            },
+        )
+    elif input_kind == "file":
         if not args.file:
             raise CliError("This problem requires --file.")
-        if args.code or args.code_file or args.prompt or args.prompt_file:
+        if workspace_directory or args.code or args.code_file or args.prompt or args.prompt_file:
             raise CliError("This problem accepts a file submission, not code or prompt.")
         files = {"file": require_file(args.file)}
         try:
@@ -454,14 +613,14 @@ def problem_submit(args: argparse.Namespace) -> None:
     elif input_kind == "prompt":
         if not (args.prompt or args.prompt_file):
             raise CliError("This Promptly problem requires --prompt or --prompt-file.")
-        if args.file or args.code or args.code_file:
+        if workspace_directory or args.file or args.code or args.code_file:
             raise CliError("This Promptly problem accepts prompt text, not code or file.")
         prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8") if args.prompt_file else read_text_value(args.prompt)
         resp = client.request("POST", f"/submit/{args.problem_id}", data={"prompt": prompt})
     else:
         if not (args.code or args.code_file):
             raise CliError("This programming problem requires --code or --code-file.")
-        if args.file or args.prompt or args.prompt_file:
+        if workspace_directory or args.file or args.prompt or args.prompt_file:
             raise CliError("This programming problem accepts code, not prompt or file.")
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else read_text_value(args.code)
         resp = client.request("POST", f"/submit/{args.problem_id}", data={"code": code})
@@ -490,6 +649,11 @@ def problem_create_form(args: argparse.Namespace) -> None:
 
 def problem_create(args: argparse.Namespace) -> None:
     client = client_from_args(args)
+    lean_package = getattr(args, "lean_package", None)
+    if lean_package and (str(args.type) != "1" or args.lang != "lean4"):
+        raise CliError("--lean-package requires --type 1 --lang lean4.")
+    if lean_package:
+        lean_package = _validate_readable_lean_zip(lean_package)
     programming_grading_prompt = build_promptly_grading_prompt_arg(args)
     llm_endpoint_bindings = build_problem_llm_bindings_arg(args)
     if programming_grading_prompt is None:
@@ -514,7 +678,36 @@ def problem_create(args: argparse.Namespace) -> None:
         ]
     )
     resp = client.request("POST", "/admin/add_problem", data=data, headers={"Accept": "application/json"})
-    print_or_save_response(resp)
+    if not lean_package:
+        print_or_save_response(resp)
+        return
+
+    ensure_ok(resp, allow_redirect=False)
+    payload = resp.json() if response_is_json(resp) else {}
+    raise_for_failure_payload(payload, http_status=resp.status_code)
+    problem_id = payload.get("problem_id") if isinstance(payload, dict) else None
+    if not problem_id:
+        raise CliError("The problem was created, but the server did not return its problem ID.")
+    files = {"lean_package_zip": require_file(lean_package)}
+    try:
+        upload_resp = client.request(
+            "POST",
+            f"/admin/upload_lean_workspace/{problem_id}",
+            files=files,
+            headers={"Accept": "application/json"},
+        )
+    finally:
+        close_files(files)
+    ensure_ok(upload_resp, allow_redirect=False)
+    upload_payload = upload_resp.json() if response_is_json(upload_resp) else {}
+    raise_for_failure_payload(upload_payload, http_status=upload_resp.status_code)
+    workspace = _lean_workspace_from_payload(upload_payload)
+    output_json({
+        "success": True,
+        "problem_id": int(problem_id),
+        "message": upload_payload.get("message") or payload.get("message"),
+        "lean_workspace": _lean_workspace_summary(workspace),
+    })
 
 
 def problem_edit_form(args: argparse.Namespace) -> None:
@@ -576,6 +769,76 @@ def problem_upload_testdata(args: argparse.Namespace) -> None:
     finally:
         close_files(files)
     print_or_save_response(resp)
+
+
+def problem_lean_workspace(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    resp = client.request(
+        "GET",
+        f"/api/admin/problems/{args.problem_id}/lean-workspace",
+    )
+    if getattr(args, "full", False):
+        print_or_save_response(resp, allow_redirect=False, project_json=False)
+        return
+    ensure_ok(resp, allow_redirect=False)
+    payload = resp.json() if response_is_json(resp) else {}
+    raise_for_failure_payload(payload, http_status=resp.status_code)
+    output_json({
+        "success": True,
+        "problem_id": int(args.problem_id),
+        "lean_workspace": _lean_workspace_summary(_lean_workspace_from_payload(payload)),
+    })
+
+
+def problem_lean_init(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    resp = client.request(
+        "GET",
+        f"/api/admin/problems/{args.problem_id}/lean-workspace",
+    )
+    ensure_ok(resp, allow_redirect=False)
+    payload = resp.json() if response_is_json(resp) else {}
+    raise_for_failure_payload(payload, http_status=resp.status_code)
+    workspace = _lean_workspace_from_payload(payload)
+    output_json(_write_lean_workspace(
+        problem_id=args.problem_id,
+        workspace=workspace,
+        directory=args.directory,
+        force=args.force,
+    ))
+
+
+def problem_lean_upload(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    files = {"lean_package_zip": require_file(args.zip)}
+    try:
+        resp = client.request(
+            "POST",
+            f"/admin/upload_lean_workspace/{args.problem_id}",
+            files=files,
+            headers={"Accept": "application/json"},
+        )
+    finally:
+        close_files(files)
+    ensure_ok(resp, allow_redirect=False)
+    payload = resp.json() if response_is_json(resp) else {}
+    raise_for_failure_payload(payload, http_status=resp.status_code)
+    output_json({
+        "success": True,
+        "problem_id": int(args.problem_id),
+        "message": payload.get("message"),
+        "lean_workspace": _lean_workspace_summary(_lean_workspace_from_payload(payload)),
+    })
+
+
+def problem_lean_download(args: argparse.Namespace) -> None:
+    client = client_from_args(args)
+    resp = client.request(
+        "GET",
+        f"/admin/download_lean_workspace/{args.problem_id}",
+    )
+    output = args.output or f"lean-problem-{args.problem_id}.zip"
+    print_or_save_response(resp, output=output, allow_redirect=False)
 
 
 def problem_rejudge(args: argparse.Namespace) -> None:
@@ -780,7 +1043,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("problem_id", type=int, help="Problem ID whose submit context should be fetched.")
     pa.add_argument("--full", action="store_true", help="Print the raw submit-context payload.")
     pa.set_defaults(func=problem_submit_page)
-    pa = add_cli_parser(ps, "submit", "Submit source code, a Promptly prompt, or a written-homework file to a problem.")
+    pa = add_cli_parser(ps, "submit", "Submit source code, a Lean workspace, a Promptly prompt, or a written-homework file to a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID to submit to.")
     submit_group = pa.add_mutually_exclusive_group(required=True)
     submit_group.add_argument("--code", help="Source code text, or @file to read code from a file.")
@@ -788,6 +1051,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     submit_group.add_argument("--prompt", help="Promptly submission text, or @file to read the prompt from a file.")
     submit_group.add_argument("--prompt-file", help="Promptly submission file path.")
     submit_group.add_argument("--file", help="Written-homework PDF or ZIP file path.")
+    submit_group.add_argument("--workspace", help="Initialized Lean 4 workspace directory containing numoj-lean.json.")
     pa.add_argument(
         "--no-wait-promptly",
         dest="wait_promptly",
@@ -805,7 +1069,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--title", required=True, help="Problem title.")
     pa.add_argument("--content", required=True, help="Problem statement Markdown text, or @markdown-file.")
     pa.add_argument("--type", choices=["1", "2"], default="1", help="Problem type: 1=programming, 2=written homework.")
-    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python"], default="matlab", help="Programming language for programming problems.")
+    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python", "lean4"], default="matlab", help="Programming language for programming problems.")
     pa.add_argument(
         "--time-limit-ms", "--time-limit",
         dest="time_limit",
@@ -841,6 +1105,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     add_promptly_review_args(pa)
     pa.add_argument("--written-grading-mode", type=int, default=1, help="Written grading mode: 1=OCR+text grading, 2=direct image grading, 3=ZIP/LaTeX, 4=manual grading.")
     pa.add_argument("--written-grading-prompt", default="", help="Rubric for AI grading of written homework, or @file.")
+    pa.add_argument("--lean-package", help="Lean 4 problem-package ZIP to upload immediately after creating a --lang lean4 problem.")
     _add_problem_llm_endpoint_args(pa, editing=False)
     pa.set_defaults(func=problem_create)
     pa = add_cli_parser(ps, "edit-form", "Fetch administrator edit-form metadata for an existing problem.")
@@ -851,7 +1116,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("problem_id", type=int, help="Problem ID to edit.")
     pa.add_argument("--title", help="Problem title. Omit to keep the current value.")
     pa.add_argument("--content", help="Problem statement Markdown text, or @markdown-file. Omit to keep the current value.")
-    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python"], help="Programming language. Omit to keep the current value.")
+    pa.add_argument("--lang", choices=["matlab", "c", "cpp", "python", "lean4"], help="Programming language. Omit to keep the current value.")
     pa.add_argument(
         "--time-limit-ms", "--time-limit",
         dest="time_limit",
@@ -893,6 +1158,23 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("problem_id", type=int, help="Problem ID whose test data should be replaced or uploaded.")
     pa.add_argument("zip", help="Path to the ZIP archive containing test data files.")
     pa.set_defaults(func=problem_upload_testdata)
+    pa = add_cli_parser(ps, "lean-workspace", "Inspect the current Lean 4 workspace revision and file map.")
+    pa.add_argument("problem_id", type=int, help="Lean 4 problem ID to inspect.")
+    pa.add_argument("--full", action="store_true", help="Include all source-file contents and verification metadata.")
+    pa.set_defaults(func=problem_lean_workspace)
+    pa = add_cli_parser(ps, "lean-init", "Initialize a local directory from the current Lean 4 workspace.")
+    pa.add_argument("problem_id", type=int, help="Lean 4 problem ID to initialize.")
+    pa.add_argument("directory", help="Directory to populate with the complete Lean 4 workspace.")
+    pa.add_argument("--force", action="store_true", help="Replace files already present at the initialized paths.")
+    pa.set_defaults(func=problem_lean_init)
+    pa = add_cli_parser(ps, "lean-upload", "Publish a Lean 4 problem-package ZIP as a new immutable revision.")
+    pa.add_argument("problem_id", type=int, help="Lean 4 problem ID whose workspace should be published.")
+    pa.add_argument("zip", help="Path to the Lean 4 problem-package ZIP.")
+    pa.set_defaults(func=problem_lean_upload)
+    pa = add_cli_parser(ps, "lean-download", "Download the current Lean 4 problem-package ZIP.")
+    pa.add_argument("problem_id", type=int, help="Lean 4 problem ID whose package should be downloaded.")
+    pa.add_argument("-o", "--output", help="Path for the downloaded ZIP; defaults to lean-problem-<id>.zip.")
+    pa.set_defaults(func=problem_lean_download)
     pa = add_cli_parser(ps, "rejudge", "Start a rejudge task for all submissions of one problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID to rejudge.")
     pa.set_defaults(func=problem_rejudge)

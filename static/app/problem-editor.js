@@ -147,10 +147,23 @@
       editor: monacoEditorInstance,
       textarea: textarea
     });
+    if (leanWorkbenchController) {
+      editorAdapter = {
+        getValue: () => leanWorkbenchController.getActiveValue(),
+        setValue: value => leanWorkbenchController.setActiveValue(value),
+        focus: () => leanWorkbenchController.focus(),
+        layout: () => leanWorkbenchController.layout()
+      };
+      window.editor = editorAdapter;
+    }
   }
 
   form?.addEventListener('submit', function () {
-    textarea.value = editorAdapter.getValue();
+    if (leanWorkbenchController) {
+      leanWorkbenchController.prepareSubmission();
+    } else {
+      textarea.value = editorAdapter.getValue();
+    }
   });
 
   document.getElementById('loadLastCodeBtn')?.addEventListener('click', function () {
@@ -166,7 +179,24 @@
       .then(response => response.json())
       .then(data => {
         if (!data.success) throw new Error(data.message || '加载失败');
-        editorAdapter.setValue(data.code || '');
+        if (leanWorkbenchController) {
+          let workspace = data.workspace || data.lean_workspace || null;
+          if (typeof workspace === 'string') {
+            try {
+              workspace = JSON.parse(workspace);
+            } catch (_error) {
+              workspace = null;
+            }
+          }
+          const files = data.files || workspace?.files;
+          if (files) {
+            leanWorkbenchController.setWritableFiles(files);
+          } else {
+            leanWorkbenchController.setActiveValue(data.code || '');
+          }
+        } else {
+          editorAdapter.setValue(data.code || '');
+        }
         editorAdapter.focus();
         leanWorkbenchController?.checkNow();
       })

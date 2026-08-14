@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+from pathlib import PurePosixPath
 
 from oj_modules.judging import core as judger_core
 
@@ -169,5 +170,38 @@ def archive_submission_record(
         archive_text_artifact(
             submission_id, f"code{ext}", code, archive_dir=archive_dir,
         )
+
+    if (
+        problem_type == 1
+        and str(problem.get("lang") or "").strip().lower() in {"lean", "lean4"}
+    ):
+        from oj_modules.problems.lean_workspace import get_submission_lean_workspace
+
+        workspace = get_submission_lean_workspace(int(submission_id))
+        if workspace:
+            workspace_root = os.path.join(archive_dir, "workspace")
+            for item in workspace.get("files") or []:
+                relative = PurePosixPath(str(item.get("path") or ""))
+                target = os.path.join(workspace_root, *relative.parts)
+                _atomic_write_text(target, item.get("content") or "")
+            _atomic_write_text(
+                os.path.join(archive_dir, "lean-workspace.json"),
+                json.dumps(
+                    {
+                        "revision": workspace.get("revision"),
+                        "revision_number": workspace.get("revision_number"),
+                        "default_file": workspace.get("default_file"),
+                        "files": [
+                            {
+                                "path": item.get("path"),
+                                "mode": item.get("mode"),
+                            }
+                            for item in workspace.get("files") or []
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+            )
 
     return archive_dir

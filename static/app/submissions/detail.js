@@ -24,7 +24,165 @@
       };
   var monacoLanguage = languageSpec.monacoLanguage;
   var problemId = Number(monacoHost && monacoHost.dataset.problemId);
+  var leanWorkspaceElement = document.getElementById(
+    "submissionLeanWorkspaceData"
+  );
+  var leanFileTree = document.getElementById("submissionLeanFileTree");
+  var leanActiveFile = document.getElementById("submissionLeanActiveFile");
+  var leanFileMode = document.getElementById("submissionLeanFileMode");
+  var leanWorkspace = readLeanWorkspace();
+  var leanStates = new Map();
+  var activeLeanPath = leanWorkspace ? leanWorkspace.defaultFile : "";
   var semanticRequestsInFlight = 0;
+
+  if (leanWorkspace) {
+    leanWorkspace.files.forEach(function (file) {
+      leanStates.set(file.path, {
+        path: file.path,
+        mode: file.mode,
+        content: file.content,
+        model: null,
+        viewState: null,
+        treeRow: null,
+      });
+    });
+  }
+
+  function readLeanWorkspace() {
+    if (!leanWorkspaceElement) return null;
+    var parsed;
+    try {
+      parsed = JSON.parse(leanWorkspaceElement.textContent || "null");
+    } catch (_error) {
+      return null;
+    }
+    if (!parsed || !Array.isArray(parsed.files) || !parsed.files.length) {
+      return null;
+    }
+    var files = parsed.files.map(function (file) {
+      return {
+        path: String(file.path || ""),
+        mode: file.mode === "readonly" ? "readonly" : "writable",
+        content: String(file.content || ""),
+      };
+    }).filter(function (file) {
+      return file.path;
+    });
+    if (!files.length) return null;
+    var requestedDefault = String(parsed.default_file || "");
+    var defaultFile = files.some(function (file) {
+      return file.path === requestedDefault;
+    }) ? requestedDefault : files[0].path;
+    return {
+      revision: String(parsed.revision || ""),
+      submissionId: Number(parsed.submission_id || 0),
+      defaultFile: defaultFile,
+      files: files,
+    };
+  }
+
+  function updateLeanFileChrome() {
+    if (!leanWorkspace) return;
+    var state = leanStates.get(activeLeanPath);
+    if (!state) return;
+    if (leanActiveFile) {
+      leanActiveFile.textContent = state.path;
+      leanActiveFile.title = state.path;
+    }
+    if (leanFileMode) {
+      var readonly = state.mode === "readonly";
+      leanFileMode.textContent = readonly ? "题目只读" : "学生提交";
+      leanFileMode.classList.toggle("is-readonly", readonly);
+    }
+    leanStates.forEach(function (fileState) {
+      if (!fileState.treeRow) return;
+      var active = fileState.path === activeLeanPath;
+      fileState.treeRow.classList.toggle("is-active", active);
+      fileState.treeRow.setAttribute("aria-current", active ? "true" : "false");
+    });
+  }
+
+  function createLeanTreeRow(label, kind, state) {
+    var row = document.createElement("button");
+    row.type = "button";
+    row.className = "lean-file-tree-row";
+    row.setAttribute("role", "treeitem");
+    var chevron = document.createElement("span");
+    chevron.className = "lean-file-tree-chevron";
+    chevron.textContent = kind === "folder" ? "▾" : "";
+    chevron.setAttribute("aria-hidden", "true");
+    var icon = document.createElement("i");
+    icon.className = "lean-file-tree-icon fas " + (
+      kind === "folder" ? "fa-folder" :
+        state.mode === "readonly" ? "fa-lock" : "fa-pen"
+    );
+    icon.setAttribute("aria-hidden", "true");
+    var name = document.createElement("span");
+    name.className = "lean-file-tree-label";
+    name.textContent = label;
+    row.append(chevron, icon, name);
+    if (state) {
+      row.classList.add(state.mode === "readonly" ? "is-readonly" : "is-writable");
+      row.title = state.path + (
+        state.mode === "readonly" ? "（题目只读文件）" : "（学生提交文件）"
+      );
+      state.treeRow = row;
+    }
+    return row;
+  }
+
+  function renderLeanFileTree(onSelect) {
+    if (!leanWorkspace || !leanFileTree) return;
+    var rootNode = { folders: new Map(), files: [] };
+    leanWorkspace.files.forEach(function (file) {
+      var parts = file.path.split("/");
+      var node = rootNode;
+      parts.slice(0, -1).forEach(function (part) {
+        if (!node.folders.has(part)) {
+          node.folders.set(part, { folders: new Map(), files: [] });
+        }
+        node = node.folders.get(part);
+      });
+      node.files.push({
+        name: parts[parts.length - 1],
+        state: leanStates.get(file.path),
+      });
+    });
+
+    function renderNode(node) {
+      var list = document.createElement("ul");
+      list.className = "lean-file-tree-list";
+      list.setAttribute("role", "group");
+      Array.from(node.folders.keys()).sort().forEach(function (folderName) {
+        var item = document.createElement("li");
+        var row = createLeanTreeRow(folderName, "folder", null);
+        var child = renderNode(node.folders.get(folderName));
+        row.setAttribute("aria-expanded", "true");
+        row.addEventListener("click", function () {
+          var expanded = row.getAttribute("aria-expanded") !== "false";
+          row.setAttribute("aria-expanded", expanded ? "false" : "true");
+          child.hidden = expanded;
+        });
+        item.append(row, child);
+        list.appendChild(item);
+      });
+      node.files.sort(function (left, right) {
+        return left.name.localeCompare(right.name);
+      }).forEach(function (file) {
+        var item = document.createElement("li");
+        var row = createLeanTreeRow(file.name, "file", file.state);
+        row.addEventListener("click", function () {
+          onSelect(file.state.path);
+        });
+        item.appendChild(row);
+        list.appendChild(item);
+      });
+      return list;
+    }
+
+    leanFileTree.replaceChildren(renderNode(rootNode));
+    updateLeanFileChrome();
+  }
 
   function updateSemanticLoading(delta) {
     semanticRequestsInFlight = Math.max(
@@ -75,25 +233,38 @@
 
     monacoHost.hidden = false;
     textarea.hidden = true;
-    var instance = monaco.editor.create(monacoHost, runtime
-      ? runtime.monacoOptions({
-          value: textarea.value,
-          language: monacoLanguage,
-          theme: editorTheme,
-          readOnly: true,
-          domReadOnly: true,
-          ariaLabel: "提交代码，只读",
-          renderValidationDecorations: "on"
-        })
-      : {
+    var editorDocument = {
       value: textarea.value,
       language: monacoLanguage,
+    };
+    if (leanWorkspace) {
+      leanWorkspace.files.forEach(function (file) {
+        var state = leanStates.get(file.path);
+        var encodedPath = file.path.split("/").map(encodeURIComponent).join("/");
+        state.model = monaco.editor.createModel(
+          file.content,
+          "lean4",
+          monaco.Uri.parse(
+            "file:///workspace/submission-" +
+              (leanWorkspace.submissionId || problemId) + "/" + encodedPath
+          )
+        );
+      });
+      editorDocument = { model: leanStates.get(activeLeanPath).model };
+    }
+    var commonOptions = Object.assign({}, editorDocument, {
       theme: editorTheme,
       readOnly: true,
       domReadOnly: true,
+      ariaLabel: leanWorkspace ? "Lean 4 提交文件，只读" : "提交代码，只读",
+      tabSize: leanWorkspace ? 2 : 4,
+      renderValidationDecorations: "on",
+    });
+    var instance = monaco.editor.create(monacoHost, runtime
+      ? runtime.monacoOptions(commonOptions)
+      : Object.assign({
       "semanticHighlighting.enabled": true,
       automaticLayout: true,
-      ariaLabel: "提交代码，只读",
       fontFamily:
         "SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace",
       fontSize: 14,
@@ -110,9 +281,32 @@
       bracketPairColorization: { enabled: true },
       guides: { bracketPairs: true, indentation: true },
       contextmenu: true,
-      renderValidationDecorations: "on",
       find: { addExtraSpaceOnTop: false },
-    });
+    }, commonOptions));
+
+    function switchLeanFile(path) {
+      var next = leanStates.get(path);
+      if (!next || !next.model) return;
+      var previous = leanStates.get(activeLeanPath);
+      if (previous && previous.path !== next.path) {
+        previous.viewState = instance.saveViewState();
+      }
+      activeLeanPath = next.path;
+      if (instance.getModel() !== next.model) instance.setModel(next.model);
+      if (next.viewState) instance.restoreViewState(next.viewState);
+      instance.updateOptions({
+        readOnly: true,
+        domReadOnly: true,
+        ariaLabel: "Lean 4 提交文件 " + next.path + "，只读",
+      });
+      instance.layout();
+      updateLeanFileChrome();
+    }
+
+    if (leanWorkspace) {
+      renderLeanFileTree(switchLeanFile);
+      switchLeanFile(activeLeanPath);
+    }
 
     window.requestAnimationFrame(function () {
       instance.layout();
@@ -125,7 +319,17 @@
         return instance.getValue();
       },
       setValue: function (value) {
-        instance.setValue(String(value || ""));
+        var text = String(value || "");
+        if (!leanWorkspace) {
+          instance.setValue(text);
+          return;
+        }
+        if (activeLeanPath !== leanWorkspace.defaultFile &&
+            text === instance.getValue()) {
+          return;
+        }
+        switchLeanFile(leanWorkspace.defaultFile);
+        if (instance.getValue() !== text) instance.setValue(text);
       },
       refresh: function () {
         instance.layout();
@@ -133,6 +337,7 @@
       getWrapperElement: function () {
         return monacoHost;
       },
+      switchFile: switchLeanFile,
       markText: function (from, to, options) {
         var reason = String((options && options.title) || "这里可能有问题");
         var collection = instance.createDecorationsCollection([{
@@ -182,18 +387,45 @@
     }
 
     revealFallback();
+    function switchFallbackLeanFile(path) {
+      var state = leanStates.get(path);
+      if (!state) return;
+      activeLeanPath = state.path;
+      textarea.value = state.content;
+      textarea.setAttribute(
+        "aria-label",
+        "Lean 4 提交文件 " + state.path + "，只读"
+      );
+      updateLeanFileChrome();
+    }
+    if (leanWorkspace) {
+      renderLeanFileTree(switchFallbackLeanFile);
+      switchFallbackLeanFile(activeLeanPath);
+    }
     var fallback = {
       kind: "textarea",
       getValue: function () {
         return textarea.value;
       },
       setValue: function (value) {
-        textarea.value = String(value || "");
+        var text = String(value || "");
+        if (!leanWorkspace) {
+          textarea.value = text;
+          return;
+        }
+        if (activeLeanPath !== leanWorkspace.defaultFile &&
+            text === textarea.value) {
+          return;
+        }
+        var state = leanStates.get(leanWorkspace.defaultFile);
+        state.content = text;
+        switchFallbackLeanFile(state.path);
       },
       refresh: function () {},
       getWrapperElement: function () {
         return textarea;
       },
+      switchFile: switchFallbackLeanFile,
       markText: function () {
         return { clear: function () {} };
       },

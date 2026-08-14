@@ -1478,6 +1478,31 @@ def test_admin_problem_create_sends_endpoint_binding_json_and_allows_unconfigure
     capsys.readouterr()
 
 
+def test_admin_problem_create_validates_lean_package_before_creating(
+        monkeypatch, tmp_path):
+    cli = _load_numoj_admin_cli_module()
+    parser = cli.build_parser()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(cli.problem_create.__globals__, "client_from_args", lambda _args: fake_client)
+    args = parser.parse_args([
+        "problem",
+        "create",
+        "--title",
+        "Lean 题",
+        "--content",
+        "题面",
+        "--lang",
+        "lean4",
+        "--lean-package",
+        str(tmp_path / "missing.zip"),
+    ])
+
+    with pytest.raises(cli.CliError, match="File not found"):
+        args.func(args)
+
+    assert fake_client.requests == []
+
+
 def test_admin_problem_edit_omitted_endpoints_are_preserved_by_omitting_binding_payload(
         monkeypatch, capsys):
     cli = _load_numoj_admin_cli_module()
@@ -1633,6 +1658,10 @@ class _HygieneClient:
             return _PayloadResponse(self._problem_form_payload())
         if path == "/api/admin/problems/1/edit-form":
             return _PayloadResponse(self._problem_form_payload())
+        if path == "/api/admin/problems/1/lean-workspace":
+            return _PayloadResponse(self._lean_workspace_payload())
+        if path == "/admin/upload_lean_workspace/1":
+            return _PayloadResponse(self._lean_workspace_payload())
         if path == "/api/problems":
             return _PayloadResponse(self._problem_list_payload())
         if path == "/api/submissions":
@@ -1834,6 +1863,31 @@ class _HygieneClient:
             "options": {"default_written_grading_prompt": "rubric"},
         }
 
+    def _lean_workspace_payload(self):
+        return {
+            "success": True,
+            "problem_id": 1,
+            "message": "ok",
+            "lean_workspace": {
+                "revision_id": 1,
+                "revision_number": 1,
+                "revision": "revision-1",
+                "schema_version": 1,
+                "default_file": "Submission.lean",
+                "verification": {
+                    "target_module": "Problem",
+                    "target_decl": "Problem.Target",
+                    "entry_module": "Submission",
+                    "entry_decl": "Submission.solution",
+                    "permitted_axioms": [],
+                },
+                "files": [
+                    {"path": "Problem.lean", "mode": "readonly", "build_order": 0, "content": "def Target : Prop := True\n"},
+                    {"path": "Submission.lean", "mode": "writable", "build_order": 1, "content": "import Problem\n"},
+                ],
+            },
+        }
+
     def _submission_list_payload(self):
         return {
             **self._noise(),
@@ -2022,6 +2076,10 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["problem", "edit", "1"],
         ["problem", "delete", "1"],
         ["problem", "upload-testdata", "1", str(fixture_zip)],
+        ["problem", "lean-workspace", "1"],
+        ["problem", "lean-init", "1", str(tmp_path / "lean-workspace")],
+        ["problem", "lean-upload", "1", str(fixture_zip)],
+        ["problem", "lean-download", "1", "-o", str(output_file)],
         ["problem", "rejudge", "1"],
         ["problem", "rejudge-status", "1"],
         ["problem", "rejudge-time-range", "--start", "2026-01-01T00:00", "--end", "2026-01-02T00:00"],

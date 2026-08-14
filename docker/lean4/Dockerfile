@@ -30,6 +30,19 @@ ENV HOME=/home/runner
 
 COPY run_lean_judge.sh /usr/local/bin/numoj-lean-judge
 COPY run_lean_lsp.sh /usr/local/bin/numoj-lean-lsp
+COPY run_lean_problem_build.sh /usr/local/bin/numoj-lean-problem-build
+COPY run_lean_workspace_judge.sh /usr/local/bin/numoj-lean-workspace-judge
+COPY NumOJVerifier.lean /usr/local/share/numoj/NumOJVerifier.lean
+
+RUN cd /usr/local/share/numoj \
+    && lean \
+        -c /tmp/NumOJVerifier.c \
+        -o /tmp/NumOJVerifier.olean \
+        NumOJVerifier.lean \
+    && leanc \
+        -o /usr/local/bin/numoj-lean-verifier \
+        /tmp/NumOJVerifier.c \
+    && rm -f /tmp/NumOJVerifier.c /tmp/NumOJVerifier.olean
 
 ARG JUDGER_RUNNER_UID=65532
 ARG JUDGER_RUNNER_GID=65532
@@ -37,6 +50,10 @@ RUN groupadd --gid "${JUDGER_RUNNER_GID}" runner \
     && useradd --uid "${JUDGER_RUNNER_UID}" --gid "${JUDGER_RUNNER_GID}" \
         -m -s /bin/sh runner \
     && chmod 0755 /usr/local/bin/numoj-lean-judge \
-                  /usr/local/bin/numoj-lean-lsp
+                  /usr/local/bin/numoj-lean-lsp \
+                  /usr/local/bin/numoj-lean-problem-build \
+                  /usr/local/bin/numoj-lean-workspace-judge \
+                  /usr/local/bin/numoj-lean-verifier \
+    && chmod 0644 /usr/local/share/numoj/NumOJVerifier.lean
 
 WORKDIR /sandbox

@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 
 import json
+import io
 import os
 import pymysql
 import tempfile
 import zipfile
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 from oj_modules.db_services import (
     create_problem,
@@ -26,15 +27,16 @@ from oj_modules.problems.llm_bindings import (
     problem_llm_bindings_from_form,
 )
 from oj_modules.problems.testdata import TestdataValidationError, import_testdata_zip
+from oj_modules.problems.lean_package import LeanPackageError, load_lean_package_zip
+from oj_modules.problems.lean_workspace import (
+    LeanWorkspaceError,
+    create_problem_revision,
+    get_current_lean_workspace,
+)
 
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
 ALLOWED_EXTENSIONS = {'zip'}
-LEAN4_DEFAULT_CONFIG = {
-    "target": "∀ n : Nat, n + 0 = n",
-    "entry": "Submission.answer",
-    "imports": ["Mathlib.Data.Nat.Basic"],
-}
 
 
 def _problem_llm_form_context(bindings=None):
@@ -184,36 +186,6 @@ def parse_programming_grading_prompt_from_form(form):
     return text
 
 
-def normalize_lean4_problem_config(raw):
-    """规范管理员保存在 ``test_code`` 中的 Lean 题目契约。"""
-    text = str(raw or '').strip()
-    payload = json.loads(text) if text else dict(LEAN4_DEFAULT_CONFIG)
-    if not isinstance(payload, dict):
-        raise ValueError("Lean 4 验证配置必须是 JSON 对象")
-
-    target = str(payload.get("target") or '').strip()
-    entry = str(payload.get("entry") or '').strip()
-    imports = payload.get("imports") or ["Mathlib.Data.Nat.Basic"]
-    if not target:
-        raise ValueError("Lean 4 验证配置缺少 target")
-    if not entry:
-        raise ValueError("Lean 4 验证配置缺少 entry")
-    if not isinstance(imports, list) or not all(
-        isinstance(item, str) and item.strip() for item in imports
-    ):
-        raise ValueError("Lean 4 验证配置的 imports 必须是模块名数组")
-
-    return json.dumps(
-        {
-            "target": target,
-            "entry": entry,
-            "imports": [item.strip() for item in imports],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
     user = current_user()
@@ -238,18 +210,8 @@ def add_problem():
         time_limit_ms = parse_time_limit_ms_from_form(request.form)
         submission_limit = int(request.form.get('submission_limit', 10))
         if lang == 'lean4':
-            try:
-                test_code = normalize_lean4_problem_config(test_code)
-            except (ValueError, json.JSONDecodeError) as exc:
-                if _wants_json_response():
-                    return jsonify(success=False, message=str(exc)), 400
-                return render_template(
-                    'problems/create.html',
-                    user=user,
-                    error_message=str(exc),
-                    default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
-                    **_problem_llm_form_context(),
-                ), 400
+            initial_code = ''
+            test_code = ''
             programming_grading_mode = 1
         try:
             llm_endpoint_bindings = problem_llm_bindings_from_form(
@@ -345,26 +307,6 @@ def edit_problem(problem_id):
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
         new_written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
         if new_lang == 'lean4':
-            try:
-                new_test_code = normalize_lean4_problem_config(new_test_code)
-            except (ValueError, json.JSONDecodeError) as exc:
-                if _wants_json_response():
-                    return jsonify(success=False, message=str(exc)), 400
-                problem_for_form = dict(problem)
-                problem_for_form.update({
-                    'title': new_title,
-                    'content': new_content,
-                    'initial_code': new_initial_code,
-                    'test_code': new_test_code,
-                    'lang': new_lang,
-                })
-                return render_template(
-                    'problems/edit.html',
-                    problem=problem_for_form,
-                    user=user,
-                    error_message=str(exc),
-                    **_problem_llm_form_context(problem.get('llm_endpoint_bindings')),
-                ), 400
             new_programming_grading_mode = 1
         try:
             new_llm_endpoint_bindings = problem_llm_bindings_from_form(
@@ -476,6 +418,116 @@ def upload_testdata(problem_id):
         flash(f'上传过程中发生错误：{str(e)}', 'danger')
 
     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+
+@admin_problem_bp.route('/admin/upload_lean_workspace/<int:problem_id>', methods=['POST'])
+def upload_lean_workspace(problem_id):
+    """上传 Lean 4 多文件题目包，并发布为新的不可变版本。"""
+
+    user = current_user()
+    if not is_admin(user):
+        return _json_or_problem_redirect('无权限进行此操作。', 403, problem_id=problem_id)
+    problem = get_problem(problem_id)
+    if not problem:
+        return _json_or_problem_redirect('题目不存在。', 404, problem_id=problem_id)
+    if (
+        int(problem.get('type') or 0) != 1
+        or str(problem.get('lang') or '').strip().lower() not in {'lean', 'lean4'}
+    ):
+        return _json_or_problem_redirect('只有 Lean 4 编程题可以上传此文件。', 400, problem_id=problem_id)
+    upload = request.files.get('lean_package_zip') or request.files.get('file')
+    if not upload or not upload.filename:
+        return _json_or_problem_redirect('请选择 Lean 4 题目包 ZIP。', 400, problem_id=problem_id)
+    if not allowed_file(upload.filename):
+        return _json_or_problem_redirect('Lean 4 题目包必须是 ZIP 文件。', 400, problem_id=problem_id)
+
+    try:
+        os.makedirs('tmp', exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f'numoj-lean-package-{problem_id}-',
+            dir='tmp',
+        ) as request_root:
+            zip_path = os.path.join(request_root, 'package.zip')
+            extract_path = os.path.join(request_root, 'workspace')
+            upload.save(zip_path)
+            package = load_lean_package_zip(zip_path, extract_path)
+            workspace = create_problem_revision(
+                problem_id=problem_id,
+                package=package,
+                created_by_user_id=user.get('id'),
+            )
+    except (LeanPackageError, LeanWorkspaceError) as exc:
+        return _json_or_problem_redirect(str(exc), 400, problem_id=problem_id)
+    except zipfile.BadZipFile:
+        return _json_or_problem_redirect('上传的文件不是有效 ZIP。', 400, problem_id=problem_id)
+    except Exception as exc:
+        if _wants_json_response():
+            return jsonify(success=False, message=f'发布 Lean 4 题目包失败：{exc}'), 500
+        flash(f'发布 Lean 4 题目包失败：{exc}', 'danger')
+        return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+    message = (
+        f"Lean 4 工作区 v{workspace['revision_number']} 发布成功。"
+        if workspace.get('created')
+        else f"Lean 4 工作区 v{workspace['revision_number']} 未变化。"
+    )
+    if _wants_json_response():
+        return jsonify(success=True, message=message, lean_workspace=workspace)
+    flash(message, 'success')
+    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+
+@admin_problem_bp.get('/api/admin/problems/<int:problem_id>/lean-workspace')
+def admin_lean_workspace(problem_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+    problem = get_problem(problem_id)
+    if not problem:
+        return jsonify(success=False, message='题目不存在'), 404
+    workspace = get_current_lean_workspace(problem_id)
+    if not workspace:
+        return jsonify(success=False, message='该题尚未上传 Lean 4 工作区'), 404
+    return jsonify(success=True, problem_id=problem_id, lean_workspace=workspace)
+
+
+@admin_problem_bp.get('/admin/download_lean_workspace/<int:problem_id>')
+def download_lean_workspace(problem_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限'), 403
+    workspace = get_current_lean_workspace(problem_id)
+    if not workspace:
+        return jsonify(success=False, message='该题尚未上传 Lean 4 工作区'), 404
+    manifest = {
+        'schema_version': workspace['schema_version'],
+        'default_file': workspace['default_file'],
+        'files': [
+            {'path': item['path'], 'mode': item['mode']}
+            for item in workspace['files']
+        ],
+        'build_order': [
+            item['path']
+            for item in sorted(workspace['files'], key=lambda row: row['build_order'])
+        ],
+        'verification': workspace['verification'],
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            'numoj-lean.json',
+            json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
+        )
+        for item in workspace['files']:
+            archive.writestr(item['path'], item.get('content') or '')
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'lean-problem-{problem_id}-v{workspace["revision_number"]}.zip',
+        max_age=0,
+    )
 
 
 @admin_problem_bp.route('/admin/delete_problem/<int:problem_id>', methods=['DELETE'])
