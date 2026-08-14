@@ -78,3 +78,11 @@ def test_score_export_is_marked_as_a_download_navigation():
         "url_for('homework.export_scores', sclass=selected_class) }}\" download"
         in template
     )
+
+
+def test_lean_workspace_export_is_marked_as_a_download_navigation():
+    template = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
+    assert (
+        "url_for('admin_problem.download_lean_workspace', problem_id=problem.id) }}\" download"
+        in template
+    )

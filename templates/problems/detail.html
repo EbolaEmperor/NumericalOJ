@@ -100,7 +100,7 @@
               <i class="fas fa-folder-open me-1"></i> {{ '更新题目包' if lean_workspace else '上传题目包' }}
             </button>
             {% if lean_workspace %}
-            <a href="{{ url_for('admin_problem.download_lean_workspace', problem_id=problem.id) }}" class="btn btn-outline-secondary">
+            <a href="{{ url_for('admin_problem.download_lean_workspace', problem_id=problem.id) }}" download class="btn btn-outline-secondary">
               <i class="fas fa-download me-1"></i> v{{ lean_workspace.revision_number }}
             </a>
             {% endif %}
