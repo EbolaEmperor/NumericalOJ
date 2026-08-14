@@ -5,8 +5,8 @@ import c from "@shikijs/langs/c";
 import cpp from "@shikijs/langs/cpp";
 import matlab from "@shikijs/langs/matlab";
 import python from "@shikijs/langs/python";
-import darkPlus from "@shikijs/themes/dark-plus";
 import lean4 from "../lean4-grammar.js";
+import darkPlus from "../lean4-theme.js";
 
 let highlighterPromise;
 

@@ -348,7 +348,11 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert 'from "../lean4-grammar.js"' in monaco_entry
     assert 'from "../lean4-unicode-input.js"' in monaco_entry
     assert "attachLean4UnicodeInput(instance)" in editor
-    assert 'from "@shikijs/themes/dark-plus"' in monaco_entry
+    assert 'from "../lean4-theme.js"' in monaco_entry
+    lean_theme = (ROOT / "frontend" / "lean4-theme.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'from "@shikijs/themes/dark-plus"' in lean_theme
     assert "createJavaScriptRegexEngine()" in monaco_entry
     assert "numoj-light" not in editor
 

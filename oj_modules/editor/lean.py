@@ -52,6 +52,8 @@ class LeanLanguageServerSession:
         self._source_digest = ""
         self._diagnostics: list[dict[str, Any]] = []
         self._processing: list[dict[str, Any]] = []
+        self._semantic_legend: dict[str, list[str]] | None = None
+        self._semantic_tokens: dict[str, Any] | None = None
         self._container_name = (
             f"numoj-lean-lsp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         )
@@ -140,7 +142,16 @@ class LeanLanguageServerSession:
                             "publishDiagnostics": {
                                 "relatedInformation": True,
                                 "versionSupport": True,
-                            }
+                            },
+                            "semanticTokens": {
+                                "dynamicRegistration": False,
+                                "requests": {"full": True},
+                                "tokenTypes": [],
+                                "tokenModifiers": [],
+                                "formats": ["relative"],
+                                "overlappingTokenSupport": False,
+                                "multilineTokenSupport": False,
+                            },
                         },
                     },
                     "initializationOptions": {},
@@ -158,6 +169,37 @@ class LeanLanguageServerSession:
                 raise LanguageServiceProtocolError(
                     "Lean 4", "Lean 4 语言服务初始化响应无效"
                 )
+            try:
+                provider = initialize["capabilities"][
+                    "semanticTokensProvider"
+                ]
+                if not isinstance(provider, dict) or not provider.get("full"):
+                    raise TypeError
+                legend = provider["legend"]
+                raw_token_types = legend["tokenTypes"]
+                raw_token_modifiers = legend["tokenModifiers"]
+                if not isinstance(raw_token_types, list) or not isinstance(
+                    raw_token_modifiers, list
+                ):
+                    raise TypeError
+                token_types = list(raw_token_types)
+                token_modifiers = list(raw_token_modifiers)
+            except (KeyError, TypeError) as exc:
+                raise LanguageServiceProtocolError(
+                    "Lean 4", "Lean 4 语言服务未提供语义高亮"
+                ) from exc
+            if (
+                not token_types
+                or not all(isinstance(item, str) for item in token_types)
+                or not all(isinstance(item, str) for item in token_modifiers)
+            ):
+                raise LanguageServiceProtocolError(
+                    "Lean 4", "Lean 4 语义高亮图例无效"
+                )
+            self._semantic_legend = {
+                "tokenTypes": token_types,
+                "tokenModifiers": token_modifiers,
+            }
             self._notify_locked("initialized", {})
         except BaseException:
             self._reset_locked()
@@ -194,6 +236,7 @@ class LeanLanguageServerSession:
                 self._source_digest = digest
                 self._diagnostics = []
                 self._processing = []
+                self._semantic_tokens = None
                 self._notify_locked(
                     "textDocument/didOpen",
                     {
@@ -212,6 +255,7 @@ class LeanLanguageServerSession:
                 self._source_digest = digest
                 self._diagnostics = []
                 self._processing = []
+                self._semantic_tokens = None
                 self._notify_locked(
                     "textDocument/didChange",
                     {
@@ -229,6 +273,66 @@ class LeanLanguageServerSession:
                     "version": self._document_version,
                 },
             )
+            if self._semantic_tokens is None:
+                semantic_response = self._request_locked(
+                    "textDocument/semanticTokens/full",
+                    {"textDocument": {"uri": _DOCUMENT_URI}},
+                )
+                if semantic_response is None:
+                    semantic_data: list[int] = []
+                elif isinstance(semantic_response, dict) and isinstance(
+                    semantic_response.get("data"), list
+                ):
+                    semantic_data = semantic_response["data"]
+                else:
+                    raise LanguageServiceProtocolError(
+                        "Lean 4", "Lean 4 语义高亮响应格式无效"
+                    )
+                if len(semantic_data) % 5 != 0 or not all(
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and 0 <= value <= 2_147_483_647
+                    for value in semantic_data
+                ):
+                    raise LanguageServiceProtocolError(
+                        "Lean 4", "Lean 4 语义高亮数据无效"
+                    )
+                assert self._semantic_legend is not None
+                token_type_count = len(
+                    self._semantic_legend["tokenTypes"]
+                )
+                if any(
+                    semantic_data[index + 3] >= token_type_count
+                    for index in range(0, len(semantic_data), 5)
+                ):
+                    raise LanguageServiceProtocolError(
+                        "Lean 4", "Lean 4 语义高亮类型无效"
+                    )
+                modifier_count = len(
+                    self._semantic_legend["tokenModifiers"]
+                )
+                if any(
+                    semantic_data[index + 4] >= 1 << modifier_count
+                    for index in range(0, len(semantic_data), 5)
+                ):
+                    raise LanguageServiceProtocolError(
+                        "Lean 4", "Lean 4 语义高亮修饰符无效"
+                    )
+                self._semantic_tokens = {
+                    "legend": {
+                        "tokenTypes": list(
+                            self._semantic_legend["tokenTypes"]
+                        ),
+                        "tokenModifiers": list(
+                            self._semantic_legend["tokenModifiers"]
+                        ),
+                    },
+                    "data": list(semantic_data),
+                    "result_id": (
+                        f"{self._document_version}:"
+                        f"{self._source_digest[:12]}"
+                    ),
+                }
             plain_goal = self._request_locked(
                 "$/lean/plainGoal",
                 {
@@ -258,6 +362,20 @@ class LeanLanguageServerSession:
                 "diagnostics": list(self._diagnostics),
                 "processing": list(self._processing),
                 "document_version": self._document_version,
+                "semantic_tokens": {
+                    "legend": {
+                        "tokenTypes": list(
+                            self._semantic_tokens["legend"]["tokenTypes"]
+                        ),
+                        "tokenModifiers": list(
+                            self._semantic_tokens["legend"][
+                                "tokenModifiers"
+                            ]
+                        ),
+                    },
+                    "data": list(self._semantic_tokens["data"]),
+                    "result_id": self._semantic_tokens["result_id"],
+                },
             }
         except (LanguageServiceProtocolError, LanguageServiceTimeoutError):
             self._reset_locked()
@@ -468,6 +586,8 @@ class LeanLanguageServerSession:
         self._source_digest = ""
         self._diagnostics = []
         self._processing = []
+        self._semantic_legend = None
+        self._semantic_tokens = None
         if process is not None:
             if process.stdin is not None:
                 try:

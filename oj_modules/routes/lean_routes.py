@@ -155,5 +155,6 @@ def check_lean_source():
         diagnostics=diagnostics,
         processing=result["processing"],
         document_version=result["document_version"],
+        semantic_tokens=result["semantic_tokens"],
         message=message,
     )
