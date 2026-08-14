@@ -186,6 +186,11 @@ def test_problem_detail_desktop_splitters_share_pointer_keyboard_and_aria_contra
     assert 'splitter.setAttribute("aria-valuenow"' in controller
     assert 'propertyName: "--problem-detail-statement-width"' in controller
     assert 'propertyName: "--lean-source-width"' in controller
+    assert 'var isLeanWorkbench = page.classList.contains("is-lean-workbench")' in controller
+    assert 'storageKey: isLeanWorkbench' in controller
+    assert '"numoj.problemDetail.leanStatementRatio"' in controller
+    assert '"numoj.problemDetail.statementRatio"' in controller
+    assert 'storageKey: "numoj.problemDetail.leanSourceRatio"' in controller
     assert 'container.style.removeProperty(options.propertyName)' in controller
     assert 'typeof global.editor.layout === "function"' in controller
     assert "global.editor.layout()" in controller
