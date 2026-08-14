@@ -870,10 +870,6 @@ rm -f -- "$ARC_RESULT_FILE"
 
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 
-phase='迁移旧 Lean 4 工作区'
-"$CANDIDATE_PYTHON" -B deploy/migrate_lean_workspaces_v1.py \
-  --apply --confirm-app-writers-stopped
-
 phase='种入 VibeHub 示例作品'
 "$CANDIDATE_PYTHON" -B deploy/seed_vibehub_examples.py \
   --repository-root "$ROOT_DIR" \
