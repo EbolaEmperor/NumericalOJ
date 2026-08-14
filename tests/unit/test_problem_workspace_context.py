@@ -265,6 +265,44 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
     load_homeworks.assert_not_called()
 
 
+def test_problem_task_agent_can_read_only_its_scoped_problem(monkeypatch):
+    problem = {
+        "id": 104,
+        "content": "# Lean 题目",
+        "initial_code": "theorem answer : True := by trivial",
+        "submission_limit": 10,
+    }
+    monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
+    load_homeworks = MagicMock(return_value=[])
+    monkeypatch.setattr(problem_context, "get_homeworks", load_homeworks)
+    monkeypatch.setattr(
+        problem_context,
+        "get_submission_summaries_by_user_and_problem",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(problem_context, "get_remaining_submissions", lambda *_args: 10)
+    monkeypatch.setattr(problem_context, "can_submit", lambda *_args: True)
+    agent_user = {
+        "id": 1,
+        "username": "admin",
+        "is_admin": 0,
+        "agent_access_role": "user",
+        "agent_task_kind": "solve",
+        "agent_problem_id": 104,
+    }
+
+    context, error = problem_context.build_problem_detail_context(agent_user, 104)
+
+    assert error is None
+    assert context["problem"]["id"] == 104
+    load_homeworks.assert_not_called()
+
+    _context, error = problem_context.build_problem_detail_context(agent_user, 105)
+
+    assert error == "forbidden"
+    load_homeworks.assert_called_once_with(agent_user)
+
+
 def test_problem_detail_context_uses_shared_rich_markdown_renderer(monkeypatch):
     problem = {
         "id": 7,

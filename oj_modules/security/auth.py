@@ -11,27 +11,29 @@ from oj_modules.security.agent_identity import (
 )
 
 
-def _task_capability_matches_active_session(capability):
-    """任务能力只能用于其绑定且仍活动的 Agent 轮次。"""
+def _active_task_session(capability):
+    """返回能力绑定且仍活动的 Agent 会话，否则返回 None。"""
 
     if not capability or capability.get("version") != 2:
-        return False
+        return None
     # 延迟导入避免普通登录路径加载 Agent 会话模块；只有 relay 请求会查库。
     from oj_modules.agents.sessions import get_agent_session
 
     try:
         agent_session = get_agent_session(capability.get("session_id"))
     except Exception:
-        return False
+        return None
     if not agent_session:
-        return False
+        return None
     status = str(agent_session.get("status") or "").strip().lower()
-    return bool(
+    if not (
         status not in {"completed", "failed", "canceled", "cancelled", "cleanupfailed", "cleanup_failed"}
         and str(agent_session.get("current_task_id") or "") == capability.get("task_id")
         and str(agent_session.get("requested_by") or "") == capability.get("username")
         and str(agent_session.get("access_role") or "").lower() == capability.get("access_role")
-    )
+    ):
+        return None
+    return agent_session
 
 
 def current_user():
@@ -45,10 +47,12 @@ def current_user():
         agent_capability,
         session_username=browser_username,
     )
+    active_task_session = None
     if capability is False:
         user = None
     elif capability and capability.get("version") == 2:
-        if not _task_capability_matches_active_session(capability):
+        active_task_session = _active_task_session(capability)
+        if not active_task_session:
             user = None
         else:
             user = get_user_by_username(capability["username"])
@@ -61,6 +65,11 @@ def current_user():
         user = dict(user)
         user["is_admin"] = 0
         user["agent_access_role"] = "user"
+        if active_task_session:
+            user["agent_task_kind"] = str(
+                active_task_session.get("task_kind") or ""
+            ).strip().lower()
+            user["agent_problem_id"] = active_task_session.get("problem_id")
     elif user and access_role == "admin":
         if int(user.get("is_admin") or 0) != 1:
             user = None
