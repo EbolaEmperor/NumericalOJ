@@ -15,6 +15,7 @@ from oj_modules.judging.programming import (
     compare_float_strings,
 )
 from oj_modules.judging.lean_proof import evaluate_lean_proof
+from oj_modules.problems.lean_workspace import get_submission_lean_workspace
 
 from oj_modules.ai.grading import evaluate_program_output_image_with_ai
 from oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
@@ -278,8 +279,8 @@ def register_evaluate_submission_task(celery_app):
     @celery_app.task(
         name=EVALUATE_TASK_NAME,
         bind=True,
-        time_limit=300,
-        soft_time_limit=240,
+        time_limit=1080,
+        soft_time_limit=1020,
         autoretry_for=_MYSQL_RETRY_ERRORS,
         retry_backoff=True,
         retry_jitter=True,
@@ -344,10 +345,10 @@ def register_evaluate_submission_task(celery_app):
             test_code = problem.get('test_code') or ''
 
             if lang in ('lean', 'lean4'):
+                lean_workspace = get_submission_lean_workspace(int(submission_id))
                 proof_result = evaluate_lean_proof(
                     submission_id=int(submission_id),
-                    source=raw_submission_code,
-                    test_code=test_code,
+                    workspace=lean_workspace,
                     time_limit_ms=int(problem.get('time_limit_ms') or 10000),
                 )
                 proof_status = proof_result.get('status') or 'Error'
@@ -374,7 +375,7 @@ def register_evaluate_submission_task(celery_app):
                     "time": int(proof_result.get('time') or 0),
                     "has_output_image": False,
                     "test_index": 1,
-                    "proof_stage": "kernel_check",
+                    "proof_stage": str(proof_result.get('stage') or 'kernel_check'),
                     "axioms": proof_axioms,
                 }
                 _finalize_programming_submission(

@@ -4,6 +4,9 @@
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/submissions.css') }}">
+{% if submission.problem_type == 1 and (plang or '') in ('lean', 'lean4') %}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/lean-workbench.css') }}">
+{% endif %}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/submissions/detail.css') }}">
 {% endblock %}
 {% block content_container_class %}container-fluid submission-detail-shell{% endblock %}
@@ -22,7 +25,30 @@
 <div class="submission-detail-page" data-math-curve-stroke-scale="1.2">
   <section class="submission-detail-primary" aria-label="{{ 'Lean 4 提交文件' if is_lean4_submission else ('提交代码' if submission.problem_type == 1 else '书面作业 PDF') }}">
     {% if submission.problem_type == 1 %}
-      <div class="submission-code-surface" id="submissionEditorShell" aria-busy="true">
+      <div class="submission-code-surface{% if is_lean4_submission and lean_workspace %} submission-lean-workspace{% endif %}" id="submissionEditorShell" aria-busy="true">
+        {% if is_lean4_submission and lean_workspace %}
+        <script type="application/json" id="submissionLeanWorkspaceData">{{ lean_workspace | tojson }}</script>
+        <aside class="lean-file-explorer submission-lean-file-explorer" aria-label="本次提交的 Lean 文件">
+          <header class="lean-file-explorer-bar">
+            <span>Files</span>
+            <span class="lean-file-count">{{ lean_workspace.files | length }}</span>
+          </header>
+          <div class="lean-file-tree" id="submissionLeanFileTree" role="tree"></div>
+        </aside>
+        <section class="submission-lean-editor-pane" aria-label="Lean 4 文件内容">
+          <header class="submission-lean-editor-bar">
+            <span class="submission-lean-active-file">
+              <span class="lean-file-mark" aria-hidden="true">λ</span>
+              <span id="submissionLeanActiveFile">{{ lean_workspace.default_file }}</span>
+              <span class="submission-lean-file-mode" id="submissionLeanFileMode">学生提交</span>
+            </span>
+            <span
+              class="submission-lean-revision"
+              title="工作区版本 {{ lean_workspace.revision }}"
+            >R{{ lean_workspace.revision_number }}</span>
+          </header>
+          <div class="submission-lean-editor-body">
+        {% endif %}
         <div class="submission-editor-loading" id="submissionEditorLoading">
           <span
             class="math-curve-loader"
@@ -57,6 +83,10 @@
           </span>
         </div>
         <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
+        {% if is_lean4_submission and lean_workspace %}
+          </div>
+        </section>
+        {% endif %}
       </div>
     {% else %}
       <div class="submission-pdf-surface" id="pdfViewer">

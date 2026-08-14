@@ -409,6 +409,88 @@ CREATE TABLE `submissions` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=12497 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for immutable Lean 4 problem workspaces
+--
+
+DROP TABLE IF EXISTS `lean_problem_revisions`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `lean_problem_revisions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `problem_id` int NOT NULL,
+  `revision_number` int unsigned NOT NULL,
+  `schema_version` int unsigned NOT NULL DEFAULT '1',
+  `default_file` varchar(512) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `manifest_json` json NOT NULL,
+  `package_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `file_count` int unsigned NOT NULL,
+  `total_size` bigint unsigned NOT NULL,
+  `created_by_user_id` int DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_lean_problem_revision_number` (`problem_id`,`revision_number`),
+  KEY `idx_lean_problem_revision_hash` (`problem_id`,`package_sha256`),
+  KEY `idx_lean_problem_revision_current` (`problem_id`,`id`),
+  KEY `idx_lean_problem_revision_creator` (`created_by_user_id`,`created_at`),
+  CONSTRAINT `lean_problem_revision_problem_fk` FOREIGN KEY (`problem_id`) REFERENCES `problems` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `lean_problem_revision_creator_fk` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `lean_problem_revision_number_chk` CHECK ((`revision_number` > 0)),
+  CONSTRAINT `lean_problem_revision_file_count_chk` CHECK ((`file_count` > 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+DROP TABLE IF EXISTS `lean_problem_revision_files`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `lean_problem_revision_files` (
+  `revision_id` bigint unsigned NOT NULL,
+  `relative_path` varchar(512) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `access_mode` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `order_index` int unsigned NOT NULL,
+  `content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `content_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `size_bytes` int unsigned NOT NULL,
+  PRIMARY KEY (`revision_id`,`relative_path`),
+  UNIQUE KEY `uniq_lean_problem_revision_file_order` (`revision_id`,`order_index`),
+  CONSTRAINT `lean_problem_revision_file_revision_fk` FOREIGN KEY (`revision_id`) REFERENCES `lean_problem_revisions` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `lean_problem_revision_file_mode_chk` CHECK ((`access_mode` in (_utf8mb4'readonly',_utf8mb4'writable')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+DROP TABLE IF EXISTS `lean_submission_workspaces`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `lean_submission_workspaces` (
+  `submission_id` int NOT NULL,
+  `problem_revision_id` bigint unsigned NOT NULL,
+  `source_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `file_count` int unsigned NOT NULL,
+  `total_size` bigint unsigned NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`submission_id`),
+  KEY `idx_lean_submission_workspace_revision` (`problem_revision_id`,`submission_id`),
+  CONSTRAINT `lean_submission_workspace_submission_fk` FOREIGN KEY (`submission_id`) REFERENCES `submissions` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `lean_submission_workspace_revision_fk` FOREIGN KEY (`problem_revision_id`) REFERENCES `lean_problem_revisions` (`id`) ON DELETE RESTRICT,
+  CONSTRAINT `lean_submission_workspace_file_count_chk` CHECK ((`file_count` > 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+DROP TABLE IF EXISTS `lean_submission_files`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `lean_submission_files` (
+  `submission_id` int NOT NULL,
+  `relative_path` varchar(512) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `content` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `content_sha256` char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `size_bytes` int unsigned NOT NULL,
+  PRIMARY KEY (`submission_id`,`relative_path`),
+  CONSTRAINT `lean_submission_file_workspace_fk` FOREIGN KEY (`submission_id`) REFERENCES `lean_submission_workspaces` (`submission_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 ALTER TABLE submissions ADD INDEX idx_submissions_user_problem_id (username, problem_id, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_user_id (username, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_created_status (created_at, status);

@@ -72,6 +72,135 @@
   height: 100%;
 }
 
+.submission-lean-workspace {
+  --lean-ink: #18181b;
+  --lean-muted: #a1a1aa;
+  --lean-line: rgba(255, 255, 255, 0.1);
+  --lean-soft: rgba(255, 255, 255, 0.07);
+  --lean-accent: #f97316;
+  display: grid;
+  grid-template-columns: clamp(145px, 23%, 215px) minmax(0, 1fr);
+}
+
+.submission-lean-workspace .submission-lean-file-explorer {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
+  border-bottom: 0;
+  background: #18181b;
+}
+
+.submission-lean-workspace .lean-file-explorer-bar {
+  color: #a1a1aa;
+}
+
+.submission-lean-workspace .lean-file-count {
+  background: rgba(255, 255, 255, 0.08);
+  color: #a1a1aa;
+}
+
+.submission-lean-workspace .lean-file-tree {
+  flex: 1 1 auto;
+  color: #a1a1aa;
+  scrollbar-color: #52525b transparent;
+}
+
+.submission-lean-workspace .lean-file-tree-row:hover {
+  background: rgba(255, 255, 255, 0.055);
+  color: #e4e4e7;
+}
+
+.submission-lean-workspace .lean-file-tree-row.is-active {
+  background: rgba(249, 115, 22, 0.14);
+  color: #fdba74;
+}
+
+.submission-lean-workspace .lean-file-tree-row.is-writable .lean-file-tree-icon {
+  color: #86d9a4;
+}
+
+.submission-lean-workspace .lean-file-tree-row.is-readonly .lean-file-tree-icon,
+.submission-lean-workspace .lean-file-tree-icon,
+.submission-lean-workspace .lean-file-tree-chevron {
+  color: #71717a;
+}
+
+.submission-lean-editor-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: #1e1e1e;
+}
+
+.submission-lean-editor-bar {
+  display: flex;
+  min-height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #252526;
+  color: #a1a1aa;
+  font: 0.66rem/1 var(--numoj-mono, monospace);
+}
+
+.submission-lean-active-file {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.submission-lean-active-file > #submissionLeanActiveFile {
+  min-width: 0;
+  overflow: hidden;
+  color: #d4d4d8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-lean-file-mode,
+.submission-lean-revision {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid rgba(74, 222, 128, 0.22);
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.08);
+  color: #86d9a4;
+  font-size: 0.55rem;
+  letter-spacing: 0.04em;
+}
+
+.submission-lean-file-mode.is-readonly {
+  border-color: rgba(161, 161, 170, 0.2);
+  background: rgba(161, 161, 170, 0.08);
+  color: #a1a1aa;
+}
+
+.submission-lean-revision {
+  border-color: rgba(251, 146, 60, 0.25);
+  background: rgba(249, 115, 22, 0.08);
+  color: #fdba74;
+  font-variant-numeric: tabular-nums;
+}
+
+.submission-lean-editor-body {
+  position: relative;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.submission-lean-editor-body .submission-monaco-container,
+.submission-lean-editor-body textarea {
+  height: 100%;
+  min-height: 0;
+}
+
 .submission-code-surface textarea {
   width: 100%;
   height: 100%;
@@ -710,6 +839,11 @@
     box-shadow: none;
   }
 
+  .submission-code-surface.submission-lean-workspace {
+    height: 500px;
+    min-height: 500px;
+  }
+
   .submission-pdf-surface {
     height: max(520px, 72vh);
   }
@@ -730,6 +864,19 @@
 
   .submission-detail-page {
     gap: 0;
+  }
+
+  .submission-code-surface.submission-lean-workspace {
+    height: 540px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(62px, auto) minmax(0, 1fr);
+  }
+
+  .submission-lean-workspace .submission-lean-file-explorer {
+    height: auto;
+    max-height: 138px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.09);
   }
 
   .submission-detail-summary-card,

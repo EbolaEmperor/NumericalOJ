@@ -299,6 +299,67 @@ def test_problem_detail_outputs_necessary_user_facing_fields(monkeypatch, capsys
     }
 
 
+def test_lean_workspace_submit_uses_form_redirect_contract(
+    monkeypatch, capsys, tmp_path
+):
+    cli = _load_numoj_user_cli_module()
+    workspace = tmp_path / "lean-workspace"
+    workspace.mkdir()
+    (workspace / "numoj-lean.json").write_text(
+        cli.json.dumps(
+            {
+                "schema_version": 1,
+                "problem_id": 42,
+                "revision": "revision-1",
+                "files": [
+                    {"path": "Problem.lean", "mode": "readonly"},
+                    {"path": "Submission.lean", "mode": "writable"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / "Submission.lean").write_text(
+        "theorem answer : True := by trivial\n",
+        encoding="utf-8",
+    )
+
+    class _RedirectResponse(_FakeResponse):
+        status_code = 302
+        headers = {"Location": "/submission_detail/321"}
+
+    client = _SequenceClient([
+        _PayloadResponse({"submit": {"input_kind": "lean_workspace"}}),
+        _RedirectResponse(),
+    ])
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
+
+    cli.problem_submit(Namespace(
+        problem_id=42,
+        workspace=str(workspace),
+        file=None,
+        code=None,
+        code_file=None,
+        prompt=None,
+        prompt_file=None,
+    ))
+
+    assert cli.json.loads(capsys.readouterr().out) == {
+        "success": True,
+        "submission_id": 321,
+    }
+    method, path, kwargs = client.requests[1]
+    assert (method, path) == ("POST", "/submit/42")
+    assert "json" not in kwargs
+    assert "headers" not in kwargs
+    assert cli.json.loads(kwargs["data"]["lean_workspace"]) == {
+        "revision": "revision-1",
+        "files": {
+            "Submission.lean": "theorem answer : True := by trivial\n"
+        },
+    }
+
+
 def _submission_list_payload():
     return {
         "count": 1,

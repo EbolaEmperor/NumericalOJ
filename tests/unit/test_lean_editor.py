@@ -83,8 +83,13 @@ def test_lean_semantic_tokens_reject_unknown_token_type():
 
 def test_lean_check_endpoint_returns_semantic_tokens(monkeypatch):
     class _Service:
-        def check(self, session_key, source, position):
-            assert session_key == "7:42"
+        def check(self, session_key, sources, active_file, position):
+            assert session_key == "7:42:rev-1"
+            assert sources == {
+                "Problem.lean": "def Problem.Target : Prop := True",
+                "Submission.lean": "theorem Submission.answer : True := by trivial",
+            }
+            assert active_file == "Submission.lean"
             return {
                 "goals": [],
                 "goal_rendered": "",
@@ -110,6 +115,32 @@ def test_lean_check_endpoint_returns_semantic_tokens(monkeypatch):
         lambda username: {"id": 7, "username": username, "is_admin": 0},
     )
     monkeypatch.setattr(lean_routes, "get_lean_interactive_service", _Service)
+    monkeypatch.setattr(
+        lean_routes,
+        "normalize_lean_submission_payload",
+        lambda **_kwargs: (
+            {
+                "revision": "rev-1",
+                "files": [
+                    {
+                        "path": "Problem.lean",
+                        "mode": "readonly",
+                        "content": "def Problem.Target : Prop := True",
+                    },
+                    {
+                        "path": "Submission.lean",
+                        "mode": "writable",
+                        "content": "",
+                    },
+                ],
+            },
+            {
+                "Submission.lean": (
+                    "theorem Submission.answer : True := by trivial"
+                )
+            },
+        ),
+    )
     monkeypatch.setattr(lean_routes, "_rds", None)
     client = app.test_client()
     with client.session_transaction() as user_session:
@@ -119,7 +150,13 @@ def test_lean_check_endpoint_returns_semantic_tokens(monkeypatch):
         "/api/lean/check",
         json={
             "problem_id": 42,
-            "source": "theorem answer : True := by trivial",
+            "revision": "rev-1",
+            "files": {
+                "Submission.lean": (
+                    "theorem Submission.answer : True := by trivial"
+                )
+            },
+            "active_file": "Submission.lean",
             "version": 9,
             "position": {"line": 0, "character": 8},
         },

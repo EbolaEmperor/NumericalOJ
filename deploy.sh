@@ -340,12 +340,22 @@ docker_source_digest() {
         agent_judge/pi_web_search_mcp.ts
         agent_judge/lean
         lean4/Dockerfile
+        lean4/NumOJVerifier.lean
         lean4/run_lean_judge.sh
         lean4/run_lean_lsp.sh
+        lean4/run_lean_problem_build.sh
+        lean4/run_lean_workspace_judge.sh
       )
       ;;
     docker/lean4)
-      inputs=(Dockerfile run_lean_judge.sh run_lean_lsp.sh)
+      inputs=(
+        Dockerfile
+        NumOJVerifier.lean
+        run_lean_judge.sh
+        run_lean_lsp.sh
+        run_lean_problem_build.sh
+        run_lean_workspace_judge.sh
+      )
       ;;
     *)
       printf '没有定义 Docker 构建输入清单：%s\n' "$context" >&2
@@ -859,6 +869,10 @@ mv -Tf -- "$ARC_CURRENT_SET_TEMP" "$ARC_CURRENT_SET"
 rm -f -- "$ARC_RESULT_FILE"
 
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
+
+phase='迁移旧 Lean 4 工作区'
+"$CANDIDATE_PYTHON" -B deploy/migrate_lean_workspaces_v1.py \
+  --apply --confirm-app-writers-stopped
 
 phase='种入 VibeHub 示例作品'
 "$CANDIDATE_PYTHON" -B deploy/seed_vibehub_examples.py \

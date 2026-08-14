@@ -248,7 +248,7 @@
   </div>
 
   {% if problem.type == 1 %}
-  <div class="row mb-3">
+  <div class="row mb-3" id="legacyProgrammingFiles"{% if plang == 'lean4' %} style="display:none;"{% endif %}>
     <div class="col-md-6">
       <label class="form-label"><i class="fas fa-code me-2"></i> <span id="initialCodeLabelText">{{ '完整 Submission.lean 初始文件' if plang == 'lean4' else '初始代码 (可选)' }}</span></label>
       <div class="card numoj-form-code-editor-card">
@@ -276,6 +276,10 @@
         {% endif %}
       </small>
     </div>
+  </div>
+
+  <div class="alert alert-info mb-3" id="leanPackageNotice"{% if plang != 'lean4' %} style="display:none;"{% endif %}>
+    Lean 4 文件和验证契约由独立题目包管理。请保存题面与时限后，从题目详情页上传或更新 ZIP 题目包。
   </div>
 
   <div class="mb-3" id="forbiddenFuncDiv">
@@ -464,22 +468,14 @@
       const isLean = languageSelect.value === 'lean4';
       const gradingFields = document.getElementById('programmingGradingFields');
       const forbiddenField = document.getElementById('forbiddenFuncDiv');
+      const legacyFiles = document.getElementById('legacyProgrammingFiles');
+      const packageNotice = document.getElementById('leanPackageNotice');
       if (gradingFields) gradingFields.style.display = isLean ? 'none' : '';
       if (forbiddenField) forbiddenField.style.display = isLean ? 'none' : '';
+      if (legacyFiles) legacyFiles.style.display = isLean ? 'none' : '';
+      if (packageNotice) packageNotice.style.display = isLean ? '' : 'none';
       const timeLabel = document.getElementById('timeLimitLabelText');
-      const initialLabel = document.getElementById('initialCodeLabelText');
-      const initialHelp = document.getElementById('initialCodeHelpText');
-      const testLabel = document.getElementById('testCodeLabelText');
-      const testHelp = document.getElementById('testCodeHelpText');
       if (timeLabel) timeLabel.textContent = isLean ? '证明验证时限' : '时限';
-      if (initialLabel) initialLabel.textContent = isLean ? '完整 Submission.lean 初始文件' : '初始代码 (可选)';
-      if (initialHelp) initialHelp.textContent = isLean
-        ? '学生提交整份 Lean 文件，可以在其中自由定义辅助引理。'
-        : '这段代码会在提交页面的代码编辑框中预先显示。';
-      if (testLabel) testLabel.textContent = isLean ? 'Lean 4 验证配置 (JSON)' : '交互库代码 (可选)';
-      if (testHelp) testHelp.textContent = isLean
-        ? '配置 target（目标类型）、entry（学生定理全名）和 imports（预装模块）；建议按需导入具体 Mathlib 模块。'
-        : '这段代码用作交互库/模板。学生代码将粘贴到 %%user_code_here。';
     };
     if (languageSelect) {
       syncLeanFields();

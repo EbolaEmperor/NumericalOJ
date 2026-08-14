@@ -1627,6 +1627,7 @@ def create_submission(
     prompt_generation_error=None,
     submission_limit=None,
     user_id=None,
+    lean_workspace=None,
 ):
     """创建提交，并在同一事务内锁定用户身份及可选提交配额。"""
     # 先在获取连接前查好题目，避免占着连接再去 get_db_connection() 形成嵌套占用、放大连接池压力。
@@ -1696,6 +1697,18 @@ def create_submission(
             subid = cursor.lastrowid
             if not subid:
                 raise RuntimeError("create_submission: failed to get valid submission id")
+
+            if lean_workspace is not None:
+                from oj_modules.problems.lean_workspace import (
+                    bind_submission_workspace_with_cursor,
+                )
+                bind_submission_workspace_with_cursor(
+                    cursor,
+                    submission_id=int(subid),
+                    problem_id=int(problem_id),
+                    revision=str(lean_workspace.get("revision") or ""),
+                    files=lean_workspace.get("files"),
+                )
 
             # 编程提交必须在返回、入队前绑定不可变仓库快照。捕获与 submissions
             # INSERT 共用事务；快照失败会让整个提交回滚，禁止悄悄改用之后可能变化的

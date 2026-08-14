@@ -48,13 +48,14 @@ SOLUTION_AGENT_PROMPT = (
 )
 
 _LEAN4_SOLUTION_AGENT_PROMPT = (
-    "\n\n本题是 Lean 4 定理证明题。读取题目详情后，必须以返回的 `initial_code` 为起点，"
-    "把完整答案保存为 `Submission.lean`；提交整个文件，而不是只提交 `by ...` 证明片段。"
-    "可以在同一文件中自行添加辅助引理或定理，但必须保留题目要求的证明入口。"
+    "\n\n本题是 Lean 4 多文件定理证明题。先阅读 numoj-user skill 引用的 Lean 4 专用 reference，"
+    "再执行 `problem lean-init {problem_id} ./lean-workspace` 初始化题目当前版本。"
+    "只修改 `numoj-lean.json` 中标记为 `writable` 的完整文件；可以自行添加辅助引理或定理，"
+    "但必须保留题目要求的证明入口。不要只提交 `by ...` 证明片段，也不要修改只读定义。"
     "禁止使用 `sorry`、`admit`、`axiom` 或其它绕过 Lean kernel 与公理检查的手段。"
-    "每次提交前，必须在工作区执行 `lean Submission.lean`，使用容器内预装的 Lean 4 和 Mathlib "
-    "对完整文件做本地检查，"
-    "修复全部错误后再执行 `problem submit {problem_id} --code-file Submission.lean`。"
+    "每次提交前，必须按 manifest 的 `build_order` 在 `./lean-workspace` 中编译全部模块，"
+    "使用容器内预装的 Lean 4 和 Mathlib 修复所有错误，再执行 "
+    "`problem submit {problem_id} --workspace ./lean-workspace`。"
     "提交后必须等待该 submission 进入终态；如果不是 `Accepted`，就读取评测诊断，继续修改、"
     "本地检查并重新提交，直到 `Accepted`。"
 )

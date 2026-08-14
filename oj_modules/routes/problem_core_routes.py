@@ -72,6 +72,11 @@ from oj_modules.agents.workspace import (
     save_agent_attachments,
 )
 from oj_modules.security.auth import current_user
+from oj_modules.problems.lean_workspace import (
+    LeanWorkspaceError,
+    LeanWorkspaceStaleError,
+    normalize_lean_submission_payload,
+)
 from oj_modules.classroom.dashboard import (
     get_class_activity,
     get_layout_navigation_context,
@@ -2002,6 +2007,76 @@ def submit_solution(problem_id):
                 else:
                     _promptly_generate_submission_task.delay(submission_id)
 
+                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+
+            is_lean4 = str(problem.get('lang') or '').strip().lower() in {'lean', 'lean4'}
+            if is_lean4:
+                payload = request.get_json(silent=True) if request.is_json else None
+                if not isinstance(payload, dict):
+                    raw_workspace = request.form.get('lean_workspace', '')
+                    try:
+                        payload = json.loads(raw_workspace)
+                    except (TypeError, json.JSONDecodeError):
+                        payload = None
+                if not isinstance(payload, dict):
+                    message = 'Lean 4 提交必须包含工作区版本和可写文件。'
+                    if request.is_json or 'application/json' in request.headers.get('Accept', ''):
+                        return jsonify(success=False, message=message), 400
+                    flash(message, 'danger')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                try:
+                    workspace, writable_files = normalize_lean_submission_payload(
+                        problem_id=problem_id,
+                        revision=payload.get('revision'),
+                        files=payload.get('files'),
+                    )
+                except LeanWorkspaceStaleError as exc:
+                    if request.is_json or 'application/json' in request.headers.get('Accept', ''):
+                        return jsonify(success=False, code='lean_workspace_stale', message=str(exc)), 409
+                    flash(str(exc), 'warning')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                except LeanWorkspaceError as exc:
+                    if request.is_json or 'application/json' in request.headers.get('Accept', ''):
+                        return jsonify(success=False, message=str(exc)), 400
+                    flash(str(exc), 'danger')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+                default_file = str(workspace.get('default_file') or '')
+                code = writable_files.get(default_file, '')
+                try:
+                    submission_id = create_submission(
+                        problem_id=problem_id,
+                        problem_title=problem['title'],
+                        username=user['username'],
+                        code=code,
+                        score=0,
+                        test_points=[],
+                        submission_limit=counted_submission_limit,
+                        user_id=user['id'],
+                        lean_workspace={
+                            'revision': workspace['revision'],
+                            'files': writable_files,
+                        },
+                    )
+                except SubmissionLimitExceeded:
+                    return _submission_limit_redirect(problem_id, submission_limit)
+                except LeanWorkspaceStaleError as exc:
+                    if request.is_json or 'application/json' in request.headers.get('Accept', ''):
+                        return jsonify(success=False, code='lean_workspace_stale', message=str(exc)), 409
+                    flash(str(exc), 'warning')
+                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                try:
+                    archive_submission_by_id(submission_id, raise_errors=True)
+                except Exception as exc:
+                    _record_archive_failure(submission_id, counted_submission_limit)
+                    flash(f'提交归档失败，已停止入队：{str(exc)}', 'danger')
+                    return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                if _evaluate_submission_task is None:
+                    flash('提交成功，但评测任务未初始化。', 'warning')
+                else:
+                    _evaluate_submission_task.delay(submission_id)
+                if request.is_json or 'application/json' in request.headers.get('Accept', ''):
+                    return jsonify(success=True, submission_id=submission_id), 201
                 return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
             code = request.form.get('code', '')

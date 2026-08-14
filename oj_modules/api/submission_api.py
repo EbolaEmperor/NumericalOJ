@@ -26,6 +26,7 @@ from oj_modules.db_services import (
 from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
+from oj_modules.problems.lean_workspace import get_submission_lean_workspace
 from oj_modules.submissions.presentation import (
     load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
     render_written_markdown_to_html as _render_written_markdown_to_html,
@@ -220,6 +221,11 @@ def submission_detail(submission_id):
 
     problem = public_problem(raw_problem)
     plang = ((raw_problem or {}).get("lang") or "matlab").lower()
+    lean_workspace = (
+        get_submission_lean_workspace(submission_id)
+        if plang in {"lean", "lean4"}
+        else None
+    )
     cached_ai_code_marks = None
     if submission.get("problem_type") == 1:
         cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
@@ -243,6 +249,7 @@ def submission_detail(submission_id):
         test_points=submission.get("test_points") or [],
         problem=problem,
         plang=plang,
+        lean_workspace=lean_workspace,
         cached_ai_code_marks=cached_ai_code_marks,
         submission_latex_text=submission_latex_text,
         submission_latex_error=submission_latex_error,

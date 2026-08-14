@@ -111,12 +111,12 @@ def test_solution_prompt_adds_complete_lean4_proof_workflow(problem_lang):
         problem_lang=problem_lang,
     )
 
-    assert "`initial_code`" in prompt
-    assert "完整答案保存为 `Submission.lean`" in prompt
+    assert "`problem lean-init 5 ./lean-workspace`" in prompt
+    assert "标记为 `writable` 的完整文件" in prompt
     assert "自行添加辅助引理或定理" in prompt
     assert "容器内预装的 Lean 4 和 Mathlib" in prompt
-    assert "`lean Submission.lean`" in prompt
-    assert "`problem submit 5 --code-file Submission.lean`" in prompt
+    assert "`build_order`" in prompt
+    assert "`problem submit 5 --workspace ./lean-workspace`" in prompt
     assert "等待该 submission 进入终态" in prompt
     assert "直到 `Accepted`" in prompt
     for forbidden in ("`sorry`", "`admit`", "`axiom`"):

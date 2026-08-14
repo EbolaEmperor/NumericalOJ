@@ -16,13 +16,19 @@ from oj_modules.editor.lean import (
     LEAN_SOURCE_MAX_BYTES,
     get_lean_interactive_service,
 )
+from oj_modules.problems.lean_workspace import (
+    LeanWorkspaceError,
+    LeanWorkspaceStaleError,
+    merge_workspace_sources,
+    normalize_lean_submission_payload,
+)
 from oj_modules.security.auth import current_user, login_required
 from oj_modules.security.throttling import rate_limit_hit
 
 
 lean_bp = Blueprint("lean", __name__)
 _rds = None
-_REQUEST_MAX_BYTES = LEAN_SOURCE_MAX_BYTES + 16 * 1024
+_REQUEST_MAX_BYTES = LEAN_SOURCE_MAX_BYTES + 512 * 1024
 _CHECKS_MAX_PER_WINDOW = 240
 _CHECKS_WINDOW_SECONDS = 60
 
@@ -82,18 +88,24 @@ def check_lean_source():
     if not isinstance(payload, dict):
         return jsonify(success=False, message="请求体必须是 JSON 对象"), 400
 
-    source = payload.get("source")
     problem_id = payload.get("problem_id")
+    revision = payload.get("revision")
+    files = payload.get("files")
+    active_file = payload.get("active_file")
     client_version = payload.get("version")
     position = payload.get("position")
-    if not isinstance(source, str):
-        return jsonify(success=False, message="source 必须是字符串"), 400
     if (
         not isinstance(problem_id, int)
         or isinstance(problem_id, bool)
         or problem_id <= 0
     ):
         return jsonify(success=False, message="problem_id 无效"), 400
+    if not isinstance(revision, str) or not revision.strip():
+        return jsonify(success=False, message="revision 无效"), 400
+    if not isinstance(files, dict):
+        return jsonify(success=False, message="files 必须是 JSON 对象"), 400
+    if not isinstance(active_file, str) or not active_file:
+        return jsonify(success=False, message="active_file 无效"), 400
     if not isinstance(client_version, int) or isinstance(client_version, bool):
         return jsonify(success=False, message="version 无效"), 400
     if not isinstance(position, dict):
@@ -127,9 +139,28 @@ def check_lean_source():
         ), 429
 
     try:
+        workspace, writable_files = normalize_lean_submission_payload(
+            problem_id=problem_id,
+            revision=revision,
+            files=files,
+        )
+    except LeanWorkspaceStaleError as exc:
+        return jsonify(
+            success=False,
+            code="lean_workspace_stale",
+            message=str(exc),
+        ), 409
+    except LeanWorkspaceError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    sources = merge_workspace_sources(workspace, writable_files)
+    if active_file not in sources:
+        return jsonify(success=False, message="active_file 无效"), 400
+
+    try:
         result = get_lean_interactive_service().check(
-            f"{user_id}:{problem_id}",
-            source,
+            f"{user_id}:{problem_id}:{workspace['revision']}",
+            sources,
+            active_file,
             {"line": line, "character": character},
         )
     except (LanguageServiceError, ValueError) as exc:
@@ -150,6 +181,7 @@ def check_lean_source():
     return jsonify(
         success=True,
         version=client_version,
+        active_file=active_file,
         goals=result["goals"],
         goal_rendered=result["goal_rendered"],
         diagnostics=diagnostics,

@@ -5,9 +5,11 @@ from __future__ import annotations
 import atexit
 from dataclasses import dataclass, field
 import hashlib
+import io
 import json
 import os
 import subprocess
+import tarfile
 import threading
 import time
 import uuid
@@ -23,8 +25,13 @@ from oj_modules.editor.language_server import (
 )
 
 
-LEAN_SOURCE_MAX_BYTES = 512 * 1024
-_DOCUMENT_URI = "file:///workspace/Submission.lean"
+LEAN_SOURCE_MAX_BYTES = 8 * 1024 * 1024
+_WORKSPACE_URI = "file:///workspace"
+_DEFAULT_DOCUMENT_PATH = "Submission.lean"
+
+
+def _document_uri(path: str) -> str:
+    return f"{_WORKSPACE_URI}/{path}"
 
 
 @dataclass
@@ -47,13 +54,15 @@ class LeanLanguageServerSession:
         self._reader_thread: threading.Thread | None = None
         self._pending: dict[int, _PendingResponse] = {}
         self._next_request_id = 1
-        self._document_open = False
-        self._document_version = 0
-        self._source_digest = ""
-        self._diagnostics: list[dict[str, Any]] = []
-        self._processing: list[dict[str, Any]] = []
+        self._open_documents: set[str] = set()
+        self._document_versions: dict[str, int] = {}
+        self._document_digests: dict[str, str] = {}
+        self._workspace_digests: dict[str, str] = {}
+        self._compiled_digests: dict[str, str] = {}
+        self._diagnostics: dict[str, list[dict[str, Any]]] = {}
+        self._processing: dict[str, list[dict[str, Any]]] = {}
         self._semantic_legend: dict[str, list[str]] | None = None
-        self._semantic_tokens: dict[str, Any] | None = None
+        self._semantic_tokens: dict[str, dict[str, Any]] = {}
         self._container_name = (
             f"numoj-lean-lsp-{os.getpid()}-{uuid.uuid4().hex[:12]}"
         )
@@ -85,7 +94,7 @@ class LeanLanguageServerSession:
             "--user",
             "65532:65532",
             "--tmpfs",
-            "/workspace:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532",
+            "/workspace:rw,nosuid,nodev,noexec,size=128m,uid=65532,gid=65532",
             "--workdir",
             "/workspace",
             image,
@@ -135,7 +144,7 @@ class LeanLanguageServerSession:
                 {
                     "processId": None,
                     "clientInfo": {"name": "NumericalOJ", "version": "1"},
-                    "rootUri": "file:///workspace",
+                    "rootUri": _WORKSPACE_URI,
                     "capabilities": {
                         "workspace": {"configuration": False},
                         "textDocument": {
@@ -157,7 +166,7 @@ class LeanLanguageServerSession:
                     "initializationOptions": {},
                     "workspaceFolders": [
                         {
-                            "uri": "file:///workspace",
+                            "uri": _WORKSPACE_URI,
                             "name": "NumericalOJ Lean",
                         }
                     ],
@@ -207,76 +216,107 @@ class LeanLanguageServerSession:
 
     def check(
         self,
-        source: str,
-        position: dict[str, int],
+        sources: dict[str, str] | str,
+        active_file: str | dict[str, int],
+        position: dict[str, int] | None = None,
     ) -> dict[str, Any]:
+        if isinstance(sources, str):
+            position = active_file if isinstance(active_file, dict) else None
+            active_file = _DEFAULT_DOCUMENT_PATH
+            sources = {_DEFAULT_DOCUMENT_PATH: sources}
+        if not isinstance(active_file, str) or position is None:
+            raise ValueError("Lean 4 当前文件或光标位置无效")
         if not self._lock.acquire(blocking=False):
             raise LanguageServiceBusyError(
                 "Lean 4", "该 Lean 4 文档正在解析"
             )
         try:
-            return self._check_locked(source, position)
+            return self._check_locked(sources, active_file, position)
         finally:
             self._lock.release()
 
     def _check_locked(
         self,
-        source: str,
+        sources: dict[str, str],
+        active_file: str,
         position: dict[str, int],
     ) -> dict[str, Any]:
-        encoded = source.encode("utf-8")
-        if len(encoded) > LEAN_SOURCE_MAX_BYTES:
+        if not sources or active_file not in sources:
+            raise ValueError("Lean 4 当前文件无效")
+        if not all(
+            isinstance(path, str)
+            and path.endswith(".lean")
+            and isinstance(source, str)
+            for path, source in sources.items()
+        ):
+            raise ValueError("Lean 4 工作区源码无效")
+        total_size = sum(
+            len(source.encode("utf-8")) for source in sources.values()
+        )
+        if total_size > LEAN_SOURCE_MAX_BYTES:
             raise ValueError("Lean 4 源码超过实时解析大小限制")
-        digest = hashlib.sha256(encoded).hexdigest()
         self.last_used = time.monotonic()
         try:
             self._start_locked()
-            if not self._document_open:
-                self._document_version = 1
-                self._source_digest = digest
-                self._diagnostics = []
-                self._processing = []
-                self._semantic_tokens = None
-                self._notify_locked(
-                    "textDocument/didOpen",
-                    {
-                        "textDocument": {
-                            "uri": _DOCUMENT_URI,
-                            "languageId": "lean4",
-                            "version": self._document_version,
-                            "text": source,
+            self._sync_workspace_locked(sources)
+            dependencies_changed = self._compile_dependencies_locked(
+                sources, active_file
+            )
+            if dependencies_changed:
+                self._close_documents_locked()
+
+            for path, source in sources.items():
+                uri = _document_uri(path)
+                digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+                if path not in self._open_documents:
+                    version = self._document_versions.get(path, 0) + 1
+                    self._document_versions[path] = version
+                    self._document_digests[path] = digest
+                    self._diagnostics[uri] = []
+                    self._processing[uri] = []
+                    self._semantic_tokens.pop(path, None)
+                    self._notify_locked(
+                        "textDocument/didOpen",
+                        {
+                            "textDocument": {
+                                "uri": uri,
+                                "languageId": "lean4",
+                                "version": version,
+                                "text": source,
+                            },
+                            "dependencyBuildMode": "never",
                         },
-                        "dependencyBuildMode": "never",
-                    },
-                )
-                self._document_open = True
-            elif digest != self._source_digest:
-                self._document_version += 1
-                self._source_digest = digest
-                self._diagnostics = []
-                self._processing = []
-                self._semantic_tokens = None
-                self._notify_locked(
-                    "textDocument/didChange",
-                    {
-                        "textDocument": {
-                            "uri": _DOCUMENT_URI,
-                            "version": self._document_version,
+                    )
+                    self._open_documents.add(path)
+                elif digest != self._document_digests.get(path):
+                    version = self._document_versions[path] + 1
+                    self._document_versions[path] = version
+                    self._document_digests[path] = digest
+                    self._diagnostics[uri] = []
+                    self._processing[uri] = []
+                    self._semantic_tokens.pop(path, None)
+                    self._notify_locked(
+                        "textDocument/didChange",
+                        {
+                            "textDocument": {
+                                "uri": uri,
+                                "version": version,
+                            },
+                            "contentChanges": [{"text": source}],
                         },
-                        "contentChanges": [{"text": source}],
-                    },
-                )
+                    )
+
+            active_uri = _document_uri(active_file)
+            active_version = self._document_versions[active_file]
+            active_digest = self._document_digests[active_file]
             self._request_locked(
                 "textDocument/waitForDiagnostics",
-                {
-                    "uri": _DOCUMENT_URI,
-                    "version": self._document_version,
-                },
+                {"uri": active_uri, "version": active_version},
             )
-            if self._semantic_tokens is None:
+            if active_file not in self._semantic_tokens:
                 semantic_response = self._request_locked(
                     "textDocument/semanticTokens/full",
-                    {"textDocument": {"uri": _DOCUMENT_URI}},
+                    {"textDocument": {"uri": active_uri}},
                 )
                 if semantic_response is None:
                     semantic_data: list[int] = []
@@ -298,9 +338,7 @@ class LeanLanguageServerSession:
                         "Lean 4", "Lean 4 语义高亮数据无效"
                     )
                 assert self._semantic_legend is not None
-                token_type_count = len(
-                    self._semantic_legend["tokenTypes"]
-                )
+                token_type_count = len(self._semantic_legend["tokenTypes"])
                 if any(
                     semantic_data[index + 3] >= token_type_count
                     for index in range(0, len(semantic_data), 5)
@@ -318,7 +356,7 @@ class LeanLanguageServerSession:
                     raise LanguageServiceProtocolError(
                         "Lean 4", "Lean 4 语义高亮修饰符无效"
                     )
-                self._semantic_tokens = {
+                self._semantic_tokens[active_file] = {
                     "legend": {
                         "tokenTypes": list(
                             self._semantic_legend["tokenTypes"]
@@ -328,15 +366,12 @@ class LeanLanguageServerSession:
                         ),
                     },
                     "data": list(semantic_data),
-                    "result_id": (
-                        f"{self._document_version}:"
-                        f"{self._source_digest[:12]}"
-                    ),
+                    "result_id": f"{active_version}:{active_digest[:12]}",
                 }
             plain_goal = self._request_locked(
                 "$/lean/plainGoal",
                 {
-                    "textDocument": {"uri": _DOCUMENT_URI},
+                    "textDocument": {"uri": active_uri},
                     "position": position,
                 },
             )
@@ -356,30 +391,183 @@ class LeanLanguageServerSession:
                     )
                 goals = list(raw_goals)
                 rendered = str(plain_goal.get("rendered") or "")
+
+            diagnostics = []
+            processing = []
+            for path in sources:
+                uri = _document_uri(path)
+                diagnostics.extend(
+                    {**item, "path": path, "uri": uri}
+                    for item in self._diagnostics.get(uri, [])
+                )
+                processing.extend(
+                    {**item, "path": path, "uri": uri}
+                    for item in self._processing.get(uri, [])
+                )
+            semantic_tokens = self._semantic_tokens[active_file]
             return {
                 "goals": goals,
                 "goal_rendered": rendered,
-                "diagnostics": list(self._diagnostics),
-                "processing": list(self._processing),
-                "document_version": self._document_version,
+                "diagnostics": diagnostics,
+                "processing": processing,
+                "document_version": active_version,
                 "semantic_tokens": {
                     "legend": {
                         "tokenTypes": list(
-                            self._semantic_tokens["legend"]["tokenTypes"]
+                            semantic_tokens["legend"]["tokenTypes"]
                         ),
                         "tokenModifiers": list(
-                            self._semantic_tokens["legend"][
-                                "tokenModifiers"
-                            ]
+                            semantic_tokens["legend"]["tokenModifiers"]
                         ),
                     },
-                    "data": list(self._semantic_tokens["data"]),
-                    "result_id": self._semantic_tokens["result_id"],
+                    "data": list(semantic_tokens["data"]),
+                    "result_id": semantic_tokens["result_id"],
                 },
             }
-        except (LanguageServiceProtocolError, LanguageServiceTimeoutError):
+        except (
+            LanguageServiceProtocolError,
+            LanguageServiceTimeoutError,
+            LanguageServiceUnavailableError,
+        ):
             self._reset_locked()
             raise
+
+    def _sync_workspace_locked(self, sources: dict[str, str]) -> set[str]:
+        digests = {
+            path: hashlib.sha256(source.encode("utf-8")).hexdigest()
+            for path, source in sources.items()
+        }
+        changed = {
+            path
+            for path, digest in digests.items()
+            if self._workspace_digests.get(path) != digest
+        }
+        if self._process is not None and changed:
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w") as tar:
+                directories = sorted(
+                    {
+                        directory
+                        for path in changed
+                        for directory in self._parent_directories(path)
+                    },
+                    key=lambda item: (item.count("/"), item),
+                )
+                for directory in directories:
+                    info = tarfile.TarInfo(directory)
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o700
+                    tar.addfile(info)
+                for path in sorted(changed):
+                    source = sources[path]
+                    encoded = source.encode("utf-8")
+                    info = tarfile.TarInfo(path)
+                    info.size = len(encoded)
+                    info.mode = 0o600
+                    tar.addfile(info, io.BytesIO(encoded))
+            self._run_docker_exec(
+                ["tar", "-xf", "-", "-C", "/workspace"],
+                input_bytes=archive.getvalue(),
+            )
+            self._run_docker_exec(
+                [
+                    "rm",
+                    "-f",
+                    *[
+                        f"/workspace/{path[:-5]}.olean"
+                        for path in sorted(changed)
+                    ],
+                ]
+            )
+        for path in changed:
+            self._compiled_digests.pop(path, None)
+        self._workspace_digests = digests
+        return changed
+
+    @staticmethod
+    def _parent_directories(path: str) -> list[str]:
+        parts = path.split("/")[:-1]
+        return ["/".join(parts[:index]) for index in range(1, len(parts) + 1)]
+
+    def _run_docker_exec(
+        self,
+        arguments: list[str],
+        *,
+        input_bytes: bytes | None = None,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[bytes]:
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "-i", self._container_name, *arguments],
+                input=input_bytes,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=self.request_timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise LanguageServiceTimeoutError(
+                "Lean 4", "Lean 4 工作区准备超时"
+            ) from exc
+        except OSError as exc:
+            raise LanguageServiceUnavailableError(
+                "Lean 4", "无法同步 Lean 4 工作区"
+            ) from exc
+        if check and result.returncode != 0:
+            raise LanguageServiceUnavailableError(
+                "Lean 4", "无法同步 Lean 4 工作区"
+            )
+        return result
+
+    def _compile_dependencies_locked(
+        self, sources: dict[str, str], active_file: str
+    ) -> bool:
+        if self._process is None:
+            return False
+        cumulative = hashlib.sha256()
+        rebuilt = False
+        for path in sources:
+            cumulative.update(path.encode("ascii"))
+            cumulative.update(b"\0")
+            cumulative.update(self._workspace_digests[path].encode("ascii"))
+            if path == active_file:
+                break
+            expected = cumulative.hexdigest()
+            if self._compiled_digests.get(path) == expected:
+                continue
+            source_path = f"/workspace/{path}"
+            output_path = f"/workspace/{path[:-5]}.olean"
+            result = self._run_docker_exec(
+                [
+                    "sh",
+                    "-c",
+                    'mathlib_path="$(cat /opt/numoj-lean-path)"; '
+                    'export LEAN_PATH="$mathlib_path:/workspace"; '
+                    'rm -f "$1"; lean -o "$1" "$2"',
+                    "sh",
+                    output_path,
+                    source_path,
+                ],
+                check=False,
+            )
+            rebuilt = True
+            if result.returncode == 0:
+                self._compiled_digests[path] = expected
+            else:
+                self._compiled_digests.pop(path, None)
+        return rebuilt
+
+    def _close_documents_locked(self) -> None:
+        for path in sorted(self._open_documents):
+            self._notify_locked(
+                "textDocument/didClose",
+                {"textDocument": {"uri": _document_uri(path)}},
+            )
+        self._open_documents.clear()
+        self._document_digests.clear()
+        self._diagnostics.clear()
+        self._processing.clear()
+        self._semantic_tokens.clear()
 
     def _handle_notification(self, message: dict[str, Any]) -> None:
         method = message.get("method")
@@ -387,24 +575,26 @@ class LeanLanguageServerSession:
         if not isinstance(params, dict):
             return
         if method == "textDocument/publishDiagnostics":
-            if params.get("uri") != _DOCUMENT_URI:
+            uri = params.get("uri")
+            if not isinstance(uri, str) or uri not in self._diagnostics:
                 return
             diagnostics = params.get("diagnostics")
             if isinstance(diagnostics, list) and all(
                 isinstance(item, dict) for item in diagnostics
             ):
-                self._diagnostics = list(diagnostics)
+                self._diagnostics[uri] = list(diagnostics)
         elif method == "$/lean/fileProgress":
             text_document = params.get("textDocument")
-            if not isinstance(text_document, dict) or text_document.get(
-                "uri"
-            ) != _DOCUMENT_URI:
+            if not isinstance(text_document, dict):
+                return
+            uri = text_document.get("uri")
+            if not isinstance(uri, str) or uri not in self._processing:
                 return
             processing = params.get("processing")
             if isinstance(processing, list) and all(
                 isinstance(item, dict) for item in processing
             ):
-                self._processing = list(processing)
+                self._processing[uri] = list(processing)
 
     def _write_message(
         self,
@@ -519,7 +709,7 @@ class LeanLanguageServerSession:
             return [None for _ in items]
         if message.get("method") == "workspace/workspaceFolders":
             return [
-                {"uri": "file:///workspace", "name": "NumericalOJ Lean"}
+                {"uri": _WORKSPACE_URI, "name": "NumericalOJ Lean"}
             ]
         return None
 
@@ -581,13 +771,15 @@ class LeanLanguageServerSession:
         reader_thread = self._reader_thread
         self._process = None
         self._reader_thread = None
-        self._document_open = False
-        self._document_version = 0
-        self._source_digest = ""
-        self._diagnostics = []
-        self._processing = []
+        self._open_documents.clear()
+        self._document_versions.clear()
+        self._document_digests.clear()
+        self._workspace_digests.clear()
+        self._compiled_digests.clear()
+        self._diagnostics.clear()
+        self._processing.clear()
         self._semantic_legend = None
-        self._semantic_tokens = None
+        self._semantic_tokens.clear()
         if process is not None:
             if process.stdin is not None:
                 try:
@@ -618,8 +810,9 @@ class LeanInteractiveService:
     def check(
         self,
         session_key: str,
-        source: str,
-        position: dict[str, int],
+        sources: dict[str, str] | str,
+        active_file: str | dict[str, int],
+        position: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         expired: list[LeanLanguageServerSession] = []
         with self._lock:
@@ -646,7 +839,7 @@ class LeanInteractiveService:
             session.last_used = now
         for old_session in expired:
             old_session.close()
-        return session.check(source, position)
+        return session.check(sources, active_file, position)
 
     def close(self) -> None:
         with self._lock:

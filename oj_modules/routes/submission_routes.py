@@ -21,6 +21,10 @@ from oj_modules.db_services import (
 from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
+from oj_modules.problems.lean_workspace import (
+    get_latest_submission_lean_workspace,
+    get_submission_lean_workspace,
+)
 from oj_modules.submissions.presentation import (
     load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
     render_written_markdown_to_html as _render_written_markdown_to_html,
@@ -71,6 +75,9 @@ def submission_detail(submission_id):
     submission_latex_error = ""
     submission_latex_html = ""
     written_grading_mode = 1
+    lean_workspace = None
+    if plang in {'lean', 'lean4'}:
+        lean_workspace = get_submission_lean_workspace(submission_id)
     if problem and problem['type'] == 2:
         try:
             written_grading_mode = int(problem.get('written_grading_mode') or 1)
@@ -96,6 +103,7 @@ def submission_detail(submission_id):
         submission_latex_error=submission_latex_error,
         submission_latex_html=submission_latex_html,
         written_grading_mode=written_grading_mode,
+        lean_workspace=lean_workspace,
     )
 
 
@@ -312,15 +320,30 @@ def get_last_submission_code(problem_id):
     if not last_submission:
         return jsonify({'success': False, 'message': '没有找到之前的提交记录'}), 404
 
-    if not last_submission.get('code'):
+    problem = get_problem(problem_id)
+    is_lean4 = bool(
+        problem
+        and str(problem.get('lang') or '').strip().lower() in {'lean', 'lean4'}
+    )
+    workspace = None
+    if is_lean4:
+        workspace = get_latest_submission_lean_workspace(
+            username=user['username'], problem_id=problem_id
+        )
+    if not workspace and not last_submission.get('code'):
         return jsonify({'success': False, 'message': '上一次提交没有代码'}), 404
 
-    return jsonify({
+    payload = {
         'success': True,
-        'code': last_submission['code'],
+        'code': last_submission.get('code') or '',
         'submission_id': last_submission['id'],
         'score': last_submission['score'],
-    })
+    }
+    if workspace:
+        payload['revision'] = workspace['revision']
+        payload['files'] = workspace['submitted_files']
+        payload['default_file'] = workspace['default_file']
+    return jsonify(payload)
 
 
 @submission_bp.route('/submission_output_image/<int:submission_id>/<int:test_index>')
