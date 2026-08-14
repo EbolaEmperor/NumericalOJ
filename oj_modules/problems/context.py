@@ -239,8 +239,14 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
     if not problem:
         return None, "not_found"
 
+    scoped_agent_access = (
+        user.get("agent_access_role") == "user"
+        and user.get("agent_task_kind") in {"solve", "testdata"}
+        and int(user.get("agent_problem_id") or 0) == int(problem_id)
+    )
+
     homework = None
-    if user['is_admin'] != 1:
+    if user['is_admin'] != 1 and not scoped_agent_access:
         homeworks = get_homeworks(user)
         homework = next(
             (item for item in homeworks if item['problem_id'] == problem_id),

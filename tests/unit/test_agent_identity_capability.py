@@ -101,6 +101,8 @@ def test_task_capability_authenticates_only_its_active_database_binding(monkeypa
         "current_task_id": "task-2",
         "requested_by": "admin",
         "access_role": "admin",
+        "task_kind": "custom",
+        "problem_id": None,
         "status": "Running",
     }
     monkeypatch.setattr(
@@ -131,6 +133,45 @@ def test_task_capability_authenticates_only_its_active_database_binding(monkeypa
         headers={AGENT_IDENTITY_HEADER: token},
     ):
         assert auth.current_user() is None
+
+
+def test_user_task_capability_exposes_only_its_scoped_problem(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "get_user_by_username",
+        lambda username: {"id": 7, "username": username, "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        "oj_modules.agents.sessions.get_agent_session",
+        lambda _session_id: {
+            "current_task_id": "task-2",
+            "requested_by": "admin",
+            "access_role": "user",
+            "task_kind": "solve",
+            "problem_id": 104,
+            "status": "Running",
+        },
+    )
+    token = create_agent_identity_capability(
+        "admin",
+        "user",
+        session_id="session-1",
+        task_id="task-2",
+    )
+    app = _app()
+
+    with app.test_request_context(
+        "/api/problems/104",
+        headers={AGENT_IDENTITY_HEADER: token},
+    ):
+        assert auth.current_user() == {
+            "id": 7,
+            "username": "admin",
+            "is_admin": 0,
+            "agent_access_role": "user",
+            "agent_task_kind": "solve",
+            "agent_problem_id": 104,
+        }
 
 
 def test_task_capability_rechecks_current_admin_permission(monkeypatch):
