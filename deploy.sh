@@ -332,7 +332,17 @@ docker_source_digest() {
       inputs=(Dockerfile)
       ;;
     docker/agent_judge)
-      inputs=(Dockerfile report run_harness)
+      context='docker'
+      inputs=(
+        agent_judge/Dockerfile
+        agent_judge/report
+        agent_judge/run_harness
+        agent_judge/pi_web_search_mcp.ts
+        agent_judge/lean
+        lean4/Dockerfile
+        lean4/run_lean_judge.sh
+        lean4/run_lean_lsp.sh
+      )
       ;;
     docker/lean4)
       inputs=(Dockerfile run_lean_judge.sh run_lean_lsp.sh)
@@ -367,6 +377,11 @@ build_candidate_image() {
   local source_digest
   local stable_source_digest
   local candidate_source_digest
+  local docker_build_args=()
+
+  if [[ "$context" == 'docker/agent_judge' ]]; then
+    docker_build_args=(--build-arg "LEAN4_IMAGE=$LEAN4_CANDIDATE")
+  fi
 
   stable_id="$(
     docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null || true
@@ -427,6 +442,7 @@ build_candidate_image() {
   DOCKER_BUILDKIT=1 docker build \
     --builder "$DOCKER_BUILDER" \
     --build-arg BUILDKIT_INLINE_CACHE=1 \
+    "${docker_build_args[@]}" \
     --label "$MANAGED_IMAGE_LABEL" \
     --label "$SOURCE_IMAGE_LABEL=$source_digest" \
     --tag "$candidate" \
@@ -567,13 +583,13 @@ build_candidate_image \
   'debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df' \
   'texlive-full' 'intel-oneapi-mkl-devel'
 build_candidate_image \
+  "$LEAN4_STABLE" "$LEAN4_CANDIDATE" docker/lean4 \
+  'debian:bookworm-slim' 'elan-init.sh' 'lake exe cache get'
+build_candidate_image \
   "$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" docker/agent_judge \
   'node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5' \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
-build_candidate_image \
-  "$LEAN4_STABLE" "$LEAN4_CANDIDATE" docker/lean4 \
-  'debian:bookworm-slim' 'elan-init.sh' 'lake exe cache get'
 
 phase='准备判题器官方头文件工具链'
 "$CANDIDATE_PYTHON" -B deploy/prepare_editor_toolchain.py \

@@ -47,6 +47,18 @@ SOLUTION_AGENT_PROMPT = (
     "本地充分测试，确认无误后提交。如果没有通过就继续尝试，直到通过为止。"
 )
 
+_LEAN4_SOLUTION_AGENT_PROMPT = (
+    "\n\n本题是 Lean 4 定理证明题。读取题目详情后，必须以返回的 `initial_code` 为起点，"
+    "把完整答案保存为 `Submission.lean`；提交整个文件，而不是只提交 `by ...` 证明片段。"
+    "可以在同一文件中自行添加辅助引理或定理，但必须保留题目要求的证明入口。"
+    "禁止使用 `sorry`、`admit`、`axiom` 或其它绕过 Lean kernel 与公理检查的手段。"
+    "每次提交前，必须在工作区执行 `lean Submission.lean`，使用容器内预装的 Lean 4 和 Mathlib "
+    "对完整文件做本地检查，"
+    "修复全部错误后再执行 `problem submit {problem_id} --code-file Submission.lean`。"
+    "提交后必须等待该 submission 进入终态；如果不是 `Accepted`，就读取评测诊断，继续修改、"
+    "本地检查并重新提交，直到 `Accepted`。"
+)
+
 __all__ = [
     "SOLUTION_AGENT_PROMPT",
     "build_solution_agent_prompt",
@@ -54,12 +66,17 @@ __all__ = [
 ]
 
 
-def build_solution_agent_prompt(*, problem_id, problem_title):
+def build_solution_agent_prompt(*, problem_id, problem_title, problem_lang=""):
     """用任务已解析的全站题号构造解题指令。"""
 
-    return SOLUTION_AGENT_PROMPT.format(
+    prompt = SOLUTION_AGENT_PROMPT.format(
         problem_id=int(problem_id),
         problem_title=str(problem_title or ""),
+    )
+    if str(problem_lang or "").strip().lower() not in {"lean", "lean4"}:
+        return prompt
+    return prompt + _LEAN4_SOLUTION_AGENT_PROMPT.format(
+        problem_id=int(problem_id),
     )
 
 
@@ -252,6 +269,7 @@ def register_agent_solve_problem_task(celery_app):
         agent_prompt = build_solution_agent_prompt(
             problem_id=problem_id,
             problem_title=title,
+            problem_lang=problem.get("lang"),
         )
         session_title = generate_initial_agent_session_title(
             task_id,
