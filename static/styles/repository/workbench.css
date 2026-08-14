@@ -961,8 +961,7 @@
 }
 
 .repository-editor-stage,
-.repository-monaco-container,
-.repository-codemirror-container {
+.repository-monaco-container {
   width: 100%;
   min-width: 0;
   height: 100%;
@@ -975,14 +974,12 @@
   position: relative;
 }
 
-.repository-monaco-container,
-.repository-codemirror-container {
+.repository-monaco-container {
   position: absolute;
   inset: 0;
 }
 
-.repository-monaco-container[hidden],
-.repository-codemirror-container[hidden] {
+.repository-monaco-container[hidden] {
   display: none;
 }
 
@@ -999,46 +996,6 @@
   font: 14px/22px var(--repo-mono);
 }
 
-.repository-editor-shell .CodeMirror {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: var(--repo-code);
-  color: var(--repo-code-ink);
-  font: 12.5px/22px var(--repo-mono);
-}
-
-.repository-editor-shell .CodeMirror-gutters {
-  border-right: 1px solid #23252a;
-  background: var(--repo-code);
-}
-
-.repository-editor-shell .CodeMirror-linenumber {
-  padding: 0 10px 0 7px;
-  color: #555860;
-}
-
-.repository-editor-shell .CodeMirror-lines {
-  padding: 15px 0 60px;
-}
-
-.repository-editor-shell .CodeMirror pre.CodeMirror-line,
-.repository-editor-shell .CodeMirror pre.CodeMirror-line-like {
-  padding: 0 18px;
-}
-
-.repository-editor-shell .CodeMirror-cursor {
-  border-left-color: #fff;
-}
-
-.repository-editor-shell .CodeMirror-selected {
-  background: rgba(234, 88, 12, .28) !important;
-}
-
-.repository-editor-shell .CodeMirror-activeline-background {
-  background: rgba(234, 88, 12, .08);
-}
-
 .repository-editor-shell .repository-located-line {
   border-left: 2px solid var(--repo-orange);
   background: rgba(234, 88, 12, .16);
@@ -1047,46 +1004,6 @@
 .repository-editor-shell .monaco-editor .repository-located-line {
   border-left: 2px solid var(--repo-orange);
   background: rgba(234, 88, 12, .16);
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-keyword,
-.repository-editor-shell .cm-s-eclipse span.cm-operator {
-  color: #f0a16b;
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-variable,
-.repository-editor-shell .cm-s-eclipse span.cm-property,
-.repository-editor-shell .cm-s-eclipse span.cm-punctuation,
-.repository-editor-shell .cm-s-eclipse span.cm-bracket {
-  color: var(--repo-code-ink);
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-def,
-.repository-editor-shell .cm-s-eclipse span.cm-variable-2,
-.repository-editor-shell .cm-s-eclipse span.cm-type {
-  color: #73b7c9;
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-number,
-.repository-editor-shell .cm-s-eclipse span.cm-atom {
-  color: #a5a2d8;
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-string {
-  color: #d5bd77;
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-comment {
-  color: #6f8a72;
-}
-
-.repository-editor-shell .cm-s-eclipse span.cm-meta {
-  color: #c690cb;
-}
-
-.repository-editor-shell .CodeMirror-matchingbracket {
-  color: #fff !important;
-  background: rgba(234, 88, 12, .28);
 }
 
 .repository-editor-status {

@@ -56,9 +56,7 @@
             <span class="math-curve-loader__label">正在解析代码语法</span>
           </span>
         </div>
-        <div id="submissionCodeMirrorContainer" class="submission-codemirror-container">
-          <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
-        </div>
+        <textarea id="submissionCode" readonly>{{ submission.code }}</textarea>
       </div>
     {% else %}
       <div class="submission-pdf-surface" id="pdfViewer">
@@ -247,8 +245,6 @@
 </div>
 
 {% if submission.problem_type == 1 %}
-  {% set codemirror_mobile_only = true %}
-  {% include 'components/editor/codemirror.html' %}
   {% include 'components/editor/monaco.html' %}
   <script src="{{ url_for('static', filename='app/submissions/detail.js') }}"></script>
 {% endif %}

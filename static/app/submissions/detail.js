@@ -8,8 +8,6 @@
     "submissionSemanticLoading"
   );
   var monacoHost = document.getElementById("submissionMonacoContainer");
-  var codeMirrorHost = document.getElementById("submissionCodeMirrorContainer");
-  var desktop = window.matchMedia("(min-width: 992px)").matches;
   var language = String(
     (monacoHost && monacoHost.dataset.language) || "matlab"
   ).toLowerCase();
@@ -23,14 +21,6 @@
             : language === "octave"
               ? "matlab"
               : language,
-        codeMirrorMode:
-          language === "cpp"
-            ? "text/x-c++src"
-            : language === "c"
-              ? "text/x-csrc"
-              : language === "python" || language === "py"
-                ? "python"
-                : "octave",
       };
   var monacoLanguage = languageSpec.monacoLanguage;
   var problemId = Number(monacoHost && monacoHost.dataset.problemId);
@@ -56,14 +46,13 @@
 
   function revealFallback() {
     if (monacoHost) monacoHost.hidden = true;
-    if (codeMirrorHost) codeMirrorHost.style.display = "block";
     if (textarea) textarea.hidden = false;
     revealEditor();
   }
 
   async function createMonacoEditor() {
     var monaco = window.NumericalOJMonaco;
-    if (!desktop || !textarea || !monacoHost || !monaco || !monaco.editor) {
+    if (!textarea || !monacoHost || !monaco || !monaco.editor) {
       return null;
     }
 
@@ -171,44 +160,9 @@
     };
   }
 
-  function createCodeMirrorEditor() {
-    if (
-      desktop ||
-      !textarea ||
-      !codeMirrorHost ||
-      typeof window.CodeMirror === "undefined"
-    ) {
-      return null;
-    }
-
-    codeMirrorHost.style.display = "block";
-    var instance = window.CodeMirror.fromTextArea(textarea, {
-      mode: languageSpec.codeMirrorMode,
-      theme: "eclipse",
-      lineNumbers: true,
-      lineWrapping: true,
-      indentUnit: 4,
-      tabSize: 4,
-      readOnly: true,
-      matchBrackets: true,
-    });
-    instance.setSize(null, "420px");
-    instance.getWrapperElement().style.fontFamily =
-      "SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace";
-    instance.getWrapperElement().style.fontSize = "14px";
-    window.requestAnimationFrame(function () {
-      instance.refresh();
-      revealEditor();
-    });
-    instance.kind = "codemirror";
-    return instance;
-  }
-
   async function initializeEditor() {
     if (!textarea) return null;
-    var ready = desktop
-      ? window.NumOJMonacoReady
-      : window.NumOJCodeMirrorReady;
+    var ready = window.NumOJMonacoReady;
     if (ready) {
       try {
         await ready;
@@ -219,7 +173,6 @@
 
     try {
       var editor = await createMonacoEditor();
-      if (!editor) editor = createCodeMirrorEditor();
       if (editor) {
         window.submissionCodeEditor = editor;
         return editor;

@@ -1,4 +1,4 @@
-{# Monaco 默认仅在桌面按需加载；显式 opt-in 的编辑面在所有断点复用同一加载逻辑。 #}
+{# 所有代码编辑与展示界面在任意断点共用同一 Monaco 运行时。 #}
 <link rel="stylesheet" href="{{ url_for('static', filename='styles/code-editor.css') }}">
 <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
 <script src="{{ url_for('static', filename='app/code-editor-runtime.js') }}"></script>
@@ -9,11 +9,6 @@
     }
   };
   window.NumOJMonacoReady = new Promise(function(resolve) {
-    var allBreakpoints = {{ 'true' if monaco_all_breakpoints|default(false) else 'false' }};
-    if (!allBreakpoints && !window.matchMedia('(min-width: 992px)').matches) {
-      resolve(null);
-      return;
-    }
     var settled = false;
     var timeout = window.setTimeout(function() {
       finish(null);

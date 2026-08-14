@@ -2305,7 +2305,13 @@
   }
 }
 
-.problem-editor-desktop-shell {
+html.is-problem-pane-resizing,
+html.is-problem-pane-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.problem-editor-shell {
   display: none;
 }
 
@@ -2358,11 +2364,53 @@
   .problem-detail-page .problem-detail-row {
     display: grid;
     min-height: 0;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns:
+      minmax(0, var(--problem-detail-statement-width, 50%))
+      7px
+      minmax(0, 1fr);
     align-items: stretch;
     gap: 0;
     margin: 0;
     overflow: hidden;
+  }
+
+  .problem-detail-page .problem-detail-splitter {
+    position: relative;
+    z-index: 6;
+    width: 7px;
+    min-width: 7px;
+    max-width: 7px;
+    height: 100%;
+    padding: 0;
+    background: #fff;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .problem-detail-page .problem-detail-splitter::after {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3px;
+    width: 1px;
+    background: var(--numoj-line);
+    content: "";
+    transition:
+      left 100ms ease,
+      width 100ms ease,
+      background-color 100ms ease;
+  }
+
+  .problem-detail-page .problem-detail-splitter:hover::after,
+  .problem-detail-page .problem-detail-splitter:focus-visible::after,
+  .problem-detail-page .problem-detail-splitter.is-dragging::after {
+    left: 2px;
+    width: 3px;
+    background: rgba(234, 88, 12, 0.58);
+  }
+
+  .problem-detail-page .problem-detail-splitter:focus-visible {
+    outline: 0;
   }
 
   .problem-detail-page .problem-col-left,
@@ -2392,7 +2440,6 @@
     max-height: none;
     flex-direction: column;
     overflow: hidden;
-    border-left: 1px solid var(--numoj-line);
     background: #fff;
   }
 
@@ -2718,7 +2765,7 @@
     height: 100%;
   }
 
-  .problem-detail-page .problem-editor-desktop-shell {
+  .problem-detail-page .problem-editor-shell {
     display: block;
     position: relative;
     height: 100%;
@@ -2727,7 +2774,7 @@
     background: #1e1e1e;
   }
 
-  .problem-detail-page .problem-editor-desktop-shell[hidden] {
+  .problem-detail-page .problem-editor-shell[hidden] {
     display: none !important;
   }
 
@@ -2756,7 +2803,7 @@
     letter-spacing: 0.04em;
   }
 
-  .problem-detail-page .problem-editor-desktop-shell[data-editor-state="ready"]
+  .problem-detail-page .problem-editor-shell[data-editor-state="ready"]
     .problem-editor-loading-state {
     opacity: 0;
     pointer-events: none;
@@ -3713,6 +3760,10 @@
     overflow: visible;
   }
 
+  .problem-detail-page .problem-detail-splitter {
+    display: none;
+  }
+
   .problem-detail-page .problem-col-left,
   .problem-detail-page .problem-col-right {
     position: static;
@@ -3811,24 +3862,6 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  .problem-detail-content-shell .problem-detail-page .numoj-problem-code-rendering code {
-    background: var(--numoj-line-soft);
-    color: var(--numoj-brand-ink);
-    font-family: var(--numoj-mono);
-  }
-
-  .problem-detail-content-shell .problem-detail-page .numoj-problem-code-rendering pre {
-    border: 0;
-    border-radius: 9px;
-    background: #18181b;
-    color: #f4f4f5;
-  }
-
-  .problem-detail-content-shell .problem-detail-page .numoj-problem-code-rendering pre code {
-    background: transparent;
-    color: inherit;
-  }
-
   .problem-detail-page .problem-col-right > form {
     margin: 0 !important;
   }
@@ -3882,7 +3915,7 @@
     height: auto;
   }
 
-  .problem-detail-page .problem-editor-desktop-shell {
+  .problem-detail-page .problem-editor-shell {
     display: block;
     position: relative;
     height: clamp(360px, 58svh, 620px);
@@ -3891,7 +3924,7 @@
     background: #1e1e1e;
   }
 
-  .problem-detail-page .problem-editor-desktop-shell[hidden] {
+  .problem-detail-page .problem-editor-shell[hidden] {
     display: none !important;
   }
 

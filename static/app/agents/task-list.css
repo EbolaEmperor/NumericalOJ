@@ -191,10 +191,6 @@
   flex: 0 1 auto;
 }
 
-.agent-composer-choice--harness { width: 124px; }
-.agent-composer-choice--endpoint { width: 170px; }
-.agent-composer-choice--role { width: 126px; }
-
 .agent-choice .rk-choice-trigger {
   min-height: 32px;
   padding: 6px 9px;
@@ -216,15 +212,35 @@
   right: auto;
   bottom: calc(100% + 7px);
   left: 0;
-  width: max(100%, 230px);
+  width: 230px;
   max-width: calc(100vw - 26px);
   border-color: var(--agent-line-strong);
   border-radius: 10px;
   box-shadow: 0 16px 42px rgb(53 45 34 / 14%);
 }
 
-.agent-choice--endpoint .rk-choice-menu { width: max(100%, 290px); }
-.agent-choice--role .rk-choice-menu { width: max(100%, 280px); }
+.agent-choice--endpoint .rk-choice-menu { width: 290px; }
+.agent-choice--role .rk-choice-menu { width: 280px; }
+
+@media (min-width: 640.02px) {
+  .agent-composer-choice,
+  .agent-composer-choice > .agent-choice {
+    width: fit-content;
+  }
+
+  .agent-composer-choice > .agent-choice {
+    max-width: 100%;
+  }
+
+  .agent-composer-choice--harness { max-width: 150px; }
+  .agent-composer-choice--endpoint { max-width: 260px; }
+  .agent-composer-choice--role { max-width: 160px; }
+
+  .agent-choice .rk-choice-trigger {
+    width: auto;
+    max-width: 100%;
+  }
+}
 
 .agent-composer-actions {
   display: flex;

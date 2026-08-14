@@ -24,6 +24,7 @@ JAVASCRIPT_ASSETS = (
     "static/app/lean-workbench.js",
     "static/app/markdown-rendering.js",
     "static/app/model-family.js",
+    "static/app/problem-detail-layout.js",
     "static/app/problem-editor.js",
     "static/app/problem-form-editors.js",
     "static/app/repository/workbench.js",

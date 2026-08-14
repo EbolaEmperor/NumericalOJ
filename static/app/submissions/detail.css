@@ -67,15 +67,9 @@
   box-shadow: none;
 }
 
-.submission-monaco-container,
-.submission-codemirror-container,
-.submission-code-surface .CodeMirror {
+.submission-monaco-container {
   width: 100%;
   height: 100%;
-}
-
-.submission-codemirror-container {
-  display: none;
 }
 
 .submission-code-surface textarea {
@@ -712,29 +706,8 @@
     min-height: 420px;
     border-top: 1px solid var(--submission-line);
     border-bottom: 1px solid var(--submission-line);
-    background: var(--submission-paper);
+    background: #1e1e1e;
     box-shadow: none;
-  }
-
-  .submission-monaco-container {
-    display: none !important;
-  }
-
-  .submission-codemirror-container {
-    display: block;
-    height: 100%;
-  }
-
-  .submission-code-surface .CodeMirror {
-    height: 420px;
-    border-radius: 0;
-    font-size: 14px;
-  }
-
-  .submission-code-surface textarea {
-    min-height: 420px;
-    background: var(--submission-paper);
-    color: var(--submission-ink);
   }
 
   .submission-pdf-surface {

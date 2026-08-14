@@ -97,17 +97,30 @@ def test_problem_detail_mobile_workspace_keeps_the_complete_monaco_surface():
     repo = Path(__file__).resolve().parents[2]
     detail = (repo / "templates/problems/detail.html").read_text()
     layout_css = (repo / "static/app/layout.css").read_text()
+    lean_css = (repo / "static/app/lean-workbench.css").read_text()
 
-    assert "{% set monaco_all_breakpoints = true %}" in detail
-    assert 'id="desktopEditorShell"' in detail
+    assert "monaco_all_breakpoints" not in detail
+    assert 'id="problemEditorShell"' in detail
     assert 'id="monacoEditorLoading"' in detail
     assert 'id="monacoEditorContainer"' in detail
-    assert 'id="codeMirrorContainer"' not in detail
+    assert "codemirror" not in detail.lower()
 
     mobile_rules = _braced_block(layout_css, "@media (max-width: 991.98px)")
+    detail_row_rule = _braced_block(
+        mobile_rules,
+        ".problem-detail-page .problem-detail-row",
+    )
+    assert "grid-template-columns: minmax(0, 1fr);" in detail_row_rule
+
+    outer_splitter_rule = _braced_block(
+        mobile_rules,
+        ".problem-detail-page .problem-detail-splitter",
+    )
+    assert "display: none;" in outer_splitter_rule
+
     editor_rule = _braced_block(
         mobile_rules,
-        ".problem-detail-page .problem-editor-desktop-shell",
+        ".problem-detail-page .problem-editor-shell",
     )
     assert "display: block;" in editor_rule
     assert "height: clamp(360px, 58svh, 620px);" in editor_rule
@@ -123,6 +136,59 @@ def test_problem_detail_mobile_workspace_keeps_the_complete_monaco_surface():
         ".problem-detail-page .problem-content table",
     )
     assert "overflow-x: auto;" in table_rule
+
+    lean_mobile_rules = _braced_block(lean_css, "@media (max-width: 991.98px)")
+    lean_workbench_rule = _braced_block(lean_mobile_rules, "\n  .lean-workbench {")
+    assert "grid-template-columns: minmax(0, 1fr);" in lean_workbench_rule
+    assert "grid-template-rows:" in lean_workbench_rule
+
+    lean_splitter_rule = _braced_block(
+        lean_mobile_rules,
+        ".lean-workbench-splitter",
+    )
+    assert "display: none;" in lean_splitter_rule
+
+
+def test_problem_detail_desktop_splitters_share_pointer_keyboard_and_aria_contract():
+    repo = Path(__file__).resolve().parents[2]
+    detail = (repo / "templates/problems/detail.html").read_text()
+    layout_css = (repo / "static/app/layout.css").read_text()
+    lean_css = (repo / "static/app/lean-workbench.css").read_text()
+    controller = (repo / "static/app/problem-detail-layout.js").read_text()
+
+    assert "data-problem-detail-splitter" in detail
+    assert "data-lean-workbench-splitter" in detail
+    assert "--problem-detail-statement-width" in layout_css
+    assert "--lean-source-width" in lean_css
+    assert 'global.matchMedia("(min-width: 992px)")' in controller
+
+    outer_splitter_rule = _braced_block(
+        layout_css,
+        ".problem-detail-page .problem-detail-splitter",
+    )
+    lean_splitter_rule = _braced_block(lean_css, ".lean-workbench-splitter")
+    for splitter_rule in (outer_splitter_rule, lean_splitter_rule):
+        assert "cursor: col-resize;" in splitter_rule
+        assert "touch-action: none;" in splitter_rule
+
+    for event_name in (
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "pointercancel",
+    ):
+        assert f'addEventListener("{event_name}"' in controller
+    assert "splitter.setPointerCapture(pointerId)" in controller
+    for event_name in ("pointermove", "pointerup", "pointercancel"):
+        assert f'global.addEventListener("{event_name}"' in controller
+    assert 'event.key === "ArrowLeft"' in controller
+    assert 'event.key === "ArrowRight"' in controller
+    assert 'splitter.setAttribute("aria-valuenow"' in controller
+    assert 'propertyName: "--problem-detail-statement-width"' in controller
+    assert 'propertyName: "--lean-source-width"' in controller
+    assert 'container.style.removeProperty(options.propertyName)' in controller
+    assert 'typeof global.editor.layout === "function"' in controller
+    assert "global.editor.layout()" in controller
 
 
 def test_problem_resources_link_to_the_repository_instead_of_the_retired_zju_site():
