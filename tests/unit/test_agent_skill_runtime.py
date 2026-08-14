@@ -37,6 +37,23 @@ def test_materialize_numoj_user_skill_for_each_harness(tmp_path, harness):
     assert not list(target.rglob(".DS_Store"))
 
 
+def test_numoj_user_skill_documents_lean4_agent_workflow(tmp_path):
+    target = skill_runtime.materialize_skill(tmp_path, "codex", "numoj-user")
+    rendered = (target / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "## Lean 4 Proof Problems" in rendered
+    assert "top-level `initial_code`" in rendered
+    assert "complete source file as `Submission.lean`" in rendered
+    assert "helper lemmas or theorems" in rendered
+    assert "preinstalled Lean 4 and Mathlib toolchain" in rendered
+    assert "`lean Submission.lean`" in rendered
+    assert "--code-file Submission.lean" in rendered
+    assert "terminal status" in rendered
+    assert "until it is `Accepted`" in rendered
+    for forbidden in ("`sorry`", "`admit`", "an `axiom` declaration"):
+        assert forbidden in rendered
+
+
 def _write_synthetic_skill(root, frontmatter, body="# First\n"):
     source = root / "numoj-user"
     source.mkdir(parents=True, exist_ok=True)

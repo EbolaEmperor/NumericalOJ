@@ -11,7 +11,7 @@
   {% if problem.type == 2 %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-written-submit.css') }}">
   {% endif %}
-  {% if user and user.is_admin == 1 and problem.type == 1 and ((problem.lang or '')|lower) not in ('lean', 'lean4') %}
+  {% if user and user.is_admin == 1 and problem.type == 1 %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-agent-launch.css') }}">
   {% endif %}
@@ -74,7 +74,7 @@
           </div>
           {% if user and user.is_admin == 1 %}
           <div class="problem-admin-actions mt-2">
-            {% if problem.type == 1 and not is_lean4 %}
+            {% if problem.type == 1 %}
             <button
               type="button"
               class="btn btn-outline-primary"
@@ -84,10 +84,12 @@
               data-bs-target="#agentSolveModal">
               <i class="fas fa-robot me-1"></i> 解题
             </button>
+            {% if not is_lean4 %}
             {% if programming_mode == 1 %}
             <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#agentGenerateDataModal">
               <i class="fas fa-robot me-1"></i> 造数据
             </button>
+            {% endif %}
             {% endif %}
             {% endif %}
             <a href="{{ url_for('admin_problem.edit_problem', problem_id=problem.id) }}" class="btn btn-outline-warning me">
@@ -403,7 +405,7 @@
 </div>
 
 {% if user and user.is_admin == 1 %}
-{% if problem.type == 1 and not is_lean4 %}
+{% if problem.type == 1 %}
 {% macro agent_launch_picker(prefix, kind, label) -%}
 <div class="agent-launch-field">
   <label class="agent-launch-field-label" id="{{ prefix }}Label" for="{{ prefix }}Trigger">{{ label }}</label>
@@ -476,6 +478,7 @@
   </div>
 </div>
 
+{% if not is_lean4 %}
 {% if programming_mode == 1 %}
 <div class="modal fade agent-launch-modal"
      id="agentGenerateDataModal"
@@ -563,6 +566,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 {% endif %}
 {% endif %}
 <!-- 上传数据模态框 & 重测进度模态框：保持不变 -->
@@ -1059,7 +1063,7 @@
 
 {% block scripts %}
   {{ super() }}
-  {% if user and user.is_admin == 1 and problem.type == 1 and ((problem.lang or '')|lower) not in ('lean', 'lean4') %}
+  {% if user and user.is_admin == 1 and problem.type == 1 %}
   <script src="{{ url_for('static', filename='app/problem-agent-launch.js') }}"></script>
   {% endif %}
   {# 标准编程题由上方 Monaco 组件加载语义客户端；其余分支在这里补齐一次。 #}

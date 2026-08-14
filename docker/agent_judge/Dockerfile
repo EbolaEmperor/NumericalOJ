@@ -1,6 +1,9 @@
 # 打榜赛 Agent-as-Judge 评测镜像：预装 Agent Harness CLI + 常见工具链 + report 命令。
 # 构建（在 why-server 上一次性执行）：
 #   docker build -t numericaloj-agent-judge:latest docker/agent_judge
+ARG LEAN4_IMAGE=numericaloj-lean4:latest
+FROM ${LEAN4_IMAGE} AS lean4_runtime
+
 FROM node:24-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -114,6 +117,18 @@ RUN npm install -g --ignore-scripts \
 # bubblewrap。按镜像缓存约束追加在 Harness 安装层之后，不改动前面的系统包层。
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
     && rm -rf /var/lib/apt/lists/*
+
+# Lean/Mathlib 直接复用独立证明镜像中已经下载并预编译的固定环境。放在现有
+# 重工具链和 Harness 层之后，Lean 版本升级不会让前面的 30GB 缓存失效。
+COPY --from=lean4_runtime /opt/elan /opt/elan
+COPY --from=lean4_runtime /opt/numoj-lean-project /opt/numoj-lean-project
+COPY --from=lean4_runtime /opt/numoj-lean-path /opt/numoj-lean-path
+COPY lean /usr/local/bin/lean
+ENV ELAN_HOME=/opt/elan
+ENV PATH=/usr/local/bin:/opt/elan/bin:${PATH}
+RUN chmod 0755 /usr/local/bin/lean \
+    && lean --version \
+    && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
 # report 上报命令
 COPY report /usr/local/bin/report

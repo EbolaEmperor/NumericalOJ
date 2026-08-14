@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+export LEAN_PATH="$PWD:$(cat /opt/numoj-lean-path)${LEAN_PATH:+:$LEAN_PATH}"
+exec /opt/elan/bin/lean "$@"

@@ -89,6 +89,40 @@ def test_solution_prompt_template_requires_authoritative_problem_identity():
     assert {"problem_id", "problem_title"} <= fields
 
 
+@pytest.mark.parametrize("problem_lang", ["", "python", "cpp", "matlab"])
+def test_solution_prompt_keeps_other_language_workflow_unchanged(problem_lang):
+    expected = solve_task.SOLUTION_AGENT_PROMPT.format(
+        problem_id=5,
+        problem_title="快照题",
+    )
+
+    assert solve_task.build_solution_agent_prompt(
+        problem_id=5,
+        problem_title="快照题",
+        problem_lang=problem_lang,
+    ) == expected
+
+
+@pytest.mark.parametrize("problem_lang", ["lean", "lean4", " LEAN4 "])
+def test_solution_prompt_adds_complete_lean4_proof_workflow(problem_lang):
+    prompt = solve_task.build_solution_agent_prompt(
+        problem_id=5,
+        problem_title="Lean 证明题",
+        problem_lang=problem_lang,
+    )
+
+    assert "`initial_code`" in prompt
+    assert "完整答案保存为 `Submission.lean`" in prompt
+    assert "自行添加辅助引理或定理" in prompt
+    assert "容器内预装的 Lean 4 和 Mathlib" in prompt
+    assert "`lean Submission.lean`" in prompt
+    assert "`problem submit 5 --code-file Submission.lean`" in prompt
+    assert "等待该 submission 进入终态" in prompt
+    assert "直到 `Accepted`" in prompt
+    for forbidden in ("`sorry`", "`admit`", "`axiom`"):
+        assert forbidden in prompt
+
+
 @pytest.mark.parametrize(
     "filename",
     [
@@ -578,7 +612,12 @@ def _patch_harness_solution_task(monkeypatch, *, submissions):
     monkeypatch.setattr(
         solve_task,
         "get_problem",
-        lambda _problem_id: {"id": 5, "type": 1, "title": "快照题"},
+        lambda _problem_id: {
+            "id": 5,
+            "type": 1,
+            "title": "快照题",
+            "lang": "python",
+        },
     )
     monkeypatch.setattr(
         solve_task,
@@ -682,6 +721,7 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
     assert prompt_requests == [{
         "problem_id": 5,
         "problem_title": "快照题",
+        "problem_lang": "python",
     }]
 
 

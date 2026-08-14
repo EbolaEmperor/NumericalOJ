@@ -58,6 +58,16 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
 
+## Lean 4 Proof Problems
+
+When `problem detail <problem_id>` reports `problem.lang` as `lean` or `lean4`:
+
+1. Read the top-level `initial_code` from the detail response and use it as the starting point. Save the complete source file as `Submission.lean`; do not submit only a `by ...` proof fragment.
+2. Preserve the required proof entry and imports. You may add your own helper lemmas or theorems in `Submission.lean`.
+3. In the NumOJ Agent container, run `lean Submission.lean` from the workspace to check the complete file with the preinstalled Lean 4 and Mathlib toolchain before every submission. Fix all local diagnostics before submitting.
+4. Never use `sorry`, `admit`, an `axiom` declaration, or another mechanism that bypasses Lean's kernel or the problem's axiom policy.
+5. Submit with `python3 scripts/numoj_user.py problem submit <problem_id> --code-file Submission.lean`, then wait for the returned submission to reach a terminal status. If it is not `Accepted`, inspect its status or stream diagnostics, revise the file, check it locally again, and repeat until it is `Accepted`.
+
 ## Examples
 
 List all the problems:
