@@ -106,7 +106,7 @@ def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch)
         (cli.problem_submit_page, Namespace(problem_id=42), "/api/problems/42/submit-context"),
         (cli.problem_create_form, Namespace(), "/api/admin/problems/create-form"),
         (cli.problem_edit_form, Namespace(problem_id=42), "/api/admin/problems/42/edit-form"),
-        (cli.problem_agent_run, Namespace(task_id="task-1"), "/admin/agent_run_status/task-1"),
+        (cli.problem_agent_run, Namespace(task_id="task-1"), "/agent/runs/task-1/state"),
         (cli.problem_agent_tasks, Namespace(), "/api/admin/agent-tasks"),
         (cli.forum_list, Namespace(), "/api/forum"),
         (cli.forum_thread, Namespace(thread_id=7), "/api/forum/threads/7"),
@@ -255,7 +255,7 @@ def test_problem_agent_solve_sends_explicit_harness_and_endpoint_as_json(
     ))
 
     method, path, kwargs = fake_client.requests[-1]
-    assert (method, path) == ("POST", "/admin/agent_solve_problem/9")
+    assert (method, path) == ("POST", "/agent/problems/9/solve")
     assert kwargs == {
         "json": {
             "harness": "claude_code",
@@ -288,7 +288,7 @@ def test_problem_agent_generate_data_uploads_standard_solution_as_multipart(
     method, path, kwargs = fake_client.requests[-1]
     assert (method, path) == (
         "POST",
-        "/admin/agent_generate_testdata/9",
+        "/agent/problems/9/generate-testdata",
     )
     assert kwargs["data"] == {
         "harness": "codex",
@@ -2031,7 +2031,14 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["site-config", "meta"],
         ["site-config", "llm", "list"],
         ["site-config", "llm", "test", "1"],
-        ["site-config", "llm", "create", "--protocol", "openai", "--category", "text", "--endpoint-base-url", "http://model", "--api-key", "key", "--model", "model"],
+        [
+            "site-config", "llm", "create", "--protocol", "openai",
+            "--category", "text", "--endpoint-base-url", "http://model",
+            "--api-key", "key", "--model", "model",
+            "--input-price-per-million", "1",
+            "--cached-input-price-per-million", "0.5",
+            "--output-price-per-million", "2",
+        ],
         ["site-config", "llm", "update", "1", "--model", "model-v2"],
         ["site-config", "llm", "delete", "1"],
         ["site-config", "llm", "lock", "1", "--reason", "verified"],

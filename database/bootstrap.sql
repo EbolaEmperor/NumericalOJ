@@ -579,6 +579,7 @@ CREATE TABLE `agent_sessions` (
   `requested_by` varchar(50) NOT NULL,
   `access_role` varchar(16) NOT NULL DEFAULT 'user',
   `harness` varchar(32) NOT NULL,
+  `endpoint_source` varchar(16) NOT NULL DEFAULT 'global',
   `endpoint_id` bigint NOT NULL,
   `endpoint_revision` bigint NOT NULL DEFAULT '1',
   `endpoint_model` varchar(255) NOT NULL,
@@ -597,6 +598,7 @@ CREATE TABLE `agent_sessions` (
   KEY `idx_agent_sessions_status_updated` (`status`,`updated_at`),
   KEY `idx_agent_sessions_user_updated` (`requested_by`,`updated_at`),
   CONSTRAINT `chk_agent_sessions_access_role` CHECK (`access_role` IN ('user','admin')),
+  CONSTRAINT `chk_agent_sessions_endpoint_source` CHECK (`endpoint_source` IN ('global','user')),
   CONSTRAINT `chk_agent_sessions_endpoint_revision` CHECK (`endpoint_revision` > 0),
   CONSTRAINT `chk_agent_sessions_turn_count` CHECK (`turn_count` > 0),
   CONSTRAINT `chk_agent_sessions_queue_paused` CHECK (`queue_paused` IN (0,1)),
@@ -730,13 +732,46 @@ DROP TABLE IF EXISTS `agent_launch_preferences`;
 CREATE TABLE `agent_launch_preferences` (
   `user_id` int NOT NULL,
   `harness` varchar(32) NOT NULL,
+  `endpoint_source` varchar(16) NOT NULL DEFAULT 'global',
   `endpoint_id` bigint NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`user_id`),
   KEY `idx_agent_launch_preferences_endpoint` (`endpoint_id`),
   CONSTRAINT `fk_agent_launch_preferences_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_agent_launch_preferences_endpoint_source` CHECK (`endpoint_source` IN ('global','user')),
   CONSTRAINT `chk_agent_launch_preferences_harness` CHECK (`harness` IN ('claude_code','codex','opencode','pi'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_user_endpoints`
+--
+
+DROP TABLE IF EXISTS `agent_user_endpoints`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_user_endpoints` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `name` varchar(100) NOT NULL,
+  `protocol` varchar(16) NOT NULL,
+  `base_url` varchar(1024) NOT NULL,
+  `api_key` text NOT NULL,
+  `model` varchar(255) NOT NULL,
+  `thinking_enabled` tinyint(1) NOT NULL DEFAULT '0',
+  `thinking_format` varchar(32) NOT NULL DEFAULT 'none',
+  `test_status` varchar(16) NOT NULL DEFAULT 'untested',
+  `test_message` text,
+  `test_latency_ms` int DEFAULT NULL,
+  `tested_at` datetime DEFAULT NULL,
+  `revision` bigint NOT NULL DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_agent_user_endpoints_user_model` (`user_id`,`model`,`id`),
+  CONSTRAINT `fk_agent_user_endpoints_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_agent_user_endpoints_revision` CHECK (`revision` > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
@@ -1758,9 +1793,9 @@ CREATE TABLE `llm_endpoints` (
   `model` varchar(255) NOT NULL,
   `thinking_enabled` tinyint(1) NOT NULL DEFAULT '0',
   `thinking_format` varchar(32) NOT NULL DEFAULT 'none',
-  `input_price_per_million` decimal(20,8) DEFAULT NULL,
-  `cached_input_price_per_million` decimal(20,8) DEFAULT NULL,
-  `output_price_per_million` decimal(20,8) DEFAULT NULL,
+  `input_price_per_million` decimal(20,8) NOT NULL,
+  `cached_input_price_per_million` decimal(20,8) NOT NULL,
+  `output_price_per_million` decimal(20,8) NOT NULL,
   `test_status` varchar(16) NOT NULL DEFAULT 'untested',
   `test_message` text,
   `test_latency_ms` int DEFAULT NULL,
@@ -1780,6 +1815,133 @@ CREATE TABLE `llm_endpoints` (
   KEY `idx_llm_endpoint_category` (`category`),
   KEY `idx_llm_endpoint_test_status` (`test_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_quota_accounts`
+--
+
+DROP TABLE IF EXISTS `agent_quota_accounts`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_quota_accounts` (
+  `user_id` int NOT NULL,
+  `granted_amount` decimal(30,14) NOT NULL DEFAULT '0',
+  `used_amount` decimal(30,14) NOT NULL DEFAULT '0',
+  `updated_by_user_id` int DEFAULT NULL,
+  `adjustment_note` text,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`),
+  KEY `idx_agent_quota_accounts_updated_by` (`updated_by_user_id`),
+  CONSTRAINT `fk_agent_quota_accounts_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_agent_quota_accounts_updated_by` FOREIGN KEY (`updated_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_agent_quota_accounts_granted` CHECK (`granted_amount` >= 0),
+  CONSTRAINT `chk_agent_quota_accounts_used` CHECK (`used_amount` >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_quota_requests`
+--
+
+DROP TABLE IF EXISTS `agent_quota_requests`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_quota_requests` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `requested_amount` decimal(30,14) NOT NULL,
+  `approved_amount` decimal(30,14) DEFAULT NULL,
+  `reason` text NOT NULL,
+  `status` varchar(16) NOT NULL DEFAULT 'pending',
+  `review_note` text,
+  `reviewed_by_user_id` int DEFAULT NULL,
+  `reviewed_at` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_agent_quota_requests_user_created` (`user_id`,`created_at`),
+  KEY `idx_agent_quota_requests_status_created` (`status`,`created_at`),
+  KEY `idx_agent_quota_requests_reviewer` (`reviewed_by_user_id`),
+  CONSTRAINT `fk_agent_quota_requests_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_agent_quota_requests_reviewer` FOREIGN KEY (`reviewed_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_agent_quota_requests_requested` CHECK (`requested_amount` > 0),
+  CONSTRAINT `chk_agent_quota_requests_approved` CHECK (`approved_amount` IS NULL OR `approved_amount` > 0),
+  CONSTRAINT `chk_agent_quota_requests_status` CHECK (`status` IN ('pending','approved','rejected'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_quota_grants`
+--
+
+DROP TABLE IF EXISTS `agent_quota_grants`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_quota_grants` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `amount` decimal(30,14) NOT NULL,
+  `kind` varchar(32) NOT NULL,
+  `batch_id` char(32) DEFAULT NULL,
+  `request_id` bigint DEFAULT NULL,
+  `granted_by_user_id` int DEFAULT NULL,
+  `note` text,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_agent_quota_grants_user_created` (`user_id`,`created_at`),
+  KEY `idx_agent_quota_grants_batch` (`batch_id`),
+  KEY `idx_agent_quota_grants_request` (`request_id`),
+  KEY `idx_agent_quota_grants_granted_by` (`granted_by_user_id`),
+  CONSTRAINT `fk_agent_quota_grants_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_agent_quota_grants_request` FOREIGN KEY (`request_id`) REFERENCES `agent_quota_requests` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_agent_quota_grants_granted_by` FOREIGN KEY (`granted_by_user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_agent_quota_grants_amount` CHECK (`amount` <> 0),
+  CONSTRAINT `chk_agent_quota_grants_kind` CHECK (`kind` IN ('request_approval','manual_adjustment','class_batch'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_usage_ledger`
+--
+
+DROP TABLE IF EXISTS `agent_usage_ledger`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_usage_ledger` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` int DEFAULT NULL,
+  `session_id` varchar(64) NOT NULL,
+  `task_id` varchar(64) NOT NULL,
+  `source` varchar(32) NOT NULL,
+  `usage_event_id` varchar(191) NOT NULL,
+  `endpoint_id` bigint DEFAULT NULL,
+  `endpoint_revision` bigint NOT NULL,
+  `endpoint_model` varchar(255) NOT NULL,
+  `input_uncached_tokens` bigint unsigned NOT NULL DEFAULT '0',
+  `input_cached_tokens` bigint unsigned NOT NULL DEFAULT '0',
+  `input_cache_write_tokens` bigint unsigned NOT NULL DEFAULT '0',
+  `output_tokens` bigint unsigned NOT NULL DEFAULT '0',
+  `reasoning_output_tokens` bigint unsigned NOT NULL DEFAULT '0',
+  `input_price_per_million` decimal(30,14) NOT NULL,
+  `cached_input_price_per_million` decimal(30,14) NOT NULL,
+  `output_price_per_million` decimal(30,14) NOT NULL,
+  `charged_amount` decimal(30,14) NOT NULL,
+  `remaining_after` decimal(30,14) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_agent_usage_event` (`task_id`,`source`,`usage_event_id`),
+  KEY `idx_agent_usage_user_created` (`user_id`,`created_at`),
+  KEY `idx_agent_usage_session_created` (`session_id`,`created_at`),
+  KEY `idx_agent_usage_endpoint` (`endpoint_id`),
+  CONSTRAINT `fk_agent_usage_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_agent_usage_task` FOREIGN KEY (`task_id`) REFERENCES `agent_session_turns` (`task_id`) ON DELETE RESTRICT,
+  CONSTRAINT `fk_agent_usage_endpoint` FOREIGN KEY (`endpoint_id`) REFERENCES `llm_endpoints` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `chk_agent_usage_endpoint_revision` CHECK (`endpoint_revision` > 0),
+  CONSTRAINT `chk_agent_usage_prices` CHECK (`input_price_per_million` >= 0 AND `cached_input_price_per_million` >= 0 AND `output_price_per_million` >= 0),
+  CONSTRAINT `chk_agent_usage_charge` CHECK (`charged_amount` >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --

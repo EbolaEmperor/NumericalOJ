@@ -6,6 +6,7 @@
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/agents/task-list.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/agents/access-control.css') }}">
 {% endblock %}
 
 {% block content_container_class %}container-fluid agent-home-shell{% endblock %}
@@ -19,8 +20,18 @@
 {% set preferred_endpoint = preference.endpoint_id|default('', true)|string %}
 {% set preferred_role = preference.access_role|default('user', true) %}
 {% set harness_labels = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'} %}
+{% set quota_summary = agent_quota_summary|default({}, true) %}
+{% set agent_is_admin = user and user.is_admin == 1 %}
+{% set agent_public_open = quota_summary.public_enabled|default(agent_public_enabled|default(true), true) %}
+{% set history_scope = agent_scope|default('all', true) if agent_is_admin else 'mine' %}
 
-<main class="agent-home" data-agent-home>
+<main class="agent-home"
+      data-agent-home
+      data-agent-admin="{{ 'true' if agent_is_admin else 'false' }}"
+      data-agent-public-enabled="{{ 'true' if agent_public_open else 'false' }}"
+      data-agent-quota-can-start="{{ 'true' if quota_summary.can_start|default(true) else 'false' }}"
+      data-agent-quota-has-account="{{ 'true' if quota_summary.has_account|default(true) else 'false' }}"
+      data-agent-quota-remaining="{{ quota_summary.remaining_amount|default('', true) }}">
   <section class="agent-home-hero" aria-labelledby="agentHomeTitle">
     <div class="agent-home-heading">
       <span class="agent-home-kicker">NUMERICAL OJ · AGENT</span>
@@ -29,7 +40,7 @@
 
     <form class="agent-composer"
           method="post"
-          action="{{ url_for('problem_core.admin_agent_tasks') }}"
+          action="{{ url_for('problem_core.agent_tasks') }}"
           enctype="multipart/form-data"
           autocomplete="off"
           data-agent-create-form>
@@ -65,6 +76,7 @@
             ) }}
           </div>
 
+          {% if agent_is_admin %}
           <div class="agent-composer-choice agent-composer-choice--role">
             {{ choice_picker(
               'agentAccessRole', 'access_role', preferred_role,
@@ -76,6 +88,9 @@
               {{ choice_option('admin', '以管理员身份', preferred_role == 'admin', 'fa-user-shield') }}
             </template>
           </div>
+          {% else %}
+          <input type="hidden" name="access_role" value="user">
+          {% endif %}
         </div>
 
         <div class="agent-composer-actions">
@@ -98,6 +113,8 @@
 
       <p class="agent-composer-feedback" data-agent-create-feedback role="status"
          aria-live="polite" hidden></p>
+      <p class="agent-composer-access-note" data-agent-create-access-note role="status"
+         aria-live="polite" hidden></p>
     </form>
 
     <script type="application/json" data-agent-harnesses-json>{{ harnesses|default([], true)|tojson }}</script>
@@ -111,7 +128,18 @@
         <span class="agent-history-kicker">RECENT WORK</span>
         <h2 id="agentHistoryTitle">历史会话</h2>
       </div>
-      <span>按最近更新排序</span>
+      {% if agent_is_admin %}
+        <nav class="agent-history-scope" aria-label="会话范围">
+          <a href="{{ url_for('problem_core.agent_tasks', scope='all') }}"
+             class="{% if history_scope != 'mine' %}is-current{% endif %}"
+             {% if history_scope != 'mine' %}aria-current="page"{% endif %}>全站会话</a>
+          <a href="{{ url_for('problem_core.agent_tasks', scope='mine') }}"
+             class="{% if history_scope == 'mine' %}is-current{% endif %}"
+             {% if history_scope == 'mine' %}aria-current="page"{% endif %}>我的会话</a>
+        </nav>
+      {% else %}
+        <span>按最近更新排序</span>
+      {% endif %}
     </header>
 
     <div class="agent-history-list" data-agent-task-list>
@@ -123,7 +151,7 @@
         {% set endpoint_name = session.endpoint_model|default(session.model|default('模型节点', true), true) %}
         {% set session_status = session.status|default('', true)|lower %}
         <a class="agent-history-row"
-           href="{{ session.detail_url|default(url_for('problem_core.admin_agent_task_detail', session_id=session_id), true) }}"
+           href="{{ session.detail_url|default(url_for('problem_core.agent_task_detail', session_id=session_id), true) }}"
            aria-label="打开会话：{{ session_title }}">
           <span class="numoj-avatar agent-history-avatar"
                 data-avatar-seed="{{ actor }}"
@@ -176,12 +204,12 @@
     {% if history_total_pages > 1 %}
       <nav class="agent-history-pagination" aria-label="历史会话分页">
         {% if history_has_prev %}
-          <a href="{{ url_for('problem_core.admin_agent_tasks', page=history_current_page - 1) }}"
+          <a href="{{ url_for('problem_core.agent_tasks', page=history_current_page - 1, scope=history_scope) }}"
              aria-label="上一页"><i class="fas fa-arrow-left" aria-hidden="true"></i></a>
         {% endif %}
         {% for page_number in history_page_numbers %}
           {% if page_number %}
-            <a href="{{ url_for('problem_core.admin_agent_tasks', page=page_number) }}"
+            <a href="{{ url_for('problem_core.agent_tasks', page=page_number, scope=history_scope) }}"
                class="{% if page_number == history_current_page %}is-current{% endif %}"
                {% if page_number == history_current_page %}aria-current="page"{% endif %}>{{ page_number }}</a>
           {% else %}
@@ -189,15 +217,17 @@
           {% endif %}
         {% endfor %}
         {% if history_has_next %}
-          <a href="{{ url_for('problem_core.admin_agent_tasks', page=history_current_page + 1) }}"
+          <a href="{{ url_for('problem_core.agent_tasks', page=history_current_page + 1, scope=history_scope) }}"
              aria-label="下一页"><i class="fas fa-arrow-right" aria-hidden="true"></i></a>
         {% endif %}
       </nav>
     {% endif %}
   </section>
 </main>
+{% include 'agents/components/access_control.html' %}
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='app/agents/access-control.js') }}"></script>
 <script src="{{ url_for('static', filename='app/agents/task-list.js') }}"></script>
 {% endblock %}

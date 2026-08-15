@@ -308,6 +308,27 @@
 
 .agent-composer-feedback.is-error { color: #b91c1c; }
 
+.agent-composer-access-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 9px 3px 0;
+  color: #4d765c;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.agent-composer-access-note::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 99px;
+  background: currentColor;
+  content: "";
+}
+
+.agent-composer-access-note.is-error { color: #b45309; }
+
 .agent-history {
   width: min(100%, 940px);
   margin: clamp(62px, 10vh, 96px) auto 0;
@@ -332,6 +353,31 @@
 .agent-history-heading > span {
   color: var(--agent-faint);
   font: 500 9px/1.4 var(--agent-mono);
+}
+
+.agent-history-scope {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--agent-line);
+  border-radius: 8px;
+  background: #f0ede6;
+}
+
+.agent-history-scope a {
+  padding: 6px 9px;
+  border-radius: 6px;
+  color: #777064;
+  font: 600 8.5px/1 var(--agent-mono);
+  text-decoration: none;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.agent-history-scope a:hover { color: var(--agent-ink); }
+
+.agent-history-scope a.is-current {
+  background: #fffefb;
+  box-shadow: 0 1px 3px rgb(55 45 32 / 10%);
+  color: #342f28;
 }
 
 .agent-history-list {
@@ -623,6 +669,8 @@
 
   .agent-history { margin-top: 54px; }
   .agent-history-heading { padding-right: 4px; padding-left: 4px; }
+
+  .agent-history-scope a { padding: 6px 7px; font-size: 8px; }
 
   .agent-history-row {
     grid-template-columns: 32px minmax(0, 1fr) 14px;

@@ -39,6 +39,10 @@
     <a class="numoj-nav-item{% if request.blueprint == 'repository' %} active{% endif %}" href="{{ url_for('repository.code_repository') }}" title="代码仓库">
       {{ icon('repository') }}<span class="numoj-nav-label">代码仓库</span>
     </a>
+    <a class="numoj-nav-item{% if current_endpoint in ('problem_core.agent_tasks', 'problem_core.agent_task_detail') %} active{% endif %}" href="{{ url_for('problem_core.agent_tasks') }}" title="Agent 任务">
+      {{ icon('agent') }}<span class="numoj-nav-label">Agent 任务</span>
+      <span class="numoj-nav-dot d-none" data-numoj-agent-active aria-label="存在运行中的 Agent 任务"></span>
+    </a>
     <a class="numoj-nav-item{% if request.blueprint == 'forum' %} active{% endif %}" href="{{ url_for('forum.forum_index') }}" title="讨论区">
       {{ icon('forum') }}<span class="numoj-nav-label">讨论区</span>
     </a>
@@ -63,10 +67,6 @@
     </a>
     <a class="numoj-nav-item{% if request.blueprint == 'homework' %} active{% endif %}" href="{{ url_for('homework.admin_homework') }}" title="作业管理">
       {{ icon('admin-homework') }}<span class="numoj-nav-label">作业管理</span>
-    </a>
-    <a class="numoj-nav-item{% if current_endpoint in ('problem_core.admin_agent_tasks', 'problem_core.admin_agent_task_detail') %} active{% endif %}" href="{{ url_for('problem_core.admin_agent_tasks') }}" title="Agent 任务">
-      {{ icon('agent') }}<span class="numoj-nav-label">Agent 任务</span>
-      <span class="numoj-nav-dot d-none" data-numoj-agent-active aria-label="存在运行中的 Agent 任务"></span>
     </a>
     <a class="numoj-nav-item{% if request.blueprint == 'ai_detection' %} active{% endif %}" href="{{ url_for('ai_detection.dashboard') }}" title="AI 检测">
       {{ icon('ai') }}<span class="numoj-nav-label">AI 检测</span>

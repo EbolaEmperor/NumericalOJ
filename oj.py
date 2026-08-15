@@ -65,6 +65,7 @@ from oj_modules.routes.vibehub_routes import vibehub_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
 from oj_modules.routes.admin_dynamic_config_routes import admin_dynamic_config_bp
+from oj_modules.routes.agent_access_routes import agent_access_bp
 from oj_modules.security.login_guard import install_global_login_guard
 from oj_modules.security.origin_guard import install_same_origin_protection
 from oj_modules.site_config.services import get_mail_settings
@@ -213,6 +214,7 @@ app.register_blueprint(game_bp)
 app.register_blueprint(vibehub_bp)
 app.register_blueprint(ranking_bp)
 app.register_blueprint(admin_dynamic_config_bp)
+app.register_blueprint(agent_access_bp)
 app.register_blueprint(create_health_blueprint(rds, get_db_connection))
 for _api_bp in API_BLUEPRINTS:
     app.register_blueprint(_api_bp)

@@ -15,6 +15,9 @@ def _endpoint(endpoint_id, *, protocol, category="text"):
         "thinking_enabled": False,
         "thinking_format": "none",
         "test_status": "passed",
+        "input_price_per_million": "1",
+        "cached_input_price_per_million": "0.1",
+        "output_price_per_million": "4",
     }
 
 
@@ -39,6 +42,8 @@ def test_launch_endpoint_matrix_includes_opencode_global_nodes_without_secrets(
     assert [item["id"] for item in result["codex"]] == [1]
     assert [item["id"] for item in result["opencode"]] == [1]
     assert [item["id"] for item in result["pi"]] == [1, 2]
+    assert result["codex"][0]["ref"] == "global:1"
+    assert result["codex"][0]["metered"] is True
     assert all(
         "api_key" not in item and "base_url" not in item
         for items in result.values()
@@ -127,8 +132,66 @@ def test_resolve_public_launch_endpoint_requires_configured_api_key(monkeypatch)
         )
 
 
+def test_launch_endpoint_matrix_includes_only_current_users_personal_nodes(
+    monkeypatch,
+):
+    monkeypatch.setattr(agent_launch, "list_llm_endpoints", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        agent_launch,
+        "list_user_agent_endpoints",
+        lambda user_id, **_kwargs: [
+            {
+                **_endpoint(9, protocol="openai"),
+                "ref": "user:9",
+                "source": "user",
+                "is_personal": True,
+                "metered": False,
+            }
+        ] if user_id == 7 else [],
+    )
+
+    result = agent_launch.list_launch_endpoints_by_harness(user_id=7)
+
+    assert result["codex"][0]["ref"] == "user:9"
+    assert result["codex"][0]["metered"] is False
+
+
+def test_resolve_personal_endpoint_is_scoped_to_current_user(monkeypatch):
+    seen = []
+
+    def get_personal(endpoint_id, user_id, *, include_secret):
+        seen.append((endpoint_id, user_id, include_secret))
+        return _endpoint(endpoint_id, protocol="openai")
+
+    monkeypatch.setattr(agent_launch, "get_user_agent_endpoint", get_personal)
+
+    resolved = agent_launch.resolve_launch_endpoint(
+        "codex",
+        "user:9",
+        include_secret=True,
+        user_id=7,
+    )
+
+    assert seen == [(9, 7, True)]
+    assert resolved["ref"] == "user:9"
+    assert resolved["metered"] is False
+
+    with pytest.raises(
+        agent_launch.AgentLaunchValidationError,
+        match="不属于当前用户",
+    ):
+        agent_launch.resolve_launch_endpoint(
+            "codex",
+            "user:9",
+            include_secret=True,
+        )
+
+
 def test_endpoint_token_pricing_requires_all_three_prices():
     endpoint = _endpoint(4, protocol="openai")
+    endpoint.pop("input_price_per_million")
+    endpoint.pop("cached_input_price_per_million")
+    endpoint.pop("output_price_per_million")
     assert agent_launch.token_pricing_from_endpoint(endpoint) is None
 
     endpoint.update({

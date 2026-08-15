@@ -370,7 +370,7 @@ def test_endpoint_thinking_wire_format_is_derived_from_protocol():
     assert "form.elements.category.value !== 'embedding'" in script
 
 
-def test_endpoint_editor_has_one_optional_three_price_row():
+def test_endpoint_editor_requires_and_summarizes_all_three_prices():
     template = _read(TEMPLATE)
     script = _read(SCRIPT)
     stylesheet = _read(STYLESHEET)
@@ -382,9 +382,14 @@ def test_endpoint_editor_has_one_optional_three_price_row():
         "output_price_per_million",
     ):
         assert f'name="{field}" type="number"' in template
+        price_input = template.split(f'name="{field}"', 1)[1].split(">", 1)[0]
+        assert "required" in price_input
         assert f"form.elements.{field}.value.trim()" in script
-        assert f"endpoint?.{field} ?? ''" in script
+        assert f"decimalText(endpoint?.{field})" in script
+        assert f"moneyText(endpoint.{field})" in script
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in stylesheet
+    assert "function endpointCard(endpoint)" in script
+    assert 'class="site-config-endpoint-prices"' in script
 
 
 def test_endpoint_save_is_gated_by_matching_test_token():

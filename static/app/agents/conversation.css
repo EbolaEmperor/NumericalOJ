@@ -102,6 +102,34 @@
   white-space: nowrap;
 }
 
+.agent-session-rename {
+  display: inline-grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #9b9388;
+  font-size: 8px;
+  opacity: .55;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.agent-session-title:hover .agent-session-rename,
+.agent-session-rename:focus-visible {
+  background: #f0ede7;
+  color: #5e574d;
+  opacity: 1;
+}
+
+.agent-session-rename:focus-visible {
+  outline: 2px solid rgb(234 88 12 / 30%);
+  outline-offset: 1px;
+}
+
 .agent-status-chip {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1113,6 +1141,94 @@
 }
 
 .agent-resume-feedback.is-error { color: var(--agent-danger); }
+
+.agent-rename-modal .modal-content {
+  overflow: hidden;
+  border: 1px solid #d8d0c2;
+  border-radius: 14px;
+  background: var(--agent-paper);
+  box-shadow: 0 24px 70px rgb(48 38 25 / 22%);
+}
+
+.agent-rename-modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 17px 18px 14px;
+  border-bottom: 1px solid var(--agent-line);
+}
+
+.agent-rename-modal header span {
+  display: block;
+  color: #9a7c58;
+  font: 700 7px/1.2 var(--agent-mono);
+  letter-spacing: .14em;
+}
+
+.agent-rename-modal header h2 {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: 680;
+  letter-spacing: -.025em;
+}
+
+.agent-rename-modal-body {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+}
+
+.agent-rename-modal-body label {
+  color: #756e64;
+  font-size: 9px;
+  font-weight: 620;
+}
+
+.agent-rename-modal-body input {
+  min-height: 39px;
+  padding: 9px 10px;
+  border: 1px solid #d8d2c7;
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  color: var(--agent-ink);
+  font-size: 11px;
+}
+
+.agent-rename-modal-body input:focus {
+  border-color: var(--agent-accent);
+  box-shadow: 0 0 0 3px rgb(234 88 12 / 8%);
+}
+
+.agent-rename-modal-body p {
+  margin: 2px 0 0;
+  color: var(--agent-danger);
+  font-size: 9px;
+}
+
+.agent-rename-modal footer {
+  display: flex;
+  justify-content: end;
+  gap: 7px;
+  padding: 12px 18px 16px;
+}
+
+.agent-rename-modal footer button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid #d7d0c4;
+  border-radius: 8px;
+  background: #fff;
+  color: #665f55;
+  font-size: 9.5px;
+  font-weight: 630;
+}
+
+.agent-rename-modal footer button[type="submit"] {
+  border-color: #292620;
+  background: #292620;
+  color: #fff;
+}
 
 .agent-splitter {
   position: relative;

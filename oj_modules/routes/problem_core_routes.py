@@ -57,7 +57,17 @@ from oj_modules.agents.sessions import (
     reorder_queued_agent_session_messages,
     update_queued_agent_session_message,
     normalize_agent_access_role,
+    rename_agent_session_title,
 )
+from oj_modules.agents.quota import (
+    AgentQuotaError,
+    get_agent_quota_summary,
+    get_agent_runtime_quota_summary,
+    get_agent_session_usage_cost,
+    list_pending_agent_quota_requests,
+    require_agent_start_eligibility,
+)
+from oj_modules.agents.user_endpoints import list_user_agent_endpoints
 from oj_modules.agents.runtime_checkpoints import (
     create_agent_runtime_checkpoint,
     create_empty_agent_runtime_checkpoint,
@@ -184,6 +194,63 @@ def _read_agent_standard_solution(upload):
 _AGENT_MESSAGE_MAX_CHARS = 100_000
 
 
+def _agent_actor(user=None):
+    """返回 Agent 路由统一使用的登录主体，便于叠加额度等策略。"""
+
+    actor_user = user if user is not None else current_user()
+    if not actor_user:
+        return None
+    return {
+        "user": actor_user,
+        "username": str(actor_user.get("username") or ""),
+        "is_admin": int(actor_user.get("is_admin") or 0) == 1,
+    }
+
+
+def _agent_actor_can_view_session(actor, agent_session):
+    if not actor or not agent_session:
+        return False
+    return bool(
+        actor["is_admin"]
+        or str(agent_session.get("requested_by") or "") == actor["username"]
+    )
+
+
+def _agent_session_for_actor(session_id, actor):
+    """读取会话并收紧普通用户的可见范围；管理员可查看全站会话。"""
+
+    try:
+        agent_session = get_agent_session(session_id)
+    except ValueError:
+        agent_session = None
+    if not agent_session:
+        raise AgentSessionMessageNotFoundError("Agent 会话不存在")
+    if not _agent_actor_can_view_session(actor, agent_session):
+        raise PermissionError("只能查看自己发起的 Agent 会话")
+    return agent_session
+
+
+def _agent_task_for_actor(task_id, actor, *, allow_unknown_for_admin=False):
+    """把单轮 task 映射到所属会话后执行统一所有权校验。"""
+
+    if actor and actor["is_admin"] and allow_unknown_for_admin:
+        return None
+    try:
+        agent_session = (
+            get_agent_session_by_task_id(task_id)
+            or get_agent_session(task_id)
+        )
+    except ValueError:
+        agent_session = None
+    if not agent_session:
+        if actor and actor["is_admin"] and allow_unknown_for_admin:
+            return None
+        raise AgentSessionMessageNotFoundError("Agent 任务不存在")
+    if not _agent_actor_can_view_session(actor, agent_session):
+        raise PermissionError("只能查看自己发起的 Agent 任务")
+    return agent_session
+
+
 def _agent_session_cookie():
     cookie_name = str(current_app.config.get('SESSION_COOKIE_NAME') or 'session')
     session_cookie = str(request.cookies.get(cookie_name) or '')
@@ -193,15 +260,12 @@ def _agent_session_cookie():
 
 
 def _agent_launch_page_options(user_id):
-    endpoints_by_harness = list_launch_endpoints_by_harness()
+    endpoints_by_harness = list_launch_endpoints_by_harness(user_id=user_id)
     preference = get_agent_launch_preference(user_id) or {}
     preferred_harness = str(preference.get('harness') or '')
-    try:
-        preferred_endpoint_id = int(preference.get('endpoint_id') or 0)
-    except (TypeError, ValueError):
-        preferred_endpoint_id = 0
+    preferred_endpoint_ref = str(preference.get('endpoint_ref') or '')
     valid = any(
-        int(item.get('id') or 0) == preferred_endpoint_id
+        str(item.get('ref') or '') == preferred_endpoint_ref
         for item in endpoints_by_harness.get(preferred_harness, [])
     )
     if not valid:
@@ -214,15 +278,39 @@ def _agent_launch_page_options(user_id):
             '',
         )
         candidates = endpoints_by_harness.get(preferred_harness, [])
-        preferred_endpoint_id = int(candidates[0]['id']) if candidates else 0
+        preferred_endpoint_ref = str(candidates[0].get('ref') or '') if candidates else ''
     return {
         'harnesses': harness_options(),
         'endpoints_by_harness': endpoints_by_harness,
         'preference': {
             'harness': preferred_harness,
-            'endpoint_id': preferred_endpoint_id or None,
+            'endpoint_id': preferred_endpoint_ref or None,
         },
     }
+
+
+def _resolve_agent_endpoint_for_user(harness, endpoint_ref, user_id, *, include_secret):
+    kwargs = {'include_secret': include_secret}
+    if str(endpoint_ref or '').strip().startswith('user:'):
+        kwargs['user_id'] = user_id
+    return resolve_launch_endpoint(harness, endpoint_ref, **kwargs)
+
+
+def _agent_quota_gate(user, *, endpoint_source):
+    return require_agent_start_eligibility(
+        user['id'],
+        is_admin=int(user.get('is_admin') or 0) == 1,
+        uses_personal_endpoint=str(endpoint_source or 'global') == 'user',
+    )
+
+
+def _agent_quota_error_response(exc):
+    return jsonify(
+        success=False,
+        message=str(exc),
+        code=getattr(exc, 'code', 'agent_quota_error'),
+        decision=getattr(exc, 'decision', None),
+    ), getattr(exc, 'status_code', 403)
 
 
 def _agent_message_from_request():
@@ -695,9 +783,13 @@ def _agent_state_with_session_token_usage(state, historical_usages=()):
     if current_task_visible and current_task_id and current_usage is not None:
         # aggregate helper 按 task_id 最后写入覆盖，避免历史/current 重复计数。
         task_usages.append((current_task_id, current_usage))
-    projected['session_token_usage'] = aggregate_agent_session_token_usage(
-        task_usages
-    )
+    session_usage = aggregate_agent_session_token_usage(task_usages)
+    ledger_cost = projected.get('session_charged_amount_rmb')
+    if session_usage is not None and ledger_cost is not None:
+        session_usage = dict(session_usage)
+        session_usage['cost_rmb'] = str(ledger_cost)
+        session_usage['cost_complete'] = True
+    projected['session_token_usage'] = session_usage
     return projected
 
 
@@ -708,7 +800,19 @@ def _agent_state_with_loaded_session_token_usage(state):
         return state
     session_id = str(state.get('session_id') or '').strip()
     current_task_id = str(state.get('task_id') or '').strip()
+    projected = dict(state)
     historical_usages = ()
+    if session_id and projected.get('session_charged_amount_rmb') is None:
+        try:
+            ledger_cost = get_agent_session_usage_cost(session_id)
+            if ledger_cost is not None:
+                projected['session_charged_amount_rmb'] = ledger_cost
+        except Exception:
+            logger.warning(
+                '读取 Agent 会话计费账本失败',
+                extra={'session_id': session_id},
+                exc_info=True,
+            )
     if session_id and current_task_id:
         try:
             historical_usages = _load_agent_historical_token_usages(
@@ -751,7 +855,7 @@ def _agent_state_with_loaded_session_token_usage(state):
                 (),
                 current_task_visible=current_task_visible,
             )
-    return _agent_state_with_session_token_usage(state, historical_usages)
+    return _agent_state_with_session_token_usage(projected, historical_usages)
 
 
 def _decorate_agent_session_message(message):
@@ -1297,13 +1401,13 @@ def problem_detail(problem_id):
     return render_template('problems/detail.html', **context)
 
 
-@problem_core_bp.route('/admin/agent_launch_options', methods=['GET'])
-def admin_agent_launch_options():
-    """返回本次启动可选项和当前管理员在此类任务中的上次选择。"""
+@problem_core_bp.get('/agent/launch-options')
+def agent_launch_options():
+    """返回本次启动可选项和当前用户在此类任务中的上次选择。"""
 
     user = current_user()
-    if not user or int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
     try:
         task_kind = normalize_agent_task_kind(request.args.get('task_kind'))
         endpoints_by_harness = list_launch_endpoints_by_harness()
@@ -1320,7 +1424,7 @@ def admin_agent_launch_options():
     valid_preference = any(
         int(item.get('id') or 0) == int(preferred_endpoint_id or 0)
         for item in endpoints_by_harness.get(preferred_harness, [])
-    )
+    ) and str(preference.get('endpoint_source') or 'global') == 'global'
     if not valid_preference:
         fallback_harness = next(
             (
@@ -1354,8 +1458,8 @@ def admin_agent_launch_options():
     return response
 
 
-@problem_core_bp.route('/admin/agent_solve_problem/<int:problem_id>', methods=['POST'])
-def admin_agent_solve_problem(problem_id):
+@problem_core_bp.post('/agent/problems/<int:problem_id>/solve')
+def agent_solve_problem(problem_id):
     user = current_user()
     if not user or user.get('is_admin') != 1:
         return jsonify(success=False, message='无权限'), 403
@@ -1450,14 +1554,14 @@ def admin_agent_solve_problem(problem_id):
         message='Agent 任务已启动',
         task_id=task_id,
         view_url=url_for(
-            'problem_core.admin_agent_task_detail',
+            'problem_core.agent_task_detail',
             session_id=task_id,
         ),
     )
 
 
-@problem_core_bp.route('/admin/agent_generate_testdata/<int:problem_id>', methods=['POST'])
-def admin_agent_generate_testdata(problem_id):
+@problem_core_bp.post('/agent/problems/<int:problem_id>/generate-testdata')
+def agent_generate_testdata(problem_id):
     user = current_user()
     if not user or user.get('is_admin') != 1:
         return jsonify(success=False, message='无权限'), 403
@@ -1591,19 +1695,27 @@ def admin_agent_generate_testdata(problem_id):
         message='数据生成 Agent 任务已启动',
         task_id=task_id,
         view_url=url_for(
-            'problem_core.admin_agent_task_detail',
+            'problem_core.agent_task_detail',
             session_id=task_id,
         ),
     )
 
 
-@problem_core_bp.route('/admin/agent_run_status/<task_id>', methods=['GET'])
-def admin_agent_run_status(task_id):
+@problem_core_bp.get('/agent/runs/<task_id>/state')
+def agent_run_status(task_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if user.get('is_admin') != 1:
-        return jsonify(success=False, message='无权限'), 403
+    try:
+        _agent_task_for_actor(
+            task_id,
+            _agent_actor(user),
+            allow_unknown_for_admin=True,
+        )
+    except PermissionError as exc:
+        return jsonify(success=False, message=str(exc)), 403
+    except AgentSessionMessageNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
 
     state = _get_agent_run_state(task_id)
     if state is None:
@@ -1623,13 +1735,21 @@ def admin_agent_run_status(task_id):
     return jsonify(success=True, state=state)
 
 
-@problem_core_bp.route('/admin/agent_run_cancel/<task_id>', methods=['POST'])
-def admin_agent_run_cancel(task_id):
+@problem_core_bp.post('/agent/runs/<task_id>/cancel')
+def agent_run_cancel(task_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if user.get('is_admin') != 1:
-        return jsonify(success=False, message='无权限'), 403
+    try:
+        _agent_task_for_actor(
+            task_id,
+            _agent_actor(user),
+            allow_unknown_for_admin=True,
+        )
+    except PermissionError as exc:
+        return jsonify(success=False, message=str(exc)), 403
+    except AgentSessionMessageNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
     if _terminate_agent_run is None:
         return jsonify(success=False, message='Agent 终止操作未初始化'), 500
 
@@ -1671,13 +1791,21 @@ def admin_agent_run_cancel(task_id):
     )
 
 
-@problem_core_bp.route('/admin/agent_run_stream/<task_id>', methods=['GET'])
-def admin_agent_run_stream(task_id):
+@problem_core_bp.get('/agent/runs/<task_id>/stream')
+def agent_run_stream(task_id):
     user = current_user()
     if not user:
         return jsonify({'error': 'Unauthorized'}), 401
-    if user.get('is_admin') != 1:
+    try:
+        _agent_task_for_actor(
+            task_id,
+            _agent_actor(user),
+            allow_unknown_for_admin=True,
+        )
+    except PermissionError:
         return jsonify({'error': 'Access denied'}), 403
+    except AgentSessionMessageNotFoundError:
+        return jsonify({'error': 'Agent task not found'}), 404
 
     fallback_state = {
         "task_id": task_id,
@@ -2228,14 +2356,14 @@ def submit_solution(problem_id):
     return render_template('problems/detail.html', **context)
 
 
-@problem_core_bp.route('/admin/agent_tasks', methods=['GET', 'POST'])
-def admin_agent_tasks():
+@problem_core_bp.route('/agent/tasks', methods=['GET', 'POST'])
+def agent_tasks():
     user = current_user()
     if not user:
-        return redirect(url_for('auth.login'))
-    if user.get('is_admin') != 1:
-        flash('无权限访问该页面', 'danger')
-        return redirect(url_for('problem_core.problem_list'))
+        if request.method == 'GET':
+            return redirect(url_for('auth.login'))
+        return jsonify(success=False, message='未登录'), 401
+    actor = _agent_actor(user)
 
     if request.method == 'POST':
         if _agent_run_turn_task is None or _agent_queue_dispatch_task is None:
@@ -2244,18 +2372,25 @@ def admin_agent_tasks():
             return jsonify(success=False, message='请使用 multipart/form-data'), 415
         try:
             message = _agent_message_from_request()
-            access_role = normalize_agent_access_role(
-                request.form.get('access_role')
+            access_role = (
+                normalize_agent_access_role(request.form.get('access_role'))
+                if actor['is_admin']
+                else 'user'
             )
             harness = normalize_launch_harness(request.form.get('harness'))
-            endpoint = resolve_launch_endpoint(
+            endpoint = _resolve_agent_endpoint_for_user(
                 harness,
                 request.form.get('endpoint_id'),
+                user['id'],
                 include_secret=False,
             )
             endpoint_id = int(endpoint['id'])
+            endpoint_source = str(endpoint.get('source') or 'global')
+            _agent_quota_gate(user, endpoint_source=endpoint_source)
             cookie_name, session_cookie = _agent_session_cookie()
             session_id = _agent_client_message_id()
+        except AgentQuotaError as exc:
+            return _agent_quota_error_response(exc)
         except (AgentLaunchValidationError, ValueError) as exc:
             return jsonify(success=False, message=str(exc)), 400
 
@@ -2276,6 +2411,8 @@ def admin_agent_tasks():
                 == str(user.get('username') or '')
                 and str(existing_message.get('user_message') or '') == message
                 and str(existing_session.get('harness') or '') == harness
+                and str(existing_session.get('endpoint_source') or 'global')
+                == endpoint_source
                 and int(existing_session.get('endpoint_id') or 0) == endpoint_id
                 and str(existing_session.get('access_role') or '') == access_role
             ):
@@ -2292,7 +2429,7 @@ def admin_agent_tasks():
                     exc_info=True,
                 )
             detail_url = url_for(
-                'problem_core.admin_agent_task_detail',
+                'problem_core.agent_task_detail',
                 session_id=session_id,
             )
             return jsonify(
@@ -2308,7 +2445,11 @@ def admin_agent_tasks():
         attachments = []
         runtime_checkpoint_id = ''
         try:
-            save_agent_launch_preference(user['id'], harness, endpoint_id)
+            save_agent_launch_preference(
+                user['id'],
+                harness,
+                endpoint.get('ref') or endpoint_id,
+            )
             ensure_agent_workspace(session_id)
             runtime_checkpoint_id = _agent_runtime_checkpoint_generation_id(
                 session_id
@@ -2327,6 +2468,7 @@ def admin_agent_tasks():
                 task_id=session_id,
                 requested_by=user['username'],
                 harness=harness,
+                endpoint_source=endpoint_source,
                 endpoint_id=endpoint_id,
                 endpoint_revision=endpoint.get('revision'),
                 endpoint_model=endpoint.get('model'),
@@ -2372,7 +2514,7 @@ def admin_agent_tasks():
             )
 
         detail_url = url_for(
-            'problem_core.admin_agent_task_detail',
+            'problem_core.agent_task_detail',
             session_id=session_id,
         )
         return jsonify(
@@ -2386,9 +2528,15 @@ def admin_agent_tasks():
 
     page = max(1, request.args.get('page', 1, type=int))
     per_page = 20
+    requested_scope = str(request.args.get('scope') or '').strip().lower()
+    if actor['is_admin']:
+        scope = requested_scope if requested_scope in {'all', 'mine'} else 'all'
+    else:
+        scope = 'mine'
     sessions, page, total_pages = get_agent_sessions_paginated(
         page=page,
         per_page=per_page,
+        requested_by=(actor['username'] if scope == 'mine' else None),
     )
 
     page_start = max(1, page - 8)
@@ -2402,9 +2550,12 @@ def admin_agent_tasks():
             get_agent_session_by_task_id(open_task_id)
             or get_agent_session(open_task_id)
         )
-    if open_session is not None:
+    if open_session is not None and _agent_actor_can_view_session(
+        actor,
+        open_session,
+    ):
         return redirect(url_for(
-            'problem_core.admin_agent_task_detail',
+            'problem_core.agent_task_detail',
             session_id=open_session['session_id'],
         ))
 
@@ -2418,6 +2569,30 @@ def admin_agent_tasks():
             'preference': {'harness': '', 'endpoint_id': None},
         }
 
+    try:
+        agent_quota_summary = get_agent_quota_summary(
+            user['id'],
+            is_admin=actor['is_admin'],
+        )
+        agent_personal_endpoints = list_user_agent_endpoints(user['id'])
+        pending_requests = (
+            list_pending_agent_quota_requests(user['id'])
+            if actor['is_admin']
+            else []
+        )
+    except Exception:
+        logger.exception('读取 Agent 额度页面信息失败')
+        agent_quota_summary = {
+            'total_amount': '0',
+            'used_amount': '0',
+            'remaining_amount': '0',
+            'public_enabled': True,
+            'can_start': actor['is_admin'],
+            'can_continue': actor['is_admin'],
+        }
+        agent_personal_endpoints = []
+        pending_requests = []
+
     return render_template(
         'admin/agent_tasks.html',
         user=user,
@@ -2425,25 +2600,35 @@ def admin_agent_tasks():
         current_page=page,
         total_pages=total_pages,
         page_numbers=page_numbers,
+        agent_scope=scope,
+        agent_quota_summary=agent_quota_summary,
+        agent_personal_endpoints=agent_personal_endpoints,
+        agent_quota_pending_count=len(pending_requests),
+        agent_quota_pending_requests=pending_requests,
         **launch_options,
     )
 
 
+@problem_core_bp.get('/admin/agent_tasks')
+def legacy_agent_tasks():
+    """兼容旧收藏链接；站内只生成新的 Agent Tasks URL。"""
+
+    query = request.query_string.decode('latin-1')
+    target = url_for('problem_core.agent_tasks')
+    return redirect(f'{target}?{query}' if query else target, code=308)
+
+
 @problem_core_bp.route(
-    '/admin/agent_tasks/<session_id>',
+    '/agent/tasks/<session_id>',
     methods=['GET', 'POST'],
 )
-def admin_agent_task_detail(session_id):
+def agent_task_detail(session_id):
     user = current_user()
     if not user:
         if request.method == 'GET':
             return redirect(url_for('auth.login'))
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        if request.method == 'GET':
-            flash('无权限访问该页面', 'danger')
-            return redirect(url_for('problem_core.problem_list'))
-        return jsonify(success=False, message='无权限'), 403
+    actor = _agent_actor(user)
 
     try:
         agent_session = get_agent_session(session_id)
@@ -2456,7 +2641,7 @@ def admin_agent_task_detail(session_id):
         )
         if mapped_session and mapped_session.get('session_id') != session_id:
             canonical_url = url_for(
-                'problem_core.admin_agent_task_detail',
+                'problem_core.agent_task_detail',
                 session_id=mapped_session['session_id'],
             )
             if request.method == 'GET':
@@ -2472,6 +2657,10 @@ def admin_agent_task_detail(session_id):
         if request.method == 'GET':
             return '<h3>Agent 会话不存在</h3>', 404
         return jsonify(success=False, message='Agent 会话不存在'), 404
+    if not _agent_actor_can_view_session(actor, agent_session):
+        if request.method == 'GET':
+            return '<h3>无权查看该 Agent 会话</h3>', 403
+        return jsonify(success=False, message='只能管理自己发起的 Agent 会话'), 403
 
     if request.method == 'POST':
         if agent_session.get('is_legacy'):
@@ -2481,6 +2670,13 @@ def admin_agent_task_detail(session_id):
             ), 409
         if str(agent_session.get('requested_by') or '') != str(user.get('username') or ''):
             return jsonify(success=False, message='只能继续自己发起的 Agent 会话'), 403
+        try:
+            _agent_quota_gate(
+                user,
+                endpoint_source=agent_session.get('endpoint_source'),
+            )
+        except AgentQuotaError as exc:
+            return _agent_quota_error_response(exc)
         if _agent_run_turn_task is None or _agent_queue_dispatch_task is None:
             return jsonify(success=False, message='通用 Agent 任务未初始化'), 500
         if request.mimetype != 'multipart/form-data':
@@ -2723,9 +2919,18 @@ def admin_agent_task_detail(session_id):
                 message='上一轮未建立可恢复的原生会话，无法继续；请新建 Agent 会话',
             ), 409
         try:
-            frozen_endpoint = resolve_launch_endpoint(
+            endpoint_source = str(
+                agent_session.get('endpoint_source') or 'global'
+            )
+            endpoint_ref = (
+                f"user:{agent_session.get('endpoint_id')}"
+                if endpoint_source == 'user'
+                else agent_session.get('endpoint_id')
+            )
+            frozen_endpoint = _resolve_agent_endpoint_for_user(
                 agent_session.get('harness'),
-                agent_session.get('endpoint_id'),
+                endpoint_ref,
+                user['id'],
                 include_secret=False,
             )
             validate_launch_endpoint_revision(
@@ -2872,7 +3077,7 @@ def admin_agent_task_detail(session_id):
                     success=False,
                     message=failure_message,
                     detail_url=url_for(
-                        'problem_core.admin_agent_task_detail',
+                        'problem_core.agent_task_detail',
                         session_id=session_id,
                     ),
                 ), 500
@@ -2977,6 +3182,20 @@ def admin_agent_task_detail(session_id):
     current_state = _agent_state_with_loaded_session_token_usage(current_state)
     current_state = _agent_state_with_loaded_session_trace_delta(current_state)
     try:
+        agent_quota_summary = get_agent_quota_summary(
+            user['id'],
+            is_admin=actor['is_admin'],
+        )
+    except Exception:
+        logger.exception('读取 Agent 会话额度失败')
+        agent_quota_summary = {
+            'remaining_amount': '0',
+            'public_enabled': True,
+            'can_start': actor['is_admin'],
+            'can_continue': actor['is_admin'],
+        }
+    current_state['quota_summary'] = agent_quota_summary
+    try:
         agent_message_state = _agent_session_message_snapshot(
             agent_session,
             current_state=current_state,
@@ -2999,6 +3218,7 @@ def admin_agent_task_detail(session_id):
             'steer_unavailable_reason': '消息队列状态暂不可用',
             'session_token_usage': current_state.get('session_token_usage'),
         }
+    agent_message_state['quota_summary'] = agent_quota_summary
     # Workspace 目录可能在 Agent 运行中持续变化；首屏不同步
     # 遍历它，由前端在页面框架返回后通过 workspace 路由异步加载。
     workspace_tree = []
@@ -3040,6 +3260,17 @@ def admin_agent_task_detail(session_id):
             'final_response',
         ):
             page_current_state.pop(key, None)
+    try:
+        agent_personal_endpoints = list_user_agent_endpoints(user['id'])
+        pending_requests = (
+            list_pending_agent_quota_requests(user['id'])
+            if actor['is_admin']
+            else []
+        )
+    except Exception:
+        logger.exception('读取 Agent 会话额度弹窗数据失败')
+        agent_personal_endpoints = []
+        pending_requests = []
     response = current_app.make_response(render_template(
         'admin/agent_task_detail.html',
         user=user,
@@ -3048,47 +3279,93 @@ def admin_agent_task_detail(session_id):
         current_state=page_current_state,
         agent_message_state=agent_message_state,
         agent_message_urls={
-            'state': f'/admin/agent_tasks/{quote(session_id, safe="")}/state',
-            'stream': f'/admin/agent_tasks/{quote(session_id, safe="")}/stream',
+            'state': f'/agent/tasks/{quote(session_id, safe="")}/state',
+            'stream': f'/agent/tasks/{quote(session_id, safe="")}/stream',
             'update': (
-                f'/admin/agent_tasks/{quote(session_id, safe="")}'
+                f'/agent/tasks/{quote(session_id, safe="")}'
                 '/messages/__MESSAGE_ID__/update'
             ),
             'delete': (
-                f'/admin/agent_tasks/{quote(session_id, safe="")}'
+                f'/agent/tasks/{quote(session_id, safe="")}'
                 '/messages/__MESSAGE_ID__/delete'
             ),
             'reorder': (
-                f'/admin/agent_tasks/{quote(session_id, safe="")}/queue/reorder'
+                f'/agent/tasks/{quote(session_id, safe="")}/queue/reorder'
             ),
             'resume': (
-                f'/admin/agent_tasks/{quote(session_id, safe="")}/queue/resume'
+                f'/agent/tasks/{quote(session_id, safe="")}/queue/resume'
+            ),
+            'rename': (
+                f'/agent/tasks/{quote(session_id, safe="")}/title'
             ),
         },
         workspace_tree=workspace_tree,
         can_resume=owns_session,
         can_retry=can_retry,
         can_retry_now=can_retry_now,
+        agent_quota_summary=agent_quota_summary,
+        agent_personal_endpoints=agent_personal_endpoints,
+        agent_quota_pending_count=len(pending_requests),
+        agent_quota_pending_requests=pending_requests,
     ))
     response.headers['Cache-Control'] = 'private, no-store'
     return response
 
 
-def _agent_message_route_session(session_id, user, *, require_owner=True):
+@problem_core_bp.patch('/agent/tasks/<session_id>/title')
+def agent_task_rename(session_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
     try:
-        agent_session = get_agent_session(session_id)
-    except ValueError:
+        _agent_session_for_actor(session_id, _agent_actor(user))
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ValueError('请求参数格式无效')
+        changed = rename_agent_session_title(session_id, payload.get('title'))
+        if not changed:
+            return jsonify(success=False, message='Agent 会话不支持重命名'), 409
+        renamed = get_agent_session(session_id)
+    except AgentSessionMessageNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
+    except PermissionError as exc:
+        return jsonify(success=False, message=str(exc)), 403
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        logger.exception('重命名 Agent 会话失败', extra={'session_id': session_id})
+        return jsonify(success=False, message='无法重命名 Agent 会话'), 500
+    return jsonify(success=True, title=renamed.get('title') or '')
+
+
+@problem_core_bp.get('/admin/agent_tasks/<session_id>')
+def legacy_agent_task_detail(session_id):
+    """兼容部署前创建的会话详情链接。"""
+
+    return redirect(
+        url_for('problem_core.agent_task_detail', session_id=session_id),
+        code=308,
+    )
+
+
+def _agent_message_route_session(session_id, user, *, require_owner=True):
+    actor = _agent_actor(user)
+    try:
+        agent_session = _agent_session_for_actor(session_id, actor)
+    except AgentSessionMessageNotFoundError:
         agent_session = None
     if not agent_session or agent_session.get('is_legacy'):
         raise AgentSessionMessageNotFoundError('Agent 会话不存在')
     if require_owner and str(agent_session.get('requested_by') or '') != str(
-        (user or {}).get('username') or ''
+        actor['username'] if actor else ''
     ):
         raise PermissionError('只能管理自己发起的 Agent 会话')
     return agent_session
 
 
 def _agent_message_mutation_error(exc):
+    if isinstance(exc, AgentQuotaError):
+        return _agent_quota_error_response(exc)
     if isinstance(exc, PermissionError):
         return jsonify(success=False, message=str(exc)), 403
     if isinstance(exc, AgentSessionMessageNotFoundError):
@@ -3100,13 +3377,11 @@ def _agent_message_mutation_error(exc):
     raise exc
 
 
-@problem_core_bp.get('/admin/agent_tasks/<session_id>/state')
-def admin_agent_task_message_state(session_id):
+@problem_core_bp.get('/agent/tasks/<session_id>/state')
+def agent_task_message_state(session_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
         agent_session = _agent_message_route_session(
             session_id,
@@ -3125,6 +3400,10 @@ def admin_agent_task_message_state(session_id):
             agent_session,
             current_state=current_state,
         )
+        state['quota_summary'] = get_agent_runtime_quota_summary(
+            user['id'],
+            is_admin=int(user.get('is_admin') or 0) == 1,
+        )
     except Exception as exc:
         try:
             return _agent_message_mutation_error(exc)
@@ -3139,13 +3418,11 @@ def admin_agent_task_message_state(session_id):
     return response
 
 
-@problem_core_bp.get('/admin/agent_tasks/<session_id>/stream')
-def admin_agent_task_message_stream(session_id):
+@problem_core_bp.get('/agent/tasks/<session_id>/stream')
+def agent_task_message_stream(session_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
         _agent_message_route_session(session_id, user, require_owner=False)
     except Exception as exc:
@@ -3155,12 +3432,22 @@ def admin_agent_task_message_stream(session_id):
     def generate():
         previous_payload = None
         heartbeat_at = time.monotonic()
+        quota_refreshed_at = 0.0
+        quota_summary = None
         while True:
             try:
                 current_session = get_agent_session(session_id)
                 if not current_session or current_session.get('is_legacy'):
                     break
                 state = _agent_session_message_snapshot(current_session)
+                now = time.monotonic()
+                if now - quota_refreshed_at >= 3:
+                    quota_summary = get_agent_runtime_quota_summary(
+                        user['id'],
+                        is_admin=int(user.get('is_admin') or 0) == 1,
+                    )
+                    quota_refreshed_at = now
+                state['quota_summary'] = quota_summary
                 payload = json.dumps(state, ensure_ascii=False, sort_keys=True)
             except GeneratorExit:
                 break
@@ -3187,18 +3474,20 @@ def admin_agent_task_message_stream(session_id):
 
 
 @problem_core_bp.post(
-    '/admin/agent_tasks/<session_id>/messages/<message_id>/update'
+    '/agent/tasks/<session_id>/messages/<message_id>/update'
 )
-def admin_agent_task_message_update(session_id, message_id):
+def agent_task_message_update(session_id, message_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     added_attachments = []
     update_committed = False
     try:
         agent_session = _agent_message_route_session(session_id, user)
+        _agent_quota_gate(
+            user,
+            endpoint_source=agent_session.get('endpoint_source'),
+        )
         message = _agent_message_from_request()
         records = list_agent_session_messages(
             session_id,
@@ -3277,16 +3566,18 @@ def admin_agent_task_message_update(session_id, message_id):
 
 
 @problem_core_bp.post(
-    '/admin/agent_tasks/<session_id>/messages/<message_id>/delete'
+    '/agent/tasks/<session_id>/messages/<message_id>/delete'
 )
-def admin_agent_task_message_delete(session_id, message_id):
+def agent_task_message_delete(session_id, message_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
         agent_session = _agent_message_route_session(session_id, user)
+        _agent_quota_gate(
+            user,
+            endpoint_source=agent_session.get('endpoint_source'),
+        )
         current = next((
             item for item in list_agent_session_messages(
                 session_id,
@@ -3319,15 +3610,17 @@ def admin_agent_task_message_delete(session_id, message_id):
     return jsonify(success=True, session_state=state)
 
 
-@problem_core_bp.post('/admin/agent_tasks/<session_id>/queue/reorder')
-def admin_agent_task_queue_reorder(session_id):
+@problem_core_bp.post('/agent/tasks/<session_id>/queue/reorder')
+def agent_task_queue_reorder(session_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
         agent_session = _agent_message_route_session(session_id, user)
+        _agent_quota_gate(
+            user,
+            endpoint_source=agent_session.get('endpoint_source'),
+        )
         if request.is_json:
             body = request.get_json(silent=True) or {}
             message_ids = body.get('message_ids') or []
@@ -3347,15 +3640,17 @@ def admin_agent_task_queue_reorder(session_id):
     return jsonify(success=True, session_state=state)
 
 
-@problem_core_bp.post('/admin/agent_tasks/<session_id>/queue/resume')
-def admin_agent_task_queue_resume(session_id):
+@problem_core_bp.post('/agent/tasks/<session_id>/queue/resume')
+def agent_task_queue_resume(session_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
         agent_session = _agent_message_route_session(session_id, user)
+        _agent_quota_gate(
+            user,
+            endpoint_source=agent_session.get('endpoint_source'),
+        )
         normalized_status = str(agent_session.get('status') or '').strip().lower()
         if normalized_status in {'cleanupfailed', 'cleanup_failed'}:
             raise AgentSessionMessageConflictError(
@@ -3386,15 +3681,16 @@ def admin_agent_task_queue_resume(session_id):
     return jsonify(success=True, session_state=state)
 
 
-@problem_core_bp.get('/admin/agent_tasks/<session_id>/workspace')
-def admin_agent_workspace_tree(session_id):
+@problem_core_bp.get('/agent/tasks/<session_id>/workspace')
+def agent_workspace_tree(session_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
-        agent_session = get_agent_session(session_id)
+        agent_session = _agent_session_for_actor(
+            session_id,
+            _agent_actor(user),
+        )
         if not agent_session:
             return jsonify(success=False, message='Agent 会话不存在'), 404
         if agent_session.get('is_legacy'):
@@ -3402,6 +3698,10 @@ def admin_agent_workspace_tree(session_id):
         tree = build_agent_workspace_tree(session_id)
     except ValueError as exc:
         return jsonify(success=False, message=str(exc)), 400
+    except PermissionError as exc:
+        return jsonify(success=False, message=str(exc)), 403
+    except AgentSessionMessageNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
     except OSError:
         logger.exception('读取 Agent workspace 目录失败')
         return jsonify(success=False, message='无法读取 workspace'), 500
@@ -3410,15 +3710,16 @@ def admin_agent_workspace_tree(session_id):
     return response
 
 
-@problem_core_bp.get('/admin/agent_tasks/<session_id>/workspace/file')
-def admin_agent_workspace_file(session_id):
+@problem_core_bp.get('/agent/tasks/<session_id>/workspace/file')
+def agent_workspace_file(session_id):
     user = current_user()
     if not user:
         return jsonify(success=False, message='未登录'), 401
-    if int(user.get('is_admin') or 0) != 1:
-        return jsonify(success=False, message='无权限'), 403
     try:
-        agent_session = get_agent_session(session_id)
+        agent_session = _agent_session_for_actor(
+            session_id,
+            _agent_actor(user),
+        )
         if not agent_session or agent_session.get('is_legacy'):
             return jsonify(success=False, message='Agent workspace 不存在'), 404
         relative_path = str(request.args.get('path') or '')
@@ -3454,6 +3755,10 @@ def admin_agent_workspace_file(session_id):
         return response
     except FileNotFoundError:
         return jsonify(success=False, message='文件不存在'), 404
+    except PermissionError as exc:
+        return jsonify(success=False, message=str(exc)), 403
+    except AgentSessionMessageNotFoundError as exc:
+        return jsonify(success=False, message=str(exc)), 404
     except ValueError as exc:
         return jsonify(success=False, message=str(exc)), 400
     except OSError:
@@ -3462,6 +3767,26 @@ def admin_agent_workspace_file(session_id):
             extra={'session_id': session_id},
         )
         return jsonify(success=False, message='无法读取文件'), 500
+
+
+# Python 调用方的过渡别名不参与 Flask endpoint 注册；canonical endpoint
+# 与页面生成的 URL 均使用上面的无 admin 名称。
+admin_agent_launch_options = agent_launch_options
+admin_agent_solve_problem = agent_solve_problem
+admin_agent_generate_testdata = agent_generate_testdata
+admin_agent_run_status = agent_run_status
+admin_agent_run_cancel = agent_run_cancel
+admin_agent_run_stream = agent_run_stream
+admin_agent_tasks = agent_tasks
+admin_agent_task_detail = agent_task_detail
+admin_agent_task_message_state = agent_task_message_state
+admin_agent_task_message_stream = agent_task_message_stream
+admin_agent_task_message_update = agent_task_message_update
+admin_agent_task_message_delete = agent_task_message_delete
+admin_agent_task_queue_reorder = agent_task_queue_reorder
+admin_agent_task_queue_resume = agent_task_queue_resume
+admin_agent_workspace_tree = agent_workspace_tree
+admin_agent_workspace_file = agent_workspace_file
 
 
 @problem_core_bp.route('/my_submissions')

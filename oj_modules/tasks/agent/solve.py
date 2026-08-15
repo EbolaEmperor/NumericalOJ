@@ -239,7 +239,6 @@ def register_agent_solve_problem_task(celery_app):
         )
         session_title = generate_initial_agent_session_title(
             task_id,
-            endpoint,
             agent_prompt,
             fallback=f"解题 {title}",
         )

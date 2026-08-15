@@ -24,7 +24,7 @@ class _FakeCursor:
         normalized_sql = " ".join(str(sql).split())
         self.connection.calls.append((normalized_sql, params))
         if normalized_sql.startswith("INSERT INTO agent_launch_preferences"):
-            user_id, harness, endpoint_id = params
+            user_id, harness, endpoint_source, endpoint_id = params
             now = datetime(2026, 8, 3, 12, 0, 0)
             created_at = (
                 self.connection.row or {}
@@ -32,6 +32,7 @@ class _FakeCursor:
             self.connection.row = {
                 "user_id": user_id,
                 "harness": harness,
+                "endpoint_source": endpoint_source,
                 "endpoint_id": endpoint_id,
                 "created_at": created_at,
                 "updated_at": now,
@@ -88,6 +89,8 @@ def test_get_agent_launch_preference_is_scoped_by_user(monkeypatch):
     assert preference == {
         "user_id": 7,
         "harness": "codex",
+        "endpoint_source": "global",
+        "endpoint_ref": "global:23",
         "endpoint_id": 23,
         "created_at": created_at,
         "updated_at": updated_at,
@@ -135,9 +138,11 @@ def test_save_agent_launch_preference_upserts_and_returns_latest_row(monkeypatch
 
     assert preference["user_id"] == 7
     assert preference["harness"] == "pi"
+    assert preference["endpoint_source"] == "global"
+    assert preference["endpoint_ref"] == "global:41"
     assert preference["endpoint_id"] == 41
     assert len(connection.calls) == 2
-    assert connection.calls[0][1] == (7, "pi", 41)
+    assert connection.calls[0][1] == (7, "pi", "global", 41)
     assert "ON DUPLICATE KEY UPDATE" in connection.calls[0][0]
     assert connection.calls[1][1] == (7,)
     assert connection.committed is True
@@ -201,6 +206,10 @@ def test_agent_launch_preferences_schema_is_declared():
     assert preference.columns["user_id"].lower() == "int not null"
     assert "task_kind" not in preference.columns
     assert preference.columns["harness"].lower() == "varchar(32) not null"
+    assert (
+        preference.columns["endpoint_source"].lower()
+        == "varchar(16) not null default 'global'"
+    )
     assert preference.columns["endpoint_id"].lower() == "bigint not null"
     assert preference.indexes["PRIMARY"].lower() == "primary key (`user_id`)"
     assert "idx_agent_launch_preferences_endpoint" in preference.indexes

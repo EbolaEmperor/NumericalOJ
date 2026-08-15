@@ -361,8 +361,8 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
     monkeypatch.setattr(
         generic,
         "generate_initial_agent_session_title",
-        lambda session_id, selected_endpoint, prompt, **kwargs: (
-            title_calls.append((session_id, selected_endpoint, prompt, kwargs))
+        lambda session_id, prompt, **kwargs: (
+            title_calls.append((session_id, prompt, kwargs))
             or "整理附件"
         ),
     )
@@ -412,8 +412,8 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
     }
     assert len(title_calls) == 1
     assert title_calls[0][0] == "custom-session"
-    assert title_calls[0][1] is endpoint
-    assert title_calls[0][2] == "请整理附件"
+    assert title_calls[0][1] == "请整理附件"
+    assert title_calls[0][2] == {}
     assert harness_calls[0]["session_id"] == "custom-session"
     assert harness_calls[0]["task_kind"] == "custom"
     assert harness_calls[0]["access_role"] == "admin"
@@ -767,3 +767,118 @@ def test_generic_rejects_changed_endpoint_revision_before_harness(monkeypatch):
     assert result["success"] is False
     assert "配置已变化" in result["message"]
     assert snapshots[-1]["status"] == "Failed"
+
+
+def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypatch):
+    task_id = "metered-summary-offline"
+    session = {
+        "session_id": "metered-session",
+        "current_task_id": task_id,
+        "title": "实时计费",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "user",
+        "harness": "pi",
+        "endpoint_id": 8,
+        "endpoint_source": "global",
+        "endpoint_revision": 4,
+        "native_session_id": "",
+        "turn_count": 1,
+        "is_legacy": False,
+    }
+    snapshots = _patch_generic(monkeypatch, session)
+    endpoint = {
+        **_endpoint(),
+        "input_price_per_million": "1",
+        "cached_input_price_per_million": "0.1",
+        "output_price_per_million": "2",
+    }
+    monkeypatch.setattr(
+        generic,
+        "get_user_by_username",
+        lambda _username: {"id": 7, "is_admin": 0},
+    )
+    monkeypatch.setattr(
+        generic,
+        "require_agent_start_eligibility",
+        lambda *_args, **_kwargs: {"allowed": True},
+    )
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: endpoint,
+    )
+    monkeypatch.setattr(
+        generic,
+        "extract_agent_conclusion",
+        lambda _task_id: "已完成并保留计费结果。",
+    )
+    charged = []
+    monkeypatch.setattr(
+        generic,
+        "charge_agent_usage",
+        lambda **kwargs: charged.append(kwargs) or {
+            "applied": True,
+            "remaining_amount": "8.5",
+            "hard_stop": False,
+        },
+    )
+    monkeypatch.setattr(
+        generic,
+        "get_agent_runtime_quota_summary",
+        lambda _user_id: {"remaining_amount": "8.5"},
+    )
+    ledger_costs = iter((None, "1.5"))
+    monkeypatch.setattr(
+        generic,
+        "get_agent_session_usage_cost",
+        lambda _session_id: next(ledger_costs),
+    )
+    monkeypatch.setattr(
+        generic,
+        "_publish_agent_trace",
+        lambda _state: (_ for _ in ()).throw(
+            RuntimeError("quota summary redis offline")
+        ),
+    )
+
+    def run_harness(**kwargs):
+        result = kwargs["usage_callback"]({
+            "source": "pi",
+            "id": "request-1",
+            "usage": {
+                "input_uncached_tokens": 10,
+                "input_cached_tokens": 0,
+                "input_cache_write_tokens": 0,
+                "output_tokens": 2,
+                "reasoning_output_tokens": 0,
+            },
+        })
+        assert result["remaining_rmb"] == "8.5"
+        return HarnessRunResult(
+            0,
+            False,
+            "",
+            "",
+            native_session_id="11111111-1111-1111-1111-111111111111",
+        )
+
+    monkeypatch.setattr(generic, "run_agent_harness", run_harness)
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "metered-session",
+        "student",
+        "user",
+        "pi",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is True
+    assert len(charged) == 1
+    assert charged[0]["usage_event_id"] == "request-1"
+    assert snapshots[-1]["session_charged_amount_rmb"] == "1.5"

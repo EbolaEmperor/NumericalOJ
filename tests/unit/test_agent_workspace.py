@@ -471,6 +471,7 @@ def test_inspect_agent_workspace_file_uses_content_magic_before_extension(
         ("solver.m", "disp('ok')\n", "code", "matlab"),
         ("query.sql", "SELECT 1;\n", "code", "sql"),
         ("program.go", "package main\n", "code", "go"),
+        ("Submission.lean", "theorem answer : True := by trivial\n", "code", "lean4"),
         ("paper.tex", "\\section{Test}\n", "code", "latex"),
         ("unknown.pdf", "this is text\n", "text", "plaintext"),
         ("README", "ordinary text\n", "text", "plaintext"),

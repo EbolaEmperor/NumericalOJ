@@ -390,7 +390,6 @@ def register_agent_generate_testdata_task(celery_app):
         )
         session_title = generate_initial_agent_session_title(
             task_id,
-            endpoint,
             prompt,
             fallback=f"造数据 {title}",
         )

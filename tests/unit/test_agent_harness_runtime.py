@@ -309,6 +309,31 @@ def test_secret_relay_cleanup_failure_blocks_resumable_terminal_state(monkeypatc
             pass
 
 
+def test_secret_relay_hard_stop_is_translated_for_generic_task():
+    relayed = SimpleNamespace(
+        wait_for_endpoint_usage=lambda: (_ for _ in ()).throw(
+            secret_relay.AgentSecretRelayUsageHardStopError(
+                "Agent 额度已达到硬停阈值，剩余额度 -5.1 元"
+            )
+        ),
+        raise_if_usage_failed=lambda: None,
+    )
+
+    with pytest.raises(runtime.AgentUsageHardStopError, match="-5.1"):
+        runtime._check_secret_relay_usage(relayed, wait=True)
+
+
+def test_secret_relay_accounting_failure_is_not_swallowed():
+    relayed = SimpleNamespace(
+        raise_if_usage_failed=lambda: (_ for _ in ()).throw(
+            RuntimeError("usage database unavailable")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        runtime._check_secret_relay_usage(relayed)
+
+
 def test_runtime_env_injects_relayed_web_search_mcp_without_secret_in_args(
         tmp_path):
     env = _runtime_env(
@@ -1538,6 +1563,55 @@ def test_canonical_journal_keeps_early_usage_after_large_stdout_and_redacts(
     assert secret not in rendered
     assert "[REDACTED]" in rendered
     assert collect_agent_token_usage(trace_dir)["input_total_tokens"] == 13
+
+
+def test_canonical_journal_keeps_adapter_usage_as_trace_only(tmp_path):
+    source = tmp_path / "canonical.tmp"
+    observer = runtime._CanonicalJournalObserver(source)
+    records = [
+        {
+            "type": "numoj_usage",
+            "version": 1,
+            "source": "pi",
+            "id": record_id,
+            "usage": {
+                "input_uncached_tokens": index,
+                "output_tokens": 1,
+            },
+        }
+        for index, record_id in enumerate(("request-1", "request-2"), 1)
+    ]
+
+    observer.feed(
+        "".join(json.dumps(item) + "\n" for item in records).encode("utf-8")
+    )
+    observer.close()
+
+    stored = [
+        json.loads(line)
+        for line in source.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["id"] for item in stored] == ["request-1", "request-2"]
+    assert [item["usage"]["input_uncached_tokens"] for item in stored] == [
+        1,
+        2,
+    ]
+
+
+def test_canonical_journal_skips_usage_without_stable_trace_id(tmp_path):
+    source = tmp_path / "canonical.tmp"
+    observer = runtime._CanonicalJournalObserver(source)
+
+    observer.feed((json.dumps({
+        "type": "numoj_usage",
+        "version": 1,
+        "source": "codex",
+        "id": "  ",
+        "usage": {"input_uncached_tokens": 1, "output_tokens": 1},
+    }) + "\n").encode("utf-8"))
+
+    observer.close()
+    assert source.read_bytes() == b""
 
 
 def test_canonical_journal_capacity_keeps_final_assistant_and_usage(tmp_path):

@@ -150,6 +150,9 @@ def test_custom_policy_allows_same_origin_skill_routes_but_blocks_identity_and_a
         ("POST", "/logout"),
         ("POST", "/send_code"),
         ("POST", "/change_password"),
+        ("POST", "/agent/tasks"),
+        ("POST", "/agent/problems/9/solve"),
+        ("POST", "/agent/runs/task-1/cancel"),
         ("POST", "/admin/agent_tasks"),
         ("POST", "/admin/agent_run_cancel/task-1"),
         ("GET", "/api/admin/agent-tasks"),
@@ -216,6 +219,8 @@ def test_unicode_path_is_encoded_without_forcing_unicode_normalization():
 @pytest.mark.parametrize(
     "raw_target",
     [
+        "/%61gent/tasks",
+        "/agent/%74asks",
         "/%61dmin/agent_tasks",
         "/admin/%61gent_tasks",
     ],

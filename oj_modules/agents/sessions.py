@@ -117,6 +117,7 @@ def _normalize_optional_identifier(
 def _session_from_row(row):
     if not row:
         return None
+    endpoint_source = str(row.get("endpoint_source") or "global")
     return {
         "session_id": row.get("session_id"),
         "current_task_id": row.get("current_task_id"),
@@ -127,6 +128,8 @@ def _session_from_row(row):
         "requested_by": row.get("requested_by"),
         "access_role": str(row.get("access_role") or "user"),
         "harness": row.get("harness"),
+        "endpoint_source": endpoint_source,
+        "uses_personal_endpoint": endpoint_source == "user",
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_revision": row.get("endpoint_revision"),
         "endpoint_model": row.get("endpoint_model"),
@@ -210,6 +213,7 @@ def create_agent_session(
     endpoint_id,
     endpoint_revision,
     endpoint_model,
+    endpoint_source="global",
     user_message,
     attachments=None,
     base_runtime_checkpoint_id="",
@@ -224,6 +228,9 @@ def create_agent_session(
     session_id = normalize_agent_session_id(session_id)
     task_id = normalize_agent_session_id(task_id)
     access_role = normalize_agent_access_role(access_role)
+    endpoint_source = str(endpoint_source or "global").strip().lower()
+    if endpoint_source not in {"global", "user"}:
+        raise ValueError("Agent LLM 节点来源无效")
     if isinstance(endpoint_revision, bool):
         raise ValueError("Agent LLM 节点版本无效")
     try:
@@ -261,6 +268,8 @@ def create_agent_session(
         "requested_by": str(requested_by or "").strip()[:50],
         "access_role": access_role,
         "harness": str(harness or "").strip()[:32],
+        "endpoint_source": endpoint_source,
+        "uses_personal_endpoint": endpoint_source == "user",
         "endpoint_id": endpoint_id,
         "endpoint_revision": endpoint_revision,
         "endpoint_model": str(endpoint_model or "").strip()[:255],
@@ -284,13 +293,14 @@ def create_agent_session(
                 INSERT INTO agent_sessions (
                     session_id, current_task_id, title, task_kind,
                     problem_id, problem_title, requested_by, access_role,
-                    harness, endpoint_id, endpoint_revision, endpoint_model,
+                    harness, endpoint_source, endpoint_id,
+                    endpoint_revision, endpoint_model,
                     status, message,
                     turn_count
                 ) VALUES (
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s, 'Pending', '任务排队中',
+                    %s, %s, %s, %s, %s, 'Pending', '任务排队中',
                     1
                 )
                 """,
@@ -304,6 +314,7 @@ def create_agent_session(
                     session["requested_by"],
                     access_role,
                     session["harness"],
+                    session["endpoint_source"],
                     endpoint_id,
                     session["endpoint_revision"],
                     session["endpoint_model"],
@@ -380,7 +391,8 @@ def begin_agent_session_turn(
             cursor.execute(
                 """
                 SELECT s.status, s.turn_count, s.task_kind, s.problem_id,
-                       s.requested_by, s.access_role, s.harness, s.endpoint_id,
+                       s.requested_by, s.access_role, s.harness,
+                       s.endpoint_source, s.endpoint_id,
                        s.endpoint_revision, s.endpoint_model,
                        s.native_session_id,
                        previous.base_runtime_checkpoint_id AS
@@ -473,6 +485,7 @@ def begin_agent_session_turn(
         "requested_by": row.get("requested_by"),
         "access_role": str(row.get("access_role") or "user"),
         "harness": row.get("harness"),
+        "endpoint_source": str(row.get("endpoint_source") or "global"),
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_revision": row.get("endpoint_revision"),
         "endpoint_model": row.get("endpoint_model"),
@@ -523,6 +536,7 @@ def begin_agent_session_retry(
                 """
                 SELECT current_task_id, status, turn_count, task_kind,
                        problem_id, requested_by, access_role, harness,
+                       endpoint_source,
                        endpoint_id, endpoint_revision, endpoint_model,
                        native_session_id,
                        EXISTS(
@@ -696,6 +710,7 @@ def begin_agent_session_retry(
         "requested_by": row.get("requested_by"),
         "access_role": str(row.get("access_role") or "user"),
         "harness": row.get("harness"),
+        "endpoint_source": str(row.get("endpoint_source") or "global"),
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_revision": row.get("endpoint_revision"),
         "endpoint_model": row.get("endpoint_model"),
@@ -1008,6 +1023,29 @@ def update_agent_session_title(session_id, title):
         conn.close()
 
 
+def rename_agent_session_title(session_id, title):
+    """显式重命名会话；与只填充空标题的生成写入分开。"""
+
+    session_id = normalize_agent_session_id(session_id)
+    normalized = str(title or "").replace("\x00", " ").strip()
+    if not normalized:
+        raise ValueError("Agent 会话标题不能为空")
+    if len(normalized) > 64:
+        raise ValueError("Agent 会话标题不能超过 64 个字符")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "UPDATE agent_sessions SET title=%s WHERE session_id=%s",
+                (normalized, session_id),
+            )
+            changed = cursor.rowcount > 0
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
+
 def claim_agent_session_title_generation(session_id, fallback_title):
     """用确定性回退标题原子占位，保证 late-ack 重投不会重复调用 LLM。"""
 
@@ -1040,7 +1078,8 @@ def get_agent_session(session_id):
                 """
                 SELECT session_id, current_task_id, title, task_kind,
                        problem_id, problem_title, requested_by, access_role,
-                       harness, endpoint_id, endpoint_revision, endpoint_model,
+                       harness, endpoint_source, endpoint_id,
+                       endpoint_revision, endpoint_model,
                        native_session_id, status, message, turn_count,
                        queue_paused, queue_pause_reason,
                        fresh_native_session_pending,
@@ -1059,7 +1098,8 @@ def get_agent_session(session_id):
                 SELECT task_id AS session_id, task_id AS current_task_id,
                        problem_title AS title, 'legacy' AS task_kind,
                        problem_id, problem_title, requested_by,
-                       'user' AS access_role, harness, endpoint_id,
+                       'user' AS access_role, harness,
+                       'global' AS endpoint_source, endpoint_id,
                        NULL AS endpoint_revision, endpoint_model,
                        NULL AS native_session_id,
                        status, message, 1 AS turn_count,
@@ -1086,7 +1126,8 @@ def get_agent_session_by_task_id(task_id):
                 """
                 SELECT s.session_id, s.current_task_id, s.title, s.task_kind,
                        s.problem_id, s.problem_title, s.requested_by,
-                       s.access_role, s.harness, s.endpoint_id,
+                       s.access_role, s.harness, s.endpoint_source,
+                       s.endpoint_id,
                        s.endpoint_revision, s.endpoint_model,
                        s.native_session_id, s.status,
                        s.message, s.turn_count,
@@ -1177,36 +1218,52 @@ def get_agent_session_turns(session_id, include_superseded=False):
     }]
 
 
-def get_agent_sessions_paginated(page=1, per_page=20):
+def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
     page = max(1, int(page))
     per_page = max(1, min(100, int(per_page)))
+    owner = str(requested_by or "").strip() or None
+    session_filter = "WHERE s.requested_by=%s" if owner else ""
+    legacy_filter = (
+        "WHERE r.requested_by=%s AND NOT EXISTS"
+        if owner
+        else "WHERE NOT EXISTS"
+    )
+    count_params = (owner, owner) if owner else ()
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT
-                    (SELECT COUNT(*) FROM agent_sessions)
+                    (SELECT COUNT(*) FROM agent_sessions AS s
+                     {session_filter})
                     +
                     (SELECT COUNT(*)
                      FROM agent_task_runs AS r
-                     WHERE NOT EXISTS (
+                     {legacy_filter} (
                          SELECT 1 FROM agent_session_turns AS t
                          WHERE t.task_id=r.task_id
                      )) AS total
-                """
+                """,
+                count_params,
             )
             total = int((cursor.fetchone() or {}).get("total") or 0)
             total_pages = max(1, (total + per_page - 1) // per_page)
             page = min(page, total_pages)
+            list_params = (
+                (owner, owner, per_page, (page - 1) * per_page)
+                if owner
+                else (per_page, (page - 1) * per_page)
+            )
             cursor.execute(
-                """
+                f"""
                 SELECT *
                 FROM (
                     SELECT s.id AS source_id, s.session_id,
                            s.current_task_id, s.title, s.task_kind,
                            s.problem_id, s.problem_title, s.requested_by,
-                           s.access_role, s.harness, s.endpoint_id,
+                           s.access_role, s.harness, s.endpoint_source,
+                           s.endpoint_id,
                            s.endpoint_revision, s.endpoint_model,
                            s.native_session_id, s.status,
                            s.message, s.turn_count,
@@ -1215,12 +1272,14 @@ def get_agent_sessions_paginated(page=1, per_page=20):
                            s.created_at, s.updated_at,
                            0 AS is_legacy
                     FROM agent_sessions AS s
+                    {session_filter}
                     UNION ALL
                     SELECT r.id AS source_id, r.task_id AS session_id,
                            r.task_id AS current_task_id,
                            r.problem_title AS title, 'legacy' AS task_kind,
                            r.problem_id, r.problem_title, r.requested_by,
-                           'user' AS access_role, r.harness, r.endpoint_id,
+                           'user' AS access_role, r.harness,
+                           'global' AS endpoint_source, r.endpoint_id,
                            NULL AS endpoint_revision, r.endpoint_model,
                            NULL AS native_session_id,
                            r.status, r.message, 1 AS turn_count,
@@ -1228,7 +1287,7 @@ def get_agent_sessions_paginated(page=1, per_page=20):
                            0 AS fresh_native_session_pending,
                            r.created_at, r.updated_at, 1 AS is_legacy
                     FROM agent_task_runs AS r
-                    WHERE NOT EXISTS (
+                    {legacy_filter} (
                         SELECT 1 FROM agent_session_turns AS t
                         WHERE t.task_id=r.task_id
                     )
@@ -1237,7 +1296,7 @@ def get_agent_sessions_paginated(page=1, per_page=20):
                          source_id DESC, session_id DESC
                 LIMIT %s OFFSET %s
                 """,
-                (per_page, (page - 1) * per_page),
+                list_params,
             )
             rows = cursor.fetchall()
     finally:
@@ -1273,6 +1332,7 @@ __all__ = [
     "list_agent_session_queue_recovery_candidates",
     "mark_agent_session_message_broker_enqueued",
     "mark_agent_session_steers_unknown_for_task",
+    "rename_agent_session_title",
     "mark_agent_turn_enqueue_failed",
     "mark_agent_turn_runtime_restore_failed",
     "normalize_agent_access_role",

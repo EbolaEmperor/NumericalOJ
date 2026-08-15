@@ -77,6 +77,9 @@ def _execution_trace_status(status):
 def _current_token_pricing(state):
     """按任务使用的节点 ID 读取当前人民币价格。"""
 
+    if str(state.get("endpoint_source") or "global").strip().lower() != "global":
+        return None
+
     try:
         endpoint_id = int(state.get("endpoint_id"))
     except (TypeError, ValueError):
