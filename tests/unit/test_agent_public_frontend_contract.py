@@ -2,6 +2,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+ENDPOINT_EDITOR_TEMPLATE = "templates/components/endpoint_editor.html"
+ENDPOINT_EDITOR_SCRIPT = "static/app/endpoint-editor.js"
+ENDPOINT_EDITOR_STYLESHEET = "static/app/endpoint-editor.css"
 
 
 def _read(path):
@@ -72,6 +75,8 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     template = _read("templates/agents/components/access_control.html")
     controller = _read("static/app/agents/access-control.js")
     styles = _read("static/app/agents/access-control.css")
+    endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)
+    endpoint_editor_controller = _read(ENDPOINT_EDITOR_SCRIPT)
 
     for contract in (
         "data-agent-access-root",
@@ -85,7 +90,6 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
         "data-agent-quota-used",
         "data-agent-quota-remaining",
         "data-agent-rate-list",
-        "data-agent-personal-endpoint-form",
         "data-agent-review-list",
         "data-agent-class-grant-form",
     ):
@@ -97,6 +101,7 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "data-agent-quota-total" not in template
     assert "累计额度" not in template
     assert "使用全站端点时，每次模型请求完成后实时扣减。" not in template
+    assert "同一用户出现在多个班级时只赠送一次，管理员不会计入。" not in template
     for tab_name in ("quota", "prices", "personal"):
         assert f'data-agent-user-tab="{tab_name}"' in template
         assert f'data-agent-user-panel="{tab_name}"' in template
@@ -104,31 +109,90 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "data-agent-personal-endpoint-layer" in template
     assert "data-agent-personal-delete-layer" in template
     assert "data-agent-personal-endpoint-create" in template
-    assert "data-agent-protocol-option" in template
+    assert "components/endpoint_editor.html" in template
+    assert "endpoint_editor('agentPersonalEndpoint', mode='personal'" in template
+    assert 'data-endpoint-editor data-endpoint-editor-mode="{{ mode }}"' in endpoint_editor
+    assert 'data-endpoint-editor-thinking' in endpoint_editor
+    for class_picker_contract in (
+        "data-agent-class-picker-trigger",
+        "data-agent-class-picker-search",
+        "data-agent-class-picker-all",
+        "data-agent-class-picker-none",
+        "data-agent-class-picker-done",
+    ):
+        assert class_picker_contract in template
+    assert 'aria-multiselectable="true"' in template
     assert '<select name="protocol"' not in template
     assert '<details class="agent-personal-endpoint-editor"' not in template
-    assert template.count("novalidate") >= 3
+    assert template.count("novalidate") >= 2
+    assert "novalidate" in endpoint_editor
     assert "function decimalText(value)" in controller
     assert "replace(/0+$/, '').replace(/\\.$/, '')" in controller
     assert "function multiplyDecimal(value, multiplier)" in controller
     assert "new Set()" in controller
     assert "user_ids" in controller
+    assert "global.NumojModelFamily.iconClass(model)" in controller
+    assert "agent-rate-logo" in controller
     assert "action: action" in controller
     assert "amount_rmb: grantForm.elements.amount_rmb.value" in controller
     assert "ArrowLeft" in controller
     assert "ArrowRight" in controller
     assert "event.stopPropagation()" in controller
     assert "node.inert = inert" in controller
+    assert "global.NumOJEndpointEditor.mount(personalForm," in controller
+    assert "personalEditor.values()" in controller
+    assert "thinking_enabled: payload.thinking_enabled" in controller
+    assert "thinking_format: payload.thinking_format" in controller
+    assert "global.NumOJEndpointEditor = Object.freeze({mount: mount})" in endpoint_editor_controller
     assert "global.confirm(" not in controller
     assert "reportValidity(" not in controller
+    assert "data-agent-personal-endpoint-form" not in f"{template}\n{controller}"
+    assert "data-agent-protocol-option" not in f"{template}\n{controller}"
+    assert "data-endpoint-form" not in f"{template}\n{controller}\n{endpoint_editor}"
     assert "global.location.reload" not in controller
     assert ".agent-access-fab" in styles
     assert ".agent-access-fab-badge" in styles
     assert ".agent-class-grant-options" in styles
+    assert ".agent-rate-card" in styles
+    assert ".agent-rate-logo" in styles
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in styles
+    assert "@media (max-width: 767.98px)" in styles
     assert "width: 67vw" in styles
+    assert "height: 88dvh" in styles
+    assert ".agent-class-picker-panel" in styles
     assert ".agent-personal-endpoint-card" in styles
     assert ".agent-access-layer" in styles
     assert "grid-template-columns: repeat(auto-fill, minmax(360px, 1fr))" in styles
+
+
+def test_agent_access_composite_fields_draw_only_the_outer_rounded_focus_ring():
+    template = _read("templates/agents/components/access_control.html")
+    styles = _read("static/app/agents/access-control.css")
+    layout = _read("static/app/layout.css")
+
+    desktop_focus_rule = layout.split(":focus-visible {", 1)[1].split("}", 1)[0]
+    assert "!important" not in desktop_focus_rule
+    assert "outline: 3px solid rgba(234, 88, 12, 0.28) !important" not in layout
+    assert 'class="agent-class-picker-search agent-access-input-shell"' in template
+    assert ".agent-quota-request-form input:focus" not in styles
+    assert ".agent-quota-request-form textarea:focus" not in styles
+
+    shell_focus_rule = styles.split(
+        ".agent-access-input-shell:focus-within {", 1
+    )[1].split("}", 1)[0]
+    assert "box-shadow: 0 0 0 2px #c2410c" in shell_focus_rule
+    assert "border-color: var(--agent-access-accent)" not in shell_focus_rule
+
+    shell_control_rule = styles.split(
+        ".agent-access-input-shell input,", 1
+    )[1].split("}", 1)[0]
+    assert "outline: 0" in shell_control_rule
+    assert "box-shadow: none" in shell_control_rule
+    invalid_focus_rule = styles.split(
+        ".agent-access-input-shell.is-invalid:focus-within {", 1
+    )[1].split("}", 1)[0]
+    assert "box-shadow: 0 0 0 2px var(--agent-access-danger)" in invalid_focus_rule
+    assert "@media (forced-colors: active)" in styles
 
 
 def test_agent_detail_is_quota_aware_and_can_be_renamed_without_a_new_page():

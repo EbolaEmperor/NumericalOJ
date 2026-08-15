@@ -1089,7 +1089,7 @@
   }
 
   :focus-visible {
-    outline: 3px solid rgba(234, 88, 12, 0.28) !important;
+    outline: 3px solid rgba(234, 88, 12, 0.28);
     outline-offset: 2px;
   }
 
@@ -1534,6 +1534,7 @@
   .numoj-content .form-control:focus,
   .modal .form-control:focus {
     border-color: var(--numoj-brand);
+    outline: 0;
     box-shadow: 0 0 0 4px var(--numoj-brand-soft);
   }
 
@@ -2941,7 +2942,7 @@ html.is-problem-pane-resizing * {
   .numoj-mobile-sidebar :focus-visible,
   .numoj-problems-content :focus-visible,
   .problem-detail-content-shell :focus-visible {
-    outline: 3px solid rgba(234, 88, 12, 0.28) !important;
+    outline: 3px solid rgba(234, 88, 12, 0.28);
     outline-offset: 2px;
   }
 
@@ -3042,6 +3043,7 @@ html.is-problem-pane-resizing * {
   .problem-detail-content-shell .modal .form-control:focus,
   .problem-detail-content-shell .modal .form-select:focus {
     border-color: var(--numoj-brand);
+    outline: 0;
     box-shadow: 0 0 0 4px var(--numoj-brand-soft);
   }
 
@@ -3998,5 +4000,16 @@ html.is-problem-pane-resizing * {
 
   .problem-detail-page .problem-editor-actions .btn {
     flex: 1 1 0;
+  }
+}
+
+@media (forced-colors: active) {
+  .numoj-content .form-control:focus,
+  .numoj-content .form-select:focus,
+  .modal .form-control:focus,
+  .modal .form-select:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
   }
 }

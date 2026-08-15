@@ -55,13 +55,17 @@
 
 .rk-choice-trigger:focus-visible,
 .rk-choice-option:focus-visible {
-  outline: 2px solid rgba(234, 88, 12, 0.28);
-  outline-offset: 1px;
+  outline: 0;
+  box-shadow: 0 0 0 2px #c2410c;
 }
 
 .rk-choice.is-invalid .rk-choice-trigger {
   border-color: var(--choice-danger);
-  box-shadow: 0 0 0 2px rgba(185, 28, 28, 0.08);
+  box-shadow: none;
+}
+
+.rk-choice.is-invalid .rk-choice-trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--choice-danger);
 }
 
 .rk-choice-trigger-main,
@@ -203,5 +207,15 @@
   .rk-choice-trigger,
   .rk-choice-option {
     min-height: 44px;
+  }
+}
+
+@media (forced-colors: active) {
+  .rk-choice-trigger:focus-visible,
+  .rk-choice.is-invalid .rk-choice-trigger:focus-visible,
+  .rk-choice-option:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
   }
 }

@@ -374,8 +374,10 @@ class _RowsCursor:
         return False
 
     def execute(self, sql):
-        assert "LEFT JOIN users AS u" in " ".join(sql.split())
-        assert "u.is_admin=0" in " ".join(sql.split())
+        normalized = " ".join(sql.split())
+        assert "LEFT JOIN users AS u" in normalized
+        assert "u.is_admin=0" in normalized
+        assert "c.logo_seed" in normalized
 
     def fetchall(self):
         return list(self.rows)
@@ -395,19 +397,26 @@ class _RowsConnection:
 def test_quota_grant_class_preview_keeps_empty_classes_and_groups_user_ids(
     monkeypatch,
 ):
+    class_seed = "0123456789abcdef" * 2
     connection = _RowsConnection(
         [
-            {"class_en": "a", "class_cn": "甲班", "user_id": 2},
-            {"class_en": "a", "class_cn": "甲班", "user_id": 3},
-            {"class_en": "b", "class_cn": None, "user_id": None},
+            {"class_en": "a", "class_cn": "甲班", "logo_seed": class_seed, "user_id": 2},
+            {"class_en": "a", "class_cn": "甲班", "logo_seed": class_seed, "user_id": 3},
+            {"class_en": "b", "class_cn": None, "logo_seed": None, "user_id": None},
         ]
     )
     monkeypatch.setattr(quota, "get_db_connection", lambda: connection)
 
-    assert quota.list_agent_quota_grant_classes() == [
+    classes = quota.list_agent_quota_grant_classes()
+    assert [
+        {key: item[key] for key in ("class_en", "label", "user_ids")}
+        for item in classes
+    ] == [
         {"class_en": "a", "label": "甲班", "user_ids": [2, 3]},
         {"class_en": "b", "label": "b", "user_ids": []},
     ]
+    assert all(item["logo"]["cells"] for item in classes)
+    assert classes[0]["logo"] == quota.class_logo_presentation(class_seed)
 
 
 class _BatchCursor:
