@@ -21,6 +21,25 @@ def test_agent_navigation_is_visible_in_workspace_for_every_logged_in_user():
     assert ">Agent 任务</span>" not in admin
 
 
+def test_workspace_navigation_uses_the_product_order():
+    navigation = _read("templates/components/layout/navigation.html")
+    workspace = navigation.split('id="{{ id_prefix }}-workspace"', 1)[1].split(
+        "{% if current_user.is_admin == 1 %}", 1
+    )[0]
+    ordered_endpoints = (
+        "problem_core.problem_list",
+        "problem_core.all_submissions",
+        "ranking.ranking_list",
+        "problem_core.agent_tasks",
+        "vibehub.index",
+        "forum.forum_index",
+        "repository.code_repository",
+    )
+
+    positions = [workspace.index(endpoint) for endpoint in ordered_endpoints]
+    assert positions == sorted(positions)
+
+
 def test_agent_home_has_quota_aware_composer_wallet_and_admin_scope_switch():
     template = _read("templates/admin/agent_tasks.html")
     controller = _read("static/app/agents/task-list.js")
@@ -63,7 +82,6 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
         "data-agent-access-reviews-url",
         "data-agent-access-review-url-template",
         "data-agent-access-class-grant-url",
-        "data-agent-quota-total",
         "data-agent-quota-used",
         "data-agent-quota-remaining",
         "data-agent-rate-list",
@@ -75,6 +93,21 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "fa-wallet" in template
     assert "data-agent-review-badge" in template
     assert "hidden{% endif %}" in template
+    assert "data-agent-fab-balance" not in template
+    assert "data-agent-quota-total" not in template
+    assert "累计额度" not in template
+    assert "使用全站端点时，每次模型请求完成后实时扣减。" not in template
+    for tab_name in ("quota", "prices", "personal"):
+        assert f'data-agent-user-tab="{tab_name}"' in template
+        assert f'data-agent-user-panel="{tab_name}"' in template
+    assert 'role="tablist"' in template
+    assert "data-agent-personal-endpoint-layer" in template
+    assert "data-agent-personal-delete-layer" in template
+    assert "data-agent-personal-endpoint-create" in template
+    assert "data-agent-protocol-option" in template
+    assert '<select name="protocol"' not in template
+    assert '<details class="agent-personal-endpoint-editor"' not in template
+    assert template.count("novalidate") >= 3
     assert "function decimalText(value)" in controller
     assert "replace(/0+$/, '').replace(/\\.$/, '')" in controller
     assert "function multiplyDecimal(value, multiplier)" in controller
@@ -82,9 +115,20 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "user_ids" in controller
     assert "action: action" in controller
     assert "amount_rmb: grantForm.elements.amount_rmb.value" in controller
+    assert "ArrowLeft" in controller
+    assert "ArrowRight" in controller
+    assert "event.stopPropagation()" in controller
+    assert "node.inert = inert" in controller
+    assert "global.confirm(" not in controller
+    assert "reportValidity(" not in controller
+    assert "global.location.reload" not in controller
     assert ".agent-access-fab" in styles
     assert ".agent-access-fab-badge" in styles
     assert ".agent-class-grant-options" in styles
+    assert "width: 67vw" in styles
+    assert ".agent-personal-endpoint-card" in styles
+    assert ".agent-access-layer" in styles
+    assert "grid-template-columns: repeat(auto-fill, minmax(360px, 1fr))" in styles
 
 
 def test_agent_detail_is_quota_aware_and_can_be_renamed_without_a_new_page():
