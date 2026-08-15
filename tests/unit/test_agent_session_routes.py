@@ -80,6 +80,38 @@ def _patch_frozen_endpoint(monkeypatch, *, revision=3):
     return calls
 
 
+def test_agent_launch_page_options_exposes_harness_native_reasoning_efforts(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        routes,
+        "list_launch_endpoints_by_harness",
+        lambda *, user_id: {
+            "pi": [{"ref": "global:1"}],
+            "claude_code": [{"ref": "global:2"}],
+            "codex": [],
+            "opencode": [],
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_launch_preference",
+        lambda _user_id: {"harness": "pi", "endpoint_ref": "global:1"},
+    )
+
+    options = routes._agent_launch_page_options(7)
+
+    assert [
+        item["value"]
+        for item in options["reasoning_efforts_by_harness"]["pi"]
+    ] == ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    assert [
+        item["value"]
+        for item in options["reasoning_efforts_by_harness"]["claude_code"]
+    ] == ["low", "medium", "high", "xhigh", "max"]
+    assert "codex" not in options["reasoning_efforts_by_harness"]
+
+
 @pytest.fixture(autouse=True)
 def _patch_runtime_checkpoints(monkeypatch):
     """路由单测只验证编排；checkpoint 文件语义由独立单测覆盖。"""
@@ -240,8 +272,9 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
         method="POST",
         data={
             "message": "分析附件并给出验证程序",
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": "12",
+            "reasoning_effort": "minimal",
             "access_role": "admin",
             "attachments": (io.BytesIO(b"note"), "notes.txt"),
         },
@@ -254,10 +287,11 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
     assert payload["success"] is True
     assert payload["session_id"] == "session-new"
     assert payload["detail_url"] == "/admin/agent_tasks/session-new"
-    assert preference_calls == [(7, "codex", 12)]
+    assert preference_calls == [(7, "pi", 12)]
     assert workspace_calls == ["session-new"]
     assert create_calls[0]["task_kind"] == "custom"
     assert create_calls[0]["access_role"] == "admin"
+    assert create_calls[0]["reasoning_effort"] == "minimal"
     assert create_calls[0]["endpoint_revision"] == 3
     assert create_calls[0]["attachments"] == attachments
     assert create_calls[0]["base_runtime_checkpoint_id"] == (
@@ -268,6 +302,70 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
     assert routes._agent_queue_dispatch_task.calls == [("session-new",)]
     assert snapshots[0]["session_id"] == "session-new"
     assert "signed-cookie" not in str(snapshots)
+
+
+def test_custom_session_idempotency_rejects_different_reasoning_effort(
+    monkeypatch,
+):
+    _patch_admin(monkeypatch)
+    monkeypatch.setattr(routes, "_agent_message_from_request", lambda: "完成任务")
+    monkeypatch.setattr(
+        routes,
+        "_agent_client_message_id",
+        lambda **_kwargs: "same-message",
+    )
+    monkeypatch.setattr(routes, "_agent_session_cookie", lambda: ("session", "signed"))
+    monkeypatch.setattr(routes, "_agent_quota_gate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        routes,
+        "_resolve_agent_endpoint_for_user",
+        lambda *_args, **_kwargs: {
+            "id": 12,
+            "source": "global",
+            "revision": 3,
+            "model": "selected-model",
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_message",
+        lambda _message_id: {
+            "session_id": "same-message",
+            "created_by": "admin",
+            "user_message": "完成任务",
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session",
+        lambda _session_id: {
+            "session_id": "same-message",
+            "harness": "pi",
+            "reasoning_effort": "low",
+            "endpoint_source": "global",
+            "endpoint_id": 12,
+            "access_role": "admin",
+        },
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/agent/tasks",
+        method="POST",
+        data={
+            "message": "完成任务",
+            "message_id": "same-message",
+            "harness": "pi",
+            "endpoint_id": "12",
+            "reasoning_effort": "high",
+            "access_role": "admin",
+        },
+        content_type="multipart/form-data",
+    ):
+        response, status = routes.agent_tasks()
+
+    assert status == 409
+    assert response.get_json()["message"] == "Agent message_id 已被其它消息使用"
 
 
 def test_custom_creation_removes_published_attachments_when_db_create_fails(

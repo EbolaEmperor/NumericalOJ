@@ -123,6 +123,7 @@ def test_ordinary_user_creation_forces_user_access_role(monkeypatch):
     assert response.get_json()["success"] is True
     assert created[0]["requested_by"] == "student"
     assert created[0]["access_role"] == "user"
+    assert created[0]["reasoning_effort"] == "high"
 
 
 def test_ordinary_user_cannot_read_another_users_session(monkeypatch):

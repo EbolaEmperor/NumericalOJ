@@ -20,6 +20,7 @@ def _session_row(**overrides):
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "codex",
+        "reasoning_effort": "default",
         "endpoint_id": 12,
         "endpoint_revision": 3,
         "endpoint_model": "gpt-test",
@@ -112,7 +113,11 @@ def test_steer_rejects_a_stale_client_task_without_falling_back_to_queue(
 def test_claim_queue_message_creates_turn_and_updates_session_atomically(monkeypatch):
     connection = _ScriptedConnection(
         one_values=[
-            _session_row(fresh_native_session_pending=1),
+            _session_row(
+                fresh_native_session_pending=1,
+                harness="pi",
+                reasoning_effort="minimal",
+            ),
             None,
             _message_row(dispatch_payload_json=(
                 '{"private_value":7}'
@@ -141,6 +146,7 @@ def test_claim_queue_message_creates_turn_and_updates_session_atomically(monkeyp
     )
     assert claim["base_native_session_id"] == "native-1"
     assert claim["newly_promoted"] is True
+    assert claim["reasoning_effort"] == "minimal"
     assert claim["dispatch_attempt_id"]
     assert claim["dispatch_payload"] == {
         "start_fresh_native_session": True,

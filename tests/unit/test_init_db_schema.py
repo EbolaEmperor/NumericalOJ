@@ -250,6 +250,9 @@ def test_agent_session_queue_schema_is_additive_and_indexed():
     sessions = specs["agent_sessions"]
     messages = specs["agent_session_messages"]
 
+    assert sessions.columns["reasoning_effort"].lower() == (
+        "varchar(16) not null default 'default'"
+    )
     assert sessions.columns["queue_paused"].lower() == (
         "tinyint(1) not null default '0'"
     )

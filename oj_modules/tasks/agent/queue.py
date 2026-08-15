@@ -160,6 +160,7 @@ def _pending_state(claim):
         "task_kind": claim.get("task_kind") or "custom",
         "access_role": claim.get("access_role") or "user",
         "harness": claim.get("harness"),
+        "reasoning_effort": claim.get("reasoning_effort") or "default",
         "endpoint_id": claim.get("endpoint_id"),
         "endpoint_model": claim.get("endpoint_model"),
         "status": "Pending",

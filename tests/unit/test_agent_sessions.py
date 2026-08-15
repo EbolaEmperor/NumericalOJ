@@ -137,6 +137,28 @@ def test_create_session_persists_the_first_turn_runtime_base(monkeypatch):
     assert connection.commits == 1
 
 
+def test_create_session_freezes_reasoning_effort(monkeypatch):
+    connection = _ScriptedConnection()
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    created = sessions.create_agent_session(
+        session_id="session-with-effort",
+        task_id="turn-with-effort",
+        requested_by="admin",
+        harness="pi",
+        reasoning_effort="xhigh",
+        endpoint_id=7,
+        endpoint_revision=2,
+        endpoint_model="model-a",
+        user_message="深入处理",
+    )
+
+    query, params = connection.cursor_instance.calls[0]
+    assert "harness, reasoning_effort, endpoint_source" in query
+    assert params[8:11] == ("pi", "xhigh", "global")
+    assert created["reasoning_effort"] == "xhigh"
+
+
 def test_continuation_freezes_runtime_base_and_locked_native_session(
     monkeypatch,
 ):
@@ -148,6 +170,7 @@ def test_continuation_freezes_runtime_base_and_locked_native_session(
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "codex",
+        "reasoning_effort": "default",
         "endpoint_source": "global",
         "endpoint_id": 7,
         "endpoint_revision": 2,
@@ -167,6 +190,7 @@ def test_continuation_freezes_runtime_base_and_locked_native_session(
     )
 
     assert claim["turn_index"] == 3
+    assert claim["reasoning_effort"] == "default"
     assert claim["native_session_id"] == "native-current"
     assert claim["base_native_session_id"] == "native-current"
     assert claim["base_runtime_checkpoint_id"] == "checkpoint-before-turn-3"
@@ -251,6 +275,7 @@ def test_retry_clones_current_turn_and_rolls_back_to_recorded_base(
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "codex",
+        "reasoning_effort": "default",
         "endpoint_source": "global",
         "endpoint_id": 7,
         "endpoint_revision": 2,

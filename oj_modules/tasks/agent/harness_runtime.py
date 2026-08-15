@@ -32,6 +32,7 @@ from oj_modules.problems.agent_launch import (
     AGENT_ACCESS_ROLE_USER,
     AGENT_CONTEXT_WINDOW_TOKENS,
     normalize_agent_access_role,
+    normalize_agent_reasoning_effort,
     normalize_agent_task_kind,
     normalize_launch_harness,
     skill_for_agent_task,
@@ -1122,6 +1123,7 @@ def _runtime_env(
     resume_session_id="",
     web_search_settings=None,
     interactive=False,
+    reasoning_effort="default",
 ):
     protocol = str(endpoint.get("protocol") or "").strip().lower()
     # 长期密钥和真实上游地址不得进入容器；这里只接受本轮宿主 relay
@@ -1134,6 +1136,18 @@ def _runtime_env(
     thinking_enabled = bool(endpoint.get("thinking_enabled"))
     thinking_format = str(endpoint.get("thinking_format") or "none").strip().lower()
     access_role = normalize_agent_access_role(access_role, task_kind=task_kind)
+    reasoning_effort = normalize_agent_reasoning_effort(
+        reasoning_effort,
+        harness,
+    )
+    if reasoning_effort != "default":
+        # 通用 Agent 会话中用户选择的深度是最终配置：Pi 的 off
+        # 强制关闭，其余 Pi/Claude 档位按协议默认 wire shape 强制开启，
+        # 不再受节点的思考开关与随开关关闭的格式字段覆盖。
+        thinking_enabled = reasoning_effort != "off"
+        thinking_format = (
+            "thinking_type" if protocol == "anthropic" else "enable_thinking"
+        ) if thinking_enabled else "none"
     skill_name = skill_for_agent_task(task_kind, access_role)
     resume_session_id = normalize_native_session_id(resume_session_id, harness)
 
@@ -1174,6 +1188,8 @@ def _runtime_env(
         # 真正的“继续会话”必须复用同一个原生 session；Claude Code 的
         # --fork-session 会创建分支，不能作为通用 Agent 的续聊语义。
         env["AJ_FORK_SESSION"] = "0"
+    if reasoning_effort != "default":
+        env["AJ_EFFORT"] = reasoning_effort
     if interactive:
         # run_harness 在此模式消费 NumOJ NDJSON 控制帧；未设置时继续读取
         # 原始 prompt stdin，保证 Reverse Judge 和旧调用方完全兼容。
@@ -1349,12 +1365,17 @@ def run_agent_harness(
     control_callback=None,
     control_target_task_id=None,
     usage_callback=None,
+    reasoning_effort="default",
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
 
     task_kind = normalize_agent_task_kind(task_kind)
     harness = normalize_launch_harness(harness)
     access_role = normalize_agent_access_role(access_role, task_kind=task_kind)
+    reasoning_effort = normalize_agent_reasoning_effort(
+        reasoning_effort,
+        harness,
+    )
     resume_session_id = normalize_native_session_id(resume_session_id, harness)
     quota_check_interval = float(AGENT_WORKSPACE_QUOTA_CHECK_INTERVAL_SECONDS)
     if quota_check_interval <= 0:
@@ -1521,6 +1542,7 @@ def run_agent_harness(
                     resume_session_id=resume_session_id,
                     web_search_settings=relayed_web_search_settings,
                     interactive=callable(control_source),
+                    reasoning_effort=reasoning_effort,
                 )
                 docker_args = _docker_args(
                     container_name=container_name,

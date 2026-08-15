@@ -92,6 +92,21 @@
     };
   }
 
+  function normalizeReasoningEffort(item) {
+    if (typeof item === 'string') {
+      var stringValue = asText(item).toLowerCase();
+      return stringValue ? {value: stringValue, label: stringValue} : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+    var value = asText(item.value || item.key || item.id).toLowerCase();
+    if (!value) return null;
+    return {
+      value: value,
+      label: asText(item.label || item.name) || value,
+      meta: asText(item.meta || item.description)
+    };
+  }
+
   function endpointMeta(endpoint) {
     var parts = [
       '节点 #' + endpoint.displayId,
@@ -136,6 +151,8 @@
     var feedback = root.querySelector('[data-agent-create-feedback]');
     var harnessChoice = root.querySelector('[data-agent-harness-choice] [data-rk-choice]');
     var endpointChoice = root.querySelector('[data-agent-endpoint-choice] [data-rk-choice]');
+    var reasoningEffortWrapper = root.querySelector('[data-agent-reasoning-effort-choice]');
+    var reasoningEffortChoice = reasoningEffortWrapper && reasoningEffortWrapper.querySelector('[data-rk-choice]');
     var accessInput = root.querySelector('input[name="access_role"]');
     var accessChoice = accessInput && accessInput.closest('[data-rk-choice]');
     var accessNote = root.querySelector('[data-agent-create-access-note]');
@@ -143,13 +160,18 @@
 
     var rawHarnesses = readJson('[data-agent-harnesses-json]', []);
     var rawEndpoints = readJson('[data-agent-endpoints-json]', {});
+    var rawReasoningEfforts = readJson('[data-agent-reasoning-efforts-json]', {});
     var preference = readJson('[data-agent-preference-json]', {});
     var harnesses = (Array.isArray(rawHarnesses) ? rawHarnesses : [])
       .map(normalizeHarness).filter(Boolean);
     var endpointsByHarness = {};
+    var reasoningEffortsByHarness = {};
     var files = [];
     var submitting = false;
     var endpointController = null;
+    var reasoningEffortController = null;
+    var activeReasoningHarness = '';
+    var reasoningSelections = Object.create(null);
 
     harnesses.forEach(function (harness) {
       var canonical = canonicalHarness(harness.value);
@@ -159,6 +181,14 @@
         || [];
       endpointsByHarness[harness.value] = (Array.isArray(entries) ? entries : [])
         .map(normalizeEndpoint).filter(Boolean);
+    });
+
+    ['pi', 'claude_code'].forEach(function (harness) {
+      var entries = rawReasoningEfforts[harness]
+        || rawReasoningEfforts[harness.replace(/_/g, '-')]
+        || [];
+      reasoningEffortsByHarness[harness] = (Array.isArray(entries) ? entries : [])
+        .map(normalizeReasoningEffort).filter(Boolean);
     });
 
     function feedbackMessage(message, error) {
@@ -179,6 +209,15 @@
       return (endpointsByHarness[harness] || []).find(function (endpoint) {
         return endpoint.id === endpointId;
       }) || null;
+    }
+
+    function reasoningOptions(harness) {
+      return reasoningEffortsByHarness[canonicalHarness(harness)] || [];
+    }
+
+    function selectedReasoningEffort() {
+      if (!reasoningEffortWrapper || reasoningEffortWrapper.hidden) return '';
+      return selectedValue(reasoningEffortChoice);
     }
 
     function accessAllowed() {
@@ -207,9 +246,11 @@
     }
 
     function updateReadyState() {
+      var effortRequired = reasoningOptions(selectedValue(harnessChoice)).length > 0;
       var ready = !!asText(textarea.value)
         && !!selectedValue(harnessChoice)
         && !!selectedValue(endpointChoice)
+        && (!effortRequired || !!selectedReasoningEffort())
         && accessAllowed();
       submit.disabled = submitting || !ready;
       renderAccessNote();
@@ -239,6 +280,41 @@
       updateReadyState();
     }
 
+    function renderReasoningEfforts(harness) {
+      if (!reasoningEffortWrapper || !reasoningEffortChoice) return;
+      if (activeReasoningHarness) {
+        var previousValue = selectedValue(reasoningEffortChoice);
+        if (previousValue) reasoningSelections[activeReasoningHarness] = previousValue;
+      }
+
+      var canonical = canonicalHarness(harness);
+      var efforts = reasoningOptions(canonical);
+      var remembered = asText(reasoningSelections[canonical]).toLowerCase();
+      var selected = efforts.some(function (effort) { return effort.value === remembered; })
+        ? remembered
+        : (efforts.some(function (effort) { return effort.value === 'high'; })
+          ? 'high'
+          : (efforts[0] ? efforts[0].value : ''));
+
+      reasoningEffortWrapper.hidden = efforts.length === 0;
+      reasoningEffortController = global.ChoicePicker.configure(
+        reasoningEffortChoice,
+        efforts.map(function (effort) {
+          return {
+            value: effort.value,
+            label: effort.label,
+            icon: 'fa-brain',
+            meta: effort.meta
+          };
+        }),
+        selected,
+        {disabled: submitting || efforts.length === 0 || (!isAdmin && !publicEnabled)}
+      );
+      activeReasoningHarness = canonical;
+      if (selected) reasoningSelections[canonical] = selected;
+      updateReadyState();
+    }
+
     var preferredHarness = asText(preference.harness);
     if (!harnesses.some(function (harness) { return harness.value === preferredHarness; })) {
       preferredHarness = (harnesses.find(function (harness) {
@@ -253,7 +329,10 @@
       menu: harnessChoice && harnessChoice.querySelector('.rk-choice-menu'),
       label: harnessChoice && harnessChoice.querySelector('[data-rk-choice-label]'),
       icon: harnessChoice && harnessChoice.querySelector('[data-rk-choice-icon]'),
-      onChange: function (value) { renderEndpoints(value, ''); }
+      onChange: function (value) {
+        renderEndpoints(value, '');
+        renderReasoningEfforts(value);
+      }
     });
     if (harnessController) {
       harnessController = global.ChoicePicker.configure(
@@ -270,9 +349,13 @@
       );
     }
     renderEndpoints(preferredHarness, preference.endpoint_id);
+    renderReasoningEfforts(preferredHarness);
     global.ChoicePicker.init(root);
     var endpointInput = endpointChoice && endpointChoice.querySelector('.rk-choice-value');
     if (endpointInput) endpointInput.addEventListener('change', updateReadyState);
+    var reasoningEffortInput = reasoningEffortChoice
+      && reasoningEffortChoice.querySelector('.rk-choice-value');
+    if (reasoningEffortInput) reasoningEffortInput.addEventListener('change', updateReadyState);
     var clientMessageId = '';
     var clientMessageFingerprint = '';
 
@@ -342,6 +425,10 @@
         submitting || !(endpointsByHarness[selectedValue(harnessChoice)] || []).length
           || (!isAdmin && !publicEnabled)
       );
+      if (reasoningEffortController) reasoningEffortController.setDisabled(
+        submitting || reasoningOptions(selectedValue(harnessChoice)).length === 0
+          || (!isAdmin && !publicEnabled)
+      );
       submit.innerHTML = submitting
         ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
         : '<i class="fas fa-arrow-up" aria-hidden="true"></i>';
@@ -396,6 +483,7 @@
         asText(textarea.value),
         selectedValue(harnessChoice),
         selectedValue(endpointChoice),
+        selectedReasoningEffort(),
         selectedValue(accessChoice),
         files.map(fileKey)
       ]);

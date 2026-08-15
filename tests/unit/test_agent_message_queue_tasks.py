@@ -54,6 +54,7 @@ def _claim():
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "pi",
+        "reasoning_effort": "high",
         "endpoint_id": 8,
         "endpoint_model": "model-a",
         "native_session_id": "native-session",
@@ -85,6 +86,7 @@ def test_dispatch_claim_uses_fixed_task_id_and_cookieless_task_capability(monkey
 
     assert result["task_id"] == "task-2"
     assert snapshots[0]["status"] == "Pending"
+    assert snapshots[0]["reasoning_effort"] == "high"
     _args, kwargs = run_turn.calls[0]
     assert kwargs["task_id"] == "task-2"
     task_args = kwargs["args"]

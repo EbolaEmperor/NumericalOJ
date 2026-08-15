@@ -104,10 +104,13 @@ from oj_modules.problems.agent_launch import (
     AgentLaunchValidationError,
     build_solution_agent_prompt,
     build_testdata_agent_prompt,
+    default_reasoning_effort_for_harness,
     harness_options,
     list_launch_endpoints_by_harness,
     normalize_agent_task_kind,
+    normalize_agent_reasoning_effort,
     normalize_launch_harness,
+    reasoning_effort_options_by_harness,
     resolve_launch_endpoint,
     validate_launch_endpoint_revision,
 )
@@ -283,6 +286,7 @@ def _agent_launch_page_options(user_id):
     return {
         'harnesses': harness_options(),
         'endpoints_by_harness': endpoints_by_harness,
+        'reasoning_efforts_by_harness': reasoning_effort_options_by_harness(),
         'preference': {
             'harness': preferred_harness,
             'endpoint_id': preferred_endpoint_ref or None,
@@ -1039,6 +1043,7 @@ def _pending_agent_run_state(session, task_id):
         'harness': session.get('harness'),
         'endpoint_id': session.get('endpoint_id'),
         'endpoint_model': session.get('endpoint_model'),
+        'reasoning_effort': session.get('reasoning_effort') or 'default',
         'status': 'Pending',
         'message': '任务排队中',
         'best_score': 0,
@@ -2548,6 +2553,11 @@ def agent_tasks():
                 else 'user'
             )
             harness = normalize_launch_harness(request.form.get('harness'))
+            reasoning_effort = normalize_agent_reasoning_effort(
+                request.form.get('reasoning_effort'),
+                harness,
+                default=default_reasoning_effort_for_harness(harness),
+            )
             endpoint = _resolve_agent_endpoint_for_user(
                 harness,
                 request.form.get('endpoint_id'),
@@ -2585,6 +2595,8 @@ def agent_tasks():
                 == endpoint_source
                 and int(existing_session.get('endpoint_id') or 0) == endpoint_id
                 and str(existing_session.get('access_role') or '') == access_role
+                and str(existing_session.get('reasoning_effort') or 'default')
+                == reasoning_effort
             ):
                 return jsonify(
                     success=False,
@@ -2638,6 +2650,7 @@ def agent_tasks():
                 task_id=session_id,
                 requested_by=user['username'],
                 harness=harness,
+                reasoning_effort=reasoning_effort,
                 endpoint_source=endpoint_source,
                 endpoint_id=endpoint_id,
                 endpoint_revision=endpoint.get('revision'),
@@ -2736,6 +2749,9 @@ def agent_tasks():
         launch_options = {
             'harnesses': harness_options(),
             'endpoints_by_harness': {},
+            'reasoning_efforts_by_harness': (
+                reasoning_effort_options_by_harness()
+            ),
             'preference': {'harness': '', 'endpoint_id': None},
         }
 

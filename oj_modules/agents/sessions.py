@@ -31,6 +31,10 @@ from oj_modules.agents.messages import (
     update_queued_agent_session_message,
 )
 from oj_modules.infrastructure.mysql import get_db_connection
+from oj_modules.problems.agent_launch import (
+    normalize_agent_reasoning_effort,
+    normalize_launch_harness,
+)
 
 
 _ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -128,6 +132,9 @@ def _session_from_row(row):
         "requested_by": row.get("requested_by"),
         "access_role": str(row.get("access_role") or "user"),
         "harness": row.get("harness"),
+        "reasoning_effort": str(
+            row.get("reasoning_effort") or "default"
+        ).strip().lower(),
         "endpoint_source": endpoint_source,
         "uses_personal_endpoint": endpoint_source == "user",
         "endpoint_id": row.get("endpoint_id"),
@@ -210,6 +217,7 @@ def create_agent_session(
     task_id,
     requested_by,
     harness,
+    reasoning_effort="default",
     endpoint_id,
     endpoint_revision,
     endpoint_model,
@@ -228,6 +236,11 @@ def create_agent_session(
     session_id = normalize_agent_session_id(session_id)
     task_id = normalize_agent_session_id(task_id)
     access_role = normalize_agent_access_role(access_role)
+    harness = normalize_launch_harness(harness)
+    reasoning_effort = normalize_agent_reasoning_effort(
+        reasoning_effort,
+        harness,
+    )
     endpoint_source = str(endpoint_source or "global").strip().lower()
     if endpoint_source not in {"global", "user"}:
         raise ValueError("Agent LLM 节点来源无效")
@@ -267,7 +280,8 @@ def create_agent_session(
         ),
         "requested_by": str(requested_by or "").strip()[:50],
         "access_role": access_role,
-        "harness": str(harness or "").strip()[:32],
+        "harness": harness,
+        "reasoning_effort": reasoning_effort,
         "endpoint_source": endpoint_source,
         "uses_personal_endpoint": endpoint_source == "user",
         "endpoint_id": endpoint_id,
@@ -293,14 +307,14 @@ def create_agent_session(
                 INSERT INTO agent_sessions (
                     session_id, current_task_id, title, task_kind,
                     problem_id, problem_title, requested_by, access_role,
-                    harness, endpoint_source, endpoint_id,
+                    harness, reasoning_effort, endpoint_source, endpoint_id,
                     endpoint_revision, endpoint_model,
                     status, message,
                     turn_count
                 ) VALUES (
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, 'Pending', '任务排队中',
+                    %s, %s, %s, %s, %s, %s, 'Pending', '任务排队中',
                     1
                 )
                 """,
@@ -314,6 +328,7 @@ def create_agent_session(
                     session["requested_by"],
                     access_role,
                     session["harness"],
+                    session["reasoning_effort"],
                     session["endpoint_source"],
                     endpoint_id,
                     session["endpoint_revision"],
@@ -392,6 +407,7 @@ def begin_agent_session_turn(
                 """
                 SELECT s.status, s.turn_count, s.task_kind, s.problem_id,
                        s.requested_by, s.access_role, s.harness,
+                       s.reasoning_effort,
                        s.endpoint_source, s.endpoint_id,
                        s.endpoint_revision, s.endpoint_model,
                        s.native_session_id,
@@ -485,6 +501,9 @@ def begin_agent_session_turn(
         "requested_by": row.get("requested_by"),
         "access_role": str(row.get("access_role") or "user"),
         "harness": row.get("harness"),
+        "reasoning_effort": str(
+            row.get("reasoning_effort") or "default"
+        ).strip().lower(),
         "endpoint_source": str(row.get("endpoint_source") or "global"),
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_revision": row.get("endpoint_revision"),
@@ -536,6 +555,7 @@ def begin_agent_session_retry(
                 """
                 SELECT current_task_id, status, turn_count, task_kind,
                        problem_id, requested_by, access_role, harness,
+                       reasoning_effort,
                        endpoint_source,
                        endpoint_id, endpoint_revision, endpoint_model,
                        native_session_id,
@@ -710,6 +730,9 @@ def begin_agent_session_retry(
         "requested_by": row.get("requested_by"),
         "access_role": str(row.get("access_role") or "user"),
         "harness": row.get("harness"),
+        "reasoning_effort": str(
+            row.get("reasoning_effort") or "default"
+        ).strip().lower(),
         "endpoint_source": str(row.get("endpoint_source") or "global"),
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_revision": row.get("endpoint_revision"),
@@ -1078,7 +1101,7 @@ def get_agent_session(session_id):
                 """
                 SELECT session_id, current_task_id, title, task_kind,
                        problem_id, problem_title, requested_by, access_role,
-                       harness, endpoint_source, endpoint_id,
+                       harness, reasoning_effort, endpoint_source, endpoint_id,
                        endpoint_revision, endpoint_model,
                        native_session_id, status, message, turn_count,
                        queue_paused, queue_pause_reason,
@@ -1099,6 +1122,7 @@ def get_agent_session(session_id):
                        problem_title AS title, 'legacy' AS task_kind,
                        problem_id, problem_title, requested_by,
                        'user' AS access_role, harness,
+                       'default' AS reasoning_effort,
                        'global' AS endpoint_source, endpoint_id,
                        NULL AS endpoint_revision, endpoint_model,
                        NULL AS native_session_id,
@@ -1126,7 +1150,8 @@ def get_agent_session_by_task_id(task_id):
                 """
                 SELECT s.session_id, s.current_task_id, s.title, s.task_kind,
                        s.problem_id, s.problem_title, s.requested_by,
-                       s.access_role, s.harness, s.endpoint_source,
+                       s.access_role, s.harness, s.reasoning_effort,
+                       s.endpoint_source,
                        s.endpoint_id,
                        s.endpoint_revision, s.endpoint_model,
                        s.native_session_id, s.status,
@@ -1262,7 +1287,8 @@ def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
                     SELECT s.id AS source_id, s.session_id,
                            s.current_task_id, s.title, s.task_kind,
                            s.problem_id, s.problem_title, s.requested_by,
-                           s.access_role, s.harness, s.endpoint_source,
+                           s.access_role, s.harness, s.reasoning_effort,
+                           s.endpoint_source,
                            s.endpoint_id,
                            s.endpoint_revision, s.endpoint_model,
                            s.native_session_id, s.status,
@@ -1279,6 +1305,7 @@ def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
                            r.problem_title AS title, 'legacy' AS task_kind,
                            r.problem_id, r.problem_title, r.requested_by,
                            'user' AS access_role, r.harness,
+                           'default' AS reasoning_effort,
                            'global' AS endpoint_source, r.endpoint_id,
                            NULL AS endpoint_revision, r.endpoint_model,
                            NULL AS native_session_id,
