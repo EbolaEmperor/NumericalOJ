@@ -375,11 +375,12 @@
         endpointEditor.setResult('字段已经变化，请重新测试连接。', 'error');
         return;
       }
-      state.endpointTestToken = data.test_token || data.test?.test_token || '';
-      state.endpointFormFingerprint = testedFingerprint;
       const test = data.test || data;
+      endpointEditor.applyTestedLimits(test);
+      state.endpointTestToken = data.test_token || data.test?.test_token || '';
+      state.endpointFormFingerprint = fingerprint(endpointPayload());
       endpointEditor.setResult(
-        `连接成功${test.latency_ms != null ? ` · ${test.latency_ms} ms` : ''}${test.message ? ` · ${test.message}` : ''}`,
+        `连接成功${test.latency_ms != null ? ` · ${test.latency_ms} ms` : ''}${test.limits_adjusted ? ' · 已按上游上限调整容量' : ''}${test.message ? ` · ${test.message}` : ''}`,
         'ok',
       );
       $('[data-endpoint-editor-save]', endpointForm).disabled = !state.endpointTestToken;
@@ -423,23 +424,39 @@
   async function retestEndpoint(endpoint, button) {
     setBusy(button, true, '');
     try {
-      await request('/llm-endpoints/test', {
+      const candidate = {
+        endpoint_id: Number(endpoint.id),
+        protocol: endpoint.protocol,
+        category: endpoint.category,
+        base_url: endpoint.base_url,
+        api_key: '',
+        model: endpoint.model,
+        context_window_tokens: endpoint.context_window_tokens,
+        max_output_tokens: endpoint.max_output_tokens,
+        thinking_enabled: Boolean(endpoint.thinking_enabled),
+        thinking_format: endpoint.thinking_format,
+        input_price_per_million: decimalText(endpoint.input_price_per_million),
+        cached_input_price_per_million: decimalText(endpoint.cached_input_price_per_million),
+        output_price_per_million: decimalText(endpoint.output_price_per_million),
+      };
+      const tested = await request('/llm-endpoints/test', {
         method: 'POST',
-        body: {
-          endpoint_id: Number(endpoint.id),
-          protocol: endpoint.protocol,
-          category: endpoint.category,
-          base_url: endpoint.base_url,
-          api_key: '',
-          model: endpoint.model,
-          thinking_enabled: Boolean(endpoint.thinking_enabled),
-          thinking_format: endpoint.thinking_format,
-          input_price_per_million: decimalText(endpoint.input_price_per_million),
-          cached_input_price_per_million: decimalText(endpoint.cached_input_price_per_million),
-          output_price_per_million: decimalText(endpoint.output_price_per_million),
-        },
+        body: candidate,
       });
-      toast(`“${endpointIdentity(endpoint)}”连接正常`);
+      const test = tested.test || tested;
+      if (test.limits_adjusted) {
+        candidate.context_window_tokens = test.context_window_tokens;
+        candidate.max_output_tokens = test.max_output_tokens;
+        candidate.test_token = tested.test_token || test.test_token;
+        delete candidate.endpoint_id;
+        await request(`/llm-endpoints/${Number(endpoint.id)}`, {
+          method: 'PUT',
+          body: candidate,
+        });
+        toast(`“${endpointIdentity(endpoint)}”已按上游上限调整容量`);
+      } else {
+        toast(`“${endpointIdentity(endpoint)}”连接正常`);
+      }
     } catch (error) {
       toast(`“${endpointIdentity(endpoint)}”复测失败：${error.message}`, 'error');
     } finally {

@@ -181,10 +181,11 @@ def test_user_endpoint_probe_uses_the_pinned_request_transport(monkeypatch):
     )
     observed = {}
 
-    def probe(candidate, *, timeout, request_post):
+    def probe(candidate, *, timeout, request_get, request_post):
         observed.update(
             candidate=candidate,
             timeout=timeout,
+            get_session=request_get.__self__,
             session=request_post.__self__,
         )
         return {"passed": True, "message": "ok", "latency_ms": 1}
@@ -199,6 +200,7 @@ def test_user_endpoint_probe_uses_the_pinned_request_transport(monkeypatch):
     assert result["passed"] is True
     assert observed["candidate"] is candidate
     assert observed["session"].trust_env is False
+    assert observed["get_session"] is observed["session"]
 
 
 def test_llm_probe_sends_through_injected_pinned_transport():

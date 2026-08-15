@@ -48,6 +48,8 @@ def test_global_and_personal_endpoints_render_the_same_editor_macro():
         "category",
         "base_url",
         "api_key",
+        "context_window_tokens",
+        "max_output_tokens",
         "thinking_enabled",
         "thinking_format",
     ):
@@ -94,12 +96,16 @@ def test_shared_controller_owns_choices_thinking_validation_and_values():
         "function setThinking(enabled)",
         "function values()",
         "function validate()",
+        "function applyTestedLimits(value)",
         "global.NumOJEndpointEditor = Object.freeze({mount: mount})",
     ):
         assert contract in script
     assert ".numoj-endpoint-editor" in stylesheet
     assert ".numoj-endpoint-editor__thinking" in stylesheet
     assert ".numoj-endpoint-editor__prices" in stylesheet
+    assert "DEFAULT_CONTEXT_WINDOW_TOKENS = 384000" in script
+    assert "DEFAULT_MAX_OUTPUT_TOKENS = 32000" in script
+    assert "outputTokens > contextTokens" in script
 
 
 def test_legacy_endpoint_form_and_personal_protocol_contracts_are_gone():
@@ -128,11 +134,13 @@ def test_host_adapters_ignore_stale_editor_requests():
 
     assert "const testedFingerprint = fingerprint(payload)" in site_script
     assert "fingerprint(endpointPayload()) !== testedFingerprint" in site_script
+    assert "endpointEditor.applyTestedLimits(test)" in site_script
     assert "var personalEditorRevision = 0" in agent_script
     assert "editorRevision === personalEditorRevision" in agent_script
     assert "editorRevision !== personalEditorRevision" in agent_script
     assert "personalFormFingerprint" in agent_script
     assert "endpointFingerprint(personalEndpointPayload()) !== testedFingerprint" in agent_script
+    assert "personalEditor.applyTestedLimits(test)" in agent_script
     assert "activeLayer === personalEditorLayer" in agent_script
     assert "activeLayer !== personalEditorLayer" not in agent_script
     assert "function isPersonalEditorOpen()" in agent_script

@@ -420,6 +420,8 @@
         protocol: endpoint.protocol || 'openai',
         category: endpoint.category || 'text',
         base_url: endpoint.base_url || '',
+        context_window_tokens: endpoint.context_window_tokens,
+        max_output_tokens: endpoint.max_output_tokens,
         thinking_enabled: Boolean(endpoint.thinking_enabled),
         thinking_format: endpoint.thinking_format || 'none'
       });
@@ -749,16 +751,18 @@
           return;
         }
         var test = response.test || response;
+        personalEditor.applyTestedLimits(test);
         personalTestToken = asText(response.test_token || (test && test.test_token));
         if (!personalTestToken || test.passed === false) {
           invalidatePersonalEndpointTest(false);
           personalEditor.setResult(asText(test.message) || '连接测试失败。', 'error');
           return;
         }
-        personalFormFingerprint = testedFingerprint;
+        personalFormFingerprint = endpointFingerprint(personalEndpointPayload());
         personalEditor.setResult(
           '连接成功'
             + (test.latency_ms != null ? ' · ' + test.latency_ms + ' ms' : '')
+            + (test.limits_adjusted ? ' · 已按上游上限调整容量' : '')
             + (test.message ? ' · ' + test.message : ''),
           'ok'
         );

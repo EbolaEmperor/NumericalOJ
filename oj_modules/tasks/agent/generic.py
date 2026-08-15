@@ -28,6 +28,10 @@ from oj_modules.problems.agent_launch import (
     token_pricing_from_endpoint,
     validate_launch_endpoint_revision,
 )
+from oj_modules.site_config.services import (
+    DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+)
 from oj_modules.tasks.agent.conversation import extract_agent_conclusion
 from oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
@@ -490,6 +494,14 @@ def register_agent_run_turn_task(celery_app):
             "endpoint_id": int(endpoint["id"]),
             "endpoint_source": endpoint_source,
             "endpoint_model": str(endpoint.get("model") or ""),
+            "context_window_tokens": int(
+                endpoint.get("context_window_tokens")
+                or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+            ),
+            "max_output_tokens": int(
+                endpoint.get("max_output_tokens")
+                or DEFAULT_LLM_MAX_OUTPUT_TOKENS
+            ),
             "reasoning_effort": normalized_reasoning_effort,
         })
         _update_agent_state(

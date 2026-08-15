@@ -135,7 +135,11 @@ def test_resolve_public_launch_endpoint_requires_configured_api_key(monkeypatch)
 def test_launch_endpoint_matrix_includes_only_current_users_personal_nodes(
     monkeypatch,
 ):
-    monkeypatch.setattr(agent_launch, "list_llm_endpoints", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        agent_launch,
+        "list_llm_endpoints",
+        lambda **_kwargs: [_endpoint(1, protocol="openai")],
+    )
     monkeypatch.setattr(
         agent_launch,
         "list_user_agent_endpoints",
@@ -152,7 +156,10 @@ def test_launch_endpoint_matrix_includes_only_current_users_personal_nodes(
 
     result = agent_launch.list_launch_endpoints_by_harness(user_id=7)
 
-    assert result["codex"][0]["ref"] == "user:9"
+    assert [item["ref"] for item in result["codex"]] == [
+        "user:9",
+        "global:1",
+    ]
     assert result["codex"][0]["metered"] is False
 
 

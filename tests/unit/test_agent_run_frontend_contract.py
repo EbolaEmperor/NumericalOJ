@@ -125,6 +125,20 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     assert ".agent-choice .rk-choice-caret { display: none; }" in mobile
 
 
+def test_agent_home_prioritizes_personal_endpoints_and_marks_them_as_self_paid():
+    controller = _read("static/app/agents/task-list.js")
+    styles = _read("static/app/agents/task-list.css")
+
+    assert "Number(right.isPersonal) - Number(left.isPersonal)" in controller
+    assert "endpointPaidBadge.textContent = '（自费）'" in controller
+    assert "badge.textContent = '（自费）'" in controller
+    assert "option.classList.add('is-personal-endpoint')" in controller
+    assert "endpointChoice.classList.toggle('is-personal-endpoint', isPersonal)" in controller
+    assert "endpoint.model + (isPersonal ? '（自费）' : '')" in controller
+    assert ".agent-endpoint-paid-badge" in styles
+    assert ".agent-choice--endpoint .rk-choice-option.is-personal-endpoint" in styles
+
+
 def test_agent_home_reasoning_effort_is_dynamic_and_part_of_submission_identity():
     template = _read("templates/admin/agent_tasks.html")
     controller = _read("static/app/agents/task-list.js")
@@ -209,7 +223,8 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     meter_start = composer.index('class="agent-context-meter"')
     meter_end = composer.index("</button>", meter_start)
     assert " title=" not in composer[meter_start:meter_end]
-    assert "agent_context_window_tokens=AGENT_CONTEXT_WINDOW_TOKENS" in routes
+    assert "agent_context_window_tokens=int(" in routes
+    assert "DEFAULT_LLM_CONTEXT_WINDOW_TOKENS" in routes
 
     assert "querySelectorAll('[data-agent-session-avatar]')" in controller
     assert "identicon.paint(avatar, identicon.cellsForSeed(seed), label)" in controller

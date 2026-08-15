@@ -225,6 +225,57 @@
 .agent-choice--effort .rk-choice-menu { width: 184px; }
 .agent-choice--role .rk-choice-menu { width: 280px; }
 
+.agent-choice--endpoint .agent-endpoint-option-name {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  overflow: visible;
+}
+
+.agent-endpoint-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-endpoint-paid-badge {
+  display: inline-flex;
+  min-width: max-content;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 1px 5px;
+  border: 1px solid #d6b884;
+  border-radius: 999px;
+  background: #f8ead2;
+  color: #7f471b;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 1.35;
+  letter-spacing: .02em;
+}
+
+.agent-endpoint-paid-badge[hidden] { display: none; }
+
+.agent-choice--endpoint .agent-endpoint-paid-badge--trigger {
+  min-width: max-content;
+  overflow: visible;
+  font-weight: 750;
+}
+
+.agent-choice--endpoint .rk-choice-option.is-personal-endpoint {
+  background: #fffaf1;
+}
+
+.agent-choice--endpoint .rk-choice-option.is-personal-endpoint:hover,
+.agent-choice--endpoint .rk-choice-option.is-personal-endpoint.is-active,
+.agent-choice--endpoint .rk-choice-option.is-personal-endpoint:focus-visible,
+.agent-choice--endpoint .rk-choice-option.is-personal-endpoint.active {
+  background: #f8eedc;
+}
+
 .agent-composer-choice,
 .agent-composer-choice > .agent-choice {
   width: fit-content;

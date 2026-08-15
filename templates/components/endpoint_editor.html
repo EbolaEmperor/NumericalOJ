@@ -11,6 +11,8 @@
     <input type="hidden" name="endpoint_id">
     <input type="hidden" name="name" value="" disabled>
     <label class="wide"><span>模型名称</span><input name="model" maxlength="200" required autocomplete="off"></label>
+    <label><span>上下文窗口</span><input name="context_window_tokens" type="number" min="1" max="2147483647" step="1" inputmode="numeric" value="384000" required></label>
+    <label><span>单次最大输出</span><input name="max_output_tokens" type="number" min="1" max="2147483647" step="1" inputmode="numeric" value="32000" required></label>
     <label>
       <span>兼容协议</span>
       <div class="rk-choice numoj-endpoint-editor__choice" data-endpoint-editor-choice="protocol">

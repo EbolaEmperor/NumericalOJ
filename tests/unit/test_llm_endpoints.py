@@ -64,6 +64,17 @@ def install_post(monkeypatch, response):
     return calls
 
 
+def install_get(monkeypatch, response):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return response
+
+    monkeypatch.setattr(adapter.requests, "get", fake_get)
+    return calls
+
+
 def test_endpoint_snapshot_is_immutable_normalized_and_secret_safe():
     snapshot = adapter.LLMEndpointSnapshot.from_mapping({
         "endpoint_id": "9",
@@ -618,7 +629,7 @@ def test_real_probe_shape_for_all_four_categories(
     assert calls[0][0].endswith(expected_suffix)
     body = calls[0][1]["json"]
     if snapshot.category is not adapter.LLMEndpointCategory.EMBEDDING:
-        assert body["max_tokens"] == 64_000
+        assert body["max_tokens"] == 64
     if snapshot.category in {adapter.LLMEndpointCategory.VISION, adapter.LLMEndpointCategory.OMNI}:
         content = body["messages"][0]["content"]
         assert any(block["type"] in {"image", "image_url"} for block in content)
@@ -635,6 +646,7 @@ def test_dynamic_config_tester_adapter_returns_supported_shape(monkeypatch):
     calls = install_post(monkeypatch, FakeResponse({
         "choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}],
     }))
+    get_calls = install_get(monkeypatch, FakeResponse({"data": []}))
     candidate = {
         "protocol": "openai",
         "category": "text",
@@ -650,8 +662,187 @@ def test_dynamic_config_tester_adapter_returns_supported_shape(monkeypatch):
     assert result["passed"] is True
     assert result["message"] == "端点测试成功。"
     assert isinstance(result["latency_ms"], int)
+    assert result["upstream_context_window_tokens"] is None
+    assert result["upstream_max_output_tokens"] is None
     assert "not-returned" not in repr(result)
     assert len(calls) == 1
+    assert len(get_calls) == 1
+
+
+def test_openai_model_metadata_uses_list_exact_match_and_preserves_query():
+    post_calls = []
+    get_calls = []
+
+    def post(url, **kwargs):
+        post_calls.append((url, kwargs))
+        return FakeResponse({
+            "choices": [{"message": {"content": "OK"}}],
+        })
+
+    def get(url, **kwargs):
+        get_calls.append((url, kwargs))
+        return FakeResponse({
+            "data": [
+                {
+                    "id": "provider/other-model",
+                    "context_length": 1,
+                    "max_output_tokens": 1,
+                },
+                {
+                    "id": "provider/model-id",
+                    "context_length": "131072",
+                    "max_output_tokens": 32768,
+                    "max_tokens": 1,
+                    "top_provider": {
+                        "context_length": 100000,
+                        "max_completion_tokens": "16000",
+                    },
+                },
+            ],
+        })
+
+    result = adapter.test_endpoint_candidate(
+        {
+            "protocol": "openai",
+            "category": "text",
+            "base_url": "https://llm.example.test/v1?api-version=2026-08-01",
+            "api_key": "secret",
+            "model": "provider/model-id",
+            "thinking_enabled": False,
+            "thinking_format": "none",
+        },
+        timeout=3,
+        request_post=post,
+        request_get=get,
+    )
+
+    assert result["passed"] is True
+    assert result["upstream_context_window_tokens"] == 100000
+    assert result["upstream_max_output_tokens"] == 16000
+    assert post_calls[0][1]["json"]["max_tokens"] == 64
+    assert get_calls == [(
+        "https://llm.example.test/v1/models?api-version=2026-08-01",
+        {
+            "headers": {
+                "Authorization": "Bearer secret",
+                "Content-Type": "application/json",
+            },
+            "timeout": 3.0,
+            "allow_redirects": False,
+        },
+    )]
+
+
+def test_anthropic_model_metadata_uses_encoded_direct_model_url():
+    get_calls = []
+
+    def post(_url, **_kwargs):
+        return FakeResponse({
+            "content": [{"type": "text", "text": "OK"}],
+            "stop_reason": "end_turn",
+        })
+
+    def get(url, **kwargs):
+        get_calls.append((url, kwargs))
+        return FakeResponse({
+            "id": "claude/model small",
+            "max_input_tokens": "200000",
+            "max_tokens": 8192,
+            "limits": {"max_output_tokens": 10000},
+        })
+
+    result = adapter.test_endpoint_candidate(
+        {
+            "protocol": "anthropic",
+            "category": "text",
+            "base_url": "https://llm.example.test/v1?beta=true",
+            "api_key": "secret",
+            "model": "claude/model small",
+            "thinking_enabled": False,
+            "thinking_format": "none",
+        },
+        timeout=4,
+        request_post=post,
+        request_get=get,
+    )
+
+    assert result["passed"] is True
+    assert result["upstream_context_window_tokens"] == 200000
+    assert result["upstream_max_output_tokens"] == 8192
+    assert get_calls == [(
+        "https://llm.example.test/v1/models/claude%2Fmodel%20small?beta=true",
+        {
+            "headers": {
+                "x-api-key": "secret",
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            "timeout": 4.0,
+            "allow_redirects": False,
+        },
+    )]
+
+
+@pytest.mark.parametrize(
+    "metadata_response",
+    [
+        FakeResponse({}, status_code=404),
+        FakeResponse(ValueError("not json")),
+        FakeResponse({"data": [{"id": "another-model", "context_length": 1}]}),
+        FakeResponse({
+            "data": [{
+                "id": "model-id",
+                "max_tokens": 1,
+                "context_length": 0,
+                "max_output_tokens": -1,
+            }],
+        }),
+    ],
+)
+def test_model_metadata_failures_and_missing_limits_are_best_effort(
+    metadata_response,
+):
+    def post(_url, **_kwargs):
+        return FakeResponse({
+            "choices": [{"message": {"content": "OK"}}],
+        })
+
+    result = adapter.test_endpoint_candidate(
+        {
+            "protocol": "openai",
+            "category": "text",
+            "base_url": "https://llm.example.test/v1",
+            "api_key": "secret",
+            "model": "model-id",
+            "thinking_enabled": False,
+            "thinking_format": "none",
+        },
+        request_post=post,
+        request_get=lambda _url, **_kwargs: metadata_response,
+    )
+
+    assert result["passed"] is True
+    assert result["upstream_context_window_tokens"] is None
+    assert result["upstream_max_output_tokens"] is None
+
+
+def test_failed_inference_probe_does_not_request_model_metadata():
+    result = adapter.test_endpoint_candidate(
+        {
+            "protocol": "openai",
+            "category": "text",
+            "base_url": "https://llm.example.test/v1",
+            "api_key": "secret",
+            "model": "model-id",
+            "thinking_enabled": False,
+            "thinking_format": "none",
+        },
+        request_post=lambda _url, **_kwargs: FakeResponse({}, status_code=401),
+        request_get=lambda _url, **_kwargs: pytest.fail("不应请求模型元数据"),
+    )
+
+    assert result["passed"] is False
+    assert result["message"] == "模型端点鉴权失败（HTTP 401）。"
 
 
 def test_dynamic_config_tester_adapter_converts_validation_error_without_secret():

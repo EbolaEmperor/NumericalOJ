@@ -435,12 +435,15 @@ def upsert_agent_run_snapshot(state):
                 """
                 INSERT INTO agent_task_runs (
                     task_id, problem_id, problem_title, requested_by,
-                    harness, endpoint_id, endpoint_model, status, message,
+                    harness, endpoint_id, endpoint_model,
+                    context_window_tokens, max_output_tokens,
+                    status, message,
                     best_score, final_submission_id, latest_submission_id,
                     attempts_json
                 ) VALUES (
                     %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
+                    %s, %s,
                     %s, %s, %s,
                     %s
                 )
@@ -492,6 +495,22 @@ def upsert_agent_run_snapshot(state):
                         ),
                         endpoint_model,
                         COALESCE(NULLIF(VALUES(endpoint_model), ''), endpoint_model)
+                    ),
+                    context_window_tokens=IF(
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
+                        context_window_tokens,
+                        COALESCE(VALUES(context_window_tokens), context_window_tokens)
+                    ),
+                    max_output_tokens=IF(
+                        LOWER(status) IN (
+                            'completed', 'failed', 'canceled', 'cancelled',
+                            'cleanupfailed', 'cleanup_failed'
+                        ),
+                        max_output_tokens,
+                        COALESCE(VALUES(max_output_tokens), max_output_tokens)
                     ),
                     message=IF(
                         LOWER(status) IN (
@@ -550,6 +569,16 @@ def upsert_agent_run_snapshot(state):
                     str(state.get("harness") or "")[:32] if state.get("harness") is not None else None,
                     state.get("endpoint_id"),
                     str(state.get("endpoint_model") or "")[:255] if state.get("endpoint_model") is not None else None,
+                    (
+                        _safe_int(state.get("context_window_tokens"), 0) or None
+                        if state.get("context_window_tokens") is not None
+                        else None
+                    ),
+                    (
+                        _safe_int(state.get("max_output_tokens"), 0) or None
+                        if state.get("max_output_tokens") is not None
+                        else None
+                    ),
                     str(state.get("status") or "Pending")[:32],
                     state.get("message"),
                     best_score,
@@ -613,7 +642,9 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                 """
                 SELECT r.task_id, t.session_id, r.problem_id,
                        r.problem_title, r.requested_by, r.harness,
-                       r.endpoint_id, r.endpoint_model, r.status, r.message,
+                       r.endpoint_id, r.endpoint_model,
+                       r.context_window_tokens, r.max_output_tokens,
+                       r.status, r.message,
                        r.best_score, r.final_submission_id,
                        r.latest_submission_id, r.attempts_json,
                        r.created_at, r.updated_at
@@ -636,11 +667,29 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                     """
                     SELECT s.session_id, s.problem_id, s.problem_title,
                            s.requested_by, s.harness, s.endpoint_id,
-                           s.endpoint_model
+                           s.endpoint_model,
+                           CASE
+                               WHEN s.endpoint_source='user'
+                               THEN ue.context_window_tokens
+                               ELSE ge.context_window_tokens
+                           END AS context_window_tokens,
+                           CASE
+                               WHEN s.endpoint_source='user'
+                               THEN ue.max_output_tokens
+                               ELSE ge.max_output_tokens
+                           END AS max_output_tokens
                     FROM agent_sessions AS s
                     JOIN agent_session_turns AS t
                       ON t.session_id=s.session_id
                      AND t.task_id=s.current_task_id
+                    LEFT JOIN llm_endpoints AS ge
+                      ON s.endpoint_source='global'
+                     AND ge.id=s.endpoint_id
+                     AND ge.revision=s.endpoint_revision
+                    LEFT JOIN agent_user_endpoints AS ue
+                      ON s.endpoint_source='user'
+                     AND ue.id=s.endpoint_id
+                     AND ue.revision=s.endpoint_revision
                     WHERE t.task_id=%s
                       AND LOWER(s.status) IN ('pending', 'running')
                     LIMIT 1
@@ -655,10 +704,11 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                         """
                         INSERT INTO agent_task_runs (
                             task_id, problem_id, problem_title, requested_by,
-                            harness, endpoint_id, endpoint_model, status,
-                            message, best_score, attempts_json
+                            harness, endpoint_id, endpoint_model,
+                            context_window_tokens, max_output_tokens,
+                            status, message, best_score, attempts_json
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s,
                             'Canceled', %s, 0, '[]'
                         )
                         ON DUPLICATE KEY UPDATE
@@ -681,6 +731,8 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                             pending_session.get("harness"),
                             pending_session.get("endpoint_id"),
                             pending_session.get("endpoint_model"),
+                            pending_session.get("context_window_tokens"),
+                            pending_session.get("max_output_tokens"),
                             cancel_message,
                         ),
                     )
@@ -689,7 +741,9 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                         """
                         SELECT r.task_id, t.session_id, r.problem_id,
                                r.problem_title, r.requested_by, r.harness,
-                               r.endpoint_id, r.endpoint_model, r.status,
+                               r.endpoint_id, r.endpoint_model,
+                               r.context_window_tokens, r.max_output_tokens,
+                               r.status,
                                r.message, r.best_score,
                                r.final_submission_id,
                                r.latest_submission_id, r.attempts_json,
@@ -762,6 +816,8 @@ def _agent_run_from_row(row):
         "harness": row.get("harness"),
         "endpoint_id": row.get("endpoint_id"),
         "endpoint_model": row.get("endpoint_model"),
+        "context_window_tokens": row.get("context_window_tokens"),
+        "max_output_tokens": row.get("max_output_tokens"),
         "status": row.get("status"),
         "message": row.get("message"),
         "best_score": _safe_int(row.get("best_score"), 0),
@@ -784,7 +840,9 @@ def get_agent_run_by_task_id(task_id):
                 """
                 SELECT r.task_id, t.session_id, r.problem_id,
                        r.problem_title, r.requested_by, r.harness,
-                       r.endpoint_id, r.endpoint_model, r.status, r.message,
+                       r.endpoint_id, r.endpoint_model,
+                       r.context_window_tokens, r.max_output_tokens,
+                       r.status, r.message,
                        r.best_score, r.final_submission_id,
                        r.latest_submission_id, r.attempts_json,
                        r.created_at, r.updated_at
@@ -815,6 +873,7 @@ def get_agent_runs_paginated(page=1, per_page=20):
                 """
                 SELECT r.task_id, r.problem_id, r.problem_title, r.requested_by,
                        r.harness, r.endpoint_id, r.endpoint_model,
+                       r.context_window_tokens, r.max_output_tokens,
                        r.status, r.message, r.best_score, r.final_submission_id,
                        r.latest_submission_id, p.max_score AS problem_max_score,
                        r.created_at, r.updated_at

@@ -11,7 +11,12 @@ from oj_modules.ranking.agent_judge.db import (
     allowed_agent_endpoint_protocols,
     normalize_agent_harness,
 )
-from oj_modules.site_config.services import get_llm_endpoint, list_llm_endpoints
+from oj_modules.site_config.services import (
+    DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    get_llm_endpoint,
+    list_llm_endpoints,
+)
 from oj_modules.agents.user_endpoints import (
     get_user_agent_endpoint,
     list_user_agent_endpoints,
@@ -34,9 +39,6 @@ ALLOWED_AGENT_ACCESS_ROLES = (
     AGENT_ACCESS_ROLE_ADMIN,
 )
 
-# 普通 Agent 的四种 harness 共用同一上下文窗口。宿主运行参数与详情页
-# 展示必须引用同一个值，避免 UI 显示的占比和容器实际限制不一致。
-AGENT_CONTEXT_WINDOW_TOKENS = 128_000
 AGENT_DEFAULT_REASONING_EFFORT = "high"
 
 _DEFAULT_REASONING_EFFORT = "default"
@@ -285,6 +287,14 @@ def _public_launch_endpoint(endpoint, *, source="global"):
         "model": str(endpoint.get("model") or "").strip(),
         "protocol": _endpoint_protocol(endpoint),
         "category": _endpoint_category(endpoint),
+        "context_window_tokens": int(
+            endpoint.get("context_window_tokens")
+            or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+        ),
+        "max_output_tokens": int(
+            endpoint.get("max_output_tokens")
+            or DEFAULT_LLM_MAX_OUTPUT_TOKENS
+        ),
         "thinking_enabled": bool(endpoint.get("thinking_enabled")),
         "test_status": str(endpoint.get("test_status") or "untested"),
         "is_personal": source == "user",
@@ -321,16 +331,16 @@ def list_launch_endpoints_by_harness(*, user_id=None):
     return {
         harness: (
             [
+                _public_launch_endpoint(endpoint, source="user")
+                for endpoint in personal_endpoints
+                if bool(endpoint.get("api_key_configured"))
+                and endpoint_supports_harness(endpoint, harness)
+            ]
+            + [
                 _public_launch_endpoint(endpoint)
                 for endpoint in endpoints
                 if bool(endpoint.get("api_key_configured"))
                 and token_pricing_from_endpoint(endpoint) is not None
-                and endpoint_supports_harness(endpoint, harness)
-            ]
-            + [
-                _public_launch_endpoint(endpoint, source="user")
-                for endpoint in personal_endpoints
-                if bool(endpoint.get("api_key_configured"))
                 and endpoint_supports_harness(endpoint, harness)
             ]
         )
@@ -402,7 +412,6 @@ def validate_launch_endpoint_revision(endpoint, expected_revision):
 __all__ = [
     "AGENT_ACCESS_ROLE_ADMIN",
     "AGENT_ACCESS_ROLE_USER",
-    "AGENT_CONTEXT_WINDOW_TOKENS",
     "AGENT_DEFAULT_REASONING_EFFORT",
     "AGENT_TASK_CUSTOM",
     "AGENT_TASK_SOLVE",

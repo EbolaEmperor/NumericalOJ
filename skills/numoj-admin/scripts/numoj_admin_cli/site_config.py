@@ -310,6 +310,10 @@ def _llm_test_then_save(
     test_token = str(tested.get("test_token") or "").strip()
     if not test_token:
         raise common.CliError("The connection test passed without returning a save token.")
+    tested_result = tested.get("test") or {}
+    for field in ("context_window_tokens", "max_output_tokens"):
+        if tested_result.get(field) is not None:
+            candidate[field] = tested_result[field]
     save_payload = {**candidate, "test_token": test_token}
     if endpoint_id is None:
         saved = _api_json(client, "POST", "/llm-endpoints", json=save_payload)

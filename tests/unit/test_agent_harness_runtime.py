@@ -179,8 +179,8 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
     assert "OPENAI_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
     assert "OPENCODE_API_KEY" not in env
-    assert env["AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS"] == "128000"
-    assert env["AJ_ENDPOINT_MAX_OUTPUT_TOKENS"] == "16384"
+    assert env["AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS"] == "384000"
+    assert env["AJ_ENDPOINT_MAX_OUTPUT_TOKENS"] == "32000"
     assert env["AJ_ENDPOINT_THINKING_ENABLED"] == "1"
     assert env["AJ_ENDPOINT_THINKING_FORMAT"] == "enable_thinking"
     assert "AJ_THINKING_FORMAT" not in env
@@ -200,6 +200,19 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
         "/workspace/.numoj-agent/identity.json"
     )
     assert "NUMOJ_USER_CONFIG" not in testdata_admin_env
+
+
+def test_runtime_env_uses_selected_endpoint_capacity_instead_of_global_limit():
+    endpoint = _endpoint()
+    endpoint.update(
+        context_window_tokens=131_072,
+        max_output_tokens=24_000,
+    )
+
+    env = _runtime_env(endpoint, "pi", "custom")
+
+    assert env["AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS"] == "131072"
+    assert env["AJ_ENDPOINT_MAX_OUTPUT_TOKENS"] == "24000"
 
 
 def test_custom_admin_runtime_uses_admin_skill_and_native_resume():

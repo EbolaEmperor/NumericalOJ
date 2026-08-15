@@ -15,6 +15,12 @@ def test_agent_user_endpoint_schema_and_source_columns_are_declared():
     assert endpoint.columns["name"].lower() == "varchar(255) not null"
     assert endpoint.columns["api_key"].lower() == "text not null"
     assert endpoint.columns["category"].lower() == "varchar(16) not null default 'text'"
+    assert endpoint.columns["context_window_tokens"].lower() == (
+        "int not null default '384000'"
+    )
+    assert endpoint.columns["max_output_tokens"].lower() == (
+        "int not null default '32000'"
+    )
     for field in (
         "input_price_per_million",
         "cached_input_price_per_million",
@@ -52,6 +58,8 @@ def test_personal_endpoint_normalization_preserves_category_without_prices():
 
     assert normalized["name"] == "private-model"
     assert normalized["category"] == "vision"
+    assert normalized["context_window_tokens"] == 384_000
+    assert normalized["max_output_tokens"] == 32_000
     assert "input_price_per_million" not in normalized
     assert "cached_input_price_per_million" not in normalized
     assert "output_price_per_million" not in normalized
@@ -79,6 +87,8 @@ def test_personal_endpoint_public_view_hides_secret_and_has_stable_ref():
     assert public["ref"] == "user:8"
     assert public["name"] == "我的 Claude"
     assert public["category"] == "omni"
+    assert public["context_window_tokens"] == 384_000
+    assert public["max_output_tokens"] == 32_000
     assert "input_price_per_million" not in public
     assert "cached_input_price_per_million" not in public
     assert "output_price_per_million" not in public
@@ -140,16 +150,28 @@ def test_personal_endpoint_test_issues_scoped_one_time_grant(monkeypatch):
         user_id=7,
         tester=lambda candidate, **_kwargs: (
             observed.append(candidate)
-            or {"passed": True, "message": "ok", "latency_ms": 2}
+            or {
+                "passed": True,
+                "message": "ok",
+                "latency_ms": 2,
+                "upstream_context_window_tokens": 128_000,
+                "upstream_max_output_tokens": 16_000,
+            }
         ),
     )
 
     assert result["test_token"] == "personal-test-token"
     assert result["expires_in_seconds"] == 600
     assert observed[0]["category"] == "text"
+    assert observed[0]["context_window_tokens"] == 384_000
+    assert result["context_window_tokens"] == 128_000
+    assert result["max_output_tokens"] == 16_000
+    assert result["limits_adjusted"] is True
     assert "input_price_per_million" not in observed[0]
     assert "INSERT INTO dynamic_config_test_grants" in executed[0][0]
     assert executed[0][1][1] == user_endpoints.USER_ENDPOINT_TEST_GRANT_KIND
+    expected = dict(observed[0], context_window_tokens=128_000, max_output_tokens=16_000)
+    assert executed[0][1][4] == user_endpoints._candidate_fingerprint(expected)
 
 
 def test_personal_endpoint_create_persists_category_without_prices(monkeypatch):
@@ -227,6 +249,7 @@ def test_personal_endpoint_create_persists_category_without_prices(monkeypatch):
 
     sql, params = executed[1]
     assert "protocol, category, base_url" in sql
+    assert "context_window_tokens, max_output_tokens" in sql
     assert "input_price_per_million" not in sql
     assert params[3] == "omni"
     assert "UPDATE dynamic_config_test_grants SET consumed_at" in executed[2][0]

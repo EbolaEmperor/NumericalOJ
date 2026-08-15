@@ -21,7 +21,7 @@ import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 
@@ -56,7 +56,26 @@ _VISION_CATEGORIES = {
 }
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
-_PROBE_MAX_TOKENS = 64_000
+_PROBE_MAX_TOKENS = 64
+
+_MODEL_CONTEXT_LIMIT_FIELDS = frozenset({
+    "contextlength",
+    "contextwindow",
+    "contextwindowtokens",
+    "inputtokenlimit",
+    "maxcontextlength",
+    "maxcontexttokens",
+    "maxinputtokens",
+    "maxmodellen",
+    "maxpositionembeddings",
+    "maxsequencelength",
+})
+_MODEL_OUTPUT_LIMIT_FIELDS = frozenset({
+    "maxcompletiontokens",
+    "maxoutputlength",
+    "maxoutputtokens",
+    "outputtokenlimit",
+})
 
 
 class LLMEndpointError(RuntimeError):
@@ -378,6 +397,13 @@ def endpoint_request_url(endpoint, operation="chat"):
     return _append_path(use_endpoint.base_url, suffix)
 
 
+def _model_metadata_url(endpoint):
+    if endpoint.protocol is LLMProtocol.OPENAI:
+        return _append_path(endpoint.base_url, "/models")
+    model = quote(endpoint.model, safe="")
+    return _append_path(endpoint.base_url, f"/v1/models/{model}")
+
+
 def _request_headers(endpoint):
     if endpoint.protocol is LLMProtocol.OPENAI:
         return {
@@ -389,6 +415,110 @@ def _request_headers(endpoint):
         "anthropic-version": _ANTHROPIC_VERSION,
         "Content-Type": "application/json",
     }
+
+
+def _metadata_positive_int(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isascii() and text.isdigit():
+            result = int(text)
+            return result if result > 0 else None
+    return None
+
+
+def _metadata_field_name(value):
+    return "".join(
+        character
+        for character in str(value or "").strip().lower()
+        if character.isalnum()
+    )
+
+
+def _model_token_limits(metadata, *, include_plain_max_tokens=False):
+    context_limits = []
+    output_limits = []
+
+    def visit(value):
+        if isinstance(value, Mapping):
+            for raw_key, raw_value in value.items():
+                key = _metadata_field_name(raw_key)
+                limit = _metadata_positive_int(raw_value)
+                if key in _MODEL_CONTEXT_LIMIT_FIELDS and limit is not None:
+                    context_limits.append(limit)
+                elif (
+                    key in _MODEL_OUTPUT_LIMIT_FIELDS
+                    or (include_plain_max_tokens and key == "maxtokens")
+                ) and limit is not None:
+                    output_limits.append(limit)
+                if isinstance(raw_value, (Mapping, list, tuple)):
+                    visit(raw_value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(metadata)
+    return (
+        min(context_limits) if context_limits else None,
+        min(output_limits) if output_limits else None,
+    )
+
+
+def _metadata_for_endpoint(endpoint, data):
+    if not isinstance(data, Mapping):
+        return None
+    if endpoint.protocol is LLMProtocol.ANTHROPIC:
+        nested = data.get("data")
+        return nested if isinstance(nested, Mapping) else data
+    models = data.get("data")
+    if not isinstance(models, list):
+        return None
+    return next(
+        (
+            item
+            for item in models
+            if isinstance(item, Mapping)
+            and str(item.get("id") or "") == endpoint.model
+        ),
+        None,
+    )
+
+
+def _probe_model_token_limits(endpoint, *, timeout, request_get=None):
+    get = request_get or requests.get
+    response = None
+    try:
+        response = get(
+            _model_metadata_url(endpoint),
+            headers=_request_headers(endpoint),
+            timeout=float(timeout),
+            allow_redirects=False,
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status < 200 or status >= 300:
+            return None, None
+        try:
+            data = response.json()
+        except Exception:
+            return None, None
+        metadata = _metadata_for_endpoint(endpoint, data)
+        if metadata is None:
+            return None, None
+        return _model_token_limits(
+            metadata,
+            include_plain_max_tokens=endpoint.protocol is LLMProtocol.ANTHROPIC,
+        )
+    except Exception:
+        return None, None
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
 
 
 def _positive_int(value, field_name, *, allow_none=True):
@@ -1371,20 +1501,44 @@ def probe_endpoint(endpoint, *, timeout=30, request_post=None):
     )
 
 
-def test_endpoint_candidate(candidate, *, timeout=30, request_post=None):
+def test_endpoint_candidate(
+    candidate,
+    *,
+    timeout=30,
+    request_post=None,
+    request_get=None,
+):
     """可直接注入动态配置服务的同步 tester。
 
-    ``candidate`` 使用配置层的普通字典结构；返回值故意只包含测试状态、
-    安全消息和耗时，不回显 API Key 或请求载荷。
+    ``candidate`` 使用配置层的普通字典结构；真实推理测试通过后，再尽力读取
+    上游模型元数据中的 token 上限。元数据缺失或请求失败不会改变连通性结果，
+    返回值也不会回显 API Key 或请求载荷。
     """
 
     started = time.monotonic()
     try:
-        return probe_endpoint(
+        result = probe_endpoint(
             candidate,
             timeout=timeout,
             request_post=request_post,
         ).to_tester_result()
+        if not result["passed"]:
+            return result
+        endpoint = _coerce_endpoint(candidate)
+        context_limit, output_limit = _probe_model_token_limits(
+            endpoint,
+            timeout=timeout,
+            request_get=request_get,
+        )
+        result.update({
+            "upstream_context_window_tokens": context_limit,
+            "upstream_max_output_tokens": output_limit,
+            "latency_ms": max(
+                0,
+                int((time.monotonic() - started) * 1000),
+            ),
+        })
+        return result
     except LLMEndpointError as exc:
         message = str(exc)
     except Exception:

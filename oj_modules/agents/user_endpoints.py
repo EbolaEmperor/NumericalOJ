@@ -44,6 +44,14 @@ def _candidate_from_row(row):
         "base_url": row.get("base_url"),
         "api_key": row.get("api_key"),
         "model": row.get("model"),
+        "context_window_tokens": int(
+            row.get("context_window_tokens")
+            or config_service.DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+        ),
+        "max_output_tokens": int(
+            row.get("max_output_tokens")
+            or config_service.DEFAULT_LLM_MAX_OUTPUT_TOKENS
+        ),
         "thinking_enabled": bool(row.get("thinking_enabled")),
         "thinking_format": row.get("thinking_format") or "none",
         # 个人端点不参与平台计费，价格只用于复用全站端点校验器。
@@ -75,6 +83,8 @@ def normalize_user_agent_endpoint_payload(payload, *, existing=None):
                 "base_url",
                 "api_key",
                 "model",
+                "context_window_tokens",
+                "max_output_tokens",
                 "thinking_enabled",
                 "thinking_format",
             )
@@ -91,6 +101,7 @@ def test_user_agent_endpoint(candidate, *, egress_target, timeout_seconds=30):
         return test_endpoint_candidate(
             candidate,
             timeout=timeout_seconds,
+            request_get=session.get,
             request_post=session.post,
         )
 
@@ -213,6 +224,18 @@ def test_user_agent_endpoint_payload(
     )
     candidate = normalize_user_agent_endpoint_payload(payload, existing=existing)
     result = _test_candidate(candidate, tester)
+    effective_candidate = config_service.apply_llm_endpoint_test_limits(
+        candidate,
+        result,
+    )
+    result["context_window_tokens"] = effective_candidate[
+        "context_window_tokens"
+    ]
+    result["max_output_tokens"] = effective_candidate["max_output_tokens"]
+    result["limits_adjusted"] = any(
+        effective_candidate[field] != candidate[field]
+        for field in config_service.LLM_CAPACITY_FIELDS
+    )
     token = secrets.token_urlsafe(32)
     now = datetime.utcnow()
     conn = get_db_connection()
@@ -231,7 +254,7 @@ def test_user_agent_endpoint_payload(
                     USER_ENDPOINT_TEST_GRANT_KIND,
                     endpoint_id,
                     int((existing or {}).get("revision") or 0),
-                    _candidate_fingerprint(candidate),
+                    _candidate_fingerprint(effective_candidate),
                     result["message"],
                     result["latency_ms"],
                     user_id,
@@ -264,6 +287,14 @@ def _public_endpoint(row, *, include_secret=False):
         "category": str(row.get("category") or "text"),
         "base_url": str(row.get("base_url") or ""),
         "model": str(row.get("model") or ""),
+        "context_window_tokens": int(
+            row.get("context_window_tokens")
+            or config_service.DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+        ),
+        "max_output_tokens": int(
+            row.get("max_output_tokens")
+            or config_service.DEFAULT_LLM_MAX_OUTPUT_TOKENS
+        ),
         "thinking_enabled": bool(row.get("thinking_enabled")),
         "thinking_format": str(row.get("thinking_format") or "none"),
         "revision": int(row.get("revision") or 1),
@@ -365,6 +396,8 @@ def save_user_agent_endpoint(
                 candidate["base_url"],
                 candidate["api_key"],
                 candidate["model"],
+                candidate["context_window_tokens"],
+                candidate["max_output_tokens"],
                 int(candidate["thinking_enabled"]),
                 candidate["thinking_format"],
                 grant["test_message"],
@@ -376,10 +409,11 @@ def save_user_agent_endpoint(
                     """
                     INSERT INTO agent_user_endpoints
                         (user_id, name, protocol, category, base_url, api_key,
-                         model, thinking_enabled, thinking_format, test_status,
+                         model, context_window_tokens, max_output_tokens,
+                         thinking_enabled, thinking_format, test_status,
                          test_message, test_latency_ms, tested_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'passed',
-                            %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            'passed', %s, %s, %s)
                     """,
                     (user_id, *values),
                 )
@@ -389,7 +423,8 @@ def save_user_agent_endpoint(
                     """
                     UPDATE agent_user_endpoints
                     SET name=%s, protocol=%s, category=%s, base_url=%s,
-                        api_key=%s, model=%s, thinking_enabled=%s,
+                        api_key=%s, model=%s, context_window_tokens=%s,
+                        max_output_tokens=%s, thinking_enabled=%s,
                         thinking_format=%s, test_status='passed',
                         test_message=%s, test_latency_ms=%s,
                         tested_at=%s, revision=revision+1
