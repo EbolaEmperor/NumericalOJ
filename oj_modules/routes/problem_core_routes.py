@@ -100,7 +100,6 @@ from oj_modules.problems.agent_runs import (
     hydrate_agent_run_snapshot,
 )
 from oj_modules.problems.agent_launch import (
-    AGENT_CONTEXT_WINDOW_TOKENS,
     AgentLaunchValidationError,
     build_solution_agent_prompt,
     build_testdata_agent_prompt,
@@ -114,6 +113,7 @@ from oj_modules.problems.agent_launch import (
     resolve_launch_endpoint,
     validate_launch_endpoint_revision,
 )
+from oj_modules.site_config.services import DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
 from oj_modules.problems.agent_preferences import (
     get_agent_launch_preference,
     save_agent_launch_preference,
@@ -901,9 +901,18 @@ def _agent_state_with_session_token_usage(
             context_tokens = None
     else:
         context_tokens = current_context_tokens
+    try:
+        context_window_tokens = int(
+            projected.get('context_window_tokens')
+            or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+        )
+    except (TypeError, ValueError):
+        context_window_tokens = DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+    if context_window_tokens <= 0:
+        context_window_tokens = DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
     projected['context_usage'] = {
         'used_tokens': context_tokens,
-        'window_tokens': AGENT_CONTEXT_WINDOW_TOKENS,
+        'window_tokens': context_window_tokens,
     }
     return projected
 
@@ -3493,7 +3502,10 @@ def agent_task_detail(session_id):
         agent_personal_endpoints=agent_personal_endpoints,
         agent_quota_pending_count=len(pending_requests),
         agent_quota_pending_requests=pending_requests,
-        agent_context_window_tokens=AGENT_CONTEXT_WINDOW_TOKENS,
+        agent_context_window_tokens=int(
+            (current_state.get('context_usage') or {}).get('window_tokens')
+            or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+        ),
     ))
     response.headers['Cache-Control'] = 'private, no-store'
     return response

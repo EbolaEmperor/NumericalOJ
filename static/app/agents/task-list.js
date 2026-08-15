@@ -151,6 +151,9 @@
     var feedback = root.querySelector('[data-agent-create-feedback]');
     var harnessChoice = root.querySelector('[data-agent-harness-choice] [data-rk-choice]');
     var endpointChoice = root.querySelector('[data-agent-endpoint-choice] [data-rk-choice]');
+    var endpointTrigger = endpointChoice && endpointChoice.querySelector('.rk-choice-trigger');
+    var endpointTriggerMain = endpointChoice && endpointChoice.querySelector('.rk-choice-trigger-main');
+    var endpointPaidBadge = null;
     var reasoningEffortWrapper = root.querySelector('[data-agent-reasoning-effort-choice]');
     var reasoningEffortChoice = reasoningEffortWrapper && reasoningEffortWrapper.querySelector('[data-rk-choice]');
     var accessInput = root.querySelector('input[name="access_role"]');
@@ -173,6 +176,14 @@
     var activeReasoningHarness = '';
     var reasoningSelections = Object.create(null);
 
+    if (endpointTriggerMain) {
+      endpointPaidBadge = document.createElement('span');
+      endpointPaidBadge.className = 'agent-endpoint-paid-badge agent-endpoint-paid-badge--trigger';
+      endpointPaidBadge.textContent = '（自费）';
+      endpointPaidBadge.hidden = true;
+      endpointTriggerMain.appendChild(endpointPaidBadge);
+    }
+
     harnesses.forEach(function (harness) {
       var canonical = canonicalHarness(harness.value);
       var entries = rawEndpoints[harness.value]
@@ -180,7 +191,10 @@
         || rawEndpoints[canonical.replace(/_/g, '-')]
         || [];
       endpointsByHarness[harness.value] = (Array.isArray(entries) ? entries : [])
-        .map(normalizeEndpoint).filter(Boolean);
+        .map(normalizeEndpoint).filter(Boolean)
+        .sort(function (left, right) {
+          return Number(right.isPersonal) - Number(left.isPersonal);
+        });
     });
 
     ['pi', 'claude_code'].forEach(function (harness) {
@@ -209,6 +223,42 @@
       return (endpointsByHarness[harness] || []).find(function (endpoint) {
         return endpoint.id === endpointId;
       }) || null;
+    }
+
+    function decorateEndpointMenu(endpoints) {
+      if (!endpointChoice) return;
+      var byId = Object.create(null);
+      endpoints.forEach(function (endpoint) { byId[endpoint.id] = endpoint; });
+      endpointChoice.querySelectorAll('.rk-choice-option').forEach(function (option) {
+        var endpoint = byId[asText(option.getAttribute('data-choice-value'))];
+        if (!endpoint || !endpoint.isPersonal) return;
+        option.classList.add('is-personal-endpoint');
+        var name = option.querySelector('.rk-choice-option-name');
+        if (!name || name.querySelector('.agent-endpoint-paid-badge')) return;
+        var modelName = document.createElement('span');
+        modelName.className = 'agent-endpoint-model-name';
+        modelName.textContent = endpoint.model;
+        var badge = document.createElement('span');
+        badge.className = 'agent-endpoint-paid-badge';
+        badge.textContent = '（自费）';
+        name.textContent = '';
+        name.classList.add('agent-endpoint-option-name');
+        name.appendChild(modelName);
+        name.appendChild(badge);
+      });
+    }
+
+    function renderEndpointPaidState() {
+      var endpoint = selectedEndpoint();
+      var isPersonal = !!(endpoint && endpoint.isPersonal);
+      if (endpointPaidBadge) endpointPaidBadge.hidden = !isPersonal;
+      if (endpointChoice) endpointChoice.classList.toggle('is-personal-endpoint', isPersonal);
+      if (endpointTrigger) {
+        endpointTrigger.setAttribute(
+          'aria-label',
+          endpoint ? '模型节点：' + endpoint.model + (isPersonal ? '（自费）' : '') : '选择模型节点'
+        );
+      }
     }
 
     function reasoningOptions(harness) {
@@ -275,6 +325,8 @@
         selected,
         {disabled: submitting || endpoints.length === 0}
       );
+      decorateEndpointMenu(endpoints);
+      renderEndpointPaidState();
       if (!endpoints.length) feedbackMessage('该 Harness 暂无兼容的模型节点。', true);
       else feedbackMessage('', false);
       updateReadyState();
@@ -352,7 +404,10 @@
     renderReasoningEfforts(preferredHarness);
     global.ChoicePicker.init(root);
     var endpointInput = endpointChoice && endpointChoice.querySelector('.rk-choice-value');
-    if (endpointInput) endpointInput.addEventListener('change', updateReadyState);
+    if (endpointInput) endpointInput.addEventListener('change', function () {
+      renderEndpointPaidState();
+      updateReadyState();
+    });
     var reasoningEffortInput = reasoningEffortChoice
       && reasoningEffortChoice.querySelector('.rk-choice-value');
     if (reasoningEffortInput) reasoningEffortInput.addEventListener('change', updateReadyState);

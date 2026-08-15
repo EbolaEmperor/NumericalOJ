@@ -28,6 +28,8 @@ def test_llm_normalization_preserves_disabled_wire_format():
 
     assert "name" not in normalized
     assert normalized["model"] == "model-a"
+    assert normalized["context_window_tokens"] == 384_000
+    assert normalized["max_output_tokens"] == 32_000
     assert normalized["thinking_enabled"] is False
     assert normalized["thinking_format"] == "enable_thinking"
 
@@ -35,6 +37,44 @@ def test_llm_normalization_preserves_disabled_wire_format():
 def test_llm_normalization_requires_provider_model_identifier():
     with pytest.raises(services.DynamicConfigValidationError, match="模型"):
         services.normalize_llm_endpoint_payload(llm_payload(model=""))
+
+
+def test_llm_capacity_normalization_is_strict_and_output_fits_context():
+    normalized = services.normalize_llm_endpoint_payload(llm_payload(
+        context_window_tokens="200000",
+        max_output_tokens="12000",
+    ))
+    assert normalized["context_window_tokens"] == 200_000
+    assert normalized["max_output_tokens"] == 12_000
+
+    for overrides in (
+        {"context_window_tokens": True},
+        {"context_window_tokens": "1.5"},
+        {"context_window_tokens": 2_147_483_648},
+        {"max_output_tokens": 0},
+        {"context_window_tokens": 8_000, "max_output_tokens": 8_001},
+    ):
+        with pytest.raises(services.DynamicConfigValidationError):
+            services.normalize_llm_endpoint_payload(llm_payload(**overrides))
+
+
+def test_llm_test_limits_only_clamp_downward_and_keep_output_within_context():
+    candidate = services.normalize_llm_endpoint_payload(llm_payload(
+        context_window_tokens=384_000,
+        max_output_tokens=32_000,
+    ))
+    adjusted = services.apply_llm_endpoint_test_limits(candidate, {
+        "upstream_context_window_tokens": 16_000,
+    })
+    assert adjusted["context_window_tokens"] == 16_000
+    assert adjusted["max_output_tokens"] == 16_000
+
+    unchanged = services.apply_llm_endpoint_test_limits(candidate, {
+        "upstream_context_window_tokens": 500_000,
+        "upstream_max_output_tokens": 64_000,
+    })
+    assert unchanged["context_window_tokens"] == 384_000
+    assert unchanged["max_output_tokens"] == 32_000
 
 
 def test_llm_normalization_uses_internal_anthropic_machine_value():
@@ -177,6 +217,23 @@ def test_tester_normalization_masks_candidate_secrets():
         "message": "remote echoed [已脱敏]",
         "latency_ms": 12,
     }
+
+
+def test_tester_normalization_preserves_only_positive_upstream_limits():
+    result = services.run_dynamic_config_tester(
+        lambda _candidate: {
+            "passed": True,
+            "message": "ok",
+            "upstream_context_window_tokens": 128_000,
+            "upstream_max_output_tokens": 16_000,
+            "untrusted_extra": "ignored",
+        },
+        llm_payload(),
+    )
+
+    assert result["upstream_context_window_tokens"] == 128_000
+    assert result["upstream_max_output_tokens"] == 16_000
+    assert "untrusted_extra" not in result
 
 
 def test_public_endpoint_unlock_permission_belongs_only_to_locker():

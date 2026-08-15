@@ -457,7 +457,7 @@ def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):
                 "session_token_usage": None,
                 "context_usage": {
                     "used_tokens": None,
-                    "window_tokens": routes.AGENT_CONTEXT_WINDOW_TOKENS,
+                    "window_tokens": routes.DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
                 },
             },
     }
@@ -566,7 +566,7 @@ def test_old_session_without_trace_usage_uses_ledger_summary(monkeypatch):
     assert projected["session_charged_amount_rmb"] == "0.42"
     assert projected["context_usage"] == {
         "used_tokens": 172,
-        "window_tokens": routes.AGENT_CONTEXT_WINDOW_TOKENS,
+        "window_tokens": routes.DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
     }
 
 
@@ -626,6 +626,7 @@ def test_context_usage_prefers_fresh_current_trace_over_session_totals():
     projected = routes._agent_state_with_session_token_usage(
         {
             "task_id": "turn-current",
+            "context_window_tokens": 200_000,
             "execution_trace": {"token_usage": {
                 "source": "codex",
                 "request_count": 3,
@@ -658,7 +659,7 @@ def test_context_usage_prefers_fresh_current_trace_over_session_totals():
     assert projected["session_token_usage"]["input_total_tokens"] == 1620
     assert projected["context_usage"] == {
         "used_tokens": 103,
-        "window_tokens": routes.AGENT_CONTEXT_WINDOW_TOKENS,
+        "window_tokens": 200_000,
     }
 
 

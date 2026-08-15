@@ -437,18 +437,13 @@ def test_claude_run_uses_local_relay_and_stops_it(monkeypatch):
     assert kwargs["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:45678"
 
 
-def test_claude_adapter_rejects_context_above_supported_contract(monkeypatch):
+def test_endpoint_capabilities_allow_context_above_one_million(monkeypatch):
     module = _load_run_harness()
     _set_anthropic_endpoint(monkeypatch, module)
-    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "1000001")
-    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
-    monkeypatch.setattr(
-        module,
-        "_run",
-        lambda *_args, **_kwargs: pytest.fail("unsupported context must fail before CLI"),
-    )
+    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "2000000")
+    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "32000")
 
-    assert module._run_claude_code("solve") == 2
+    assert module._endpoint_model_capabilities()[:2] == (2_000_000, 32_000)
 
 
 def test_codex_audit_mode_uses_read_only_sandbox_without_bypass(monkeypatch):
@@ -1218,26 +1213,6 @@ def test_all_harnesses_reject_invalid_endpoint_capabilities(
     monkeypatch.setattr(
         module, "_run",
         lambda *_args, **_kwargs: pytest.fail("能力配置非法时不得启动 harness"),
-    )
-
-    assert getattr(module, runner_name)("solve") == 2
-
-
-@pytest.mark.parametrize(("runner_name", "protocol"), [
-    ("_run_claude_code", "anthropic"),
-    ("_run_codex", "openai"),
-    ("_run_opencode", "openai"),
-    ("_run_pi", "openai"),
-])
-def test_all_harnesses_reject_context_above_one_million(
-        monkeypatch, runner_name, protocol):
-    module = _load_run_harness()
-    _set_endpoint(monkeypatch, protocol=protocol)
-    monkeypatch.setenv("AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS", "1000001")
-    monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
-    monkeypatch.setattr(
-        module, "_run",
-        lambda *_args, **_kwargs: pytest.fail("超过 1M 时不得启动 harness"),
     )
 
     assert getattr(module, runner_name)("solve") == 2

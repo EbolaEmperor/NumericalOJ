@@ -30,7 +30,7 @@ PROBLEM_AGENT_TASK_SCOPE = "problem_agent"
 DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 DEFAULT_MAX_OUTPUT_TOKENS = 384_000
 DEFAULT_THINKING_COMPATIBILITY = True
-MAX_CONTEXT_WINDOW_TOKENS = 1_000_000
+CLAUDE_ONE_MILLION_CONTEXT_WINDOW_TOKENS = 1_000_000
 CLAUDE_AUTO_COMPACT_MIN_TOKENS = 100_000
 PI_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 UUID_RE = re.compile(
@@ -3299,11 +3299,6 @@ def _endpoint_model_capabilities():
     max_output_tokens = _positive_int_env(
         "AJ_ENDPOINT_MAX_OUTPUT_TOKENS", DEFAULT_MAX_OUTPUT_TOKENS,
     )
-    if context_window_tokens > MAX_CONTEXT_WINDOW_TOKENS:
-        raise ValueError(
-            "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS cannot exceed "
-            f"{MAX_CONTEXT_WINDOW_TOKENS}"
-        )
     if max_output_tokens > context_window_tokens:
         raise ValueError(
             "AJ_ENDPOINT_MAX_OUTPUT_TOKENS cannot exceed "
@@ -3959,7 +3954,7 @@ def _run_claude_code(prompt, commands=None):
     cli_model = model
     if (
         cli_model
-        and context_window_tokens == MAX_CONTEXT_WINDOW_TOKENS
+        and context_window_tokens == CLAUDE_ONE_MILLION_CONTEXT_WINDOW_TOKENS
         and not cli_model.endswith("[1m]")
     ):
         # Claude Code 官方 1M 标记适用于任意模型名；它只作用于本地 CLI，

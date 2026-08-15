@@ -30,7 +30,6 @@ from oj_modules.config import (
 )
 from oj_modules.problems.agent_launch import (
     AGENT_ACCESS_ROLE_USER,
-    AGENT_CONTEXT_WINDOW_TOKENS,
     normalize_agent_access_role,
     normalize_agent_reasoning_effort,
     normalize_agent_task_kind,
@@ -38,7 +37,11 @@ from oj_modules.problems.agent_launch import (
     skill_for_agent_task,
 )
 from oj_modules.problems.agent_runs import agent_run_container_name
-from oj_modules.site_config.services import get_web_search_settings
+from oj_modules.site_config.services import (
+    DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    get_web_search_settings,
+)
 from oj_modules.tasks.agent.traces import (
     AGENT_TRACE_SYNC_INTERVAL_SECONDS,
     ensure_agent_trace_dir,
@@ -52,7 +55,6 @@ _STDOUT_MIRROR_LIMIT_BYTES = 8 * 1024 * 1024
 _CANONICAL_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
 _CANONICAL_JOURNAL_RECORD_MAX_BYTES = 16 * 1024 * 1024
 _CANONICAL_JOURNAL_TAIL_RESERVE_BYTES = 17 * 1024 * 1024
-_AGENT_MAX_OUTPUT_TOKENS = 16_384
 _IDENTITY_CONFIG_PATH = "/workspace/.numoj-agent/identity.json"
 _SKILL_CONFIG_ENV = {
     "numoj-user": "NUMOJ_USER_CONFIG",
@@ -1133,6 +1135,15 @@ def _runtime_env(
     if not base_url or not api_key:
         raise RuntimeError("Agent 外部服务密钥代理配置不完整")
     model = str(endpoint.get("model") or "").strip()
+    context_window_tokens = int(
+        endpoint.get("context_window_tokens")
+        or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+    )
+    max_output_tokens = int(
+        endpoint.get("max_output_tokens") or DEFAULT_LLM_MAX_OUTPUT_TOKENS
+    )
+    if context_window_tokens <= 0 or not 0 < max_output_tokens <= context_window_tokens:
+        raise RuntimeError("Agent 模型节点的上下文容量配置无效")
     thinking_enabled = bool(endpoint.get("thinking_enabled"))
     thinking_format = str(endpoint.get("thinking_format") or "none").strip().lower()
     access_role = normalize_agent_access_role(access_role, task_kind=task_kind)
@@ -1172,8 +1183,8 @@ def _runtime_env(
         "AJ_ENDPOINT_BASE_URL": base_url,
         "AJ_ENDPOINT_API_KEY": api_key,
         "AJ_ENDPOINT_MODEL": model,
-        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(AGENT_CONTEXT_WINDOW_TOKENS),
-        "AJ_ENDPOINT_MAX_OUTPUT_TOKENS": str(_AGENT_MAX_OUTPUT_TOKENS),
+        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(context_window_tokens),
+        "AJ_ENDPOINT_MAX_OUTPUT_TOKENS": str(max_output_tokens),
         "AJ_ENDPOINT_THINKING_ENABLED": "1" if thinking_enabled else "0",
         "AJ_ENDPOINT_THINKING_FORMAT": thinking_format,
         "AJ_ENABLE_SKILLS": "1",

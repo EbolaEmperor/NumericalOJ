@@ -63,7 +63,11 @@ def test_llm_create_tests_then_saves_without_printing_secrets(monkeypatch, capsy
     client = _Client(
         _Response({
             "success": True,
-            "test": {"passed": True},
+            "test": {
+                "passed": True,
+                "context_window_tokens": 128_000,
+                "max_output_tokens": 16_000,
+            },
             "test_token": "one-time-token",
             "api_key": "very-secret-key",
         }),
@@ -82,6 +86,8 @@ def test_llm_create_tests_then_saves_without_printing_secrets(monkeypatch, capsy
     ]
     assert client.requests[0][2]["json"]["api_key"] == "very-secret-key"
     assert client.requests[1][2]["json"]["test_token"] == "one-time-token"
+    assert client.requests[1][2]["json"]["context_window_tokens"] == 128_000
+    assert client.requests[1][2]["json"]["max_output_tokens"] == 16_000
     stdout = capsys.readouterr().out
     assert "very-secret-key" not in stdout
     assert "one-time-token" not in stdout

@@ -11,6 +11,8 @@
     {value: 'vision', label: '视觉理解', icon: 'fa-eye'},
     {value: 'embedding', label: 'Embedding', icon: 'fa-vector-square'}
   ];
+  var DEFAULT_CONTEXT_WINDOW_TOKENS = 384000;
+  var DEFAULT_MAX_OUTPUT_TOKENS = 32000;
 
   function entries(items, fallback) {
     return (items || fallback).map(function (item) {
@@ -110,6 +112,10 @@
       ['name', 'model', 'base_url'].forEach(function (name) {
         if (form.elements[name] && !form.elements[name].disabled) form.elements[name].value = initial[name] || '';
       });
+      form.elements.context_window_tokens.value = initial.context_window_tokens != null
+        ? initial.context_window_tokens : DEFAULT_CONTEXT_WINDOW_TOKENS;
+      form.elements.max_output_tokens.value = initial.max_output_tokens != null
+        ? initial.max_output_tokens : DEFAULT_MAX_OUTPUT_TOKENS;
       ['input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
         form.elements[name].value = initial[name] != null ? initial[name] : '';
       });
@@ -121,9 +127,15 @@
       value = value || {}; reset(); editing = Boolean(value.endpoint_id || value.id);
       form.elements.endpoint_id.value = value.endpoint_id || value.id || '';
       choiceValue('protocol', value.protocol || 'openai'); choiceValue('category', value.category || 'text');
-      ['name', 'model', 'base_url', 'input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
+      ['name', 'model', 'base_url', 'context_window_tokens', 'max_output_tokens', 'input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
         if (form.elements[name] && !form.elements[name].disabled && value[name] != null) form.elements[name].value = value[name];
       });
+      if (value.context_window_tokens == null) {
+        form.elements.context_window_tokens.value = DEFAULT_CONTEXT_WINDOW_TOKENS;
+      }
+      if (value.max_output_tokens == null) {
+        form.elements.max_output_tokens.value = DEFAULT_MAX_OUTPUT_TOKENS;
+      }
       form.elements.api_key.value = ''; updateKeyState(); setThinking(Boolean(value.thinking_enabled)); clearResult();
       return controller;
     }
@@ -136,6 +148,8 @@
         model: form.elements.model.value.trim(), protocol: form.elements.protocol.value,
         category: form.elements.category.value, base_url: form.elements.base_url.value.trim(),
         api_key: form.elements.api_key.value,
+        context_window_tokens: form.elements.context_window_tokens.value.trim(),
+        max_output_tokens: form.elements.max_output_tokens.value.trim(),
         thinking_enabled: form.elements.thinking_enabled.value === 'true',
         thinking_format: form.elements.thinking_format.value,
         input_price_per_million: form.elements.input_price_per_million.value.trim(),
@@ -154,6 +168,14 @@
         return false;
       });
       if (!invalid && !editing && !form.elements.api_key.value.trim()) invalid = form.elements.api_key;
+      var contextTokens = Number(form.elements.context_window_tokens.value);
+      var outputTokens = Number(form.elements.max_output_tokens.value);
+      if (!invalid && (!Number.isInteger(contextTokens) || contextTokens <= 0 || contextTokens > 2147483647)) {
+        invalid = form.elements.context_window_tokens;
+      }
+      if (!invalid && (!Number.isInteger(outputTokens) || outputTokens <= 0 || outputTokens > 2147483647 || outputTokens > contextTokens)) {
+        invalid = form.elements.max_output_tokens;
+      }
       if (invalid) {
         invalid.classList.add('is-invalid'); invalid.setAttribute('aria-invalid', 'true');
         setResult(invalid.name === 'api_key' ? '新建端点必须填写 API 密钥。' : '请检查并补全端点配置。', 'error');
@@ -162,8 +184,20 @@
       return true;
     }
 
+    function applyTestedLimits(value) {
+      value = value || {};
+      if (value.context_window_tokens != null) {
+        form.elements.context_window_tokens.value = value.context_window_tokens;
+      }
+      if (value.max_output_tokens != null) {
+        form.elements.max_output_tokens.value = value.max_output_tokens;
+      }
+      return controller;
+    }
+
     var controller = {form: form, configure: configure, reset: reset, fill: fill, values: values,
-      validate: validate, setResult: setResult, clearResult: clearResult, setThinking: setThinking};
+      validate: validate, applyTestedLimits: applyTestedLimits, setResult: setResult,
+      clearResult: clearResult, setThinking: setThinking};
     form.__endpointEditorController = controller;
     thinking.addEventListener('click', function () {
       setThinking(form.elements.thinking_enabled.value !== 'true');

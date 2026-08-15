@@ -19,6 +19,18 @@ class _FakeRedis:
         self.messages.append((channel, payload))
 
 
+def test_persisted_agent_run_restores_model_capacity():
+    state = db_services._agent_run_from_row({
+        "task_id": "turn-capacity",
+        "context_window_tokens": 2_000_000,
+        "max_output_tokens": 32_000,
+        "attempts_json": "[]",
+    })
+
+    assert state["context_window_tokens"] == 2_000_000
+    assert state["max_output_tokens"] == 32_000
+
+
 def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
     projected = []
     class Cursor:
@@ -114,6 +126,8 @@ def test_cancel_snapshot_claims_current_session_before_run_snapshot_exists(
                     "harness": "codex",
                     "endpoint_id": 17,
                     "endpoint_model": "gpt-test",
+                    "context_window_tokens": 2_000_000,
+                    "max_output_tokens": 32_000,
                 },
                 {
                     "task_id": "turn-before-run",
@@ -172,8 +186,13 @@ def test_cancel_snapshot_claims_current_session_before_run_snapshot_exists(
     assert state["status"] == "Canceled"
     queries = [query for query, _params in connection.cursor_instance.calls]
     assert "LOWER(s.status) IN ('pending', 'running')" in queries[2]
+    assert "ue.context_window_tokens" in queries[2]
+    assert "ge.context_window_tokens" in queries[2]
     assert "INSERT INTO agent_task_runs" in queries[3]
+    assert "context_window_tokens, max_output_tokens" in queries[3]
     assert "ON DUPLICATE KEY UPDATE" in queries[3]
+    insert_params = connection.cursor_instance.calls[3][1]
+    assert insert_params[-3:-1] == (2_000_000, 32_000)
     assert projected[0][1]["session_id"] == "session-before-run"
     assert projected[0][1]["status"] == "Canceled"
     assert connection.commits == 1

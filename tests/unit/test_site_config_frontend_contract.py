@@ -408,6 +408,21 @@ def test_endpoint_editor_requires_and_summarizes_all_three_prices():
     assert 'class="site-config-endpoint-prices"' in script
 
 
+def test_endpoint_editor_exposes_capacity_and_applies_tested_upstream_limits():
+    template = _read(ENDPOINT_EDITOR_TEMPLATE)
+    shared = _read(ENDPOINT_EDITOR_SCRIPT)
+    host = _read(SCRIPT)
+
+    assert 'name="context_window_tokens" type="number"' in template
+    assert 'name="max_output_tokens" type="number"' in template
+    assert 'value="384000"' in template
+    assert 'value="32000"' in template
+    assert "function applyTestedLimits(value)" in shared
+    assert "endpointEditor.applyTestedLimits(test)" in host
+    assert "state.endpointFormFingerprint = fingerprint(endpointPayload())" in host
+    assert "已按上游上限调整容量" in host
+
+
 def test_endpoint_save_is_gated_by_matching_test_token():
     script = _read(SCRIPT)
 

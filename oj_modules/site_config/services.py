@@ -36,6 +36,13 @@ LLM_PRICE_FIELDS = (
     "cached_input_price_per_million",
     "output_price_per_million",
 )
+DEFAULT_LLM_CONTEXT_WINDOW_TOKENS = 384_000
+DEFAULT_LLM_MAX_OUTPUT_TOKENS = 32_000
+MAX_LLM_TOKEN_COUNT = 2_147_483_647
+LLM_CAPACITY_FIELDS = (
+    "context_window_tokens",
+    "max_output_tokens",
+)
 
 FEATURE_SPECS = {
     "ai_code_annotation": {
@@ -211,6 +218,69 @@ def _normalize_llm_prices(payload, existing):
     return dict(zip(LLM_PRICE_FIELDS, values))
 
 
+def _parse_llm_token_count(value, field, default):
+    raw = default if value in (None, "") else value
+    if isinstance(raw, bool):
+        raise DynamicConfigValidationError(f"{field} 必须是正整数")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise DynamicConfigValidationError(f"{field} 必须是正整数") from None
+    if str(raw).strip() != str(parsed) or not 0 < parsed <= MAX_LLM_TOKEN_COUNT:
+        raise DynamicConfigValidationError(
+            f"{field} 必须是 1 到 {MAX_LLM_TOKEN_COUNT} 之间的整数"
+        )
+    return parsed
+
+
+def _normalize_llm_capacities(payload, existing):
+    context_window_tokens = _parse_llm_token_count(
+        payload.get(
+            "context_window_tokens",
+            existing.get(
+                "context_window_tokens",
+                DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
+            ),
+        ),
+        "上下文窗口",
+        DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
+    )
+    max_output_tokens = _parse_llm_token_count(
+        payload.get(
+            "max_output_tokens",
+            existing.get("max_output_tokens", DEFAULT_LLM_MAX_OUTPUT_TOKENS),
+        ),
+        "单次最大输出",
+        DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    )
+    if max_output_tokens > context_window_tokens:
+        raise DynamicConfigValidationError("单次最大输出不能超过上下文窗口")
+    return {
+        "context_window_tokens": context_window_tokens,
+        "max_output_tokens": max_output_tokens,
+    }
+
+
+def apply_llm_endpoint_test_limits(candidate, result):
+    """只按上游明确给出的限制向下校正候选配置。"""
+
+    effective = dict(candidate)
+    context_limit = result.get("upstream_context_window_tokens")
+    output_limit = result.get("upstream_max_output_tokens")
+    context = int(effective["context_window_tokens"])
+    output = int(effective["max_output_tokens"])
+    if isinstance(context_limit, int) and not isinstance(context_limit, bool):
+        if context_limit > 0:
+            context = min(context, context_limit)
+    if isinstance(output_limit, int) and not isinstance(output_limit, bool):
+        if output_limit > 0:
+            output = min(output, output_limit)
+    output = min(output, context)
+    effective["context_window_tokens"] = context
+    effective["max_output_tokens"] = output
+    return effective
+
+
 def normalize_llm_endpoint_payload(payload, *, existing=None):
     """校验并返回可用于测试/保存的 LLM 端点候选配置。"""
     if not isinstance(payload, dict):
@@ -264,6 +334,7 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
         requested_format = "thinking_type"
 
     prices = _normalize_llm_prices(payload, existing)
+    capacities = _normalize_llm_capacities(payload, existing)
 
     return {
         "protocol": protocol,
@@ -278,6 +349,7 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
             "模型名称",
             max_length=255,
         ),
+        **capacities,
         "thinking_enabled": thinking_enabled,
         "thinking_format": requested_format,
         **prices,
@@ -291,6 +363,13 @@ def _endpoint_candidate_from_row(row):
         "base_url": row["base_url"],
         "api_key": row["api_key"],
         "model": row["model"],
+        "context_window_tokens": int(
+            row.get("context_window_tokens")
+            or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+        ),
+        "max_output_tokens": int(
+            row.get("max_output_tokens") or DEFAULT_LLM_MAX_OUTPUT_TOKENS
+        ),
         "thinking_enabled": bool(row.get("thinking_enabled")),
         "thinking_format": row.get("thinking_format") or "none",
         **{
@@ -308,6 +387,13 @@ def _public_endpoint(row, *, include_secret=False, actor_user_id=None):
     result["api_key_configured"] = bool(secret)
     result["api_key"] = secret if include_secret else ""
     result["thinking_enabled"] = bool(result.get("thinking_enabled"))
+    result["context_window_tokens"] = int(
+        result.get("context_window_tokens")
+        or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+    )
+    result["max_output_tokens"] = int(
+        result.get("max_output_tokens") or DEFAULT_LLM_MAX_OUTPUT_TOKENS
+    )
     result["is_locked"] = bool(result.get("is_locked"))
     result["can_unlock"] = bool(
         result["is_locked"]
@@ -384,6 +470,16 @@ def run_dynamic_config_tester(tester, candidate):
         raw_result = {"passed": False, "message": f"连接测试失败：{exc}"}
     measured_latency = max(0, int((time.monotonic() - started) * 1000))
 
+    upstream_limits = {}
+    if isinstance(raw_result, dict):
+        for field in (
+            "upstream_context_window_tokens",
+            "upstream_max_output_tokens",
+        ):
+            value = raw_result.get(field)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                upstream_limits[field] = value
+
     if isinstance(raw_result, bool):
         passed = raw_result
         message = "测试通过" if passed else "测试未通过"
@@ -412,6 +508,7 @@ def run_dynamic_config_tester(tester, candidate):
         "status": "passed" if passed else "failed",
         "message": _sanitize_test_message(message, candidate),
         "latency_ms": latency_ms,
+        **upstream_limits,
     }
 
 
@@ -436,14 +533,22 @@ def test_llm_endpoint(payload, *, user_id, tester, endpoint_id=None):
     if existing and bool(existing.get("is_locked")):
         raise DynamicConfigLockedError("端点已锁定，不能测试")
     candidate = normalize_llm_endpoint_payload(payload, existing=existing)
-    fingerprint = _canonical_fingerprint(candidate)
+    result = run_dynamic_config_tester(tester, candidate)
+    effective_candidate = apply_llm_endpoint_test_limits(candidate, result)
+    fingerprint = _canonical_fingerprint(effective_candidate)
     candidate_matches_existing = bool(
         existing
         and fingerprint
         == _canonical_fingerprint(_endpoint_candidate_from_row(existing))
     )
-
-    result = run_dynamic_config_tester(tester, candidate)
+    result["context_window_tokens"] = effective_candidate[
+        "context_window_tokens"
+    ]
+    result["max_output_tokens"] = effective_candidate["max_output_tokens"]
+    result["limits_adjusted"] = any(
+        effective_candidate[field] != candidate[field]
+        for field in LLM_CAPACITY_FIELDS
+    )
     now = datetime.utcnow()
     conn = get_db_connection()
     token = None
@@ -551,6 +656,8 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
             values = (
                 candidate["protocol"], candidate["category"], candidate["base_url"],
                 candidate["api_key"], candidate["model"],
+                candidate["context_window_tokens"],
+                candidate["max_output_tokens"],
                 int(candidate["thinking_enabled"]), candidate["thinking_format"],
                 candidate["input_price_per_million"],
                 candidate["cached_input_price_per_million"],
@@ -562,13 +669,14 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                     """
                     INSERT INTO llm_endpoints
                         (protocol, category, base_url, api_key, model,
+                         context_window_tokens, max_output_tokens,
                          thinking_enabled, thinking_format,
                          input_price_per_million, cached_input_price_per_million,
                          output_price_per_million, test_status, test_message,
                          test_latency_ms, tested_at, tested_by_user_id,
                          created_by_user_id, updated_by_user_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            'passed', %s, %s, %s, %s, %s, %s)
+                            %s, %s, 'passed', %s, %s, %s, %s, %s, %s)
                     """,
                     values + (user_id, user_id),
                 )
@@ -578,7 +686,9 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                     """
                     UPDATE llm_endpoints
                     SET protocol=%s, category=%s, base_url=%s, api_key=%s,
-                        model=%s, thinking_enabled=%s, thinking_format=%s,
+                        model=%s, context_window_tokens=%s,
+                        max_output_tokens=%s, thinking_enabled=%s,
+                        thinking_format=%s,
                         input_price_per_million=%s,
                         cached_input_price_per_million=%s,
                         output_price_per_million=%s,

@@ -196,6 +196,12 @@ def test_dynamic_site_config_schema_is_fully_declared():
         assert endpoints.columns[price_field].lower() == "decimal(20,8) not null"
     assert "name" not in endpoints.columns
     assert endpoints.columns["model"].lower() == "varchar(255) not null"
+    assert endpoints.columns["context_window_tokens"].lower() == (
+        "int not null default '384000'"
+    )
+    assert endpoints.columns["max_output_tokens"].lower() == (
+        "int not null default '32000'"
+    )
     assert "uq_llm_endpoint_name" not in endpoints.indexes
     assert "uq_llm_endpoint_model" not in endpoints.indexes
     assert (
@@ -218,6 +224,10 @@ def test_agent_task_run_schema_declares_endpoint_snapshot():
     assert agent_runs.columns["endpoint_model"].lower() == (
         "varchar(255) default null"
     )
+    assert agent_runs.columns["context_window_tokens"].lower() == (
+        "int default null"
+    )
+    assert agent_runs.columns["max_output_tokens"].lower() == "int default null"
 
 
 def test_agent_session_turn_schema_declares_retry_lineage_and_runtime_base():
