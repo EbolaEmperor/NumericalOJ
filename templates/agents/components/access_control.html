@@ -200,6 +200,13 @@
         </div>
 
         {% if not access_is_admin %}
+        <section class="agent-access-layer agent-access-layer--endpoint" data-agent-personal-endpoint-layer hidden
+                 role="dialog" aria-modal="true" aria-labelledby="agentPersonalEndpoint-title">
+          <button class="agent-access-layer-scrim" type="button" tabindex="-1"
+                  data-endpoint-editor-dismiss aria-label="关闭端点编辑器"></button>
+          {{ endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点', surface='layer') }}
+        </section>
+
         <section class="agent-access-layer is-compact" data-agent-personal-delete-layer hidden
                  role="alertdialog" aria-modal="true" aria-labelledby="agentPersonalEndpointDeleteTitle">
           <button class="agent-access-layer-scrim" type="button" tabindex="-1"
@@ -221,15 +228,6 @@
       </div>
     </div>
   </div>
-
-  {% if not access_is_admin %}
-  <div class="modal fade numoj-endpoint-editor-modal" id="agentPersonalEndpointModal" tabindex="-1"
-       aria-labelledby="agentPersonalEndpoint-title" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-      {{ endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点') }}
-    </div>
-  </div>
-  {% endif %}
 
   <script type="application/json" data-agent-access-summary-json>{{ access_summary|tojson }}</script>
   <script type="application/json" data-agent-access-prices-json>{{ agent_priced_endpoints|default(endpoints_by_harness|default({}, true), true)|tojson }}</script>

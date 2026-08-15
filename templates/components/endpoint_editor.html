@@ -1,10 +1,11 @@
-{% macro endpoint_editor(id_prefix, mode='global', title='新建端点') -%}
-<form class="numoj-endpoint-editor modal-content"
-      data-endpoint-editor data-endpoint-editor-mode="{{ mode }}" data-endpoint-editor-surface="modal"
+{% macro endpoint_editor(id_prefix, mode='global', title='新建端点', surface='modal') -%}
+<form class="numoj-endpoint-editor{% if surface == 'modal' %} modal-content{% else %} numoj-endpoint-editor--layer{% endif %}"
+      data-endpoint-editor data-endpoint-editor-mode="{{ mode }}" data-endpoint-editor-surface="{{ surface }}"
       autocomplete="off" novalidate>
   <header class="numoj-endpoint-editor__header">
     <div><p>ENDPOINT EDITOR</p><h2 id="{{ id_prefix }}-title" data-endpoint-editor-title tabindex="-1">{{ title }}</h2></div>
-    <button type="button" class="btn-close" aria-label="关闭" data-bs-dismiss="modal"></button>
+    <button type="button" class="btn-close" aria-label="关闭"
+            {% if surface == 'modal' %}data-bs-dismiss="modal"{% else %}data-endpoint-editor-dismiss{% endif %}></button>
   </header>
   <div class="numoj-endpoint-editor__body">
     <input type="hidden" name="endpoint_id">
@@ -57,7 +58,8 @@
     <p class="numoj-endpoint-editor__result wide" data-endpoint-editor-result role="status" aria-live="polite" hidden></p>
   </div>
   <footer class="numoj-endpoint-editor__footer">
-    <button class="numoj-endpoint-editor__secondary" type="button" data-bs-dismiss="modal">放弃</button>
+    <button class="numoj-endpoint-editor__secondary" type="button"
+            {% if surface == 'modal' %}data-bs-dismiss="modal"{% else %}data-endpoint-editor-dismiss{% endif %}>放弃</button>
     <button class="numoj-endpoint-editor__secondary" type="button" data-endpoint-editor-test><i class="fas fa-vial" aria-hidden="true"></i>测试</button>
     <button class="numoj-endpoint-editor__primary" type="submit" data-endpoint-editor-save disabled>保存</button>
   </footer>

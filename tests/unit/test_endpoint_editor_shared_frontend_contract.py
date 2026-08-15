@@ -33,14 +33,14 @@ def test_global_and_personal_endpoints_render_the_same_editor_macro():
     )
     assert import_contract in site
     assert import_contract in agent
-    assert "{% macro endpoint_editor(id_prefix, mode='global'" in shared
+    assert "{% macro endpoint_editor(id_prefix, mode='global', title='新建端点', surface='modal')" in shared
     assert "endpoint_editor('endpointModal', mode='global'" in site
-    assert "endpoint_editor('agentPersonalEndpoint', mode='personal'" in agent
+    assert "endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点', surface='layer')" in agent
     assert 'id="endpointModal"' in site
-    assert 'id="agentPersonalEndpointModal"' in agent
+    assert 'id="agentPersonalEndpointModal"' not in agent
     modal_shell = 'class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"'
     assert modal_shell in site
-    assert modal_shell in agent
+    assert modal_shell not in agent
 
     for field in (
         "model",
@@ -55,9 +55,9 @@ def test_global_and_personal_endpoints_render_the_same_editor_macro():
     assert 'name="model"' not in site
     assert 'name="model"' not in agent
     assert shared.count("data-endpoint-editor-test") == 1
-    assert "data-endpoint-editor-dismiss" not in shared
-    assert "numoj-endpoint-editor--layer" not in shared
-    assert "data-agent-personal-endpoint-layer" not in agent
+    assert "data-endpoint-editor-dismiss" in shared
+    assert "numoj-endpoint-editor--layer" in shared
+    assert "data-agent-personal-endpoint-layer" in agent
 
 
 def test_endpoint_editor_assets_load_before_each_host_controller_and_stylesheet():
@@ -133,7 +133,9 @@ def test_host_adapters_ignore_stale_editor_requests():
     assert "editorRevision !== personalEditorRevision" in agent_script
     assert "personalFormFingerprint" in agent_script
     assert "endpointFingerprint(personalEndpointPayload()) !== testedFingerprint" in agent_script
-    assert "personalModalNode.classList.contains('show')" in agent_script
+    assert "activeLayer === personalEditorLayer" in agent_script
+    assert "activeLayer !== personalEditorLayer" not in agent_script
+    assert "function isPersonalEditorOpen()" in agent_script
 
 
 def test_personal_editor_keeps_shared_fields_but_omits_platform_prices():
