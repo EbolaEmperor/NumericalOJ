@@ -134,30 +134,29 @@
     }));
   }
 
-  function endpointChoice(kind) {
-    return $(`[data-choice-kind="${kind}"]`, $('[data-endpoint-form]'));
-  }
+  const endpointForm = $('[data-endpoint-editor][data-endpoint-editor-mode="global"]');
+  const endpointEditor = window.NumOJEndpointEditor.mount(endpointForm);
 
-  function setEndpointChoice(kind, value) {
-    const picker = endpointChoice(kind);
-    const controller = picker && picker.__choicePickerController;
-    if (controller) controller.setValue(value, false);
-    else if (picker) $('input[type="hidden"]', picker).value = value;
-  }
-
-  function initializeMetaControls() {
-    const form = $('[data-endpoint-form]');
-    window.ChoicePicker.configure(
-      endpointChoice('protocol'),
-      enumEntries(state.meta.protocols, ['openai', 'anthropic'], protocolLabels, protocolIcons),
-      form.elements.protocol.value || 'openai',
-    );
-    window.ChoicePicker.configure(
-      endpointChoice('category'),
-      enumEntries(state.meta.categories, ['omni', 'text', 'vision', 'embedding'], categoryLabels, categoryIcons),
-      form.elements.category.value || 'text',
-    );
-    updateThinkingControls(true);
+  function configureEndpointEditor(title) {
+    endpointEditor.configure({
+      title,
+      protocols: enumEntries(
+        state.meta.protocols,
+        ['openai', 'anthropic'],
+        protocolLabels,
+        protocolIcons,
+      ),
+      categories: enumEntries(
+        state.meta.categories,
+        ['omni', 'text', 'vision', 'embedding'],
+        categoryLabels,
+        categoryIcons,
+      ),
+      defaultProtocol: values(state.meta.protocols, ['openai'])[0],
+      defaultCategory: values(state.meta.categories, ['text'])[0],
+      createKeyNote: '新建端点必须填写 API 密钥。',
+      editKeyNote: '留空表示继续使用已保存的密钥。',
+    });
   }
 
   function testStatus(endpoint) {
@@ -327,20 +326,10 @@
     });
   }
 
-  function endpointPayload(form) {
-    return {
-      endpoint_id: form.elements.endpoint_id.value ? Number(form.elements.endpoint_id.value) : undefined,
-      protocol: form.elements.protocol.value,
-      category: form.elements.category.value,
-      base_url: form.elements.base_url.value.trim(),
-      api_key: form.elements.api_key.value,
-      model: form.elements.model.value.trim(),
-      thinking_enabled: form.elements.thinking_enabled.value === 'true',
-      thinking_format: form.elements.thinking_format.value,
-      input_price_per_million: form.elements.input_price_per_million.value.trim(),
-      cached_input_price_per_million: form.elements.cached_input_price_per_million.value.trim(),
-      output_price_per_million: form.elements.output_price_per_million.value.trim(),
-    };
+  function endpointPayload() {
+    const payload = endpointEditor.values();
+    delete payload.name;
+    return payload;
   }
 
   function fingerprint(payload) {
@@ -350,91 +339,63 @@
   function invalidateEndpointTest() {
     state.endpointTestToken = '';
     state.endpointFormFingerprint = '';
-    $('[data-endpoint-save]').disabled = true;
-    $('[data-endpoint-test-result]').hidden = true;
-  }
-
-  function setThinking(enabled) {
-    const form = $('[data-endpoint-form]');
-    const button = $('[data-thinking-switch]', form);
-    const active = Boolean(enabled) && form.elements.category.value !== 'embedding';
-    form.elements.thinking_enabled.value = active ? 'true' : 'false';
-    form.elements.thinking_format.value = active
-      ? (form.elements.protocol.value === 'anthropic' ? 'thinking_type' : 'enable_thinking')
-      : 'none';
-    button.setAttribute('aria-checked', active ? 'true' : 'false');
-    $('[data-thinking-switch-label]', button).textContent = active ? '开启' : '关闭';
-  }
-
-  function updateThinkingControls(preserve = true) {
-    const form = $('[data-endpoint-form]');
-    let protocol = form.elements.protocol.value || 'openai';
-    const category = form.elements.category.value || 'text';
-    if (category === 'embedding' && protocol !== 'openai') {
-      protocol = 'openai';
-      setEndpointChoice('protocol', protocol);
-    }
-    const wasEnabled = preserve && form.elements.thinking_enabled.value === 'true';
-    $('[data-thinking-toggle-field]', form).hidden = category === 'embedding';
-    setThinking(wasEnabled);
+    $('[data-endpoint-editor-save]', endpointForm).disabled = true;
+    endpointEditor.clearResult();
   }
 
   function openEndpointModal(endpoint = null) {
-    const form = $('[data-endpoint-form]');
-    form.reset();
-    initializeMetaControls();
-    $('[data-endpoint-modal-title]').textContent = endpoint ? '编辑端点' : '新建端点';
-    form.elements.endpoint_id.value = endpoint?.id || '';
-    setEndpointChoice('protocol', endpoint?.protocol || values(state.meta.protocols, ['openai'])[0]);
-    setEndpointChoice('category', endpoint?.category || values(state.meta.categories, ['text'])[0]);
-    form.elements.base_url.value = endpoint?.base_url || '';
-    form.elements.api_key.value = '';
-    form.elements.model.value = endpoint?.model || '';
-    form.elements.input_price_per_million.value = decimalText(endpoint?.input_price_per_million);
-    form.elements.cached_input_price_per_million.value = decimalText(endpoint?.cached_input_price_per_million);
-    form.elements.output_price_per_million.value = decimalText(endpoint?.output_price_per_million);
-    updateThinkingControls(false);
-    setThinking(Boolean(endpoint?.thinking_enabled));
+    configureEndpointEditor(endpoint ? '编辑端点' : '新建端点');
+    if (endpoint) {
+      endpointEditor.fill({
+        ...endpoint,
+        input_price_per_million: decimalText(endpoint.input_price_per_million),
+        cached_input_price_per_million: decimalText(endpoint.cached_input_price_per_million),
+        output_price_per_million: decimalText(endpoint.output_price_per_million),
+      });
+    } else {
+      endpointEditor.reset({
+        protocol: values(state.meta.protocols, ['openai'])[0],
+        category: values(state.meta.categories, ['text'])[0],
+      });
+    }
     invalidateEndpointTest();
     modal('endpointModal').show();
   }
 
-  async function testEndpoint(form, button) {
-    if (!form.reportValidity()) return;
-    const payload = endpointPayload(form);
-    if (!payload.endpoint_id && !payload.api_key.trim()) {
-      form.elements.api_key.setCustomValidity('创建端点时必须填写 API 密钥');
-      form.elements.api_key.reportValidity();
-      form.elements.api_key.setCustomValidity('');
-      return;
-    }
-    const resultBox = $('[data-endpoint-test-result]');
+  async function testEndpoint(button) {
+    if (!endpointEditor.validate()) return;
+    const payload = endpointPayload();
+    const testedFingerprint = fingerprint(payload);
     setBusy(button, true, '测试中…');
-    resultBox.hidden = false;
-    resultBox.className = 'site-config-test-result';
-    resultBox.textContent = '测试中…';
+    endpointEditor.setResult('测试中…', 'pending');
     try {
       const data = await request('/llm-endpoints/test', {method: 'POST', body: payload});
+      if (fingerprint(endpointPayload()) !== testedFingerprint) {
+        invalidateEndpointTest();
+        endpointEditor.setResult('字段已经变化，请重新测试连接。', 'error');
+        return;
+      }
       state.endpointTestToken = data.test_token || data.test?.test_token || '';
-      state.endpointFormFingerprint = fingerprint(payload);
+      state.endpointFormFingerprint = testedFingerprint;
       const test = data.test || data;
-      resultBox.className = 'site-config-test-result is-ok';
-      resultBox.textContent = `连接成功${test.latency_ms != null ? ` · ${test.latency_ms} ms` : ''}${test.message ? ` · ${test.message}` : ''}`;
-      $('[data-endpoint-save]').disabled = !state.endpointTestToken;
+      endpointEditor.setResult(
+        `连接成功${test.latency_ms != null ? ` · ${test.latency_ms} ms` : ''}${test.message ? ` · ${test.message}` : ''}`,
+        'ok',
+      );
+      $('[data-endpoint-editor-save]', endpointForm).disabled = !state.endpointTestToken;
     } catch (error) {
       state.endpointTestToken = '';
       state.endpointFormFingerprint = '';
-      $('[data-endpoint-save]').disabled = true;
-      resultBox.className = 'site-config-test-result is-error';
-      resultBox.textContent = error.message;
+      $('[data-endpoint-editor-save]', endpointForm).disabled = true;
+      endpointEditor.setResult(error.message, 'error');
     } finally {
       setBusy(button, false);
     }
   }
 
-  async function saveEndpoint(form, button) {
-    if (!form.reportValidity()) return;
-    const payload = endpointPayload(form);
+  async function saveEndpoint(button) {
+    if (!endpointEditor.validate()) return;
+    const payload = endpointPayload();
     if (!state.endpointTestToken || state.endpointFormFingerprint !== fingerprint(payload)) {
       invalidateEndpointTest();
       toast('字段已经变化，请重新测试连接', 'error');
@@ -702,7 +663,7 @@
     const data = await request('/meta');
     state.meta = {...state.meta, ...data};
     $('[data-feature-count]').textContent = String(state.meta.features.length);
-    initializeMetaControls();
+    configureEndpointEditor();
   }
 
   async function loadEndpoints() {
@@ -894,26 +855,17 @@
     else if (action === 'delete') openDelete(endpoint);
   });
 
-  const endpointForm = $('[data-endpoint-form]');
   endpointForm.addEventListener('input', (event) => {
-    if (event.target.name === 'api_key') event.target.setCustomValidity('');
     invalidateEndpointTest();
   });
-  endpointForm.addEventListener('change', (event) => {
-    if (['protocol', 'category', 'thinking_format'].includes(event.target.name)) updateThinkingControls(true);
-    invalidateEndpointTest();
-  });
-  $('[data-thinking-switch]').addEventListener('click', () => {
-    setThinking(endpointForm.elements.thinking_enabled.value !== 'true');
-    invalidateEndpointTest();
-  });
+  endpointForm.addEventListener('change', invalidateEndpointTest);
   $('[data-agent-public-access-switch]').addEventListener('click', (event) => {
     saveAgentPublicAccess(event.currentTarget);
   });
-  $('[data-endpoint-test]').addEventListener('click', (event) => testEndpoint(endpointForm, event.currentTarget));
+  $('[data-endpoint-editor-test]', endpointForm).addEventListener('click', (event) => testEndpoint(event.currentTarget));
   endpointForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    saveEndpoint(endpointForm, $('[data-endpoint-save]'));
+    saveEndpoint($('[data-endpoint-editor-save]', endpointForm));
   });
 
   $('[data-lock-form]').addEventListener('submit', (event) => {

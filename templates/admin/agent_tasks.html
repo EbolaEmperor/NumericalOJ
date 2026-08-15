@@ -6,6 +6,7 @@
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/agents/task-list.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/endpoint-editor.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/agents/access-control.css') }}">
 {% endblock %}
 
@@ -228,6 +229,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='app/endpoint-editor.js') }}"></script>
 <script src="{{ url_for('static', filename='app/agents/access-control.js') }}"></script>
 <script src="{{ url_for('static', filename='app/agents/task-list.js') }}"></script>
 {% endblock %}

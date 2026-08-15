@@ -7,6 +7,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
+from oj_modules.classroom.logos import class_logo_presentation
 from oj_modules.infrastructure.mysql import get_db_connection
 
 
@@ -502,7 +503,7 @@ def list_agent_quota_grant_classes():
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT c.class_en, c.class_cn, u.id AS user_id
+                SELECT c.class_en, c.class_cn, c.logo_seed, u.id AS user_id
                 FROM class_table AS c
                 LEFT JOIN user_class_map AS m ON m.class_en=c.class_en
                 LEFT JOIN users AS u ON u.id=m.user_id AND u.is_admin=0
@@ -522,6 +523,10 @@ def list_agent_quota_grant_classes():
             item = {
                 "class_en": class_en,
                 "label": str(row.get("class_cn") or class_en),
+                "logo": class_logo_presentation(
+                    row.get("logo_seed"),
+                    fallback=class_en,
+                ),
                 "user_ids": [],
             }
             by_class[class_en] = item

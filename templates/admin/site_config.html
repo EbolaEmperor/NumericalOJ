@@ -1,9 +1,11 @@
 {% extends "layouts/site.html" %}
+{% from 'components/endpoint_editor.html' import endpoint_editor %}
 
 {% block title %}全站配置 - {{ super() }}{% endblock %}
 
 {% block head %}
 {{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/endpoint-editor.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/site-config.css') }}">
 {% endblock %}
 
@@ -274,129 +276,10 @@
 
   <div class="site-config-rail-backdrop" data-config-rail-backdrop hidden></div>
 
-  <div class="modal fade site-config-modal" id="endpointModal" tabindex="-1" aria-hidden="true">
+  <div class="modal fade numoj-endpoint-editor-modal" id="endpointModal" tabindex="-1"
+       aria-labelledby="endpointModal-title" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-      <form class="modal-content" data-endpoint-form autocomplete="off">
-        <div class="modal-header">
-          <div>
-            <p>ENDPOINT EDITOR</p>
-            <h2 class="modal-title" data-endpoint-modal-title>新建端点</h2>
-          </div>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" name="endpoint_id">
-          <div class="site-config-form-grid is-endpoint">
-            <label class="wide">
-              <span>模型名称</span>
-              <input name="model" required autocomplete="off">
-            </label>
-
-            <label>
-              <span>兼容协议</span>
-              <div class="rk-choice site-config-choice"
-                   data-config-choice
-                   data-choice-kind="protocol">
-                <input type="hidden" name="protocol" value="openai">
-                <button type="button"
-                        class="rk-choice-trigger"
-                        id="endpointProtocolTrigger"
-                        role="combobox"
-                        aria-haspopup="listbox"
-                        aria-expanded="false"
-                        aria-controls="endpointProtocolMenu">
-                  <span class="rk-choice-trigger-main">
-                    <i class="fas fa-code" data-rk-choice-icon aria-hidden="true"></i>
-                    <span data-rk-choice-label></span>
-                  </span>
-                  <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
-                </button>
-                <div class="rk-choice-menu"
-                     id="endpointProtocolMenu"
-                     role="listbox"
-                     aria-labelledby="endpointProtocolTrigger"></div>
-              </div>
-            </label>
-
-            <label>
-              <span>能力类别</span>
-              <div class="rk-choice site-config-choice"
-                   data-config-choice
-                   data-choice-kind="category">
-                <input type="hidden" name="category" value="text">
-                <button type="button"
-                        class="rk-choice-trigger"
-                        id="endpointCategoryTrigger"
-                        role="combobox"
-                        aria-haspopup="listbox"
-                        aria-expanded="false"
-                        aria-controls="endpointCategoryMenu">
-                  <span class="rk-choice-trigger-main">
-                    <i class="fas fa-font" data-rk-choice-icon aria-hidden="true"></i>
-                    <span data-rk-choice-label></span>
-                  </span>
-                  <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
-                </button>
-                <div class="rk-choice-menu"
-                     id="endpointCategoryMenu"
-                     role="listbox"
-                     aria-labelledby="endpointCategoryTrigger"></div>
-              </div>
-            </label>
-
-            <label class="wide">
-              <span>基础地址</span>
-              <input name="base_url" required type="url" autocomplete="url">
-            </label>
-            <label>
-              <span>API 密钥</span>
-              <input name="api_key" type="password" autocomplete="new-password">
-            </label>
-
-            <label class="site-config-switch-field" data-thinking-toggle-field>
-              <span>思考模式</span>
-              <button class="site-config-switch"
-                      type="button"
-                      role="switch"
-                      aria-checked="false"
-                      data-thinking-switch>
-                <i aria-hidden="true"></i>
-                <b data-thinking-switch-label>关闭</b>
-              </button>
-              <input name="thinking_enabled" type="hidden" value="false">
-              <input name="thinking_format" type="hidden" value="none">
-            </label>
-
-            <div class="site-config-price-row">
-              <label>
-                <span>输入单价（RMB / 1M Token）</span>
-                <input name="input_price_per_million" type="number" min="0" step="any" inputmode="decimal" required>
-              </label>
-              <label>
-                <span>输入缓存命中单价（RMB / 1M Token）</span>
-                <input name="cached_input_price_per_million" type="number" min="0" step="any" inputmode="decimal" required>
-              </label>
-              <label>
-                <span>输出单价（RMB / 1M Token）</span>
-                <input name="output_price_per_million" type="number" min="0" step="any" inputmode="decimal" required>
-              </label>
-            </div>
-          </div>
-          <div class="site-config-test-result"
-               data-endpoint-test-result
-               role="status"
-               aria-live="polite"
-               hidden></div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="site-config-secondary" data-bs-dismiss="modal">放弃</button>
-          <button type="button" class="site-config-secondary" data-endpoint-test>
-            <i class="fas fa-vial" aria-hidden="true"></i>
-            测试
-          </button>
-          <button type="submit" class="site-config-primary" data-endpoint-save disabled>保存</button>
-        </div>
-      </form>
+      {{ endpoint_editor('endpointModal', mode='global', title='新建端点', surface='modal') }}
     </div>
   </div>
 
@@ -499,5 +382,6 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="{{ url_for('static', filename='app/endpoint-editor.js') }}"></script>
 <script src="{{ url_for('static', filename='app/site-config.js') }}"></script>
 {% endblock %}

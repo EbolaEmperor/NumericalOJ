@@ -58,8 +58,8 @@
 .site-config-v2 textarea:focus-visible,
 .site-config-v2 [role="combobox"]:focus-visible,
 .site-config-v2 [role="option"]:focus-visible {
-  outline: 2px solid rgba(234, 88, 12, 0.28);
-  outline-offset: 1px;
+  outline: 0;
+  box-shadow: 0 0 0 2px #c2410c;
 }
 
 /* Header */
@@ -956,10 +956,6 @@
   gap: 11px 12px;
 }
 
-.site-config-form-grid.is-endpoint {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
 .site-config-form-grid label,
 .site-config-field {
   display: grid;
@@ -970,13 +966,6 @@
 
 .site-config-form-grid label.wide {
   grid-column: 1 / -1;
-}
-
-.site-config-price-row {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
 }
 
 .site-config-form-grid label > span,
@@ -1016,12 +1005,9 @@
 .site-config-form-grid input:focus,
 .site-config-field input:focus,
 .site-config-field textarea:focus {
-  border-color: var(--cfg-orange);
-  outline: 2px solid rgba(234, 88, 12, 0.12);
-}
-
-.site-config-switch-field {
-  align-content: start;
+  border-color: #b9c1cb;
+  outline: 0;
+  box-shadow: 0 0 0 2px #c2410c;
 }
 
 .site-config-switch {
@@ -1145,28 +1131,6 @@
   padding: 7px 10px;
   border-top-color: var(--cfg-line);
   background: #fafafa;
-}
-
-.site-config-test-result {
-  margin-top: 13px;
-  padding: 9px 10px;
-  border: 1px solid var(--cfg-line);
-  background: #fafafa;
-  color: var(--cfg-ink-3);
-  font-size: 10.5px;
-  line-height: 1.5;
-}
-
-.site-config-test-result.is-ok {
-  border-color: #bbf7d0;
-  background: var(--cfg-green-soft);
-  color: var(--cfg-green);
-}
-
-.site-config-test-result.is-error {
-  border-color: #fecaca;
-  background: var(--cfg-red-soft);
-  color: var(--cfg-red);
 }
 
 .site-config-lock-reason {
@@ -1398,12 +1362,7 @@
     grid-template-columns: 1fr;
   }
 
-  .site-config-form-grid,
-  .site-config-form-grid.is-endpoint {
-    grid-template-columns: 1fr;
-  }
-
-  .site-config-price-row {
+  .site-config-form-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1520,5 +1479,18 @@
   .site-config-v2 .rk-choice-trigger,
   .site-config-v2 .rk-choice-menu {
     border-color: CanvasText;
+  }
+
+  .site-config-v2 button:focus-visible,
+  .site-config-v2 input:focus-visible,
+  .site-config-v2 textarea:focus-visible,
+  .site-config-v2 [role="combobox"]:focus-visible,
+  .site-config-v2 [role="option"]:focus-visible,
+  .site-config-form-grid input:focus,
+  .site-config-field input:focus,
+  .site-config-field textarea:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
   }
 }

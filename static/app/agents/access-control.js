@@ -252,11 +252,18 @@
       }
       list.innerHTML = prices.map(function (endpoint) {
         var id = endpoint.id != null ? endpoint.id : endpoint.endpoint_id;
-        return '<article class="agent-rate-row">'
-          + '<div class="agent-rate-row-name"><strong>' + escapeHtml(endpoint.model || endpoint.name || ('节点 #' + id)) + '</strong><small>节点 #' + escapeHtml(id) + '</small></div>'
-          + '<div class="agent-rate-value"><span>INPUT</span><strong>' + escapeHtml(decimalText(endpoint.input_price_per_million) || '—') + '</strong></div>'
-          + '<div class="agent-rate-value"><span>CACHED</span><strong>' + escapeHtml(decimalText(endpoint.cached_input_price_per_million) || '—') + '</strong></div>'
-          + '<div class="agent-rate-value"><span>OUTPUT</span><strong>' + escapeHtml(decimalText(endpoint.output_price_per_million) || '—') + '</strong></div>'
+        var model = endpoint.model || endpoint.name || ('节点 #' + id);
+        var logoClass = global.NumojModelFamily
+          ? global.NumojModelFamily.iconClass(model)
+          : 'fas fa-microchip';
+        return '<article class="agent-rate-card">'
+          + '<header class="agent-rate-card-header"><span class="agent-rate-logo"><i class="' + escapeHtml(logoClass) + '" data-model-family-logo data-model-name="' + escapeHtml(model) + '" aria-hidden="true"></i></span>'
+          + '<div class="agent-rate-card-name"><strong title="' + escapeHtml(model) + '">' + escapeHtml(model) + '</strong><small>节点 #' + escapeHtml(id) + '</small></div></header>'
+          + '<dl class="agent-rate-values" aria-label="节点价格，人民币每百万 Token">'
+          + '<div class="agent-rate-value"><dt>INPUT</dt><dd>' + escapeHtml(decimalText(endpoint.input_price_per_million) || '—') + '</dd></div>'
+          + '<div class="agent-rate-value"><dt>CACHED</dt><dd>' + escapeHtml(decimalText(endpoint.cached_input_price_per_million) || '—') + '</dd></div>'
+          + '<div class="agent-rate-value"><dt>OUTPUT</dt><dd>' + escapeHtml(decimalText(endpoint.output_price_per_million) || '—') + '</dd></div>'
+          + '</dl>'
           + '</article>';
       }).join('');
     }
@@ -268,18 +275,12 @@
     var modalContent = modalNode && modalNode.querySelector('.modal-content');
     var modalHeader = modalContent && modalContent.querySelector(':scope > .agent-access-modal-header');
     var modalScroll = modalContent && modalContent.querySelector(':scope > .agent-access-modal-scroll');
-
-    function setProtocol(value) {
-      var form = root.querySelector('[data-agent-personal-endpoint-form]');
-      if (!form) return;
-      var protocol = value === 'anthropic' ? 'anthropic' : 'openai';
-      form.elements.protocol.value = protocol;
-      form.querySelectorAll('[data-agent-protocol-option]').forEach(function (button) {
-        var active = button.dataset.agentProtocolOption === protocol;
-        button.classList.toggle('is-current', active);
-        button.setAttribute('aria-pressed', active ? 'true' : 'false');
-      });
-    }
+    var personalForm = root.querySelector('[data-endpoint-editor][data-endpoint-editor-mode="personal"]');
+    var personalEditorRevision = 0;
+    var personalEditor = personalForm && global.NumOJEndpointEditor.mount(personalForm, {
+      createKeyNote: '密钥只用于你的 Agent 会话。',
+      editKeyNote: '留空表示继续使用已保存的密钥。'
+    });
 
     function setMainInert(inert) {
       [modalHeader, modalScroll].forEach(function (node) {
@@ -317,42 +318,30 @@
     }
 
     function resetPersonalForm() {
-      var form = root.querySelector('[data-agent-personal-endpoint-form]');
-      if (!form) return;
-      form.reset();
-      form.elements.endpoint_id.value = '';
-      form.elements.api_key.required = true;
-      var label = root.querySelector('[data-agent-personal-editor-label]');
-      var note = root.querySelector('[data-agent-personal-key-note]');
-      form.querySelectorAll('.agent-access-input-shell').forEach(function (shell) {
-        shell.classList.remove('is-invalid');
-      });
-      form.querySelectorAll('[aria-invalid]').forEach(function (field) {
-        field.removeAttribute('aria-invalid');
-      });
-      setProtocol('openai');
-      if (label) label.textContent = '新建自定义端点';
-      if (note) note.textContent = '密钥只用于你的 Agent 会话。';
-      setFeedback(root.querySelector('[data-agent-personal-endpoint-editor-feedback]'), '', false);
+      if (!personalEditor) return;
+      personalEditorRevision += 1;
+      personalEditor.configure({title: '新建自定义端点'});
+      personalEditor.reset({protocol: 'openai', category: 'text'});
+      personalForm.querySelector('[data-endpoint-editor-save]').disabled = false;
     }
 
     function editPersonalEndpoint(endpoint, opener) {
-      var form = root.querySelector('[data-agent-personal-endpoint-form]');
       var layer = root.querySelector('[data-agent-personal-endpoint-layer]');
-      if (!form) return;
-      resetPersonalForm();
-      form.elements.endpoint_id.value = endpoint.id || endpoint.endpoint_id || '';
-      form.elements.name.value = endpoint.name || endpoint.label || '';
-      form.elements.model.value = endpoint.model || '';
-      setProtocol(endpoint.protocol || 'openai');
-      form.elements.base_url.value = endpoint.base_url || '';
-      form.elements.api_key.value = '';
-      form.elements.api_key.required = false;
-      var label = root.querySelector('[data-agent-personal-editor-label]');
-      var note = root.querySelector('[data-agent-personal-key-note]');
-      if (label) label.textContent = '编辑自定义端点';
-      if (note) note.textContent = '留空表示继续使用已保存的密钥。';
-      openLayer(layer, opener, '[data-agent-personal-editor-label]');
+      if (!personalEditor) return;
+      personalEditorRevision += 1;
+      personalEditor.configure({title: '编辑自定义端点'});
+      personalEditor.fill({
+        endpoint_id: endpoint.id || endpoint.endpoint_id || '',
+        name: endpoint.name || endpoint.label || '',
+        model: endpoint.model || '',
+        protocol: endpoint.protocol || 'openai',
+        category: 'text',
+        base_url: endpoint.base_url || '',
+        thinking_enabled: Boolean(endpoint.thinking_enabled),
+        thinking_format: endpoint.thinking_format || 'none'
+      });
+      personalForm.querySelector('[data-endpoint-editor-save]').disabled = false;
+      openLayer(layer, opener, '[data-endpoint-editor-title]');
     }
 
     function endpointUrl(id) {
@@ -445,11 +434,57 @@
       return asText(item && (item.label || item.class_name || item.name || item.class_en)) || '未命名班级';
     }
 
-    function selectedClassGrant() {
-      var selected = Array.prototype.map.call(
-        root.querySelectorAll('[data-agent-class-grant-options] input:checked'),
-        function (input) { return input.value; }
+    function classLogoMarkup(item, className) {
+      var classesText = className || 'agent-class-option-logo';
+      var cells = item && item.logo && Array.isArray(item.logo.cells) ? item.logo.cells : [];
+      if (!cells.length) {
+        return '<span class="' + classesText + ' is-placeholder" aria-hidden="true"></span>';
+      }
+      var rects = cells.filter(function (cell) {
+        return Array.isArray(cell) && cell.length >= 2
+          && Number.isInteger(Number(cell[0])) && Number.isInteger(Number(cell[1]));
+      }).map(function (cell) {
+        return '<rect x="' + (Number(cell[0]) + 1) + '" y="' + (Number(cell[1]) + 1)
+          + '" width="1" height="1"></rect>';
+      });
+      return '<span class="' + classesText + '" aria-hidden="true">'
+        + '<svg viewBox="0 0 7 7" focusable="false" shape-rendering="crispEdges">'
+        + rects.join('') + '</svg></span>';
+    }
+
+    function selectedClassInputs() {
+      return Array.prototype.slice.call(
+        root.querySelectorAll('[data-agent-class-grant-options] input[name="classes"]:checked')
       );
+    }
+
+    function syncClassPicker() {
+      var selected = selectedClassInputs();
+      var label = root.querySelector('[data-agent-class-picker-label]');
+      var codes = root.querySelector('[data-agent-class-picker-codes]');
+      var logo = root.querySelector('[data-agent-class-picker-logo]');
+      if (label) label.textContent = selected.length ? '已选择 ' + selected.length + ' 个班级' : '选择班级';
+      if (codes) codes.textContent = selected.length
+        ? selected.map(function (input) { return input.value; }).join(' · ')
+        : 'MULTIPLE SELECT';
+      if (logo) {
+        var item = selected.length ? classes.find(function (candidate) {
+          return classKey(candidate) === selected[0].value;
+        }) : null;
+        var holder = document.createElement('div');
+        holder.innerHTML = classLogoMarkup(item, 'agent-class-picker-logo');
+        var replacement = holder.firstElementChild;
+        if (replacement) {
+          Array.prototype.forEach.call(logo.attributes, function (attribute) {
+            if (attribute.name.indexOf('data-') === 0) replacement.setAttribute(attribute.name, attribute.value);
+          });
+          logo.replaceWith(replacement);
+        }
+      }
+    }
+
+    function selectedClassGrant() {
+      var selected = selectedClassInputs().map(function (input) { return input.value; });
       var userIds = new Set();
       var fallbackCount = 0;
       selected.forEach(function (key) {
@@ -484,21 +519,27 @@
 
     function renderClasses() {
       var list = root.querySelector('[data-agent-class-grant-options]');
+      var trigger = root.querySelector('[data-agent-class-picker-trigger]');
       if (!list) return;
       if (!classes.length) {
         list.innerHTML = '<div class="agent-access-empty">暂无可赠送的班级</div>';
+        if (trigger) trigger.disabled = true;
+        syncClassPicker();
         updateClassGrantPreview();
         return;
       }
+      if (trigger) trigger.disabled = false;
       list.innerHTML = classes.map(function (item) {
         var key = classKey(item);
-        var count = Array.isArray(item.user_ids)
-          ? new Set(item.user_ids.map(asText)).size
-          : Number(item.user_count || item.student_count || 0);
-        return '<label><input type="checkbox" name="classes" value="' + escapeHtml(key) + '">'
-          + '<span><strong>' + escapeHtml(classLabel(item)) + '</strong><small>' + count + ' 位普通用户</small></span>'
-          + '<i class="fas fa-check" aria-hidden="true"></i></label>';
+        var searchText = classLabel(item) + ' ' + key;
+        return '<label class="agent-class-option" data-agent-class-search="' + escapeHtml(searchText.toLowerCase()) + '">'
+          + '<input class="agent-class-checkbox" type="checkbox" name="classes" value="' + escapeHtml(key) + '">'
+          + classLogoMarkup(item, 'agent-class-option-logo')
+          + '<span class="agent-class-option-copy"><strong>' + escapeHtml(classLabel(item)) + '</strong><small>' + escapeHtml(key) + '</small></span>'
+          + '<span class="agent-class-option-state" aria-hidden="true"><i class="fas fa-check"></i></span></label>';
       }).join('');
+      syncClassPicker();
+      filterClassPicker();
       updateClassGrantPreview();
     }
 
@@ -553,6 +594,7 @@
     });
     if (modalNode) modalNode.addEventListener('hidden.bs.modal', function () {
       closeLayer(false);
+      setClassPickerOpen(false);
       pendingDeleteEndpoint = null;
       resetPersonalForm();
     });
@@ -583,51 +625,49 @@
       });
     });
 
-    var personalForm = root.querySelector('[data-agent-personal-endpoint-form]');
     if (personalForm) personalForm.addEventListener('submit', function (event) {
       event.preventDefault();
-      var id = asText(personalForm.elements.endpoint_id.value);
-      var button = root.querySelector('[data-agent-personal-endpoint-save]');
-      var feedback = root.querySelector('[data-agent-personal-endpoint-editor-feedback]');
-      if (!validateForm(personalForm, feedback)) return;
+      var payload = personalEditor.values();
+      var id = asText(payload.endpoint_id);
+      var button = personalForm.querySelector('[data-endpoint-editor-save]');
+      var editorRevision = personalEditorRevision;
+      var editorLayer = root.querySelector('[data-agent-personal-endpoint-layer]');
+      if (!personalEditor.validate()) return;
       button.disabled = true;
-      setFeedback(feedback, '正在测试连接并保存…', false);
+      personalEditor.setResult('正在测试连接并保存…', 'pending');
       request(id ? endpointUrl(id) : root.dataset.agentAccessPersonalEndpointsUrl, {
         method: id ? 'PUT' : 'POST',
         body: {
-          name: personalForm.elements.name.value.trim(),
-          model: personalForm.elements.model.value.trim(),
-          protocol: personalForm.elements.protocol.value,
-          base_url: personalForm.elements.base_url.value.trim(),
-          api_key: personalForm.elements.api_key.value
+          name: payload.name,
+          model: payload.model,
+          protocol: payload.protocol,
+          base_url: payload.base_url,
+          api_key: payload.api_key,
+          thinking_enabled: payload.thinking_enabled,
+          thinking_format: payload.thinking_format
         }
       }).then(function (payload) {
         var endpoint = payload && (payload.endpoint || payload.data);
         if (!upsertPersonalEndpoint(endpoint)) loadPersonalEndpoints().catch(function () {});
-        button.disabled = false;
-        closeLayer(true);
+        if (editorRevision === personalEditorRevision && activeLayer === editorLayer) {
+          button.disabled = false;
+          closeLayer(true);
+        }
         setFeedback(root.querySelector('[data-agent-personal-endpoint-feedback]'), id ? '端点已更新。' : '端点已创建。', false);
       }).catch(function (error) {
+        if (editorRevision !== personalEditorRevision || activeLayer !== editorLayer) return;
         button.disabled = false;
-        setFeedback(feedback, error.message, true);
+        personalEditor.setResult(error.message, 'error');
       });
     });
-
-    if (personalForm) personalForm.addEventListener('input', clearFieldError);
 
     var createEndpoint = root.querySelector('[data-agent-personal-endpoint-create]');
     if (createEndpoint) createEndpoint.addEventListener('click', function () {
       resetPersonalForm();
-      openLayer(root.querySelector('[data-agent-personal-endpoint-layer]'), createEndpoint, '[data-agent-personal-editor-label]');
+      openLayer(root.querySelector('[data-agent-personal-endpoint-layer]'), createEndpoint, '[data-endpoint-editor-title]');
     });
 
-    var protocolPicker = root.querySelector('[data-agent-protocol-picker]');
-    if (protocolPicker) protocolPicker.addEventListener('click', function (event) {
-      var option = event.target.closest('[data-agent-protocol-option]');
-      if (option) setProtocol(option.dataset.agentProtocolOption);
-    });
-
-    root.querySelectorAll('[data-agent-layer-dismiss]').forEach(function (button) {
+    root.querySelectorAll('[data-endpoint-editor-dismiss], [data-agent-layer-dismiss]').forEach(function (button) {
       button.addEventListener('click', function () { closeLayer(true); });
     });
 
@@ -744,6 +784,76 @@
     bindTabs(root, adminTabs, '[data-agent-admin-tab]', '[data-agent-admin-panel]', 'agentAdminTab', 'agentAdminPanel');
     bindTabs(root, root.querySelector('[data-agent-user-tabs]'), '[data-agent-user-tab]', '[data-agent-user-panel]', 'agentUserTab', 'agentUserPanel');
 
+    var classPicker = root.querySelector('[data-agent-class-picker]');
+    var classPickerTrigger = root.querySelector('[data-agent-class-picker-trigger]');
+    var classPickerPanel = root.querySelector('[data-agent-class-picker-panel]');
+    var classPickerSearch = root.querySelector('[data-agent-class-picker-search]');
+    var classPickerOptions = root.querySelector('[data-agent-class-grant-options]');
+    var classPickerEmpty = root.querySelector('[data-agent-class-picker-empty]');
+
+    function setClassPickerOpen(open) {
+      if (!classPicker || !classPickerPanel || !classPickerTrigger) return;
+      classPicker.classList.toggle('is-open', open);
+      classPickerPanel.hidden = !open;
+      classPickerTrigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open && classPickerSearch) window.setTimeout(function () { classPickerSearch.focus(); }, 0);
+    }
+
+    function filterClassPicker() {
+      var query = asText(classPickerSearch && classPickerSearch.value).toLowerCase();
+      var shown = 0;
+      if (classPickerOptions) {
+        classPickerOptions.querySelectorAll('.agent-class-option').forEach(function (option) {
+          var hit = !query || asText(option.dataset.agentClassSearch).indexOf(query) !== -1;
+          option.classList.toggle('is-hidden', !hit);
+          if (hit) shown += 1;
+        });
+      }
+      if (classPickerEmpty) classPickerEmpty.hidden = shown > 0;
+    }
+
+    if (classPickerTrigger) classPickerTrigger.addEventListener('click', function () {
+      setClassPickerOpen(!classPicker.classList.contains('is-open'));
+    });
+    if (classPickerSearch) classPickerSearch.addEventListener('input', filterClassPicker);
+    if (classPickerOptions) classPickerOptions.addEventListener('change', function (event) {
+      if (!event.target.matches('input[name="classes"]')) return;
+      syncClassPicker();
+      updateClassGrantPreview();
+    });
+    var selectAllClasses = root.querySelector('[data-agent-class-picker-all]');
+    if (selectAllClasses) selectAllClasses.addEventListener('click', function () {
+      classPickerOptions.querySelectorAll('.agent-class-option:not(.is-hidden) input[name="classes"]')
+        .forEach(function (input) { input.checked = true; });
+      syncClassPicker();
+      updateClassGrantPreview();
+    });
+    var clearAllClasses = root.querySelector('[data-agent-class-picker-none]');
+    if (clearAllClasses) clearAllClasses.addEventListener('click', function () {
+      classPickerOptions.querySelectorAll('input[name="classes"]')
+        .forEach(function (input) { input.checked = false; });
+      syncClassPicker();
+      updateClassGrantPreview();
+    });
+    var finishClassPicker = root.querySelector('[data-agent-class-picker-done]');
+    if (finishClassPicker) finishClassPicker.addEventListener('click', function () {
+      setClassPickerOpen(false);
+      classPickerTrigger.focus();
+    });
+    root.addEventListener('click', function (event) {
+      if (classPicker && classPicker.classList.contains('is-open') && !classPicker.contains(event.target)) {
+        setClassPickerOpen(false);
+      }
+    });
+    root.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && classPicker && classPicker.classList.contains('is-open')) {
+        event.preventDefault();
+        event.stopPropagation();
+        setClassPickerOpen(false);
+        classPickerTrigger.focus();
+      }
+    });
+
     var grantForm = root.querySelector('[data-agent-class-grant-form]');
     if (grantForm) {
       grantForm.addEventListener('input', updateClassGrantPreview);
@@ -773,6 +883,8 @@
             ? payload.total_amount
             : multiplyDecimal(grantForm.elements.amount_rmb.value, count);
           grantForm.reset();
+          syncClassPicker();
+          filterClassPicker();
           updateClassGrantPreview();
           setFeedback(feedback, '已向 ' + count + ' 位用户赠送，共 ' + moneyText(total) + '。', false);
         }).catch(function (error) {

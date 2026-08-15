@@ -1,3 +1,4 @@
+{% from 'components/endpoint_editor.html' import endpoint_editor %}
 {% set access_summary = agent_quota_summary|default({}, true) %}
 {% set access_urls = agent_access_urls|default({}, true) %}
 {% set access_is_admin = user and user.is_admin == 1 %}
@@ -63,13 +64,41 @@
             <header>
               <span>CLASS GRANT</span>
               <h3>按班级赠送额度</h3>
-              <p>同一用户出现在多个班级时只赠送一次，管理员不会计入。</p>
             </header>
             <form data-agent-class-grant-form novalidate>
-              <fieldset>
+              <fieldset class="agent-class-grant-fieldset">
                 <legend>选择班级</legend>
-                <div class="agent-class-grant-options" data-agent-class-grant-options>
-                  <div class="agent-access-loading">读取班级中</div>
+                <div class="agent-class-picker" data-agent-class-picker>
+                  <button type="button" class="agent-class-picker-trigger"
+                          data-agent-class-picker-trigger aria-haspopup="listbox"
+                          aria-expanded="false" aria-controls="agentClassGrantPanel">
+                    <span class="agent-class-picker-logo is-placeholder"
+                          data-agent-class-picker-logo aria-hidden="true"></span>
+                    <span class="agent-class-picker-current">
+                      <strong data-agent-class-picker-label>选择班级</strong>
+                      <small data-agent-class-picker-codes>MULTIPLE SELECT</small>
+                    </span>
+                    <i class="fas fa-chevron-down agent-class-picker-caret" aria-hidden="true"></i>
+                  </button>
+                  <div class="agent-class-picker-panel" id="agentClassGrantPanel"
+                       data-agent-class-picker-panel role="listbox"
+                       aria-label="选择班级" aria-multiselectable="true" hidden>
+                    <label class="agent-class-picker-search agent-access-input-shell">
+                      <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+                      <input type="search" data-agent-class-picker-search
+                             placeholder="搜索班级" autocomplete="off" spellcheck="false"
+                             aria-label="搜索班级">
+                    </label>
+                    <div class="agent-class-grant-options" data-agent-class-grant-options>
+                      <div class="agent-access-loading">读取班级中</div>
+                    </div>
+                    <div class="agent-class-picker-empty" data-agent-class-picker-empty hidden>无匹配班级</div>
+                    <footer class="agent-class-picker-footer">
+                      <button type="button" data-agent-class-picker-all>全选</button>
+                      <button type="button" data-agent-class-picker-none>清空</button>
+                      <button type="button" class="is-done" data-agent-class-picker-done>完成</button>
+                    </footer>
+                  </div>
                 </div>
               </fieldset>
               <label class="agent-class-grant-amount agent-access-field">
@@ -173,52 +202,10 @@
 
         {% if not access_is_admin %}
         <section class="agent-access-layer" data-agent-personal-endpoint-layer hidden
-                 role="dialog" aria-modal="true" aria-labelledby="agentPersonalEndpointLayerTitle">
+                 role="dialog" aria-modal="true" aria-labelledby="agentPersonalEndpoint-title">
           <button class="agent-access-layer-scrim" type="button" tabindex="-1"
                   data-agent-layer-dismiss aria-label="关闭端点编辑器"></button>
-          <form class="agent-access-layer-panel" data-agent-personal-endpoint-form autocomplete="off" novalidate>
-            <header class="agent-access-modal-header">
-              <div><span>ENDPOINT EDITOR</span><h2 id="agentPersonalEndpointLayerTitle" data-agent-personal-editor-label tabindex="-1">新建自定义端点</h2></div>
-              <button type="button" class="btn-close" data-agent-layer-dismiss aria-label="关闭"></button>
-            </header>
-            <div class="agent-endpoint-editor-body">
-              <input type="hidden" name="endpoint_id">
-              <label class="agent-access-field">
-                <span>显示名称</span>
-                <span class="agent-access-input-shell"><i class="fas fa-tag" aria-hidden="true"></i><input name="name" maxlength="100" required placeholder="例如：我的 DeepSeek"></span>
-              </label>
-              <label class="agent-access-field">
-                <span>模型名称</span>
-                <span class="agent-access-input-shell"><i class="fas fa-cube" aria-hidden="true"></i><input name="model" maxlength="200" required placeholder="例如：deepseek-chat"></span>
-              </label>
-              <fieldset class="agent-access-field wide agent-protocol-picker" data-agent-protocol-picker>
-                <legend>兼容协议</legend>
-                <input type="hidden" name="protocol" value="openai">
-                <div>
-                  <button class="is-current" type="button" data-agent-protocol-option="openai" aria-pressed="true">
-                    <i class="fas fa-code" aria-hidden="true"></i><span><strong>OpenAI 兼容</strong><small>Chat Completions / Responses</small></span>
-                  </button>
-                  <button type="button" data-agent-protocol-option="anthropic" aria-pressed="false">
-                    <i class="fas fa-terminal" aria-hidden="true"></i><span><strong>Anthropic 兼容</strong><small>Messages API</small></span>
-                  </button>
-                </div>
-              </fieldset>
-              <label class="agent-access-field wide">
-                <span>基础地址</span>
-                <span class="agent-access-input-shell"><i class="fas fa-link" aria-hidden="true"></i><input name="base_url" type="url" required autocomplete="url" placeholder="https://api.example.com/v1"></span>
-              </label>
-              <label class="agent-access-field wide">
-                <span>API 密钥</span>
-                <span class="agent-access-input-shell"><i class="fas fa-lock" aria-hidden="true"></i><input name="api_key" type="password" autocomplete="new-password" placeholder="sk-..."></span>
-                <small data-agent-personal-key-note>密钥只用于你的 Agent 会话。</small>
-              </label>
-              <p class="agent-access-feedback wide" data-agent-personal-endpoint-editor-feedback role="status" aria-live="polite" hidden></p>
-            </div>
-            <footer class="agent-endpoint-editor-footer">
-              <button class="agent-access-secondary" type="button" data-agent-layer-dismiss>放弃</button>
-              <button class="agent-access-primary" type="submit" data-agent-personal-endpoint-save>保存端点</button>
-            </footer>
-          </form>
+          {{ endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建自定义端点', surface='layer') }}
         </section>
 
         <section class="agent-access-layer is-compact" data-agent-personal-delete-layer hidden
@@ -232,7 +219,7 @@
               <p>将删除 <strong data-agent-personal-delete-name>这个端点</strong>。已有会话仍可查看，但不能再通过它继续运行。</p>
               <p class="agent-access-feedback" data-agent-personal-endpoint-delete-feedback role="status" aria-live="polite" hidden></p>
             </div>
-            <footer class="agent-endpoint-editor-footer">
+            <footer class="agent-endpoint-delete-footer">
               <button class="agent-access-secondary" type="button" data-agent-delete-dismiss>保留端点</button>
               <button class="agent-access-danger-button" type="button" data-agent-personal-endpoint-delete-confirm>确认删除</button>
             </footer>

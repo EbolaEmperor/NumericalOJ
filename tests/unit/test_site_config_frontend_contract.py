@@ -5,6 +5,9 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "templates/admin/site_config.html"
 SCRIPT = ROOT / "static/app/site-config.js"
 STYLESHEET = ROOT / "static/app/site-config.css"
+ENDPOINT_EDITOR_TEMPLATE = ROOT / "templates/components/endpoint_editor.html"
+ENDPOINT_EDITOR_SCRIPT = ROOT / "static/app/endpoint-editor.js"
+ENDPOINT_EDITOR_STYLESHEET = ROOT / "static/app/endpoint-editor.css"
 CHOICE_PICKER = ROOT / "static/app/choice-picker.js"
 CHOICE_PICKER_TEMPLATE = ROOT / "templates/components/choice_picker.html"
 PROBLEM_ENDPOINT_SELECT = ROOT / "templates/problems/components/llm_endpoint_select.html"
@@ -47,20 +50,21 @@ def test_site_config_has_exactly_three_internal_pages():
 
 def test_site_config_keeps_decorative_labels_without_explanatory_copy():
     template = _read(TEMPLATE)
+    endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)
     script = _read(SCRIPT)
-    combined = f"{template}\n{script}"
+    combined = f"{template}\n{endpoint_editor}\n{script}"
 
     for decoration in (
         "GLOBAL CONFIGURATION",
         "ENDPOINT POOL",
         "RUNTIME BINDINGS",
         "OTHER SERVICES",
-        "ENDPOINT EDITOR",
         "CHANGE PROTECTION",
         "PROTECTED CONFIG",
         "DELETE ENDPOINT",
     ):
         assert decoration in template
+    assert "ENDPOINT EDITOR" in endpoint_editor
 
     for explanatory_copy in (
         "邮件与联网搜索可独立保存、测试或整组清除，不依赖模型端点池。",
@@ -83,8 +87,9 @@ def test_site_config_keeps_decorative_labels_without_explanatory_copy():
 
 def test_site_config_has_no_native_select_or_endpoint_filter_controls():
     template = _read(TEMPLATE)
+    endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)
     script = _read(SCRIPT)
-    combined = f"{template}\n{script}".lower()
+    combined = f"{template}\n{endpoint_editor}\n{script}".lower()
 
     assert "<select" not in combined
     assert "<option" not in combined
@@ -156,23 +161,28 @@ def test_site_config_rail_typography_matches_ranking_detail():
 
 def test_site_config_choice_pickers_are_custom_and_accessible():
     template = _read(TEMPLATE)
+    endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)
     script = _read(SCRIPT)
     picker = _read(CHOICE_PICKER)
 
-    assert template.count('role="combobox"') == 2
-    assert template.count('role="listbox"') == 2
+    assert "components/endpoint_editor.html" in template
+    assert "endpoint_editor('endpointModal', mode='global'" in template
+    assert endpoint_editor.count('role="combobox"') == 2
+    assert endpoint_editor.count('role="listbox"') == 2
     for trigger, menu in (
-        ("endpointProtocolTrigger", "endpointProtocolMenu"),
-        ("endpointCategoryTrigger", "endpointCategoryMenu"),
+        ("{{ id_prefix }}-protocol-trigger", "{{ id_prefix }}-protocol-menu"),
+        ("{{ id_prefix }}-category-trigger", "{{ id_prefix }}-category-menu"),
     ):
-        assert f'id="{trigger}"' in template
-        assert f'aria-controls="{menu}"' in template
-        assert f'id="{menu}"' in template
-        assert f'aria-labelledby="{trigger}"' in template
+        assert f'id="{trigger}"' in endpoint_editor
+        assert f'aria-controls="{menu}"' in endpoint_editor
+        assert f'id="{menu}"' in endpoint_editor
+        assert f'aria-labelledby="{trigger}"' in endpoint_editor
     for name in ("protocol", "category", "thinking_format"):
-        assert f'name="{name}" type="hidden"' in template or (
-            f'<input type="hidden" name="{name}"' in template
-        )
+        name_at = endpoint_editor.index(f'name="{name}"')
+        field = endpoint_editor[
+            endpoint_editor.rfind("<input", 0, name_at) : endpoint_editor.index(">", name_at)
+        ]
+        assert 'type="hidden"' in field
 
     assert "data-feature-choice" in script
     assert "window.ChoicePicker.configure" in script
@@ -265,6 +275,7 @@ def test_endpoint_secrets_are_never_rendered_from_list_payload():
 
 def test_endpoint_model_is_the_only_display_name():
     template = _read(TEMPLATE)
+    endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)
     script = _read(SCRIPT)
     external_displays = "\n".join(
         _read(path)
@@ -284,7 +295,8 @@ def test_endpoint_model_is_the_only_display_name():
     assert "site-config-endpoint-model" not in f"{script}\n{_read(STYLESHEET)}"
     assert "endpoint.name" not in external_displays
     assert "{{ endpoint.name }}" not in external_displays
-    assert '<input name="model" required' in template
+    assert "mode == 'personal'" in endpoint_editor
+    assert '<input name="model" maxlength="200" required' in endpoint_editor
     assert "modelIconClass(endpoint.model)" in script
     assert "${escapeHtml(endpoint.model)}</span></h3>" in script
     assert "label: endpoint.model" in script
@@ -361,21 +373,24 @@ def test_endpoint_protection_actions_name_the_stable_endpoint_id():
 
 def test_endpoint_thinking_wire_format_is_derived_from_protocol():
     template = _read(TEMPLATE)
-    script = _read(SCRIPT)
+    endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)
+    endpoint_editor_script = _read(ENDPOINT_EDITOR_SCRIPT)
 
-    assert "思考参数格式" not in template
-    assert "form.elements.protocol.value === 'anthropic'" in script
-    assert "'thinking_type' : 'enable_thinking'" in script
-    assert ": 'none'" in script
-    assert "form.elements.category.value !== 'embedding'" in script
+    assert "思考参数格式" not in f"{template}\n{endpoint_editor}"
+    assert 'data-endpoint-editor-thinking' in endpoint_editor
+    assert "form.elements.protocol.value === 'anthropic'" in endpoint_editor_script
+    assert "'thinking_type' : 'enable_thinking'" in endpoint_editor_script
+    assert ": 'none'" in endpoint_editor_script
+    assert "category !== 'embedding'" in endpoint_editor_script
 
 
 def test_endpoint_editor_requires_and_summarizes_all_three_prices():
-    template = _read(TEMPLATE)
+    template = _read(ENDPOINT_EDITOR_TEMPLATE)
     script = _read(SCRIPT)
-    stylesheet = _read(STYLESHEET)
+    endpoint_editor_script = _read(ENDPOINT_EDITOR_SCRIPT)
+    stylesheet = _read(ENDPOINT_EDITOR_STYLESHEET)
 
-    assert template.count('class="site-config-price-row"') == 1
+    assert template.count('class="numoj-endpoint-editor__prices wide"') == 1
     for field in (
         "input_price_per_million",
         "cached_input_price_per_million",
@@ -384,8 +399,8 @@ def test_endpoint_editor_requires_and_summarizes_all_three_prices():
         assert f'name="{field}" type="number"' in template
         price_input = template.split(f'name="{field}"', 1)[1].split(">", 1)[0]
         assert "required" in price_input
-        assert f"form.elements.{field}.value.trim()" in script
-        assert f"decimalText(endpoint?.{field})" in script
+        assert f"form.elements.{field}.value.trim()" in endpoint_editor_script
+        assert f"decimalText(endpoint.{field})" in script
         assert f"moneyText(endpoint.{field})" in script
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in stylesheet
     assert "function endpointCard(endpoint)" in script
@@ -398,4 +413,4 @@ def test_endpoint_save_is_gated_by_matching_test_token():
     assert "endpointFormFingerprint" in script
     assert "test_token" in script
     assert "字段已经变化，请重新测试连接" in script
-    assert "[data-endpoint-save]').disabled = true" in script
+    assert "[data-endpoint-editor-save]', endpointForm).disabled = true" in script
