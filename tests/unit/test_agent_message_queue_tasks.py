@@ -480,3 +480,26 @@ def test_control_bridge_delivers_one_steer_and_maps_ack(monkeypatch):
             "error_message": "",
         },
     )]
+
+
+def test_control_bridge_keeps_steer_queued_when_runtime_access_is_blocked(
+    monkeypatch,
+):
+    claimed = []
+    monkeypatch.setattr(
+        queue,
+        "claim_next_agent_session_steer",
+        lambda *_args, **kwargs: (
+            claimed.append(True)
+            if kwargs["dispatch_allowed"]()
+            else None
+        ),
+    )
+    source, _callback = queue.build_agent_control_bridge(
+        "session-1",
+        "task-1",
+        eligibility_check=lambda: False,
+    )
+
+    assert source() == ()
+    assert claimed == []

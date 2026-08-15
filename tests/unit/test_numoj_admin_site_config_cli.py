@@ -50,9 +50,9 @@ def _llm_args(**overrides):
         "env_file": None,
         "model": "example-model",
         "thinking_enabled": True,
-        "input_price_per_million": None,
-        "cached_input_price_per_million": None,
-        "output_price_per_million": None,
+        "input_price_per_million": "1",
+        "cached_input_price_per_million": "0.1",
+        "output_price_per_million": "4",
     }
     values.update(overrides)
     return Namespace(**values)

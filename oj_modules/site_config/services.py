@@ -156,6 +156,16 @@ def _json_value(value):
     return value
 
 
+def _decimal_display_text(value):
+    try:
+        number = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return value
+    if not number.is_finite():
+        return value
+    return "0" if number == 0 else format(number.normalize(), "f")
+
+
 def _serialize_row(row):
     return {key: _json_value(value) for key, value in (row or {}).items()}
 
@@ -196,9 +206,8 @@ def _normalize_llm_prices(payload, existing):
             raise DynamicConfigValidationError("Token 单价超出数据库可存储范围")
         values.append(format(price, "f"))
 
-    configured = sum(value is not None for value in values)
-    if configured not in (0, len(LLM_PRICE_FIELDS)):
-        raise DynamicConfigValidationError("三个 Token 单价必须全部填写或全部留空")
+    if any(value is None for value in values):
+        raise DynamicConfigValidationError("三个 Token 单价均为必填项")
     return dict(zip(LLM_PRICE_FIELDS, values))
 
 
@@ -305,6 +314,8 @@ def _public_endpoint(row, *, include_secret=False, actor_user_id=None):
         and actor_user_id is not None
         and int(result.get("locked_by_user_id") or 0) == int(actor_user_id)
     )
+    for field in LLM_PRICE_FIELDS:
+        result[field] = _decimal_display_text(result.get(field))
     return result
 
 

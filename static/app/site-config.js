@@ -5,6 +5,9 @@
   if (!root) return;
 
   const apiRoot = String(root.dataset.apiRoot || '/api/admin/dynamic-config').replace(/\/$/, '');
+  const agentPublicAccessPath = String(
+    root.dataset.agentPublicAccessUrl || `${apiRoot}/agent-public-access`
+  ).replace(apiRoot, '') || '/agent-public-access';
   const currentUserId = Number(root.dataset.currentUserId || 0);
   const REQUIRED_UNLOCK_PHRASE = '我已阅读上述内容，我清楚后果，我坚持要解锁';
   const mobileRailQuery = window.matchMedia('(max-width: 991.98px)');
@@ -17,6 +20,19 @@
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+
+  const decimalText = (value) => {
+    let text = String(value ?? '').trim();
+    if (!text) return '';
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(text)) return text;
+    text = text.replace(/^([+-]?)0+(?=\d)/, '$1');
+    if (text.includes('.')) text = text.replace(/0+$/, '').replace(/\.$/, '');
+    return ['-0', '+0', ''].includes(text) ? '0' : text;
+  };
+  const moneyText = (value) => {
+    const text = decimalText(value);
+    return text ? `${text} 元` : '—';
+  };
 
   const protocolLabels = {openai: 'OpenAI 兼容', anthropic: 'Anthropic 兼容'};
   const protocolIcons = {openai: 'fa-code', anthropic: 'fa-brain'};
@@ -49,6 +65,7 @@
     unlockTarget: null,
     deleteTarget: null,
     featureControllers: new Map(),
+    agentPublicEnabled: true,
     railReturnFocus: null,
   };
 
@@ -178,6 +195,11 @@
             </div>
           </div>
           <div class="site-config-endpoint-url"><small>地址 · ${escapeHtml(apiKey)}</small><span title="${escapeHtml(endpoint.base_url)}">${escapeHtml(endpoint.base_url)}</span></div>
+          <dl class="site-config-endpoint-prices" aria-label="节点价格，人民币每百万 Token">
+            <div><dt>INPUT</dt><dd>${escapeHtml(moneyText(endpoint.input_price_per_million))}</dd></div>
+            <div><dt>CACHED</dt><dd>${escapeHtml(moneyText(endpoint.cached_input_price_per_million))}</dd></div>
+            <div><dt>OUTPUT</dt><dd>${escapeHtml(moneyText(endpoint.output_price_per_million))}</dd></div>
+          </dl>
         </div>
         <footer class="site-config-endpoint-foot">
           <span class="site-config-test-state ${status.className}" title="${escapeHtml(endpoint.test_message || '')}"><i aria-hidden="true"></i>${escapeHtml(status.label)}</span>
@@ -368,9 +390,9 @@
     form.elements.base_url.value = endpoint?.base_url || '';
     form.elements.api_key.value = '';
     form.elements.model.value = endpoint?.model || '';
-    form.elements.input_price_per_million.value = endpoint?.input_price_per_million ?? '';
-    form.elements.cached_input_price_per_million.value = endpoint?.cached_input_price_per_million ?? '';
-    form.elements.output_price_per_million.value = endpoint?.output_price_per_million ?? '';
+    form.elements.input_price_per_million.value = decimalText(endpoint?.input_price_per_million);
+    form.elements.cached_input_price_per_million.value = decimalText(endpoint?.cached_input_price_per_million);
+    form.elements.output_price_per_million.value = decimalText(endpoint?.output_price_per_million);
     updateThinkingControls(false);
     setThinking(Boolean(endpoint?.thinking_enabled));
     invalidateEndpointTest();
@@ -451,6 +473,9 @@
           model: endpoint.model,
           thinking_enabled: Boolean(endpoint.thinking_enabled),
           thinking_format: endpoint.thinking_format,
+          input_price_per_million: decimalText(endpoint.input_price_per_million),
+          cached_input_price_per_million: decimalText(endpoint.cached_input_price_per_million),
+          output_price_per_million: decimalText(endpoint.output_price_per_million),
         },
       });
       toast(`“${endpointIdentity(endpoint)}”连接正常`);
@@ -701,6 +726,46 @@
     populateSearch(await request('/web-search'));
   }
 
+  function renderAgentPublicAccess(enabled) {
+    state.agentPublicEnabled = Boolean(enabled);
+    const button = $('[data-agent-public-access-switch]');
+    const label = $('[data-agent-public-access-label]');
+    const description = $('[data-agent-public-access-description]');
+    button.disabled = false;
+    button.setAttribute('aria-checked', state.agentPublicEnabled ? 'true' : 'false');
+    label.textContent = state.agentPublicEnabled ? '开启' : '关闭';
+    description.textContent = state.agentPublicEnabled
+      ? '普通用户可以创建任务、继续会话和申请额度'
+      : '普通用户只能查看已有会话，不能申请额度或发送消息';
+  }
+
+  async function loadAgentPublicAccess() {
+    const data = await request(agentPublicAccessPath);
+    const settings = data.settings || data;
+    renderAgentPublicAccess(
+      settings.public_enabled ?? settings.enabled ?? settings.agent_public_enabled ?? true
+    );
+  }
+
+  async function saveAgentPublicAccess(button) {
+    const next = !state.agentPublicEnabled;
+    button.disabled = true;
+    try {
+      const data = await request(agentPublicAccessPath, {
+        method: 'PUT',
+        body: {enabled: next},
+      });
+      const settings = data.settings || data;
+      renderAgentPublicAccess(
+        settings.public_enabled ?? settings.enabled ?? settings.agent_public_enabled ?? next
+      );
+      toast(next ? '已允许普通用户使用 Agent' : '已暂停普通用户使用 Agent');
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, 'error');
+    }
+  }
+
   function railIsOpen() {
     return $('[data-config-rail]').classList.contains('is-open');
   }
@@ -842,6 +907,9 @@
     setThinking(endpointForm.elements.thinking_enabled.value !== 'true');
     invalidateEndpointTest();
   });
+  $('[data-agent-public-access-switch]').addEventListener('click', (event) => {
+    saveAgentPublicAccess(event.currentTarget);
+  });
   $('[data-endpoint-test]').addEventListener('click', (event) => testEndpoint(endpointForm, event.currentTarget));
   endpointForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -892,7 +960,9 @@
     syncRailMode();
     try {
       await loadMeta();
-      const results = await Promise.allSettled([loadEndpoints(), loadBindings(), loadMail(), loadSearch()]);
+      const results = await Promise.allSettled([
+        loadEndpoints(), loadBindings(), loadMail(), loadSearch(), loadAgentPublicAccess(),
+      ]);
       const failed = results.filter((result) => result.status === 'rejected');
       if (failed.length) toast(failed[0].reason?.message || '部分配置读取失败', 'error');
     } catch (error) {

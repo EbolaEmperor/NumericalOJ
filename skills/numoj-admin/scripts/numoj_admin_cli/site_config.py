@@ -164,14 +164,17 @@ def _add_llm_candidate_args(parser: argparse.ArgumentParser, *, required: bool) 
     parser.add_argument("--model", required=required, help="Provider model identifier.")
     parser.add_argument(
         "--input-price-per-million",
+        required=required,
         help="RMB price per 1M uncached input tokens.",
     )
     parser.add_argument(
         "--cached-input-price-per-million",
+        required=required,
         help="RMB price per 1M cached input tokens.",
     )
     parser.add_argument(
         "--output-price-per-million",
+        required=required,
         help="RMB price per 1M output tokens.",
     )
     _add_thinking_args(parser)
@@ -208,7 +211,15 @@ def _llm_payload(
     if required:
         missing = [
             field_name
-            for field_name in ("protocol", "category", "base_url", "model")
+            for field_name in (
+                "protocol",
+                "category",
+                "base_url",
+                "model",
+                "input_price_per_million",
+                "cached_input_price_per_million",
+                "output_price_per_million",
+            )
             if not str(payload.get(field_name) or "").strip()
         ]
         if missing:

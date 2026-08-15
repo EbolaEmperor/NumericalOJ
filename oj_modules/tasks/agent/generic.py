@@ -11,6 +11,12 @@ from oj_modules.agents.sessions import (
     get_agent_session,
     normalize_agent_session_id,
 )
+from oj_modules.agents.quota import (
+    charge_agent_usage,
+    get_agent_runtime_quota_summary,
+    get_agent_session_usage_cost,
+    require_agent_start_eligibility,
+)
 from oj_modules.db_services import get_user_by_username
 from oj_modules.problems.agent_launch import (
     AGENT_TASK_CUSTOM,
@@ -18,11 +24,13 @@ from oj_modules.problems.agent_launch import (
     normalize_agent_task_kind,
     normalize_launch_harness,
     resolve_launch_endpoint,
+    token_pricing_from_endpoint,
     validate_launch_endpoint_revision,
 )
 from oj_modules.tasks.agent.conversation import extract_agent_conclusion
 from oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
+    AgentUsageHardStopError,
     normalize_native_session_id,
     run_agent_harness,
 )
@@ -374,8 +382,11 @@ def register_agent_run_turn_task(celery_app):
         state["harness"] = normalized_harness
 
         user = get_user_by_username(requested_by)
-        if not user or int(user.get("is_admin") or 0) != 1:
+        if not user:
             return _generic_failure(state, "无权限执行通用 Agent")
+        requester_is_admin = int(user.get("is_admin") or 0) == 1
+        if normalized_role == "admin" and not requester_is_admin:
+            return _generic_failure(state, "普通用户不能使用管理员身份运行 Agent")
         if not str(prompt or "").strip():
             return _generic_failure(state, "Agent 消息不能为空")
 
@@ -400,12 +411,34 @@ def register_agent_run_turn_task(celery_app):
             return _generic_failure(state, str(exc) or "Agent 会话状态无效")
         state["native_session_id"] = normalized_resume_session_id
 
+        endpoint_source = str(
+            session.get("endpoint_source") or "global"
+        ).strip().lower()
+        uses_personal_endpoint = endpoint_source == "user"
+        if endpoint_source not in {"global", "user"}:
+            return _generic_failure(state, "Agent 会话模型节点来源无效")
         try:
-            # 本轮只解析一次端点；标题调用与 harness 共用同一冻结映射。
+            require_agent_start_eligibility(
+                user["id"],
+                is_admin=requester_is_admin,
+                uses_personal_endpoint=uses_personal_endpoint,
+            )
+        except Exception as exc:
+            return _generic_failure(state, str(exc) or "当前不能继续 Agent 会话")
+
+        try:
+            endpoint_ref = (
+                f"user:{int(endpoint_id)}"
+                if uses_personal_endpoint
+                else endpoint_id
+            )
+            resolve_kwargs = {"include_secret": True}
+            if uses_personal_endpoint:
+                resolve_kwargs["user_id"] = user["id"]
             endpoint = resolve_launch_endpoint(
                 normalized_harness,
-                endpoint_id,
-                include_secret=True,
+                endpoint_ref,
+                **resolve_kwargs,
             )
             validate_launch_endpoint_revision(
                 endpoint,
@@ -421,9 +454,21 @@ def register_agent_run_turn_task(celery_app):
         if bool(generate_title) and not title:
             title = generate_initial_agent_session_title(
                 normalized_session_id,
-                endpoint,
                 prompt,
-                fallback=prompt,
+            )
+        # 标题使用站点免费链路，最多可能等待两个节点。
+        # 真正启动 harness 前再读一次开关与余额，避免等待
+        # 期间状态变更后仍发起新的模型请求。
+        try:
+            require_agent_start_eligibility(
+                user["id"],
+                is_admin=requester_is_admin,
+                uses_personal_endpoint=uses_personal_endpoint,
+            )
+        except Exception as exc:
+            return _generic_failure(
+                state,
+                str(exc) or "当前不能继续 Agent 会话",
             )
         state.update({
             "task_kind": session_task_kind,
@@ -436,6 +481,7 @@ def register_agent_run_turn_task(celery_app):
                 or "通用 Agent"
             ),
             "endpoint_id": int(endpoint["id"]),
+            "endpoint_source": endpoint_source,
             "endpoint_model": str(endpoint.get("model") or ""),
         })
         _update_agent_state(
@@ -450,7 +496,58 @@ def register_agent_run_turn_task(celery_app):
         control_source, control_callback = build_agent_control_bridge(
             normalized_session_id,
             task_id,
+            eligibility_check=lambda: require_agent_start_eligibility(
+                user["id"],
+                is_admin=requester_is_admin,
+                uses_personal_endpoint=uses_personal_endpoint,
+            ).get("allowed", False),
         )
+        usage_callback = None
+        if not requester_is_admin and not uses_personal_endpoint:
+            pricing = token_pricing_from_endpoint(endpoint)
+            if pricing is None:
+                return _generic_failure(state, "所选全站节点尚未配置完整价格")
+            try:
+                state["session_charged_amount_rmb"] = (
+                    get_agent_session_usage_cost(normalized_session_id) or "0"
+                )
+            except Exception:
+                # 计费账本仍是权威数据；这里仅为实时页面准备一个历史基线。
+                # 读取失败时不阻断 harness，后续状态接口会再次从账本恢复。
+                pass
+
+            def charge_usage(event):
+                result = charge_agent_usage(
+                    user_id=user["id"],
+                    session_id=normalized_session_id,
+                    task_id=task_id,
+                    source=event.get("source"),
+                    usage_event_id=event.get("id"),
+                    endpoint_id=endpoint["id"],
+                    endpoint_revision=session.get("endpoint_revision"),
+                    endpoint_model=endpoint.get("model"),
+                    usage=event.get("usage"),
+                    pricing=pricing,
+                )
+                try:
+                    state["session_charged_amount_rmb"] = (
+                        get_agent_session_usage_cost(normalized_session_id)
+                    )
+                    state["quota_summary"] = get_agent_runtime_quota_summary(
+                        user["id"]
+                    )
+                    _publish_agent_trace(state)
+                except Exception:
+                    # 账本事务已经提交后，额度摘要/Redis 只是界面旁路。
+                    # 发布失败不能把已扣费的正常请求误判成记账失败并杀掉任务；
+                    # 后续状态读取会直接从额度账户恢复最新余额。
+                    pass
+                return {
+                    **result,
+                    "remaining_rmb": result.get("remaining_amount"),
+                }
+
+            usage_callback = charge_usage
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
@@ -473,7 +570,17 @@ def register_agent_run_turn_task(celery_app):
                 control_source=control_source,
                 control_callback=control_callback,
                 control_target_task_id=task_id,
+                usage_callback=usage_callback,
                 reset_trace=False,
+            )
+        except AgentUsageHardStopError:
+            conclusion = extract_agent_conclusion(task_id)
+            state["conclusion"] = conclusion
+            return _generic_failure(
+                state,
+                "额度耗尽：余额已达到 -5 元，系统已自动停止任务",
+                harness_status="quota_exhausted",
+                conclusion=conclusion,
             )
         except AgentHarnessCleanupError as exc:
             conclusion = extract_agent_conclusion(task_id)

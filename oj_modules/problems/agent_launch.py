@@ -12,6 +12,10 @@ from oj_modules.ranking.agent_judge.db import (
     normalize_agent_harness,
 )
 from oj_modules.site_config.services import get_llm_endpoint, list_llm_endpoints
+from oj_modules.agents.user_endpoints import (
+    get_user_agent_endpoint,
+    list_user_agent_endpoints,
+)
 
 
 AGENT_TASK_SOLVE = "solve"
@@ -175,6 +179,20 @@ def _normalize_endpoint_id(value):
     return endpoint_id
 
 
+def normalize_launch_endpoint_ref(value):
+    """规范化节点引用；纯数字沿用升级前的全站节点语义。"""
+
+    if type(value) is int:
+        return "global", _normalize_endpoint_id(value)
+    if type(value) is str:
+        if re.fullmatch(r"[1-9][0-9]*", value):
+            return "global", _normalize_endpoint_id(value)
+        matched = re.fullmatch(r"(global|user):([1-9][0-9]*)", value)
+        if matched:
+            return matched.group(1), _normalize_endpoint_id(matched.group(2))
+    raise AgentLaunchValidationError("请选择有效的 LLM 节点")
+
+
 def endpoint_supports_harness(endpoint, harness):
     try:
         harness = normalize_launch_harness(harness)
@@ -186,15 +204,25 @@ def endpoint_supports_harness(endpoint, harness):
     )
 
 
-def _public_launch_endpoint(endpoint):
-    return {
-        "id": int(endpoint["id"]),
+def _public_launch_endpoint(endpoint, *, source="global"):
+    endpoint_id = int(endpoint["id"])
+    result = {
+        "id": endpoint_id,
+        "ref": f"{source}:{endpoint_id}",
+        "source": source,
         "model": str(endpoint.get("model") or "").strip(),
         "protocol": _endpoint_protocol(endpoint),
         "category": _endpoint_category(endpoint),
         "thinking_enabled": bool(endpoint.get("thinking_enabled")),
         "test_status": str(endpoint.get("test_status") or "untested"),
+        "is_personal": source == "user",
+        "metered": source == "global",
     }
+    if source == "global":
+        pricing = token_pricing_from_endpoint(endpoint)
+        if pricing:
+            result.update(pricing)
+    return result
 
 
 def token_pricing_from_endpoint(endpoint):
@@ -209,30 +237,61 @@ def token_pricing_from_endpoint(endpoint):
     return values
 
 
-def list_launch_endpoints_by_harness():
+def list_launch_endpoints_by_harness(*, user_id=None):
     """列出各 harness 可用节点；响应不含 URL 和密钥。"""
 
     endpoints = list_llm_endpoints(include_secrets=False)
+    personal_endpoints = (
+        list_user_agent_endpoints(user_id, include_secrets=False)
+        if user_id is not None
+        else []
+    )
     return {
-        harness: [
-            _public_launch_endpoint(endpoint)
-            for endpoint in endpoints
-            if bool(endpoint.get("api_key_configured"))
-            and endpoint_supports_harness(endpoint, harness)
-        ]
+        harness: (
+            [
+                _public_launch_endpoint(endpoint)
+                for endpoint in endpoints
+                if bool(endpoint.get("api_key_configured"))
+                and token_pricing_from_endpoint(endpoint) is not None
+                and endpoint_supports_harness(endpoint, harness)
+            ]
+            + [
+                _public_launch_endpoint(endpoint, source="user")
+                for endpoint in personal_endpoints
+                if bool(endpoint.get("api_key_configured"))
+                and endpoint_supports_harness(endpoint, harness)
+            ]
+        )
         for harness in ALLOWED_AGENT_HARNESSES
     }
 
 
-def resolve_launch_endpoint(harness, endpoint_id, *, include_secret):
-    """读取并验证本次运行冻结使用的全局 LLM 节点。"""
+def resolve_launch_endpoint(
+    harness,
+    endpoint_ref,
+    *,
+    include_secret,
+    user_id=None,
+):
+    """读取并验证本次运行冻结使用的全站或用户自有节点。"""
 
     harness = normalize_launch_harness(harness)
-    endpoint_id = _normalize_endpoint_id(endpoint_id)
+    source, endpoint_id = normalize_launch_endpoint_ref(endpoint_ref)
 
     try:
-        endpoint = get_llm_endpoint(endpoint_id, include_secret=include_secret)
+        if source == "user":
+            if user_id is None:
+                raise AgentLaunchValidationError("自有 LLM 节点不属于当前用户")
+            endpoint = get_user_agent_endpoint(
+                endpoint_id,
+                user_id,
+                include_secret=include_secret,
+            )
+        else:
+            endpoint = get_llm_endpoint(endpoint_id, include_secret=include_secret)
     except Exception as exc:
+        if isinstance(exc, AgentLaunchValidationError):
+            raise
         raise AgentLaunchValidationError("所选 LLM 节点不存在或已被删除") from exc
     if not endpoint_supports_harness(endpoint, harness):
         raise AgentLaunchValidationError("所选 LLM 节点与 harness 的协议不兼容")
@@ -242,6 +301,11 @@ def resolve_launch_endpoint(harness, endpoint_id, *, include_secret):
         has_api_key = bool(endpoint.get("api_key_configured"))
     if not has_api_key:
         raise AgentLaunchValidationError("所选 LLM 节点没有可用的 API Key")
+    endpoint = dict(endpoint)
+    endpoint["source"] = source
+    endpoint["ref"] = f"{source}:{endpoint_id}"
+    endpoint["is_personal"] = source == "user"
+    endpoint["metered"] = source == "global"
     return endpoint
 
 
@@ -281,6 +345,7 @@ __all__ = [
     "list_launch_endpoints_by_harness",
     "normalize_agent_access_role",
     "normalize_agent_task_kind",
+    "normalize_launch_endpoint_ref",
     "normalize_launch_harness",
     "resolve_launch_endpoint",
     "skill_for_agent_task",

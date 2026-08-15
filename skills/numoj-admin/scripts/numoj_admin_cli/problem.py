@@ -870,13 +870,13 @@ def problem_rejudge_time_range_status(args: argparse.Namespace) -> None:
 
 def problem_agent_run_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/admin/agent_run_status/{args.task_id}")
+    resp = client.request("GET", f"/agent/runs/{args.task_id}/state")
     print_or_save_response(resp)
 
 
 def problem_agent_run(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/admin/agent_run_status/{args.task_id}")
+    resp = client.request("GET", f"/agent/runs/{args.task_id}/state")
     print_or_save_response(resp, allow_redirect=False)
 
 
@@ -933,7 +933,7 @@ def necessary_agent_stream_event_payload(event: Any) -> Any:
 
 def problem_agent_run_stream(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/admin/agent_run_stream/{args.task_id}", stream=True)
+    resp = client.request("GET", f"/agent/runs/{args.task_id}/stream", stream=True)
     if getattr(args, "full", False):
         print_stream_lines(resp, max_lines=args.max_lines)
         return
@@ -961,7 +961,7 @@ def problem_agent_solve(args: argparse.Namespace) -> None:
         "harness": args.harness,
         "endpoint_id": args.endpoint_id,
     }
-    resp = client.request("POST", f"/admin/agent_solve_problem/{args.problem_id}", json=payload)
+    resp = client.request("POST", f"/agent/problems/{args.problem_id}/solve", json=payload)
     print_or_save_response(resp)
 
 
@@ -977,7 +977,7 @@ def problem_agent_generate_data(args: argparse.Namespace) -> None:
     try:
         resp = client.request(
             "POST",
-            f"/admin/agent_generate_testdata/{args.problem_id}",
+            f"/agent/problems/{args.problem_id}/generate-testdata",
             data=data,
             files=files,
         )

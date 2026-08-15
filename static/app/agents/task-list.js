@@ -3,6 +3,11 @@
 
   var root = document.querySelector('[data-agent-home]');
   if (!root) return;
+  var isAdmin = root.dataset.agentAdmin === 'true';
+  var publicEnabled = root.dataset.agentPublicEnabled !== 'false';
+  var quotaCanStart = root.dataset.agentQuotaCanStart !== 'false';
+  var quotaHasAccount = root.dataset.agentQuotaHasAccount !== 'false';
+  var quotaRemaining = Number(root.dataset.agentQuotaRemaining);
 
   var HARNESS_LABELS = {
     claude_code: 'Claude Code',
@@ -68,22 +73,38 @@
 
   function normalizeEndpoint(item) {
     if (!item || typeof item !== 'object') return null;
-    var id = asText(item.id != null ? item.id : item.endpoint_id);
+    var personal = item.is_personal === true || item.scope === 'user'
+      || item.owner_type === 'user' || item.source === 'user';
+    var rawId = asText(item.id != null ? item.id : item.endpoint_id);
+    var id = asText(item.choice_value || item.value || item.ref)
+      || (personal && rawId ? 'user:' + rawId : rawId);
     if (!id) return null;
     return {
       id: id,
+      displayId: rawId || id.replace(/^(?:global|user):/, ''),
       model: asText(item.model || item.label || item.name) || '节点 #' + id,
       protocol: asText(item.protocol).toLowerCase(),
-      category: asText(item.category).toLowerCase()
+      category: asText(item.category).toLowerCase(),
+      isPersonal: personal || id.indexOf('user:') === 0,
+      inputPrice: item.input_price_per_million,
+      cachedInputPrice: item.cached_input_price_per_million,
+      outputPrice: item.output_price_per_million
     };
   }
 
   function endpointMeta(endpoint) {
-    return [
-      '节点 #' + endpoint.id,
+    var parts = [
+      '节点 #' + endpoint.displayId,
       PROTOCOL_LABELS[endpoint.protocol] || endpoint.protocol,
       CATEGORY_LABELS[endpoint.category] || endpoint.category
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean);
+    if (endpoint.isPersonal) {
+      parts.push('自有端点 · 不计额度');
+    } else if (global.NumOJAgentAccess) {
+      parts.push('输入 ' + (global.NumOJAgentAccess.decimalText(endpoint.inputPrice) || '—')
+        + ' / 输出 ' + (global.NumOJAgentAccess.decimalText(endpoint.outputPrice) || '—') + ' 元');
+    }
+    return parts.join(' · ');
   }
 
   function formatBytes(value) {
@@ -117,6 +138,7 @@
     var endpointChoice = root.querySelector('[data-agent-endpoint-choice] [data-rk-choice]');
     var accessInput = root.querySelector('input[name="access_role"]');
     var accessChoice = accessInput && accessInput.closest('[data-rk-choice]');
+    var accessNote = root.querySelector('[data-agent-create-access-note]');
     if (!form || !textarea || !input || !strip || !submit || !global.ChoicePicker) return;
 
     var rawHarnesses = readJson('[data-agent-harnesses-json]', []);
@@ -151,11 +173,46 @@
       return inputNode ? asText(inputNode.value) : '';
     }
 
+    function selectedEndpoint() {
+      var harness = selectedValue(harnessChoice);
+      var endpointId = selectedValue(endpointChoice);
+      return (endpointsByHarness[harness] || []).find(function (endpoint) {
+        return endpoint.id === endpointId;
+      }) || null;
+    }
+
+    function accessAllowed() {
+      if (isAdmin) return true;
+      if (!publicEnabled) return false;
+      var endpoint = selectedEndpoint();
+      return !!(endpoint && (endpoint.isPersonal || quotaCanStart));
+    }
+
+    function renderAccessNote() {
+      if (!accessNote) return;
+      var endpoint = selectedEndpoint();
+      var message = '';
+      if (!isAdmin && !publicEnabled) {
+        message = 'Agent 暂停向普通用户开放；已有会话仍可查看。';
+      } else if (!isAdmin && endpoint && !endpoint.isPersonal && !quotaCanStart) {
+        message = quotaHasAccount
+          ? '余额低于 0 元，不能使用全站端点。你仍可从右下角申请额度，或选择自己的端点。'
+          : '你还没有平台额度。请从右下角申请额度，或选择自己的端点。';
+      } else if (!isAdmin && endpoint && endpoint.isPersonal) {
+        message = '当前使用自有端点，不消耗平台额度。';
+      }
+      accessNote.textContent = message;
+      accessNote.hidden = !message;
+      accessNote.classList.toggle('is-error', !!message && (!publicEnabled || (endpoint && !endpoint.isPersonal && !quotaCanStart)));
+    }
+
     function updateReadyState() {
       var ready = !!asText(textarea.value)
         && !!selectedValue(harnessChoice)
-        && !!selectedValue(endpointChoice);
+        && !!selectedValue(endpointChoice)
+        && accessAllowed();
       submit.disabled = submitting || !ready;
+      renderAccessNote();
     }
 
     function renderEndpoints(harness, preferredId) {
@@ -276,11 +333,14 @@
     function setSubmitting(value) {
       submitting = value === true;
       form.classList.toggle('is-submitting', submitting);
-      textarea.disabled = submitting;
-      input.disabled = submitting;
-      if (harnessController) harnessController.setDisabled(submitting || harnesses.length === 0);
+      textarea.disabled = submitting || (!isAdmin && !publicEnabled);
+      input.disabled = submitting || (!isAdmin && !publicEnabled);
+      if (harnessController) harnessController.setDisabled(
+        submitting || harnesses.length === 0 || (!isAdmin && !publicEnabled)
+      );
       if (endpointController) endpointController.setDisabled(
         submitting || !(endpointsByHarness[selectedValue(harnessChoice)] || []).length
+          || (!isAdmin && !publicEnabled)
       );
       submit.innerHTML = submitting
         ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
@@ -369,7 +429,21 @@
     });
 
     resizeTextarea();
+    setSubmitting(false);
     updateReadyState();
+
+    global.addEventListener('numoj:agent-quota-change', function (event) {
+      var summary = event.detail || {};
+      if (typeof summary.public_enabled === 'boolean') publicEnabled = summary.public_enabled;
+      if (typeof summary.can_start === 'boolean') quotaCanStart = summary.can_start;
+      if (typeof summary.has_account === 'boolean') quotaHasAccount = summary.has_account;
+      if (summary.remaining_amount !== undefined) quotaRemaining = Number(summary.remaining_amount);
+      root.dataset.agentPublicEnabled = publicEnabled ? 'true' : 'false';
+      root.dataset.agentQuotaCanStart = quotaCanStart ? 'true' : 'false';
+      root.dataset.agentQuotaHasAccount = quotaHasAccount ? 'true' : 'false';
+      root.dataset.agentQuotaRemaining = Number.isFinite(quotaRemaining) ? String(quotaRemaining) : '';
+      setSubmitting(false);
+    });
   }
 
   paintAvatars(root);

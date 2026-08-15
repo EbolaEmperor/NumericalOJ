@@ -165,6 +165,7 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "identicon.paint(avatar, identicon.cellsForSeed(seed), label)" in controller
     assert "function formatMeasuredValue(value)" in controller
     assert "function formatTokenCount(tokens)" in controller
+    assert "function formatMoneyValue(value)" in controller
     assert "function renderHeaderTokenUsage(usage)" in controller
     assert "state.session_token_usage" in controller
     assert "Number(usage.input_total_tokens)" in controller
@@ -176,7 +177,8 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "formatMeasuredValue(tokens / 1000000) + ' M'" in controller
     assert "Math.min(100, cachedTokens / inputTokens * 100)" in controller
     assert "setUsageValue(usageCached, cachedPercent.toFixed(2) + '%');" in controller
-    assert "formatMeasuredValue(Number(usage.cost_rmb)) + ' RMB'" in controller
+    assert "formatMoneyValue(usage.cost_rmb) + ' 元'" in controller
+    assert "usesPersonalEndpoint ? '不计额度' : '—'" in controller
     assert "renderHeaderTokenUsage(state.session_token_usage);" in controller
     assert "renderHeaderTokenUsage(null);" not in controller
     assert (
@@ -560,8 +562,8 @@ def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
     styles = _read("static/app/agents/conversation.css")
     editor_runtime = _read("static/app/code-editor-runtime.js")
 
-    assert "problem_core.admin_agent_workspace_tree" in template
-    assert "problem_core.admin_agent_workspace_file" in template
+    assert "problem_core.agent_workspace_tree" in template
+    assert "problem_core.agent_workspace_file" in template
     assert "raw: 1" in controller
     assert "download: 1" in controller
     assert "renderCode" in controller
@@ -577,6 +579,18 @@ def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
     assert "documentId: function (model)" in controller
     assert "readOnly: true" in controller
     assert "domReadOnly: true" in controller
+
+    # Lean 预览复用 Problem Detail 的同一个同步 Monaco/TextMate
+    # 运行时；Agent 预览不注册 Lean 语义服务，也不加载 Goal 面板。
+    assert 'lean: "lean4"' in editor_runtime
+    assert "registerLean4(monaco);" in editor_runtime
+    assert "var theme = await runtime.prepareMonaco(monaco);" in controller
+    semantic_provider = controller.split("function ensureSemanticProvider", 1)[1].split(
+        "function encodedMonacoPath", 1
+    )[0]
+    assert "'lean4'" not in semantic_provider
+    assert "lean-workbench.js" not in template
+    assert "data-lean-goal" not in template
 
     render_code = controller.split("async function renderCode", 1)[1].split(
         "function imageViewer", 1
@@ -600,6 +614,7 @@ def test_agent_frontend_javascript_has_valid_syntax():
     if not node:
         pytest.skip("Node.js is unavailable")
     for relative_path in (
+        "static/app/agents/access-control.js",
         "static/app/agents/task-list.js",
         "static/app/agents/conversation.js",
         "static/app/code-editor-runtime.js",

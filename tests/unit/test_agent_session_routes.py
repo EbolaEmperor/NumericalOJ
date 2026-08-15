@@ -152,8 +152,8 @@ def test_task_id_query_redirects_historical_turn_to_owning_session(monkeypatch):
         routes,
         "url_for",
         lambda endpoint, **kwargs: (
-            f"/admin/agent_tasks/{kwargs['session_id']}"
-            if endpoint == "problem_core.admin_agent_task_detail"
+            f"/agent/tasks/{kwargs['session_id']}"
+            if endpoint == "problem_core.agent_task_detail"
             else "/unexpected"
         ),
     )
@@ -165,7 +165,7 @@ def test_task_id_query_redirects_historical_turn_to_owning_session(monkeypatch):
         response = routes.admin_agent_tasks()
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/admin/agent_tasks/session-1")
+    assert response.headers["Location"].endswith("/agent/tasks/session-1")
 
 
 def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
@@ -1296,17 +1296,18 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     assert rendered[0][0] == "admin/agent_task_detail.html"
     assert rendered[0][1]["agent_session"] == agent_session
     assert rendered[0][1]["agent_message_urls"] == {
-        "state": "/admin/agent_tasks/session-1/state",
-        "stream": "/admin/agent_tasks/session-1/stream",
+        "state": "/agent/tasks/session-1/state",
+        "stream": "/agent/tasks/session-1/stream",
         "update": (
-            "/admin/agent_tasks/session-1/messages/__MESSAGE_ID__/update"
+            "/agent/tasks/session-1/messages/__MESSAGE_ID__/update"
         ),
         "delete": (
-            "/admin/agent_tasks/session-1/messages/__MESSAGE_ID__/delete"
+            "/agent/tasks/session-1/messages/__MESSAGE_ID__/delete"
         ),
-        "reorder": "/admin/agent_tasks/session-1/queue/reorder",
-        "resume": "/admin/agent_tasks/session-1/queue/resume",
-    }
+        "reorder": "/agent/tasks/session-1/queue/reorder",
+            "resume": "/agent/tasks/session-1/queue/resume",
+            "rename": "/agent/tasks/session-1/title",
+        }
     assert rendered[0][1]["can_resume"] is True
     assert rendered[0][1]["can_retry"] is True
     assert rendered[0][1]["can_retry_now"] is True
@@ -1489,6 +1490,26 @@ def test_superseded_retry_source_is_excluded_from_session_usage(monkeypatch):
     assert historical.current_task_visible is False
     assert projected["session_token_usage"]["request_count"] == 1
     assert projected["session_token_usage"]["cost_rmb"] == "0.25"
+
+
+def test_session_usage_cost_prefers_frozen_quota_ledger_amount():
+    projected = routes._agent_state_with_session_token_usage({
+        "task_id": "turn-1",
+        "session_charged_amount_rmb": "1.25",
+        "execution_trace": {"token_usage": {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 10,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 5,
+            # 轨迹里的旧投影可能按后来修改过的端点价格计算。
+            "cost_rmb": "99",
+        }},
+    })
+
+    assert projected["session_token_usage"]["cost_rmb"] == "1.25"
+    assert projected["session_token_usage"]["cost_complete"] is True
 
 
 def test_ordered_pi_turns_render_only_each_resume_trace_delta_and_keep_nonempty_baseline(

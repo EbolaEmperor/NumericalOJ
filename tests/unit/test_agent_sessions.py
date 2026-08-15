@@ -148,6 +148,7 @@ def test_continuation_freezes_runtime_base_and_locked_native_session(
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "codex",
+        "endpoint_source": "global",
         "endpoint_id": 7,
         "endpoint_revision": 2,
         "endpoint_model": "gpt-test",
@@ -250,6 +251,7 @@ def test_retry_clones_current_turn_and_rolls_back_to_recorded_base(
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "codex",
+        "endpoint_source": "global",
         "endpoint_id": 7,
         "endpoint_revision": 2,
         "endpoint_model": "gpt-test",
@@ -891,6 +893,29 @@ def test_session_list_excludes_every_run_already_owned_by_a_turn(monkeypatch):
         "ORDER BY updated_at DESC, is_legacy ASC, source_id DESC, session_id DESC"
         in queries[-1]
     )
+
+
+def test_session_list_can_be_scoped_to_one_requesting_user(monkeypatch):
+    connection = _ScriptedConnection(
+        one_values=[{"total": 0}],
+        all_values=[[]],
+    )
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    result, page, total_pages = sessions.get_agent_sessions_paginated(
+        page=1,
+        per_page=20,
+        requested_by="student-1",
+    )
+
+    assert result == []
+    assert (page, total_pages) == (1, 1)
+    count_query, count_params = connection.cursor_instance.calls[0]
+    list_query, list_params = connection.cursor_instance.calls[1]
+    assert count_query.count("requested_by=%s") == 2
+    assert list_query.count("requested_by=%s") == 2
+    assert count_params == ("student-1", "student-1")
+    assert list_params == ("student-1", "student-1", 20, 0)
 
 
 def test_task_lookup_includes_historical_turns(monkeypatch):

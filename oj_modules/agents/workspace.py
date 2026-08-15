@@ -131,6 +131,7 @@ _CODE_LANGUAGE_BY_EXTENSION = {
     ".kt": "kotlin",
     ".kts": "kotlin",
     ".lua": "lua",
+    ".lean": "lean4",
     # .m 在本项目中明确按 MATLAB 处理，不按 Objective-C 处理。
     ".m": "matlab",
     ".mm": "objective-c",

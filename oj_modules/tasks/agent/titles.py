@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""使用任务所选节点生成简短的 Agent 会话标题。"""
+"""使用低价全站节点生成简短的 Agent 会话标题。"""
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import re
 
 from oj_modules.ai.endpoints import call_text
+from oj_modules.site_config.services import list_llm_endpoints
 
 
 _TITLE_SYSTEM_PROMPT = (
@@ -15,6 +17,8 @@ _TITLE_SYSTEM_PROMPT = (
     "其它内容。要精准概括，能概括出用户的具体任务，不要太宽泛。再次强调：直接输出你概括"
     "的标题，15 字左右，不含其它内容。"
 )
+_TITLE_INPUT_MAX_CHARS = 4_000
+_TITLE_MAX_TOKENS = 64
 
 
 def normalize_agent_title(value, *, fallback="Agent 任务"):
@@ -34,24 +38,70 @@ def normalize_agent_title(value, *, fallback="Agent 任务"):
     return line or "Agent 任务"
 
 
-def generate_agent_title(endpoint, task_prompt, *, fallback="Agent 任务"):
-    """只发起一次标题调用；节点故障时使用确定性的本地回退。"""
+def fallback_agent_title(task_prompt):
+    """取任务正文前 15 个 Unicode 字符作为确定性标题。"""
 
+    text = str(task_prompt or "").replace("\x00", "").strip()
+    return text[:15] or "Agent 任务"
+
+
+def _title_endpoint_candidates():
+    """按输入单价选择至多两个全站文本节点，不使用任务所选节点。"""
+
+    candidates = []
+    for endpoint in list_llm_endpoints(include_secrets=True):
+        if str(endpoint.get("category") or "").strip().lower() not in {
+            "text",
+            "omni",
+        }:
+            continue
+        if not str(endpoint.get("api_key") or "").strip():
+            continue
+        try:
+            input_price = Decimal(str(endpoint.get("input_price_per_million")))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if not input_price.is_finite() or input_price < 0:
+            continue
+        candidates.append((input_price, int(endpoint.get("id") or 0), endpoint))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in candidates[:2]]
+
+
+def _generate_agent_title_once(endpoint, task_prompt):
     try:
         result = call_text(
             endpoint,
-            str(task_prompt or ""),
+            str(task_prompt or "")[:_TITLE_INPUT_MAX_CHARS],
             system_prompt=_TITLE_SYSTEM_PROMPT,
             temperature=0,
-            # 部分节点会把内部推理也计入 completion budget；给足节点可用
-            # 预算，标题长度交给 system prompt 约束，不再在收到后硬截断。
-            max_tokens=32768,
-            timeout=60,
+            # 标题调用不计入用户账单，因此同时限制输入与输出预算；
+            # 64 Token 足以容纳约 15 个汉字的标题及少量模型推理余量。
+            max_tokens=_TITLE_MAX_TOKENS,
+            timeout=30,
         )
-        candidate = result.text
+        candidate = normalize_agent_title(result.text, fallback="")
     except Exception:
-        candidate = ""
-    return normalize_agent_title(candidate, fallback=fallback)
+        return ""
+    return candidate if candidate != "Agent 任务" else ""
+
+
+def generate_agent_title(task_prompt, *, fallback=None):
+    """依次尝试输入单价最低的两个全站节点，失败后使用本地标题。"""
+
+    fallback_title = normalize_agent_title(
+        fallback_agent_title(task_prompt) if fallback is None else fallback,
+        fallback=fallback_agent_title(task_prompt),
+    )
+    try:
+        candidates = _title_endpoint_candidates()
+    except Exception:
+        candidates = []
+    for endpoint in candidates:
+        candidate = _generate_agent_title_once(endpoint, task_prompt)
+        if candidate:
+            return candidate
+    return fallback_title
 
 
 def existing_agent_session_title(session_id):
@@ -87,14 +137,16 @@ def _initial_agent_session_message(session_id):
 
 def generate_initial_agent_session_title(
     session_id,
-    endpoint,
     task_prompt,
     *,
-    fallback="Agent 任务",
+    fallback=None,
 ):
     """为首轮会话至多调用一次标题 LLM，并为崩溃窗口保留可读回退。"""
 
-    fallback_title = normalize_agent_title("", fallback=fallback)
+    fallback_title = normalize_agent_title(
+        fallback_agent_title(task_prompt) if fallback is None else fallback,
+        fallback=fallback_agent_title(task_prompt),
+    )
     existing = existing_agent_session_title(session_id)
     if existing:
         return normalize_agent_title(existing, fallback=fallback_title)
@@ -113,7 +165,6 @@ def generate_initial_agent_session_title(
     if not first_user_message:
         return fallback_title
     return generate_agent_title(
-        endpoint,
         first_user_message,
         fallback=fallback_title,
     )
@@ -121,6 +172,7 @@ def generate_initial_agent_session_title(
 
 __all__ = [
     "existing_agent_session_title",
+    "fallback_agent_title",
     "generate_agent_title",
     "generate_initial_agent_session_title",
     "normalize_agent_title",

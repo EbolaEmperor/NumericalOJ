@@ -38,6 +38,15 @@ DATABASE_BOOTSTRAP_SQL = ROOT / "database" / "bootstrap.sql"
 SKIP_DUMP_TABLES = {"Cdemo2024", "Ctest"}
 SCHEMA_LOCK_NAME = "numericaloj:init_db_schema"
 SCHEMA_LOCK_TIMEOUT_SECONDS = 120
+REQUIRED_AGENT_QUOTA_TABLES = (
+    "agent_quota_accounts",
+    "agent_quota_requests",
+    "agent_quota_grants",
+    "agent_usage_ledger",
+)
+REQUIRED_AGENT_PUBLIC_TABLES = (
+    "agent_user_endpoints",
+)
 
 CLASS_HOMEWORK_CREATE_SQL = """
 CREATE TABLE `{table}` (
@@ -186,6 +195,16 @@ def _load_schema_specs() -> OrderedDict[str, TableSpec]:
     for name, create_sql in _iter_create_table_sql(sql_text):
         specs[name] = _parse_table_spec(name, create_sql)
     _parse_dump_alter_indexes(sql_text, specs)
+    missing_agent_tables = [
+        table
+        for table in (*REQUIRED_AGENT_QUOTA_TABLES, *REQUIRED_AGENT_PUBLIC_TABLES)
+        if table not in specs
+    ]
+    if missing_agent_tables:
+        raise RuntimeError(
+            "Agent public schema is incomplete: "
+            + ", ".join(missing_agent_tables)
+        )
     return specs
 
 

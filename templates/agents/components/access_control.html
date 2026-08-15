@@ -1,0 +1,186 @@
+{% set access_summary = agent_quota_summary|default({}, true) %}
+{% set access_urls = agent_access_urls|default({}, true) %}
+{% set access_is_admin = user and user.is_admin == 1 %}
+{% set access_public_enabled = access_summary.public_enabled|default(agent_public_enabled|default(true), true) %}
+{% set access_pending_count = agent_quota_pending_count|default(0, true)|int %}
+<aside class="agent-access-control"
+       data-agent-access-root
+       data-agent-access-admin="{{ 'true' if access_is_admin else 'false' }}"
+       data-agent-access-public-enabled="{{ 'true' if access_public_enabled else 'false' }}"
+       data-agent-access-summary-url="{{ access_urls.summary|default('/api/agent/quota', true) }}"
+       data-agent-access-request-url="{{ access_urls.request|default('/api/agent/quota/requests', true) }}"
+       data-agent-access-prices-url="{{ access_urls.prices|default('/api/agent/endpoints/prices', true) }}"
+       data-agent-access-personal-endpoints-url="{{ access_urls.personal_endpoints|default('/api/agent/endpoints', true) }}"
+       data-agent-access-personal-endpoint-url-template="{{ access_urls.personal_endpoint|default('/api/agent/endpoints/__ENDPOINT_ID__', true) }}"
+       data-agent-access-reviews-url="{{ access_urls.reviews|default('/api/agent/quota/requests/pending', true) }}"
+       data-agent-access-review-url-template="{{ access_urls.review|default('/api/agent/quota/requests/__REQUEST_ID__/review', true) }}"
+       data-agent-access-class-grant-url="{{ access_urls.class_grant|default('/api/agent/quota/grants/class-batch', true) }}">
+  <button class="agent-access-fab{{ ' agent-access-fab--review' if access_is_admin else '' }}"
+          type="button"
+          data-agent-access-open
+          data-bs-toggle="modal"
+          data-bs-target="#agentAccessModal"
+          aria-label="{{ '审核额度申请' if access_is_admin else '查看 Agent 额度' }}"
+          title="{{ '额度申请审核' if access_is_admin else 'Agent 额度' }}">
+    <i class="fas {{ 'fa-clipboard-check' if access_is_admin else 'fa-wallet' }}" aria-hidden="true"></i>
+    {% if access_is_admin %}
+      <span class="agent-access-fab-badge" data-agent-review-badge
+            {% if access_pending_count < 1 %}hidden{% endif %}>{{ access_pending_count }}</span>
+    {% else %}
+      <span class="agent-access-fab-meter" data-agent-fab-balance aria-hidden="true">—</span>
+    {% endif %}
+  </button>
+
+  <div class="modal fade agent-access-modal" id="agentAccessModal" tabindex="-1"
+       aria-labelledby="agentAccessModalTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <header class="agent-access-modal-header">
+          <div>
+            <span>{{ 'REQUEST DESK' if access_is_admin else 'AGENT WALLET' }}</span>
+            <h2 id="agentAccessModalTitle">{{ '额度申请审核' if access_is_admin else '额度与端点' }}</h2>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+        </header>
+
+        <div class="agent-access-modal-scroll">
+        {% if access_is_admin %}
+          <nav class="agent-access-admin-tabs" aria-label="额度管理" data-agent-admin-tabs>
+            <button type="button" class="is-current" data-agent-admin-tab="reviews" aria-selected="true">申请审核</button>
+            <button type="button" data-agent-admin-tab="grants" aria-selected="false">批量赠送</button>
+          </nav>
+          <section data-agent-admin-panel="reviews">
+            <div class="agent-access-review-summary">
+              <span>等待处理</span>
+              <strong><b data-agent-review-count>{{ access_pending_count }}</b> 项</strong>
+            </div>
+            <div class="agent-access-review-list" data-agent-review-list>
+              <div class="agent-access-loading">读取申请中</div>
+            </div>
+          </section>
+          <section class="agent-class-grant-panel" data-agent-admin-panel="grants" hidden>
+            <header>
+              <span>CLASS GRANT</span>
+              <h3>按班级赠送额度</h3>
+              <p>同一用户出现在多个班级时只赠送一次，管理员不会计入。</p>
+            </header>
+            <form data-agent-class-grant-form>
+              <fieldset>
+                <legend>选择班级</legend>
+                <div class="agent-class-grant-options" data-agent-class-grant-options>
+                  <div class="agent-access-loading">读取班级中</div>
+                </div>
+              </fieldset>
+              <label class="agent-class-grant-amount">
+                <span>每人赠送</span>
+                <span class="agent-access-money-input"><b>¥</b><input name="amount_rmb" type="number" min="0.01" step="0.01" inputmode="decimal" required></span>
+              </label>
+              <dl class="agent-class-grant-preview" aria-live="polite">
+                <div><dt>去重用户</dt><dd><b data-agent-class-grant-users>0</b> 人</dd></div>
+                <div><dt>赠送总额</dt><dd data-agent-class-grant-total>0 元</dd></div>
+              </dl>
+              <button type="submit" data-agent-class-grant-submit disabled>确认赠送</button>
+            </form>
+            <p class="agent-access-feedback" data-agent-class-grant-feedback role="status" aria-live="polite" hidden></p>
+          </section>
+        {% else %}
+          <div class="agent-access-public-notice" data-agent-public-notice
+               {% if access_public_enabled %}hidden{% endif %}>
+            <i class="fas fa-pause-circle" aria-hidden="true"></i>
+            <div><strong>Agent 暂停向普通用户开放</strong><span>已有会话仍可查看，但不能申请额度、创建任务或继续对话。</span></div>
+          </div>
+
+          <section class="agent-access-balance" aria-labelledby="agentBalanceTitle">
+            <header>
+              <span>ACCOUNT</span>
+              <h3 id="agentBalanceTitle">额度概览</h3>
+            </header>
+            <dl>
+              <div>
+                <dt>累计额度</dt>
+                <dd data-agent-quota-total>—</dd>
+              </div>
+              <div>
+                <dt>已用额度</dt>
+                <dd data-agent-quota-used>—</dd>
+              </div>
+              <div class="is-remaining" data-agent-quota-remaining-card>
+                <dt>剩余额度</dt>
+                <dd data-agent-quota-remaining>—</dd>
+              </div>
+            </dl>
+            <p class="agent-access-balance-note" data-agent-quota-note>
+              使用全站端点时，每次模型请求完成后实时扣减。
+            </p>
+          </section>
+
+          <section class="agent-access-section" aria-labelledby="agentQuotaRequestTitle">
+            <header>
+              <div><span>REQUEST</span><h3 id="agentQuotaRequestTitle">申请额度</h3></div>
+              <span class="agent-access-status" data-agent-request-status hidden></span>
+            </header>
+            <form class="agent-quota-request-form" data-agent-quota-request-form>
+              <label>
+                <span>申请金额</span>
+                <span class="agent-access-money-input"><b>¥</b><input name="requested_amount" type="number" min="0.01" step="0.01" inputmode="decimal" required></span>
+              </label>
+              <label class="wide">
+                <span>申请理由</span>
+                <textarea name="reason" rows="3" maxlength="1000" required placeholder="简要说明你准备让 Agent 完成什么任务"></textarea>
+              </label>
+              <button type="submit" data-agent-quota-request-submit>提交申请</button>
+            </form>
+            <p class="agent-access-feedback" data-agent-quota-request-feedback role="status" aria-live="polite" hidden></p>
+          </section>
+
+          <section class="agent-access-section" aria-labelledby="agentEndpointPriceTitle">
+            <header>
+              <div><span>RATE CARD</span><h3 id="agentEndpointPriceTitle">全站端点价格</h3></div>
+              <small>元 / 1M Token</small>
+            </header>
+            <div class="agent-rate-list" data-agent-rate-list>
+              <div class="agent-access-loading">读取价格中</div>
+            </div>
+          </section>
+
+          <section class="agent-access-section agent-personal-endpoints" aria-labelledby="agentPersonalEndpointTitle">
+            <header>
+              <div><span>BRING YOUR OWN KEY</span><h3 id="agentPersonalEndpointTitle">我的端点</h3></div>
+              <small>不消耗平台额度</small>
+            </header>
+            <div class="agent-personal-endpoint-list" data-agent-personal-endpoint-list></div>
+            <details class="agent-personal-endpoint-editor" data-agent-personal-endpoint-editor>
+              <summary><i class="fas fa-plus" aria-hidden="true"></i><span data-agent-personal-editor-label>添加端点</span></summary>
+              <form data-agent-personal-endpoint-form autocomplete="off">
+                <input type="hidden" name="endpoint_id">
+                <label><span>显示名称</span><input name="name" maxlength="100" required></label>
+                <label><span>模型名称</span><input name="model" maxlength="200" required></label>
+                <label>
+                  <span>兼容协议</span>
+                  <select name="protocol" required>
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="anthropic">Anthropic 兼容</option>
+                  </select>
+                </label>
+                <label class="wide"><span>基础地址</span><input name="base_url" type="url" required autocomplete="url"></label>
+                <label class="wide"><span>API 密钥</span><input name="api_key" type="password" autocomplete="new-password"><small>编辑时留空表示沿用原密钥</small></label>
+                <div class="agent-personal-endpoint-actions wide">
+                  <button type="button" data-agent-personal-endpoint-cancel hidden>取消编辑</button>
+                  <button type="submit" data-agent-personal-endpoint-save>保存端点</button>
+                </div>
+              </form>
+            </details>
+            <p class="agent-access-feedback" data-agent-personal-endpoint-feedback role="status" aria-live="polite" hidden></p>
+          </section>
+        {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="application/json" data-agent-access-summary-json>{{ access_summary|tojson }}</script>
+  <script type="application/json" data-agent-access-prices-json>{{ agent_priced_endpoints|default(endpoints_by_harness|default({}, true), true)|tojson }}</script>
+  <script type="application/json" data-agent-access-personal-endpoints-json>{{ agent_personal_endpoints|default([], true)|tojson }}</script>
+  <script type="application/json" data-agent-access-reviews-json>{{ agent_quota_pending_requests|default([], true)|tojson }}</script>
+  <script type="application/json" data-agent-access-classes-json>{{ agent_quota_classes|default([], true)|tojson }}</script>
+</aside>

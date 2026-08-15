@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import hmac
 import http.client
 import http.server
+import json
 import re
 import secrets
 import socket
@@ -21,6 +22,10 @@ import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+from oj_modules.agents.endpoint_egress import (
+    AgentEndpointEgressError,
+    resolve_public_host,
+)
 from oj_modules.tasks.agent.identity_relay import (
     _BoundedIdentityRelayServer,
     _RequestRejected,
@@ -39,6 +44,8 @@ _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _UPSTREAM_TIMEOUT_SECONDS = 600
 _HANDLER_SHUTDOWN_TIMEOUT_SECONDS = 5
 _CLIENT_TIMEOUT_SECONDS = 30
+_ENDPOINT_USAGE_GATE_WAIT_SECONDS = 30
+_ENDPOINT_USAGE_DRAIN_SECONDS = _UPSTREAM_TIMEOUT_SECONDS + 5
 _REDACTION = b"[REDACTED]"
 _ALLOWED_METHODS = {
     "openai": frozenset({"POST"}),
@@ -137,11 +144,41 @@ class AgentSecretRelayCleanupError(AgentSecretRelayError):
     """外部服务密钥代理关闭状态未知。"""
 
 
+class AgentSecretRelayUsageError(AgentSecretRelayError):
+    """模型响应 usage 缺失、无效或未能完成记账。"""
+
+
+class AgentSecretRelayUsageHardStopError(AgentSecretRelayUsageError):
+    """模型请求完成记账后触发用户额度硬停。"""
+
+
 class _RelayConnectionMixin:
     """让 relay 能在 HTTPConnection 懒连接完成时立即取得底层 socket。"""
 
+    def __init__(self, *args, connect_host="", **kwargs):
+        self._relay_connect_host = str(connect_host or "").strip()
+        super().__init__(*args, **kwargs)
+
     def connect(self):
-        super().connect()
+        original_create_connection = getattr(self, "_create_connection", None)
+        if self._relay_connect_host and original_create_connection is not None:
+            pinned_host = self._relay_connect_host
+
+            def create_pinned_connection(address, *args, **kwargs):
+                return original_create_connection(
+                    (pinned_host, address[1]),
+                    *args,
+                    **kwargs,
+                )
+
+            self._create_connection = create_pinned_connection
+        try:
+            # HTTPSConnection 仍以 self.host 执行 SNI 与证书校验；只有底层
+            # socket 的拨号地址被替换为本轮已冻结的公网 IP。
+            super().connect()
+        finally:
+            if original_create_connection is not None:
+                self._create_connection = original_create_connection
         handle = getattr(self, "_relay_interrupt_handle", None)
         if handle is not None and not handle.remember_socket(self.sock):
             raise OSError("secret relay is closing")
@@ -226,6 +263,7 @@ class _FrozenUpstream:
     scheme: str
     host: str
     port: int
+    connect_host: str
     origin_url: str
     base_path: str
     base_query: str
@@ -241,6 +279,7 @@ class _FrozenUpstream:
             self.host,
             self.port,
             timeout=_UPSTREAM_TIMEOUT_SECONDS,
+            connect_host=self.connect_host,
         )
 
     def target_path(self, canonical_target):
@@ -254,7 +293,12 @@ class _FrozenUpstream:
         return self.origin_url + self.target_path(canonical_target)
 
 
-def _normalize_upstream_base_url(value, *, preserve_trailing_slash=False):
+def _normalize_upstream_base_url(
+    value,
+    *,
+    preserve_trailing_slash=False,
+    require_public_address=False,
+):
     raw = str(value or "").strip()
     if (
         not raw
@@ -291,7 +335,14 @@ def _normalize_upstream_base_url(value, *, preserve_trailing_slash=False):
     except _RequestRejected as exc:
         raise AgentSecretRelayError("外部服务 Base URL 路径无效") from exc
     host = str(parts.hostname).lower().rstrip(".")
-    if host == _CONTAINER_HOST:
+    use_port = int(port or (443 if parts.scheme.lower() == "https" else 80))
+    connect_host = ""
+    if require_public_address:
+        try:
+            connect_host = resolve_public_host(host, use_port)
+        except AgentEndpointEgressError as exc:
+            raise AgentSecretRelayError(str(exc)) from None
+    elif host == _CONTAINER_HOST:
         host = "127.0.0.1"
     rendered_host = f"[{host}]" if ":" in host else host
     netloc = rendered_host
@@ -301,7 +352,8 @@ def _normalize_upstream_base_url(value, *, preserve_trailing_slash=False):
     return _FrozenUpstream(
         scheme=parts.scheme.lower(),
         host=host,
-        port=int(port or (443 if parts.scheme.lower() == "https" else 80)),
+        port=use_port,
+        connect_host=connect_host,
         origin_url=origin_url,
         base_path=decoded_path,
         base_query=parts.query,
@@ -336,6 +388,332 @@ def _route_allowed(mode, method, path, query, base_path):
     # Query 只携带 provider 的版本、beta、路由等参数，不会改变已经冻结的
     # origin、方法和请求路径，因此不再把它当作路由权限的一部分。
     return relative in _ALLOWED_RELATIVE_ROUTES[mode].get(method, ())
+
+
+def _route_requires_usage_ack(mode, path, base_path):
+    if mode == "mcp":
+        return False
+    relative = _relative_request_path(path, base_path)
+    # Anthropic count_tokens 只做确定性的计数，不产生可计费模型输出；让它
+    # 占据闸门会在真正的 /messages 请求前自锁。
+    return relative not in {"/messages/count_tokens", "/v1/messages/count_tokens"}
+
+
+def _usage_count(value, label):
+    """严格读取 provider usage；不能把缺失或小数静默当成 0。"""
+
+    if isinstance(value, bool):
+        raise AgentSecretRelayUsageError(f"{label} 无效")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        parsed = int(value.strip())
+    else:
+        raise AgentSecretRelayUsageError(f"{label} 无效")
+    if parsed < 0:
+        raise AgentSecretRelayUsageError(f"{label} 无效")
+    return parsed
+
+
+def _first_usage_count(mapping, names, label, *, required=False, default=0):
+    source = mapping if isinstance(mapping, dict) else {}
+    for name in names:
+        if name in source:
+            return _usage_count(source[name], label), True
+    if required:
+        raise AgentSecretRelayUsageError(f"模型响应缺少 {label}")
+    return int(default), False
+
+
+def _usage_details(usage, *names):
+    for name in names:
+        value = usage.get(name) if isinstance(usage, dict) else None
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _normalize_openai_usage(usage):
+    """投影 OpenAI/兼容端点 usage，与容器 adapter 的五字段口径一致。"""
+
+    if not isinstance(usage, dict):
+        raise AgentSecretRelayUsageError("模型响应 usage 必须是对象")
+    total_input, _ = _first_usage_count(
+        usage,
+        ("prompt_tokens", "input_tokens"),
+        "输入 Token",
+        required=True,
+    )
+    output_tokens, _ = _first_usage_count(
+        usage,
+        ("completion_tokens", "output_tokens"),
+        "输出 Token",
+        required=True,
+    )
+    input_details = _usage_details(
+        usage,
+        "prompt_tokens_details",
+        "input_tokens_details",
+    )
+    output_details = _usage_details(
+        usage,
+        "completion_tokens_details",
+        "output_tokens_details",
+    )
+    cached_tokens, cached_present = _first_usage_count(
+        usage,
+        (
+            "prompt_cache_hit_tokens",
+            "input_cached_tokens",
+            "cache_read_input_tokens",
+        ),
+        "缓存输入 Token",
+    )
+    if not cached_present:
+        cached_tokens, _ = _first_usage_count(
+            input_details,
+            ("cached_tokens", "cache_read_tokens"),
+            "缓存输入 Token",
+        )
+    cache_write_tokens, cache_write_present = _first_usage_count(
+        usage,
+        ("input_cache_write_tokens", "cache_creation_input_tokens"),
+        "缓存写入 Token",
+    )
+    if not cache_write_present:
+        cache_write_tokens, _ = _first_usage_count(
+            input_details,
+            ("cache_write_tokens", "cache_creation_tokens"),
+            "缓存写入 Token",
+        )
+    uncached_tokens, uncached_present = _first_usage_count(
+        usage,
+        ("prompt_cache_miss_tokens", "input_uncached_tokens"),
+        "非缓存输入 Token",
+    )
+    if not uncached_present:
+        cached_total = cached_tokens + cache_write_tokens
+        if cached_total > total_input:
+            raise AgentSecretRelayUsageError("缓存输入 Token 超过总输入 Token")
+        uncached_tokens = total_input - cached_total
+    reasoning_tokens, reasoning_present = _first_usage_count(
+        usage,
+        ("reasoning_output_tokens", "reasoning_tokens"),
+        "推理输出 Token",
+    )
+    if not reasoning_present:
+        reasoning_tokens, _ = _first_usage_count(
+            output_details,
+            ("reasoning_tokens",),
+            "推理输出 Token",
+        )
+    if reasoning_tokens > output_tokens:
+        raise AgentSecretRelayUsageError("推理输出 Token 超过总输出 Token")
+    return {
+        "input_uncached_tokens": uncached_tokens,
+        "input_cached_tokens": cached_tokens,
+        "input_cache_write_tokens": cache_write_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_output_tokens": reasoning_tokens,
+    }
+
+
+def _normalize_anthropic_usage(usages):
+    """合并 Anthropic message_start/message_delta 的累计 usage。"""
+
+    records = [item for item in usages if isinstance(item, dict)]
+    if not records:
+        raise AgentSecretRelayUsageError("模型响应缺少 usage")
+    maxima = {}
+    aliases = {
+        "input_uncached_tokens": ("input_tokens", "input"),
+        "input_cached_tokens": ("cache_read_input_tokens", "cacheRead"),
+        "input_cache_write_tokens": (
+            "cache_creation_input_tokens",
+            "cacheWrite",
+        ),
+        "output_tokens": ("output_tokens", "output"),
+        "reasoning_output_tokens": (
+            "reasoning_output_tokens",
+            "reasoning_tokens",
+            "reasoning",
+        ),
+    }
+    present = set()
+    for record in records:
+        cache_creation = record.get("cache_creation")
+        if (
+            "cache_creation_input_tokens" not in record
+            and isinstance(cache_creation, dict)
+        ):
+            five_minutes, _ = _first_usage_count(
+                cache_creation,
+                ("ephemeral_5m_input_tokens",),
+                "5 分钟缓存写入 Token",
+            )
+            one_hour, _ = _first_usage_count(
+                cache_creation,
+                ("ephemeral_1h_input_tokens",),
+                "1 小时缓存写入 Token",
+            )
+            record = {
+                **record,
+                "cache_creation_input_tokens": five_minutes + one_hour,
+            }
+        for target, names in aliases.items():
+            value, found = _first_usage_count(
+                record,
+                names,
+                target,
+            )
+            if found:
+                present.add(target)
+                maxima[target] = max(maxima.get(target, 0), value)
+    if "input_uncached_tokens" not in present:
+        raise AgentSecretRelayUsageError("模型响应缺少输入 Token")
+    if "output_tokens" not in present:
+        raise AgentSecretRelayUsageError("模型响应缺少输出 Token")
+    return {field: maxima.get(field, 0) for field in aliases}
+
+
+def _response_documents(payload):
+    """读取完整 JSON 或 SSE data 帧；任何破损 data 帧都 fail closed。"""
+
+    try:
+        text = bytes(payload or b"").decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AgentSecretRelayUsageError("模型响应不是有效 UTF-8") from exc
+    if not text.strip():
+        raise AgentSecretRelayUsageError("模型响应为空")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        document = None
+    if isinstance(document, dict):
+        return [document]
+    if document is not None:
+        raise AgentSecretRelayUsageError("模型 JSON 响应必须是对象")
+
+    documents = []
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    for record in normalized.split("\n\n"):
+        data_lines = []
+        for line in record.split("\n"):
+            if line == "data":
+                data_lines.append("")
+            elif line.startswith("data:"):
+                value = line[5:]
+                if value.startswith(" "):
+                    value = value[1:]
+                data_lines.append(value)
+        if not data_lines:
+            continue
+        data = "\n".join(data_lines).strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            document = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise AgentSecretRelayUsageError("模型 SSE usage 帧无效") from exc
+        if not isinstance(document, dict):
+            raise AgentSecretRelayUsageError("模型 SSE data 必须是对象")
+        documents.append(document)
+    if not documents:
+        raise AgentSecretRelayUsageError("模型响应不是有效 JSON/SSE")
+    return documents
+
+
+def _extract_response_usage(mode, relative_route, payload):
+    """从受支持生成路由的完整响应提取五类 Token。"""
+
+    documents = _response_documents(payload)
+    normalized_mode = str(mode or "").strip().lower()
+    try:
+        parsed_whole = json.loads(bytes(payload or b"").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        parsed_whole = None
+    is_json = isinstance(parsed_whole, dict)
+    if normalized_mode == "openai":
+        if not is_json:
+            route = str(relative_route or "")
+            if route.endswith("/chat/completions"):
+                normalized_payload = bytes(payload).replace(b"\r\n", b"\n")
+                done = any(
+                    line[5:].strip() == b"[DONE]"
+                    for line in normalized_payload.split(b"\n")
+                    if line.startswith(b"data:")
+                )
+                if not done:
+                    raise AgentSecretRelayUsageError(
+                        "Chat Completions SSE 未完整结束"
+                    )
+            elif route.endswith("/responses"):
+                if not any(
+                    str(document.get("type") or "") in {
+                        "response.completed",
+                        "response.failed",
+                        "response.incomplete",
+                    }
+                    for document in documents
+                ):
+                    raise AgentSecretRelayUsageError("Responses SSE 未完整结束")
+            elif route.endswith("/responses/compact"):
+                raise AgentSecretRelayUsageError("Compact 响应必须是完整 JSON")
+        usages = []
+        for document in documents:
+            if isinstance(document.get("usage"), dict):
+                usages.append(document["usage"])
+            response = document.get("response")
+            if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+                usages.append(response["usage"])
+        if not usages:
+            raise AgentSecretRelayUsageError(
+                f"模型响应缺少 usage：{relative_route}"
+            )
+        return _normalize_openai_usage(usages[-1])
+    if normalized_mode == "anthropic":
+        if not is_json and not any(
+            str(document.get("type") or "") == "message_stop"
+            for document in documents
+        ):
+            raise AgentSecretRelayUsageError("Anthropic SSE 未完整结束")
+        usages = []
+        for document in documents:
+            if isinstance(document.get("usage"), dict):
+                usages.append(document["usage"])
+            message = document.get("message")
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                usages.append(message["usage"])
+        return _normalize_anthropic_usage(usages)
+    raise AgentSecretRelayUsageError("当前 relay 模式不支持 usage 计费")
+
+
+def _prepare_endpoint_request_body(mode, relative_route, body):
+    """为流式 Chat 请求强制要求 usage，避免正常客户端拿不到计费帧。"""
+
+    payload = bytes(body or b"")
+    if (
+        str(mode or "").lower() != "openai"
+        or not str(relative_route or "").endswith("/chat/completions")
+    ):
+        return payload
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return payload
+    if not isinstance(document, dict) or document.get("stream") is not True:
+        return payload
+    stream_options = document.get("stream_options")
+    if stream_options is None:
+        stream_options = {}
+    if not isinstance(stream_options, dict):
+        raise _RequestRejected(400, "invalid stream options")
+    document["stream_options"] = {**stream_options, "include_usage": True}
+    return json.dumps(
+        document,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _request_content_length(headers, method, max_bytes):
@@ -544,7 +922,17 @@ class _BoundedSecretRelayServer(_BoundedIdentityRelayServer):
 
 
 class _AgentSecretRelay:
-    def __init__(self, *, upstream_base_url, mode, real_credential):
+    def __init__(
+        self,
+        *,
+        upstream_base_url,
+        mode,
+        real_credential,
+        stop_event=None,
+        require_usage_ack=False,
+        usage_callback=None,
+        require_public_upstream=False,
+    ):
         normalized_mode = str(mode or "").strip().lower()
         if normalized_mode not in {"openai", "anthropic", "mcp"}:
             raise AgentSecretRelayError("外部服务密钥代理模式无效")
@@ -552,6 +940,7 @@ class _AgentSecretRelay:
         self.upstream = _normalize_upstream_base_url(
             upstream_base_url,
             preserve_trailing_slash=self.mode == "mcp",
+            require_public_address=bool(require_public_upstream),
         )
         self.real_credential = _validate_header_value(
             real_credential,
@@ -588,8 +977,16 @@ class _AgentSecretRelay:
         self._state_lock = threading.Lock()
         self._active = False
         self._closed = False
+        self._stop_event = stop_event or threading.Event()
+        self._require_usage_ack = bool(require_usage_ack)
+        self._usage_callback = usage_callback
+        if self._require_usage_ack and not callable(self._usage_callback):
+            raise AgentSecretRelayError("模型端点实时计费 callback 未配置")
         self._request_count = 0
         self._inflight_request_bytes = 0
+        self._endpoint_request_inflight = False
+        self._usage_failure = None
+        self._usage_condition = threading.Condition(self._state_lock)
 
     @property
     def container_credential(self):
@@ -617,12 +1014,133 @@ class _AgentSecretRelay:
 
     def _claim_request(self):
         with self._state_lock:
-            if not self._active or self._closed:
+            if (
+                not self._active
+                or self._closed
+                or self._stop_event.is_set()
+            ):
                 return False
             if self._request_count >= _MAX_REQUESTS_PER_RELAY:
                 return False
             self._request_count += 1
             return True
+
+    def _claim_endpoint_request(self):
+        """串行放行一条需计费的模型请求。
+
+        relay 临时凭据对容器内所有进程可见，因此必须以 relay 观察到的上游
+        usage 为权威边界。上一条响应没有完整读取、解析并入账前，下一条生成
+        请求不能到达上游；adapter stdout 只负责展示轨迹。
+        """
+
+        if not self._require_usage_ack:
+            return True
+        deadline = time.monotonic() + _ENDPOINT_USAGE_GATE_WAIT_SECONDS
+        with self._usage_condition:
+            while self._endpoint_request_inflight:
+                if (
+                    not self._active
+                    or self._closed
+                    or self._stop_event.is_set()
+                ):
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._usage_condition.wait(timeout=remaining)
+            if (
+                not self._active
+                or self._closed
+                or self._stop_event.is_set()
+            ):
+                return False
+            self._endpoint_request_inflight = True
+            return True
+
+    def _abandon_endpoint_request(self):
+        if not self._require_usage_ack:
+            return
+        with self._usage_condition:
+            self._endpoint_request_inflight = False
+            self._usage_condition.notify_all()
+
+    def _record_usage_failure(self, exc):
+        failure = exc if isinstance(exc, Exception) else AgentSecretRelayUsageError(
+            "模型 usage 记账失败"
+        )
+        with self._usage_condition:
+            if self._usage_failure is None:
+                self._usage_failure = failure
+            self._endpoint_request_inflight = False
+            self._usage_condition.notify_all()
+        self.deny_new_requests()
+
+    def _account_endpoint_response(self, relative_route, payload):
+        if not self._require_usage_ack:
+            return None
+        try:
+            usage = _extract_response_usage(self.mode, relative_route, payload)
+            event = {
+                "type": "numoj_usage",
+                "version": 1,
+                "source": f"relay_{self.mode}",
+                "id": "relay-" + secrets.token_urlsafe(24),
+                "usage": usage,
+            }
+            result = self._usage_callback(event)
+            if not isinstance(result, dict) or result.get("applied") is not True:
+                raise AgentSecretRelayUsageError("模型 usage 没有产生新的记账记录")
+            if bool(result.get("hard_stop")):
+                remaining = str(
+                    result.get("remaining_rmb")
+                    or result.get("remaining_amount")
+                    or ""
+                ).strip()
+                detail = f"，剩余额度 {remaining} 元" if remaining else ""
+                raise AgentSecretRelayUsageHardStopError(
+                    f"Agent 额度已达到硬停阈值{detail}"
+                )
+        except Exception as exc:
+            self._record_usage_failure(exc)
+            raise
+        with self._usage_condition:
+            self._endpoint_request_inflight = False
+            self._usage_condition.notify_all()
+        return result
+
+    def raise_if_usage_failed(self):
+        with self._usage_condition:
+            failure = self._usage_failure
+        if failure is not None:
+            raise failure
+
+    def wait_for_endpoint_usage(self, timeout=_ENDPOINT_USAGE_DRAIN_SECONDS):
+        """正常结束 harness 时等最后一个已接受请求读完并完成记账。"""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._usage_condition:
+            while self._endpoint_request_inflight and self._usage_failure is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AgentSecretRelayUsageError("等待模型 usage 记账超时")
+                self._usage_condition.wait(timeout=remaining)
+            failure = self._usage_failure
+        if failure is not None:
+            raise failure
+
+    def deny_new_requests(self):
+        """立即封锁本轮 relay，并中断已进入转发链的模型请求。"""
+
+        self._stop_event.set()
+        with self._usage_condition:
+            self._active = False
+            server = self.server
+            self._usage_condition.notify_all()
+        if server is not None:
+            # usage 记账完成时，harness 可能已经并发发起下一次模型请求。
+            # 除了让 _claim_request fail closed，还要关闭已经进入 handler 的
+            # client/upstream socket，确保硬停不会再产生一次未记账调用。
+            server.close_active_requests()
 
     def _forwarding_snapshot(self):
         """原子复制请求注入与响应脱敏所需的同一组凭据。"""
@@ -637,6 +1155,7 @@ class _AgentSecretRelay:
             if (
                 not self._active
                 or self._closed
+                or self._stop_event.is_set()
                 or requested < 0
                 or self._inflight_request_bytes + requested > limit
             ):
@@ -691,7 +1210,12 @@ class _AgentSecretRelay:
                 connection_handle = None
                 connection_registered = False
                 reserved_body_bytes = 0
+                endpoint_request_claimed = False
+                endpoint_response_accepted = False
+                endpoint_accounting_attempted = False
+                endpoint_accounted = False
                 response_started = False
+                relative_route = ""
                 try:
                     # 临时凭据验证和生命周期门禁必须早于路径、body 与上游 I/O。
                     if not relay._authorize_request(self.headers):
@@ -713,11 +1237,29 @@ class _AgentSecretRelay:
                         relay.upstream.base_path,
                     ):
                         raise _RequestRejected(404, "not found")
+                    relative_route = _relative_request_path(
+                        path,
+                        relay.upstream.base_path,
+                    )
                     content_length = _request_content_length(
                         self.headers,
                         method,
                         _MAX_REQUEST_BYTES[relay.mode],
                     )
+                    if (
+                        relay._require_usage_ack
+                        and _route_requires_usage_ack(
+                            relay.mode,
+                            path,
+                            relay.upstream.base_path,
+                        )
+                    ):
+                        if not relay._claim_endpoint_request():
+                            raise _RequestRejected(
+                                503,
+                                "usage acknowledgement required",
+                            )
+                        endpoint_request_claimed = True
                     upstream_headers, secret_values = (
                         relay._forwarding_snapshot()
                     )
@@ -732,6 +1274,12 @@ class _AgentSecretRelay:
                     body = self.rfile.read(content_length) if content_length else None
                     if content_length and (body is None or len(body) != content_length):
                         raise _RequestRejected(400, "incomplete request")
+                    if endpoint_request_claimed:
+                        body = _prepare_endpoint_request_body(
+                            relay.mode,
+                            relative_route,
+                            body,
+                        )
                     connection = relay.upstream.open_connection()
                     connection_handle = _InterruptibleHTTPConnection(connection)
                     # handle 在 request/connect 之前登记，并在懒连接建立后保存
@@ -755,21 +1303,36 @@ class _AgentSecretRelay:
                     status = int(getattr(response, "status", response.getcode()))
                     if 300 <= status < 400:
                         raise _RequestRejected(502, "upstream redirect refused")
+                    endpoint_response_accepted = bool(
+                        endpoint_request_claimed and 200 <= status < 300
+                    )
                     _response_content_length(response.headers)
                     _validate_response_content_encoding(response.headers)
-                    self.send_response(status)
-                    for name, value in _response_headers(
-                        response.headers,
-                        secret_values,
-                    ):
-                        self.send_header(name, value)
-                    # 脱敏可能改变长度，因此不转发 Content-Length；HTTP/1.0
-                    # 以连接关闭定界，同时保持 SSE/流式输出。
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Connection", "close")
-                    self.end_headers()
                     response_started = True
+                    client_writable = True
+                    try:
+                        self.send_response(status)
+                        for name, value in _response_headers(
+                            response.headers,
+                            secret_values,
+                        ):
+                            self.send_header(name, value)
+                        # 脱敏可能改变长度，因此不转发 Content-Length；HTTP/1.0
+                        # 以连接关闭定界，同时保持 SSE/流式输出。
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                    except (
+                        BrokenPipeError,
+                        ConnectionResetError,
+                        OSError,
+                        socket.timeout,
+                    ):
+                        # 客户端断开不等于上游请求没有发生。继续 drain 上游，
+                        # 只有完整 usage 入账后才释放串行闸门。
+                        client_writable = False
                     transferred = 0
+                    response_payload = bytearray()
                     redactor = _StreamingRedactor(secret_values)
                     while True:
                         chunk = _read_response_chunk(response)
@@ -777,26 +1340,83 @@ class _AgentSecretRelay:
                             break
                         transferred += len(chunk)
                         if transferred > _MAX_RESPONSE_BYTES:
-                            break
+                            raise AgentSecretRelayUsageError("模型响应过大")
+                        if endpoint_response_accepted:
+                            response_payload.extend(chunk)
                         rendered = redactor.feed(chunk)
-                        if rendered:
+                        if rendered and client_writable:
+                            try:
+                                self.wfile.write(rendered)
+                                self.wfile.flush()
+                            except (
+                                BrokenPipeError,
+                                ConnectionResetError,
+                                OSError,
+                                socket.timeout,
+                            ):
+                                client_writable = False
+                    rendered = redactor.feed(final=True)
+                    if rendered and client_writable:
+                        try:
                             self.wfile.write(rendered)
                             self.wfile.flush()
-                    rendered = redactor.feed(final=True)
-                    if rendered:
-                        self.wfile.write(rendered)
-                        self.wfile.flush()
+                        except (
+                            BrokenPipeError,
+                            ConnectionResetError,
+                            OSError,
+                            socket.timeout,
+                        ):
+                            client_writable = False
+                    if endpoint_response_accepted:
+                        endpoint_accounting_attempted = True
+                        relay._account_endpoint_response(
+                            relative_route,
+                            bytes(response_payload),
+                        )
+                        endpoint_accounted = True
                 except _RequestRejected as exc:
+                    if endpoint_response_accepted:
+                        relay._record_usage_failure(
+                            AgentSecretRelayUsageError(
+                                "模型响应未能完整读取并记账"
+                            )
+                        )
                     if not response_started:
-                        self._send_plain(exc.status, exc.message)
+                        try:
+                            self._send_plain(exc.status, exc.message)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            pass
+                except AgentSecretRelayUsageError:
+                    # 解析/记账方法已经记录权威失败并封锁 relay；响应可能已经
+                    # 流式交付，不能再向同一连接拼接另一个 HTTP 错误。
+                    if endpoint_response_accepted and not endpoint_accounting_attempted:
+                        relay._record_usage_failure(
+                            AgentSecretRelayUsageError(
+                                "模型响应未能完整读取并记账"
+                            )
+                        )
                 except (
                     BrokenPipeError,
                     ConnectionResetError,
                     OSError,
                     socket.timeout,
-                ):
-                    pass
+                ) as exc:
+                    if endpoint_response_accepted and not endpoint_accounting_attempted:
+                        relay._record_usage_failure(
+                            AgentSecretRelayUsageError(
+                                "模型响应读取中断，无法确认 usage"
+                            )
+                        )
+                except Exception as exc:
+                    if endpoint_response_accepted and not endpoint_accounting_attempted:
+                        relay._record_usage_failure(exc)
                 finally:
+                    if (
+                        endpoint_request_claimed
+                        and not endpoint_response_accepted
+                        and not endpoint_accounted
+                    ):
+                        relay._abandon_endpoint_request()
                     if reserved_body_bytes:
                         relay._release_request_body(reserved_body_bytes)
                     if response is not None:
@@ -939,17 +1559,63 @@ class AgentSecretRelaySession:
     web_search_base_url: str = ""
     web_search_authorization: str = field(default="", repr=False)
     temporary_secrets: tuple[str, ...] = field(default=(), repr=False)
+    _deny_endpoint_requests: object = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _raise_if_usage_failed: object = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _wait_for_endpoint_usage: object = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def deny_endpoint_requests(self):
+        callback = self._deny_endpoint_requests
+        if callable(callback):
+            callback()
+
+    def raise_if_usage_failed(self):
+        callback = self._raise_if_usage_failed
+        if callable(callback):
+            callback()
+
+    def wait_for_endpoint_usage(self, timeout=_ENDPOINT_USAGE_DRAIN_SECONDS):
+        callback = self._wait_for_endpoint_usage
+        if callable(callback):
+            callback(timeout)
 
 
 @contextmanager
-def run_agent_secret_relays(endpoint, web_search_settings=None):
+def run_agent_secret_relays(
+    endpoint,
+    web_search_settings=None,
+    *,
+    endpoint_stop_event=None,
+    require_endpoint_usage_ack=False,
+    endpoint_usage_callback=None,
+):
     """启动一轮模型端点及可选 WebSearch MCP 密钥代理。"""
 
     endpoint_protocol = str(endpoint.get("protocol") or "").strip().lower()
+    endpoint_source = str(
+        endpoint.get("source")
+        or endpoint.get("endpoint_source")
+        or "global"
+    ).strip().lower()
     endpoint_relay = _AgentSecretRelay(
         upstream_base_url=endpoint.get("base_url"),
         mode=endpoint_protocol,
         real_credential=endpoint.get("api_key"),
+        stop_event=endpoint_stop_event,
+        require_usage_ack=require_endpoint_usage_ack,
+        usage_callback=endpoint_usage_callback,
+        require_public_upstream=endpoint_source == "user",
     )
     web_search_relay = None
     if web_search_settings:
@@ -983,6 +1649,9 @@ def run_agent_secret_relays(endpoint, web_search_settings=None):
             web_search_base_url=web_search_base_url,
             web_search_authorization=web_search_authorization,
             temporary_secrets=tuple(temporary_secrets),
+            _deny_endpoint_requests=endpoint_relay.deny_new_requests,
+            _raise_if_usage_failed=endpoint_relay.raise_if_usage_failed,
+            _wait_for_endpoint_usage=endpoint_relay.wait_for_endpoint_usage,
         )
     finally:
         cleanup_errors = []
@@ -1003,6 +1672,8 @@ def run_agent_secret_relays(endpoint, web_search_settings=None):
 __all__ = [
     "AgentSecretRelayCleanupError",
     "AgentSecretRelayError",
+    "AgentSecretRelayUsageError",
+    "AgentSecretRelayUsageHardStopError",
     "AgentSecretRelaySession",
     "run_agent_secret_relays",
 ]

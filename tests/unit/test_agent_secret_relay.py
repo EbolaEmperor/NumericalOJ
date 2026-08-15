@@ -1,6 +1,7 @@
 import io
 import http.client
 from email.message import Message
+import json
 import socket
 import threading
 from types import SimpleNamespace
@@ -108,6 +109,105 @@ def test_local_container_alias_is_only_rewritten_for_host_upstream():
 
     assert upstream.origin_url == "http://127.0.0.1:9000"
     assert upstream.container_base_path == "/v1"
+    assert upstream.connect_host == ""
+
+
+def test_personal_upstream_rejects_private_target_but_global_keeps_compatibility():
+    global_upstream = relay._normalize_upstream_base_url(
+        "http://127.0.0.1:9000/v1"
+    )
+
+    assert global_upstream.host == "127.0.0.1"
+    with pytest.raises(relay.AgentSecretRelayError, match="公网地址"):
+        relay._normalize_upstream_base_url(
+            "http://127.0.0.1:9000/v1",
+            require_public_address=True,
+        )
+
+
+def test_personal_upstream_freezes_resolved_ip_for_the_relay_lifetime(
+    monkeypatch,
+):
+    resolved = []
+
+    def resolve(host, port):
+        resolved.append((host, port))
+        return "93.184.216.34"
+
+    monkeypatch.setattr(relay, "resolve_public_host", resolve)
+    upstream = relay._normalize_upstream_base_url(
+        "https://API.Example.Test:8443/tenant/v1",
+        require_public_address=True,
+    )
+
+    assert resolved == [("api.example.test", 8443)]
+    assert upstream.host == "api.example.test"
+    assert upstream.connect_host == "93.184.216.34"
+    assert upstream.origin_url == "https://api.example.test:8443"
+
+
+def test_pinned_https_connection_dials_ip_but_keeps_hostname_for_sni():
+    calls = []
+
+    class FakeSocket:
+        def setsockopt(self, *args):
+            calls.append(("sockopt", args))
+
+    class FakeContext:
+        def wrap_socket(self, upstream_socket, *, server_hostname):
+            calls.append(("sni", server_hostname, upstream_socket))
+            return FakeSocket()
+
+    connection = relay._RelayHTTPSConnection(
+        "api.example.test",
+        443,
+        timeout=3,
+        context=FakeContext(),
+        connect_host="93.184.216.34",
+    )
+    connection._create_connection = (
+        lambda address, *_args, **_kwargs: (
+            calls.append(("connect", address)) or FakeSocket()
+        )
+    )
+
+    connection.connect()
+
+    assert calls[0] == ("connect", ("93.184.216.34", 443))
+    assert any(call[:2] == ("sni", "api.example.test") for call in calls)
+
+
+def test_personal_endpoint_source_enables_runtime_public_address_policy(
+    monkeypatch,
+):
+    resolved = []
+    started = []
+
+    monkeypatch.setattr(
+        relay,
+        "resolve_public_host",
+        lambda host, port: resolved.append((host, port)) or "93.184.216.34",
+    )
+
+    def fake_start(instance):
+        started.append(instance)
+        with instance._state_lock:
+            instance._active = True
+        instance.container_base_url = "http://host.docker.internal:43100/v1"
+        return instance.container_base_url
+
+    monkeypatch.setattr(relay._AgentSecretRelay, "start", fake_start)
+
+    with relay.run_agent_secret_relays({
+        "source": "user",
+        "protocol": "openai",
+        "base_url": "https://api.example.test/v1",
+        "api_key": "private-key",
+    }):
+        pass
+
+    assert resolved == [("api.example.test", 443)]
+    assert started[0].upstream.connect_host == "93.184.216.34"
 
 
 def test_each_relay_has_an_independent_high_entropy_temporary_credential():
@@ -222,6 +322,157 @@ def test_expired_relay_never_accepts_another_request(monkeypatch):
         + authorization
         + b"\r\n\r\n",
     )[0] == 404
+
+
+def test_usage_stop_event_rejects_subsequent_endpoint_requests():
+    stop_event = threading.Event()
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        stop_event=stop_event,
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    assert instance._claim_request() is True
+    stop_event.set()
+    assert instance._claim_request() is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "route", "payload", "expected"),
+    [
+        (
+            "openai",
+            "/v1/chat/completions",
+            b'{"usage":{"prompt_tokens":10,"prompt_tokens_details":'
+            b'{"cached_tokens":3,"cache_write_tokens":2},'
+            b'"completion_tokens":5,"completion_tokens_details":'
+            b'{"reasoning_tokens":2}}}',
+            (5, 3, 2, 5, 2),
+        ),
+        (
+            "openai",
+            "/v1/chat/completions",
+            b'data: {"choices":[],"usage":{"prompt_tokens":8,'
+            b'"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":5,'
+            b'"completion_tokens":2}}\n\ndata: [DONE]\n\n',
+            (5, 3, 0, 2, 0),
+        ),
+        (
+            "openai",
+            "/v1/responses",
+            b'{"usage":{"input_tokens":7,"input_tokens_details":'
+            b'{"cached_tokens":2},"output_tokens":4,'
+            b'"output_tokens_details":{"reasoning_tokens":1}}}',
+            (5, 2, 0, 4, 1),
+        ),
+        (
+            "openai",
+            "/v1/responses",
+            b'data: {"type":"response.completed","response":{"usage":'
+            b'{"input_tokens":6,"output_tokens":3}}}\n\n',
+            (6, 0, 0, 3, 0),
+        ),
+        (
+            "openai",
+            "/v1/responses/compact",
+            b'{"object":"response.compaction","usage":'
+            b'{"input_tokens":9,"output_tokens":1}}',
+            (9, 0, 0, 1, 0),
+        ),
+        (
+            "anthropic",
+            "/v1/messages",
+            b'{"usage":{"input_tokens":5,"cache_read_input_tokens":2,'
+            b'"cache_creation_input_tokens":1,"output_tokens":4}}',
+            (5, 2, 1, 4, 0),
+        ),
+        (
+            "anthropic",
+            "/v1/messages",
+            b'data: {"type":"message_start","message":{"usage":'
+            b'{"input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":2},'
+            b'"cache_read_input_tokens":1,"output_tokens":0}}}\n\n'
+            b'data: {"type":"message_delta","usage":{"output_tokens":4}}\n\n'
+            b'data: {"type":"message_stop"}\n\n',
+            (5, 1, 2, 4, 0),
+        ),
+    ],
+)
+def test_extracts_authoritative_usage_from_supported_json_and_sse(
+    mode,
+    route,
+    payload,
+    expected,
+):
+    usage = relay._extract_response_usage(mode, route, payload)
+
+    assert tuple(usage.values()) == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "route", "payload", "message"),
+    [
+        ("openai", "/v1/chat/completions", b'{"choices":[]}', "缺少 usage"),
+        (
+            "openai",
+            "/v1/chat/completions",
+            b'data: {"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+            "未完整结束",
+        ),
+        (
+            "anthropic",
+            "/v1/messages",
+            b'{"usage":{"input_tokens":true,"output_tokens":1}}',
+            "无效",
+        ),
+    ],
+)
+def test_response_usage_missing_truncated_or_invalid_fails_closed(
+    mode,
+    route,
+    payload,
+    message,
+):
+    with pytest.raises(relay.AgentSecretRelayUsageError, match=message):
+        relay._extract_response_usage(mode, route, payload)
+
+
+def test_anthropic_count_tokens_does_not_consume_generation_usage_gate():
+    assert relay._route_requires_usage_ack(
+        "anthropic",
+        "/tenant/v1/messages/count_tokens",
+        "/tenant/v1",
+    ) is False
+    assert relay._route_requires_usage_ack(
+        "anthropic",
+        "/tenant/v1/messages",
+        "/tenant/v1",
+    ) is True
+
+
+def test_deny_new_requests_sets_shared_stop_event_and_closes_inflight():
+    stop_event = threading.Event()
+    closed = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        stop_event=stop_event,
+    )
+    instance.server = SimpleNamespace(
+        close_active_requests=lambda: closed.append("closed")
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    instance.deny_new_requests()
+
+    assert stop_event.is_set()
+    assert instance._claim_request() is False
+    assert closed == ["closed"]
 
 
 def test_start_failure_forgets_real_and_temporary_credentials(monkeypatch):
@@ -779,6 +1030,312 @@ def _send(instance, raw_request):
     head, payload = bytes(request_socket.output).split(b"\r\n\r\n", 1)
     status = int(head.splitlines()[0].split()[1])
     return status, head, payload
+
+
+def test_direct_endpoint_requests_are_accounted_by_relay_and_reopen_gate(
+    monkeypatch,
+):
+    charged = []
+    request_bodies = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": True,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class SuccessfulResponse:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def __init__(self):
+            self.chunks = [
+                b'data: {"choices":[],"usage":{"prompt_tokens":8,',
+                b'"prompt_tokens_details":{"cached_tokens":3},'
+                b'"completion_tokens":2}}\n\ndata: [DONE]\n\n',
+            ]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class SuccessfulConnection:
+        registered = False
+
+        def request(self, _method, _target, *, body, headers):
+            assert self.registered is True
+            request_bodies.append(body)
+
+        def getresponse(self):
+            return SuccessfulResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: SuccessfulConnection(),
+    )
+    authorization = f"Bearer {instance.temporary_secret}".encode("ascii")
+    body = b'{"stream":true}'
+    request = (
+        b"POST /v1/chat/completions HTTP/1.0\r\nAuthorization: "
+        + authorization
+        + b"\r\nContent-Type: application/json\r\nContent-Length: "
+        + str(len(body)).encode("ascii")
+        + b"\r\n\r\n"
+        + body
+    )
+
+    assert _send(instance, request)[0] == 200
+    assert _send(instance, request)[0] == 200
+
+    assert len(charged) == 2
+    assert charged[0]["source"] == "relay_openai"
+    assert charged[0]["id"] != charged[1]["id"]
+    assert charged[0]["usage"] == {
+        "input_uncached_tokens": 5,
+        "input_cached_tokens": 3,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 2,
+        "reasoning_output_tokens": 0,
+    }
+    assert all(
+        json.loads(payload)["stream_options"]["include_usage"] is True
+        for payload in request_bodies
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "callback_result", "error_type", "message"),
+    [
+        (b'{"choices":[]}', None, relay.AgentSecretRelayUsageError, "缺少 usage"),
+        (
+            b'{"usage":{"prompt_tokens":1,"completion_tokens":1}}',
+            {"applied": False, "hard_stop": False},
+            relay.AgentSecretRelayUsageError,
+            "新的记账记录",
+        ),
+        (
+            b'{"usage":{"prompt_tokens":1,"completion_tokens":1}}',
+            {"applied": True, "hard_stop": True, "remaining_rmb": "-5.2"},
+            relay.AgentSecretRelayUsageHardStopError,
+            "-5.2",
+        ),
+    ],
+)
+def test_usage_failure_replay_or_hard_stop_closes_relay(
+    monkeypatch,
+    payload,
+    callback_result,
+    error_type,
+    message,
+):
+    callback_calls = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: callback_calls.append(event) or callback_result,
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class Response:
+        status = 200
+        headers = _headers(Content_Type="application/json")
+
+        def __init__(self):
+            self.chunks = [payload]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class Connection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: Connection(),
+    )
+    authorization = f"Bearer {instance.temporary_secret}".encode("ascii")
+    request = (
+        b"POST /v1/chat/completions HTTP/1.0\r\nAuthorization: "
+        + authorization
+        + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    assert _send(instance, request)[0] == 200
+    with pytest.raises(error_type, match=message):
+        instance.raise_if_usage_failed()
+    assert instance._stop_event.is_set()
+    assert _send(instance, request)[0] == 404
+    assert len(callback_calls) == (0 if callback_result is None else 1)
+
+
+def test_client_disconnect_still_drains_and_accounts_upstream(monkeypatch):
+    charged = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": True,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class Response:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def __init__(self):
+            self.chunks = [
+                b'data: {"type":"message_start","message":{"usage":'
+                b'{"input_tokens":3,"output_tokens":0}}}\n\n',
+                b'data: {"type":"message_delta","usage":{"output_tokens":2}}\n\n'
+                b'data: {"type":"message_stop"}\n\n',
+            ]
+            self.read_count = 0
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            self.read_count += 1
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    response = Response()
+
+    class Connection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return response
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: Connection(),
+    )
+
+    class DisconnectSocket(_FakeSocket):
+        def sendall(self, _payload):
+            raise BrokenPipeError("client disconnected")
+
+    authorization = f"Bearer {instance.temporary_secret}".encode("ascii")
+    request_socket = DisconnectSocket(
+        b"POST /v1/messages HTTP/1.0\r\nX-Api-Key: "
+        + authorization.removeprefix(b"Bearer ")
+        + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+    instance._handler_class()(
+        request_socket,
+        ("127.0.0.1", 12345),
+        _FakeServer(),
+    )
+
+    assert response.read_count == 3
+    assert len(charged) == 1
+    assert charged[0]["usage"]["output_tokens"] == 2
+
+
+def test_anthropic_count_tokens_is_forwarded_without_billing(monkeypatch):
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda _event: pytest.fail("count_tokens 不应记账"),
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class Response:
+        status = 200
+        headers = _headers(Content_Type="application/json")
+
+        def __init__(self):
+            self.chunks = [b'{"input_tokens":42}']
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class Connection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: Connection(),
+    )
+    secret = instance.temporary_secret.encode("ascii")
+    status, _head, payload = _send(
+        instance,
+        b"POST /v1/messages/count_tokens HTTP/1.0\r\nX-Api-Key: "
+        + secret
+        + b"\r\nContent-Length: 2\r\n\r\n{}",
+    )
+
+    assert status == 200
+    assert payload == b'{"input_tokens":42}'
+    instance.raise_if_usage_failed()
 
 
 def test_temporary_gate_precedes_path_body_and_upstream(monkeypatch):

@@ -89,6 +89,10 @@ class AgentHarnessCleanupError(RuntimeError):
     """无法证明本轮容器已停止；会话不得进入可续聊终态。"""
 
 
+class AgentUsageHardStopError(RuntimeError):
+    """本次 usage 扣费已经触发 Agent 额度硬停。"""
+
+
 def _containerize_url(value):
     """让容器内的 localhost 端点显式回到宿主机。"""
 
@@ -336,6 +340,22 @@ def _secret_relay_context(*args, **kwargs):
             yield relay
     except AgentSecretRelayCleanupError as exc:
         raise AgentHarnessCleanupError(str(exc)) from exc
+
+
+def _check_secret_relay_usage(secret_relay, *, wait=False):
+    from oj_modules.tasks.agent.secret_relay import (
+        AgentSecretRelayUsageHardStopError,
+    )
+
+    try:
+        waiter = getattr(secret_relay, "wait_for_endpoint_usage", None)
+        checker = getattr(secret_relay, "raise_if_usage_failed", None)
+        if wait and callable(waiter):
+            waiter()
+        if callable(checker):
+            checker()
+    except AgentSecretRelayUsageHardStopError as exc:
+        raise AgentUsageHardStopError(str(exc)) from exc
 
 
 def _read_native_session_state(workspace, harness):
@@ -639,25 +659,7 @@ class _CanonicalJournalObserver:
             offset += os.write(self._fd, payload[offset:])
         self._written += len(payload)
 
-    def _append_record(self, raw):
-        try:
-            event = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return
-        if (
-            not isinstance(event, dict)
-            or event.get("type") not in self._EVENT_TYPES
-            or event.get("version") != 1
-        ):
-            return
-        payload = (
-            json.dumps(
-                self._redact(event),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            + b"\n"
-        )
+    def _store_payload(self, payload):
         if len(payload) > self._max_bytes:
             return
         if (
@@ -676,6 +678,34 @@ class _CanonicalJournalObserver:
             and self._tail_bytes > self._tail_reserve_bytes
         ):
             self._tail_bytes -= len(self._tail_records.popleft())
+
+    def _append_record(self, raw):
+        try:
+            event = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        if (
+            not isinstance(event, dict)
+            or event.get("type") not in self._EVENT_TYPES
+            or event.get("version") != 1
+        ):
+            return
+        if event.get("type") == "numoj_usage":
+            record_id = str(event.get("id") or "").strip()
+            if not record_id:
+                return
+            event["id"] = record_id
+        payload = (
+            json.dumps(
+                self._redact(event),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        # adapter usage 只用于轨迹和 token 展示。实际扣费以宿主 relay
+        # 完整读取到的 provider usage 为准，不能在这里再次记账。
+        self._store_payload(payload)
 
     def feed(self, block):
         payload = bytes(block or b"")
@@ -805,7 +835,7 @@ def _run_with_bounded_output(
     )
     canonical_observer = None
     try:
-        if interactive and canonical_journal_path:
+        if canonical_journal_path:
             canonical_observer = _CanonicalJournalObserver(
                 canonical_journal_path,
                 secrets=canonical_journal_secrets,
@@ -1312,6 +1342,7 @@ def run_agent_harness(
     control_source=None,
     control_callback=None,
     control_target_task_id=None,
+    usage_callback=None,
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
 
@@ -1392,7 +1423,8 @@ def run_agent_harness(
         ".agent_harness.stdout.tmp",
     )
     canonical_trace_path = None
-    if callable(control_source):
+    canonical_enabled = callable(control_source) or callable(usage_callback)
+    if canonical_enabled:
         canonical_trace_path = _prepare_workspace_temp_path(
             trace_dir,
             ".agent_harness.canonical.tmp",
@@ -1452,9 +1484,18 @@ def run_agent_harness(
             )
             check_agent_workspace_quota(normalized_session_id)
             web_search_settings = get_web_search_settings(include_secret=True)
+            usage_stop_event = (
+                threading.Event() if callable(usage_callback) else None
+            )
+            secret_relay_kwargs = {}
+            if usage_stop_event is not None:
+                secret_relay_kwargs["endpoint_stop_event"] = usage_stop_event
+                secret_relay_kwargs["require_endpoint_usage_ack"] = True
+                secret_relay_kwargs["endpoint_usage_callback"] = usage_callback
             with _secret_relay_context(
                 endpoint,
                 web_search_settings,
+                **secret_relay_kwargs,
             ) as secret_relay:
                 relayed_web_search_settings = None
                 if secret_relay.web_search_base_url:
@@ -1507,7 +1548,7 @@ def run_agent_harness(
 
                 def sync_trace(*, final=False):
                     sync_kwargs = {"secrets": trace_secrets}
-                    if callable(control_source):
+                    if canonical_enabled:
                         sync_kwargs["canonical"] = True
                     sync_agent_trace(
                         container_name,
@@ -1525,6 +1566,7 @@ def run_agent_harness(
                             pass
 
                 def enforce_workspace_quota():
+                    _check_secret_relay_usage(secret_relay)
                     return check_agent_workspace_quota(normalized_session_id)
 
                 try:
@@ -1558,11 +1600,17 @@ def run_agent_harness(
                             "canonical_journal_path": canonical_trace_path,
                             "canonical_journal_secrets": trace_secrets,
                         })
+                    elif canonical_enabled:
+                        run_kwargs.update({
+                            "canonical_journal_path": canonical_trace_path,
+                            "canonical_journal_secrets": trace_secrets,
+                        })
                     result = _run_with_bounded_output(
                         _docker_exec_args(container_name),
                         prompt,
                         **run_kwargs,
                     )
+                    _check_secret_relay_usage(secret_relay, wait=True)
                     enforce_workspace_quota()
                     sync_trace()
                 finally:
@@ -1601,6 +1649,7 @@ def run_agent_harness(
 
 __all__ = [
     "AgentHarnessCleanupError",
+    "AgentUsageHardStopError",
     "HarnessRunResult",
     "normalize_native_session_id",
     "read_agent_native_session_id",

@@ -958,6 +958,7 @@ def _claim_payload(session, message, turn_index, *, newly_promoted=False):
         "requested_by": session.get("requested_by"),
         "access_role": str(session.get("access_role") or "user"),
         "harness": session.get("harness"),
+        "endpoint_source": str(session.get("endpoint_source") or "global"),
         "endpoint_id": session.get("endpoint_id"),
         "endpoint_revision": session.get("endpoint_revision"),
         "endpoint_model": session.get("endpoint_model"),
@@ -986,6 +987,7 @@ def claim_next_agent_session_message(
     *,
     task_id=None,
     prepare_runtime_checkpoint=None,
+    dispatch_allowed=None,
 ):
     """原子领取 FIFO 队首并创建下一执行轮次。
 
@@ -1004,7 +1006,8 @@ def claim_next_agent_session_message(
                 SELECT s.current_task_id, s.status, s.turn_count, s.queue_paused,
                        s.fresh_native_session_pending,
                        s.task_kind, s.problem_id, s.requested_by, s.access_role,
-                       s.harness, s.endpoint_id, s.endpoint_revision,
+                       s.harness, s.endpoint_source, s.endpoint_id,
+                       s.endpoint_revision,
                        s.endpoint_model, s.native_session_id,
                        previous.base_runtime_checkpoint_id AS
                            previous_base_runtime_checkpoint_id
@@ -1091,6 +1094,12 @@ def claim_next_agent_session_message(
                 if str(session.get("status") or "").strip().lower() not in (
                     _TERMINAL_SESSION_STATUSES - {"cleanupfailed", "cleanup_failed"}
                 ):
+                    return None
+                if callable(dispatch_allowed) and not bool(
+                    dispatch_allowed(dict(session))
+                ):
+                    # 余额不足或站点暂停开放时，队首仍保持
+                    # queued；后续补充额度或重新开放后可原样继续。
                     return None
                 cursor.execute(
                     """
@@ -1207,7 +1216,12 @@ def claim_next_agent_session_message(
         conn.close()
 
 
-def claim_next_agent_session_steer(session_id, *, task_id):
+def claim_next_agent_session_steer(
+    session_id,
+    *,
+    task_id,
+    dispatch_allowed=None,
+):
     """原子领取当前任务的一条软插话，供持有 harness 控制通道的 worker 投递。"""
 
     session_id = _normalize_session_id(session_id)
@@ -1249,6 +1263,10 @@ def claim_next_agent_session_steer(session_id, *, task_id):
             )
             message = cursor.fetchone()
             if not message:
+                return None
+            if callable(dispatch_allowed) and not bool(dispatch_allowed()):
+                # 开关或额度在插话入队后变更时，不改变
+                # queued 状态，补充额度后仍可投递。
                 return None
             cursor.execute(
                 """

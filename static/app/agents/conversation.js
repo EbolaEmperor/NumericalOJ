@@ -23,8 +23,18 @@
   var messagePollingTimer = null;
   var messagePollingDueAt = 0;
   var queuePaused = root.dataset.queuePaused === 'true';
+  var isAdmin = root.dataset.agentAdmin === 'true';
+  var publicEnabled = root.dataset.agentPublicEnabled !== 'false';
+  var usesPersonalEndpoint = root.dataset.agentUsesPersonalEndpoint === 'true';
+  var quotaCanContinue = root.dataset.agentQuotaCanContinue !== 'false';
+  var quotaHasAccount = root.dataset.agentQuotaHasAccount !== 'false';
+  var quotaRemaining = Number(root.dataset.agentQuotaRemaining);
+  var syncingQuotaWidget = false;
+  function accessIsBlocked() {
+    return !isAdmin && (!publicEnabled || (!usesPersonalEndpoint && !quotaCanContinue));
+  }
   var hardBlocked = !canResume || legacySession
-    || isBlockedStatus(currentState && currentState.status);
+    || isBlockedStatus(currentState && currentState.status) || accessIsBlocked();
   var blocked = root.dataset.blocked === 'true' || hardBlocked;
   var steerSupported = root.dataset.steerSupported !== 'false';
   var steerUnavailableReason = asText(root.dataset.steerUnavailableReason).trim();
@@ -69,6 +79,10 @@
   var fileDownload = root.querySelector('[data-agent-file-download]');
   var conversationSplitter = root.querySelector('[data-agent-splitter="conversation"]');
   var workspaceSplitter = root.querySelector('[data-agent-splitter="workspace"]');
+  var renameForm = document.querySelector('[data-agent-rename-form]');
+  var renameInput = document.querySelector('[data-agent-rename-input]');
+  var renameFeedback = document.querySelector('[data-agent-rename-feedback]');
+  var renameSubmit = document.querySelector('[data-agent-rename-submit]');
 
   var resumeFiles = [];
   var resumePending = false;
@@ -163,6 +177,18 @@
     return formatMeasuredValue(tokens / 1000000) + ' M';
   }
 
+  function formatMoneyValue(value) {
+    var numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0) return '—';
+    if (
+      global.NumOJAgentAccess
+      && typeof global.NumOJAgentAccess.decimalText === 'function'
+    ) {
+      return global.NumOJAgentAccess.decimalText(value);
+    }
+    return asText(value).replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '') || '0';
+  }
+
   function setUsageValue(element, value) {
     if (element && element.textContent !== value) element.textContent = value;
   }
@@ -170,9 +196,10 @@
   function renderHeaderTokenUsage(usage) {
     usage = usage && typeof usage === 'object' ? usage : null;
     if (!usage) {
-      [usageInput, usageCached, usageOutput, usageCost].forEach(function (element) {
+      [usageInput, usageCached, usageOutput].forEach(function (element) {
         setUsageValue(element, '—');
       });
+      setUsageValue(usageCost, usesPersonalEndpoint ? '不计额度' : '—');
       return;
     }
 
@@ -193,7 +220,9 @@
       && Number(usage.cost_rmb) >= 0;
     setUsageValue(
       usageCost,
-      hasCost ? formatMeasuredValue(Number(usage.cost_rmb)) + ' RMB' : '—'
+      usesPersonalEndpoint
+        ? '不计额度'
+        : (hasCost ? formatMoneyValue(usage.cost_rmb) + ' 元' : '—')
     );
   }
 
@@ -266,6 +295,44 @@
     resumeFeedback.textContent = message || '';
     resumeFeedback.hidden = !message;
     resumeFeedback.classList.toggle('is-error', isError === true);
+  }
+
+  function accessBlockedMessage() {
+    if (isAdmin || !accessIsBlocked()) return '';
+    if (!publicEnabled) return 'Agent 暂停向普通用户开放，当前会话仅可查看。';
+    if (!quotaHasAccount) return '你还没有平台额度；请先申请额度再继续此会话。';
+    if (Number.isFinite(quotaRemaining) && quotaRemaining <= -5) {
+      return '额度已达到 -5 元，系统正在停止任务；补充额度后才能继续。';
+    }
+    return '额度低于 0 元，请申请额度后继续。此会话使用全站端点，不能切换为自有端点。';
+  }
+
+  function applyQuotaSummary(summary) {
+    if (!summary || typeof summary !== 'object') return;
+    if (typeof summary.public_enabled === 'boolean') publicEnabled = summary.public_enabled;
+    if (typeof summary.can_continue === 'boolean') quotaCanContinue = summary.can_continue;
+    if (typeof summary.has_account === 'boolean') quotaHasAccount = summary.has_account;
+    if (summary.remaining_amount !== undefined) {
+      quotaRemaining = Number(summary.remaining_amount);
+      if (Number.isFinite(quotaRemaining) && quotaRemaining < 0) quotaCanContinue = false;
+    }
+    root.dataset.agentPublicEnabled = publicEnabled ? 'true' : 'false';
+    root.dataset.agentQuotaCanContinue = quotaCanContinue ? 'true' : 'false';
+    root.dataset.agentQuotaHasAccount = quotaHasAccount ? 'true' : 'false';
+    root.dataset.agentQuotaRemaining = Number.isFinite(quotaRemaining) ? String(quotaRemaining) : '';
+    hardBlocked = !canResume || legacySession
+      || isBlockedStatus(currentState && currentState.status) || accessIsBlocked();
+    queueSignature = '';
+    renderMessageQueue(messageState);
+    updateSendState();
+    updateRetryState();
+    var message = accessBlockedMessage();
+    if (message) setResumeFeedback(message, true);
+    if (global.NumOJAgentAccess && !syncingQuotaWidget) {
+      syncingQuotaWidget = true;
+      global.NumOJAgentAccess.update(summary);
+      syncingQuotaWidget = false;
+    }
   }
 
   function messageUrl(template, messageId) {
@@ -848,10 +915,12 @@
     if (queueResumeButton) {
       queueResumeButton.disabled = hardBlocked || resumePending || queueMutationPending;
     }
+    var accessMessage = accessBlockedMessage();
+    if (accessMessage && !resumePending) setResumeFeedback(accessMessage, true);
   }
 
   function updateRetryState() {
-    var retryBlocked = legacySession || !canResume
+    var retryBlocked = hardBlocked || legacySession || !canResume
       || isBlockedStatus(currentState && currentState.status);
     root.querySelectorAll('[data-agent-retry-last]').forEach(function (button) {
       var expectedTaskId = asText(button.dataset.agentExpectedTaskId).trim();
@@ -872,7 +941,8 @@
     if (stateStatus) {
       var nextHardBlocked = isBlockedStatus(stateStatus)
         || !canResume
-        || legacySession;
+        || legacySession
+        || accessIsBlocked();
       if (nextHardBlocked !== hardBlocked) {
         hardBlocked = nextHardBlocked;
         queueSignature = '';
@@ -947,6 +1017,9 @@
     renderMessageQueue(state);
     renderSteerMessages(state);
     if (state.session_token_usage) renderHeaderTokenUsage(state.session_token_usage);
+    if (state.quota_summary || state.agent_quota) {
+      applyQuotaSummary(state.quota_summary || state.agent_quota);
+    }
     updateSendState();
 
     var taskId = asText(state.current_task_id).trim();
@@ -1252,6 +1325,9 @@
       sessionTitle.title = nextTitle;
     }
     renderHeaderTokenUsage(state.session_token_usage);
+    if (state.quota_summary || state.agent_quota) {
+      applyQuotaSummary(state.quota_summary || state.agent_quota);
+    }
     var stateIsRunning = isRunningStatus(state.status);
     setRunning(stateIsRunning, state.status, state.native_session_id);
     if (liveTurn) liveTurn.hidden = false;
@@ -1749,7 +1825,10 @@
     if (!turnsRoot || !resumeForm) return;
     turnsRoot.addEventListener('click', function (event) {
       var button = event.target.closest('[data-agent-retry-last]');
-      if (!button || button.disabled || button.hidden || running || resumePending) return;
+      if (
+        !button || button.disabled || button.hidden || running || resumePending
+        || hardBlocked || accessIsBlocked()
+      ) return;
       var expectedTaskId = asText(button.dataset.agentExpectedTaskId).trim();
       if (!expectedTaskId || expectedTaskId !== currentTaskId) {
         setResumeFeedback('会话状态已变化，请刷新后重试。', true);
@@ -1838,6 +1917,59 @@
         queueResumeButton.disabled = hardBlocked || resumePending;
         queueResumeButton.innerHTML = '<i class="fas fa-play" aria-hidden="true"></i><span>继续队列</span>';
         setResumeFeedback(error.message || '继续消息队列失败。', true);
+      });
+    });
+  }
+
+  function bindRename() {
+    if (!renameForm || !renameInput || !renameSubmit || !root.dataset.agentRenameUrl) return;
+    var modalNode = document.getElementById('agentRenameModal');
+    if (modalNode) modalNode.addEventListener('show.bs.modal', function () {
+      renameInput.value = sessionTitle ? sessionTitle.textContent.trim() : '';
+      if (renameFeedback) {
+        renameFeedback.textContent = '';
+        renameFeedback.hidden = true;
+        renameFeedback.classList.remove('is-error');
+      }
+      global.setTimeout(function () { renameInput.select(); }, 150);
+    });
+    renameForm.addEventListener('submit', function (event) {
+      event.preventDefault();
+      if (!renameForm.reportValidity() || renameSubmit.disabled) return;
+      var nextTitle = renameInput.value.trim();
+      renameSubmit.disabled = true;
+      renameSubmit.textContent = '保存中…';
+      global.fetch(root.dataset.agentRenameUrl, {
+        method: 'PATCH',
+        body: JSON.stringify({title: nextTitle}),
+        headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+        credentials: 'same-origin',
+        mathCurveLoader: false
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (payload) {
+          if (!response.ok || payload.success === false) {
+            throw new Error(asText(payload.message || payload.error) || '重命名失败');
+          }
+          return payload;
+        });
+      }).then(function (payload) {
+        var title = asText(payload.title || (payload.session && payload.session.title) || nextTitle).trim();
+        if (sessionTitle) {
+          sessionTitle.textContent = title;
+          sessionTitle.title = title;
+        }
+        if (global.bootstrap && modalNode) {
+          global.bootstrap.Modal.getOrCreateInstance(modalNode).hide();
+        }
+      }).catch(function (error) {
+        if (renameFeedback) {
+          renameFeedback.textContent = error.message || '重命名失败';
+          renameFeedback.hidden = false;
+          renameFeedback.classList.add('is-error');
+        }
+      }).finally(function () {
+        renameSubmit.disabled = false;
+        renameSubmit.textContent = '保存';
       });
     });
   }
@@ -2583,6 +2715,7 @@
   bindRetryButton();
   bindStopButton();
   bindQueueControls();
+  bindRename();
   bindWorkspaceAndFiles();
   bindLazyHistoricalTraces();
   paintSessionAvatars();
@@ -2613,6 +2746,11 @@
     currentState.status || root.dataset.status || (running ? 'running' : 'completed')
   );
   scrollToLatest('auto');
+
+  global.addEventListener('numoj:agent-quota-change', function (event) {
+    if (syncingQuotaWidget) return;
+    applyQuotaSummary(event.detail || {});
+  });
 
   global.addEventListener('beforeunload', function () {
     stopLiveUpdates();

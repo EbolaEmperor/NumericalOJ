@@ -62,7 +62,8 @@ def test_agent_launch_loads_task_specific_options_and_restores_preference():
     template = _read(TEMPLATE)
     script = _read(SCRIPT)
 
-    assert "'/admin/agent_launch_options'" in template
+    assert "url_for('problem_core.agent_launch_options')" in template
+    assert "/admin/agent_launch_options" not in template
     assert 'data-task-kind="solve"' in template
     assert 'data-task-kind="testdata"' in template
     assert "addQuery(this.optionsUrl, 'task_kind', this.taskKind)" in script

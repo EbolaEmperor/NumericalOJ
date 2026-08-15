@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 
+from oj_modules.agents.quota import check_agent_start_eligibility
 from oj_modules.agents.messages import (
     AgentSessionMessageConflictError,
     AgentSessionMessageNotFoundError,
@@ -20,7 +21,7 @@ from oj_modules.agents.runtime_checkpoints import (
     create_agent_runtime_checkpoint,
     remove_agent_runtime_checkpoint,
 )
-from oj_modules.db_services import upsert_agent_run_snapshot
+from oj_modules.db_services import get_user_by_username, upsert_agent_run_snapshot
 
 
 AGENT_QUEUE_DISPATCH_TASK_NAME = "oj.agent.dispatch_session_queue"
@@ -48,7 +49,7 @@ def prompt_with_agent_attachments(message, attachments):
     )
 
 
-def build_agent_control_bridge(session_id, task_id):
+def build_agent_control_bridge(session_id, task_id, *, eligibility_check=None):
     """返回供 harness runtime 轮询的一次一条插话源和确认回调。"""
 
     normalized_session_id = str(session_id or "").strip()
@@ -56,9 +57,12 @@ def build_agent_control_bridge(session_id, task_id):
 
     def control_source():
         try:
+            claim_kwargs = {"task_id": normalized_task_id}
+            if callable(eligibility_check):
+                claim_kwargs["dispatch_allowed"] = eligibility_check
             message = claim_next_agent_session_steer(
                 normalized_session_id,
-                task_id=normalized_task_id,
+                **claim_kwargs,
             )
         except (AgentSessionMessageConflictError, AgentSessionMessageNotFoundError):
             return ()
@@ -116,6 +120,36 @@ def build_agent_control_bridge(session_id, task_id):
     return control_source, control_callback
 
 
+def _session_dispatch_allowed(session):
+    """在队首升格为 turn 之前做一次实时额度门禁。"""
+
+    requested_by = str((session or {}).get("requested_by") or "").strip()
+    user = get_user_by_username(requested_by) if requested_by else None
+    if not user:
+        return False
+    requester_is_admin = int(user.get("is_admin") or 0) == 1
+    # 升级前已入队的旧版造数据任务是 user role，但本质上
+    # 是管理员操作；保留其原有派发语义。
+    legacy_testdata = (
+        str((session or {}).get("task_kind") or "").strip().lower() == "testdata"
+        and str((session or {}).get("access_role") or "user").strip().lower()
+        == "user"
+    )
+    if legacy_testdata:
+        return True
+    decision = check_agent_start_eligibility(
+        user["id"],
+        is_admin=requester_is_admin,
+        uses_personal_endpoint=(
+            str((session or {}).get("endpoint_source") or "global")
+            .strip()
+            .lower()
+            == "user"
+        ),
+    )
+    return bool(decision.get("allowed"))
+
+
 def _pending_state(claim):
     return {
         "task_id": claim["task_id"],
@@ -167,6 +201,7 @@ def register_agent_queue_tasks(
                 claim = claim_next_agent_session_message(
                     str(session_id or ""),
                     prepare_runtime_checkpoint=create_agent_runtime_checkpoint,
+                    dispatch_allowed=_session_dispatch_allowed,
                 )
             except Exception as exc:
                 # checkpoint 发布、DB claim 或连接故障都不能把仍在 MySQL

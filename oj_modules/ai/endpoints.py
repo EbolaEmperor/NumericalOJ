@@ -766,9 +766,10 @@ def _status_error(status_code):
     return LLMEndpointRequestError(message, status_code=status or None)
 
 
-def _post(endpoint, payload, *, timeout, stream):
+def _post(endpoint, payload, *, timeout, stream, request_post=None):
+    post = request_post or requests.post
     try:
-        response = requests.post(
+        response = post(
             endpoint_request_url(endpoint, "chat"),
             headers=_request_headers(endpoint),
             json=payload,
@@ -1099,6 +1100,7 @@ def call_chat(
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
+    request_post=None,
 ):
     """调用文本/全模态端点，返回统一的消息、工具调用与 usage。"""
 
@@ -1116,7 +1118,13 @@ def call_chat(
         max_tokens=max_tokens,
         stream=use_stream,
     )
-    response = _post(use_endpoint, payload, timeout=timeout_value, stream=use_stream)
+    response = _post(
+        use_endpoint,
+        payload,
+        timeout=timeout_value,
+        stream=use_stream,
+        request_post=request_post,
+    )
     content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
     if use_stream and "text/event-stream" in content_type:
         if use_endpoint.protocol is LLMProtocol.OPENAI:
@@ -1144,6 +1152,7 @@ def call_text(
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
+    request_post=None,
 ):
     messages = []
     if system_prompt:
@@ -1159,6 +1168,7 @@ def call_text(
         timeout=timeout,
         stream=stream,
         on_text_delta=on_text_delta,
+        request_post=request_post,
     )
 
 
@@ -1173,6 +1183,7 @@ def call_vision(
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
+    request_post=None,
 ):
     """调用视觉/全模态端点；图片可为远程 URL、Data URL 或 :class:`LLMImage`。"""
 
@@ -1201,7 +1212,13 @@ def call_vision(
         max_tokens=max_tokens,
         stream=use_stream,
     )
-    response = _post(use_endpoint, payload, timeout=timeout_value, stream=use_stream)
+    response = _post(
+        use_endpoint,
+        payload,
+        timeout=timeout_value,
+        stream=use_stream,
+        request_post=request_post,
+    )
     content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
     if use_stream and "text/event-stream" in content_type:
         if use_endpoint.protocol is LLMProtocol.OPENAI:
@@ -1217,7 +1234,14 @@ def call_vision(
     return result
 
 
-def create_embeddings(endpoint, texts, *, timeout=120, dimensions=None):
+def create_embeddings(
+    endpoint,
+    texts,
+    *,
+    timeout=120,
+    dimensions=None,
+    request_post=None,
+):
     """通过 OpenAI-compatible ``/embeddings`` 创建向量。"""
 
     use_endpoint = _coerce_endpoint(endpoint)
@@ -1233,7 +1257,7 @@ def create_embeddings(endpoint, texts, *, timeout=120, dimensions=None):
     if dimensions is not None:
         payload["dimensions"] = _positive_int(dimensions, "dimensions", allow_none=False)
     try:
-        response = requests.post(
+        response = (request_post or requests.post)(
             endpoint_request_url(use_endpoint, "embedding"),
             headers=_request_headers(use_endpoint),
             json=payload,
@@ -1286,7 +1310,7 @@ def _probe_image():
     return LLMImage.from_bytes(png, "image/png")
 
 
-def probe_endpoint(endpoint, *, timeout=30):
+def probe_endpoint(endpoint, *, timeout=30, request_post=None):
     """按声明类别执行一次真实、最小且不写外部状态的连通性测试。"""
 
     use_endpoint = _coerce_endpoint(endpoint)
@@ -1298,6 +1322,7 @@ def probe_endpoint(endpoint, *, timeout=30):
                 "只回复 OK。",
                 max_tokens=_PROBE_MAX_TOKENS,
                 timeout=timeout,
+                request_post=request_post,
             )
             if not result.text.strip():
                 raise LLMEndpointResponseError("文本端点未返回可用文本。")
@@ -1308,6 +1333,7 @@ def probe_endpoint(endpoint, *, timeout=30):
                 [_probe_image()],
                 max_tokens=_PROBE_MAX_TOKENS,
                 timeout=timeout,
+                request_post=request_post,
             )
             if not result.text.strip():
                 raise LLMEndpointResponseError("视觉端点未返回可用文本。")
@@ -1316,6 +1342,7 @@ def probe_endpoint(endpoint, *, timeout=30):
                 use_endpoint,
                 ["NumericalOJ endpoint connectivity probe"],
                 timeout=timeout,
+                request_post=request_post,
             )
             if not result.vectors or not result.vectors[0]:
                 raise LLMEndpointResponseError("Embedding 端点未返回可用向量。")
@@ -1344,7 +1371,7 @@ def probe_endpoint(endpoint, *, timeout=30):
     )
 
 
-def test_endpoint_candidate(candidate, *, timeout=30):
+def test_endpoint_candidate(candidate, *, timeout=30, request_post=None):
     """可直接注入动态配置服务的同步 tester。
 
     ``candidate`` 使用配置层的普通字典结构；返回值故意只包含测试状态、
@@ -1353,7 +1380,11 @@ def test_endpoint_candidate(candidate, *, timeout=30):
 
     started = time.monotonic()
     try:
-        return probe_endpoint(candidate, timeout=timeout).to_tester_result()
+        return probe_endpoint(
+            candidate,
+            timeout=timeout,
+            request_post=request_post,
+        ).to_tester_result()
     except LLMEndpointError as exc:
         message = str(exc)
     except Exception:

@@ -12,9 +12,16 @@ EXPECTED_TITLE_SYSTEM_PROMPT = (
 )
 
 
-def test_title_generation_uses_selected_endpoint_once_and_sanitizes_output(
+def test_title_generation_uses_lowest_input_price_and_sanitizes_output(
         monkeypatch):
-    endpoint = {"id": 8, "model": "model-a"}
+    cheap = {
+        "id": 8, "model": "cheap", "category": "text", "api_key": "secret",
+        "input_price_per_million": "0.5",
+    }
+    expensive = {
+        "id": 9, "model": "expensive", "category": "omni", "api_key": "secret",
+        "input_price_per_million": "2",
+    }
     raw_message = "请整理附件\n并保留首轮消息的原始换行"
     calls = []
 
@@ -23,44 +30,91 @@ def test_title_generation_uses_selected_endpoint_once_and_sanitizes_output(
         return SimpleNamespace(text="**任务标题：整理 MATLAB 数值实验附件并输出总结。**\n解释")
 
     monkeypatch.setattr(titles, "call_text", call_text)
+    monkeypatch.setattr(
+        titles,
+        "list_llm_endpoints",
+        lambda **_kwargs: [expensive, cheap],
+    )
 
     result = titles.generate_agent_title(
-        endpoint,
         raw_message,
         fallback="回退标题",
     )
 
     assert result == "整理 MATLAB 数值实验附件并输出总结"
     assert len(calls) == 1
-    assert calls[0][0] is endpoint
+    assert calls[0][0] is cheap
     assert calls[0][1] == raw_message
     assert calls[0][2]["system_prompt"] == EXPECTED_TITLE_SYSTEM_PROMPT
     assert calls[0][2]["temperature"] == 0
-    assert calls[0][2]["max_tokens"] == 32768
+    assert calls[0][2]["max_tokens"] == 64
+    assert calls[0][2]["timeout"] == 30
 
 
-def test_title_generation_failure_preserves_deterministic_fallback(
+def test_title_generation_retries_second_cheapest_then_uses_fifteen_characters(
         monkeypatch):
+    endpoints = [
+        {
+            "id": 8, "category": "text", "api_key": "a",
+            "input_price_per_million": "1",
+        },
+        {
+            "id": 9, "category": "text", "api_key": "b",
+            "input_price_per_million": "2",
+        },
+        {
+            "id": 10, "category": "text", "api_key": "c",
+            "input_price_per_million": "3",
+        },
+    ]
+    calls = []
+    monkeypatch.setattr(titles, "list_llm_endpoints", lambda **_kwargs: endpoints)
+
+    def fail(endpoint, *_args, **_kwargs):
+        calls.append(endpoint["id"])
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(titles, "call_text", fail)
+
+    result = titles.generate_agent_title(
+        "一二三四五六七八九十甲乙丙丁戊己庚辛",
+    )
+
+    assert calls == [8, 9]
+    assert result == "一二三四五六七八九十甲乙丙丁戊"
+
+
+def test_free_title_generation_has_bounded_input(monkeypatch):
+    endpoint = {
+        "id": 8,
+        "category": "text",
+        "api_key": "secret",
+        "input_price_per_million": "1",
+    }
+    calls = []
+    monkeypatch.setattr(titles, "list_llm_endpoints", lambda **_kwargs: [endpoint])
     monkeypatch.setattr(
         titles,
         "call_text",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+        lambda selected, prompt, **kwargs: (
+            calls.append((selected, prompt, kwargs))
+            or SimpleNamespace(text="有界标题")
+        ),
     )
 
-    result = titles.generate_agent_title(
-        {"id": 8},
-        "prompt",
-        fallback="这是一个很长很长的任务回退标题文本",
-    )
-
-    assert result == "这是一个很长很长的任务回退标题文本"
+    assert titles.generate_agent_title("任" * 5000) == "有界标题"
+    assert len(calls[0][1]) == 4000
+    assert calls[0][2]["max_tokens"] == 64
 
 
 def test_initial_title_claim_prevents_duplicate_llm_calls_on_redelivery(
     monkeypatch,
 ):
     stored = {"title": ""}
-    endpoint = {"id": 8, "model": "same-selected-node"}
+    endpoint = {
+        "id": 8, "model": "global-cheapest", "category": "text",
+        "api_key": "secret", "input_price_per_million": "1",
+    }
     first_user_message = "用 MATLAB 设计自适应积分题"
     calls = []
 
@@ -71,6 +125,11 @@ def test_initial_title_claim_prevents_duplicate_llm_calls_on_redelivery(
             "title": stored["title"],
             "is_legacy": False,
         },
+    )
+    monkeypatch.setattr(
+        titles,
+        "list_llm_endpoints",
+        lambda **_kwargs: [endpoint],
     )
     monkeypatch.setattr(
         agent_sessions,
@@ -103,7 +162,6 @@ def test_initial_title_claim_prevents_duplicate_llm_calls_on_redelivery(
 
     first = titles.generate_initial_agent_session_title(
         "session-1",
-        endpoint,
         (
             f"{first_user_message}\n\n"
             "用户随本轮消息上传了以下附件，文件已经放入 workspace。"
@@ -112,7 +170,6 @@ def test_initial_title_claim_prevents_duplicate_llm_calls_on_redelivery(
     )
     redelivery = titles.generate_initial_agent_session_title(
         "session-1",
-        endpoint,
         "处理任务",
         fallback="确定性回退",
     )
@@ -151,7 +208,6 @@ def test_missing_first_turn_message_does_not_send_runtime_prompt(monkeypatch):
 
     result = titles.generate_initial_agent_session_title(
         "session-missing-turn",
-        {"id": 9},
         "原消息\n\n运行期追加的附件路径",
         fallback="安全回退标题",
     )

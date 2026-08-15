@@ -168,24 +168,24 @@ def test_solve_launch_persists_outbox_and_wakes_dispatcher(
         "url_for",
         lambda endpoint, **kwargs: (
             url_calls.append((endpoint, kwargs))
-            or f"/admin/agent_tasks/{kwargs['session_id']}"
+            or f"/agent/tasks/{kwargs['session_id']}"
         ),
     )
 
     app = _app("numoj_session")
     with app.test_request_context(
-        "/admin/agent_solve_problem/9",
+        "/agent/problems/9/solve",
         method="POST",
         json={"harness": "codex", "endpoint_id": 12},
         environ_overrides={"HTTP_COOKIE": "numoj_session=signed-session-value"},
     ):
-        response = routes.admin_agent_solve_problem(9)
+        response = routes.agent_solve_problem(9)
 
     payload = response.get_json()
     assert payload["success"] is True
-    assert payload["view_url"] == f"/admin/agent_tasks/{payload['task_id']}"
+    assert payload["view_url"] == f"/agent/tasks/{payload['task_id']}"
     assert url_calls[-1] == (
-        "problem_core.admin_agent_task_detail",
+        "problem_core.agent_task_detail",
         {"session_id": payload["task_id"]},
     )
     assert saved == [(7, "codex", 12)]
@@ -278,13 +278,13 @@ def test_testdata_launch_creates_admin_session_with_standard_solution_attachment
         "url_for",
         lambda endpoint, **kwargs: (
             url_calls.append((endpoint, kwargs))
-            or f"/admin/agent_tasks/{kwargs['session_id']}"
+            or f"/agent/tasks/{kwargs['session_id']}"
         ),
     )
 
     app = _app()
     with app.test_request_context(
-        "/admin/agent_generate_testdata/9",
+        "/agent/problems/9/generate-testdata",
         method="POST",
         data={
             "harness": "pi",
@@ -299,13 +299,13 @@ def test_testdata_launch_creates_admin_session_with_standard_solution_attachment
         content_type="multipart/form-data",
         environ_overrides={"HTTP_COOKIE": "session=signed-session-value"},
     ):
-        response = routes.admin_agent_generate_testdata(9)
+        response = routes.agent_generate_testdata(9)
 
     payload = response.get_json()
     assert payload["success"] is True
-    assert payload["view_url"] == f"/admin/agent_tasks/{payload['task_id']}"
+    assert payload["view_url"] == f"/agent/tasks/{payload['task_id']}"
     assert url_calls[-1] == (
-        "problem_core.admin_agent_task_detail",
+        "problem_core.agent_task_detail",
         {"session_id": payload["task_id"]},
     )
     assert sessions == [{
@@ -378,8 +378,8 @@ def test_agent_task_list_redirects_existing_task_to_session_detail(monkeypatch):
         routes,
         "url_for",
         lambda endpoint, **kwargs: (
-            f"/admin/agent_tasks/{kwargs['session_id']}"
-            if endpoint == "problem_core.admin_agent_task_detail"
+            f"/agent/tasks/{kwargs['session_id']}"
+            if endpoint == "problem_core.agent_task_detail"
             else "/unexpected"
         ),
     )
@@ -394,7 +394,7 @@ def test_agent_task_list_redirects_existing_task_to_session_detail(monkeypatch):
     with app.test_request_context("/admin/agent_tasks?task_id=task-1"):
         response = routes.admin_agent_tasks()
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/admin/agent_tasks/session-1")
+    assert response.headers["Location"].endswith("/agent/tasks/session-1")
     assert rendered == []
 
     with app.test_request_context("/admin/agent_tasks?task_id=missing"):
@@ -411,9 +411,9 @@ def test_legacy_agent_run_page_route_is_removed():
     rules = {rule.rule for rule in app.url_map.iter_rules()}
 
     assert "/admin/agent_run/<task_id>" not in rules
-    assert "/admin/agent_run_status/<task_id>" in rules
-    assert "/admin/agent_run_stream/<task_id>" in rules
-    assert "/admin/agent_run_cancel/<task_id>" in rules
+    assert "/agent/runs/<task_id>/state" in rules
+    assert "/agent/runs/<task_id>/stream" in rules
+    assert "/agent/runs/<task_id>/cancel" in rules
 
 
 def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):

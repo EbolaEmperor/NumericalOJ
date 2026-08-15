@@ -8,6 +8,8 @@ description: A skill to use NumericalOJ/NumOJ. Use when the user asks you to do 
 Use the bundled script `scripts/numoj_user.py` for NumOJ user workflows. Resolve
 it relative to this `SKILL.md`, save that resolved absolute path as
 `NUMOJ_USER_CLI`, and invoke it without changing the current working directory:
+Never `cd` into the skill directory; keep the task workspace as the current
+working directory and call the CLI by its resolved absolute path.
 
 ```bash
 NUMOJ_USER_CLI=/absolute/path/to/numoj-user/scripts/numoj_user.py

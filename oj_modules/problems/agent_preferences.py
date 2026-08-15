@@ -5,6 +5,7 @@ from __future__ import annotations
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.problems.agent_launch import (
     AgentLaunchValidationError,
+    normalize_launch_endpoint_ref,
     normalize_launch_harness,
 )
 
@@ -42,9 +43,14 @@ def _preference_from_row(row):
     preference = dict(row)
     preference["user_id"] = _normalize_user_id(preference["user_id"])
     preference["harness"] = normalize_launch_harness(preference["harness"])
+    source = str(preference.get("endpoint_source") or "global").strip().lower()
+    if source not in {"global", "user"}:
+        raise AgentLaunchValidationError("LLM 节点来源无效")
+    preference["endpoint_source"] = source
     preference["endpoint_id"] = _normalize_endpoint_id(
         preference["endpoint_id"]
     )
+    preference["endpoint_ref"] = f"{source}:{preference['endpoint_id']}"
     return preference
 
 
@@ -60,6 +66,7 @@ def get_agent_launch_preference(user_id):
                 SELECT
                     user_id,
                     harness,
+                    endpoint_source,
                     endpoint_id,
                     created_at,
                     updated_at
@@ -73,12 +80,15 @@ def get_agent_launch_preference(user_id):
         conn.close()
 
 
-def save_agent_launch_preference(user_id, harness, endpoint_id):
+def save_agent_launch_preference(user_id, harness, endpoint_ref):
     """原子保存并返回某用户统一的 Agent 启动偏好。"""
 
     user_id = _normalize_user_id(user_id)
     harness = normalize_launch_harness(harness)
-    endpoint_id = _normalize_endpoint_id(endpoint_id)
+    try:
+        endpoint_source, endpoint_id = normalize_launch_endpoint_ref(endpoint_ref)
+    except AgentLaunchValidationError:
+        raise AgentLaunchValidationError("LLM 节点 ID 无效") from None
 
     conn = get_db_connection()
     try:
@@ -88,20 +98,23 @@ def save_agent_launch_preference(user_id, harness, endpoint_id):
                 INSERT INTO agent_launch_preferences (
                     user_id,
                     harness,
+                    endpoint_source,
                     endpoint_id
-                ) VALUES (%s, %s, %s)
+                ) VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     harness=VALUES(harness),
+                    endpoint_source=VALUES(endpoint_source),
                     endpoint_id=VALUES(endpoint_id),
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (user_id, harness, endpoint_id),
+                (user_id, harness, endpoint_source, endpoint_id),
             )
             cursor.execute(
                 """
                 SELECT
                     user_id,
                     harness,
+                    endpoint_source,
                     endpoint_id,
                     created_at,
                     updated_at

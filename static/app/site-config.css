@@ -605,6 +605,46 @@
   white-space: nowrap;
 }
 
+.site-config-endpoint-prices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 13px 0 0;
+  overflow: hidden;
+  border: 1px solid var(--cfg-line);
+  border-radius: 5px;
+  background: var(--cfg-line);
+}
+
+.site-config-endpoint-prices > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 7px 8px;
+  background: #fafafa;
+}
+
+.site-config-endpoint-prices dt,
+.site-config-endpoint-prices dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-config-endpoint-prices dt {
+  color: var(--cfg-ink-4);
+  font: 650 7px/1 var(--cfg-mono);
+  letter-spacing: .06em;
+}
+
+.site-config-endpoint-prices dd {
+  color: var(--cfg-ink-2);
+  font: 650 9px/1.1 var(--cfg-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .site-config-endpoint-foot {
   display: flex;
   min-width: 0;
@@ -677,6 +717,65 @@
 }
 
 /* Feature bindings */
+.site-config-agent-access {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 38px minmax(0, 1fr) 112px;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--cfg-line);
+  border-top: 2px solid var(--cfg-orange);
+  border-radius: 5px;
+  background:
+    linear-gradient(90deg, var(--cfg-orange-soft), transparent 42%),
+    #fff;
+}
+
+.site-config-agent-access-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--cfg-orange-ink);
+  font-size: 12px;
+}
+
+.site-config-agent-access-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.site-config-agent-access-copy p,
+.site-config-agent-access-copy h3,
+.site-config-agent-access-copy span { margin: 0; }
+
+.site-config-agent-access-copy p {
+  color: var(--cfg-orange-ink);
+  font: 650 8px/1.2 var(--cfg-mono);
+  letter-spacing: .1em;
+}
+
+.site-config-agent-access-copy h3 {
+  color: var(--cfg-ink);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.site-config-agent-access-copy span {
+  overflow: hidden;
+  color: var(--cfg-ink-3);
+  font-size: 9px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .site-config-feature-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1306,6 +1405,15 @@
 
   .site-config-price-row {
     grid-template-columns: 1fr;
+  }
+
+  .site-config-agent-access {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .site-config-agent-access > .site-config-switch {
+    width: 100%;
+    grid-column: 1 / -1;
   }
 
   .site-config-form-grid label.wide {

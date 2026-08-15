@@ -110,6 +110,9 @@ _CUSTOM_BLOCKED_EXACT_ROUTES = frozenset({
     "/change_password",
 })
 _CUSTOM_BLOCKED_ROUTE_PREFIXES = (
+    "/agent/tasks",
+    "/agent/problems",
+    "/agent/runs",
     "/admin/agent_tasks",
     "/admin/agent_solve_problem",
     "/admin/agent_generate_testdata",
