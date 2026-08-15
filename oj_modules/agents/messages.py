@@ -958,6 +958,9 @@ def _claim_payload(session, message, turn_index, *, newly_promoted=False):
         "requested_by": session.get("requested_by"),
         "access_role": str(session.get("access_role") or "user"),
         "harness": session.get("harness"),
+        "reasoning_effort": str(
+            session.get("reasoning_effort") or "default"
+        ).strip().lower(),
         "endpoint_source": str(session.get("endpoint_source") or "global"),
         "endpoint_id": session.get("endpoint_id"),
         "endpoint_revision": session.get("endpoint_revision"),
@@ -1006,7 +1009,8 @@ def claim_next_agent_session_message(
                 SELECT s.current_task_id, s.status, s.turn_count, s.queue_paused,
                        s.fresh_native_session_pending,
                        s.task_kind, s.problem_id, s.requested_by, s.access_role,
-                       s.harness, s.endpoint_source, s.endpoint_id,
+                       s.harness, s.reasoning_effort,
+                       s.endpoint_source, s.endpoint_id,
                        s.endpoint_revision,
                        s.endpoint_model, s.native_session_id,
                        previous.base_runtime_checkpoint_id AS

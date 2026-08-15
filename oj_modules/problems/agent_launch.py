@@ -37,6 +37,27 @@ ALLOWED_AGENT_ACCESS_ROLES = (
 # 普通 Agent 的四种 harness 共用同一上下文窗口。宿主运行参数与详情页
 # 展示必须引用同一个值，避免 UI 显示的占比和容器实际限制不一致。
 AGENT_CONTEXT_WINDOW_TOKENS = 128_000
+AGENT_DEFAULT_REASONING_EFFORT = "high"
+
+_DEFAULT_REASONING_EFFORT = "default"
+_REASONING_EFFORT_OPTIONS_BY_HARNESS = {
+    "pi": (
+        ("off", "关闭"),
+        ("minimal", "最少"),
+        ("low", "低"),
+        ("medium", "中"),
+        ("high", "高"),
+        ("xhigh", "极高"),
+        ("max", "最大"),
+    ),
+    "claude_code": (
+        ("low", "低"),
+        ("medium", "中"),
+        ("high", "高"),
+        ("xhigh", "极高"),
+        ("max", "最大"),
+    ),
+}
 
 _HARNESS_LABELS = {
     "claude_code": "Claude Code",
@@ -125,6 +146,53 @@ def normalize_launch_harness(value):
     if raw not in ALLOWED_AGENT_HARNESSES or harness != raw:
         raise AgentLaunchValidationError("Agent harness 无效")
     return harness
+
+
+def reasoning_effort_options_by_harness():
+    """返回前端可展示的 Harness 原生思考深度选项。"""
+
+    return {
+        harness: [
+            {"value": value, "label": label}
+            for value, label in options
+        ]
+        for harness, options in _REASONING_EFFORT_OPTIONS_BY_HARNESS.items()
+    }
+
+
+def default_reasoning_effort_for_harness(harness):
+    """新建网页会话的缺省深度；不支持该能力的 Harness 沿用自身默认。"""
+
+    harness = normalize_launch_harness(harness)
+    if harness in _REASONING_EFFORT_OPTIONS_BY_HARNESS:
+        return AGENT_DEFAULT_REASONING_EFFORT
+    return _DEFAULT_REASONING_EFFORT
+
+
+def normalize_agent_reasoning_effort(
+    value,
+    harness,
+    *,
+    default=_DEFAULT_REASONING_EFFORT,
+):
+    """校验会话冻结的原生 Harness 思考深度。"""
+
+    harness = normalize_launch_harness(harness)
+    effort = str(value or "").strip().lower()
+    if not effort:
+        effort = str(default or _DEFAULT_REASONING_EFFORT).strip().lower()
+    if effort == _DEFAULT_REASONING_EFFORT:
+        return effort
+    allowed = {
+        option_value
+        for option_value, _label in _REASONING_EFFORT_OPTIONS_BY_HARNESS.get(
+            harness,
+            (),
+        )
+    }
+    if effort not in allowed:
+        raise AgentLaunchValidationError("所选 Harness 不支持该思考深度")
+    return effort
 
 
 def normalize_agent_access_role(value, *, task_kind=AGENT_TASK_CUSTOM):
@@ -335,6 +403,7 @@ __all__ = [
     "AGENT_ACCESS_ROLE_ADMIN",
     "AGENT_ACCESS_ROLE_USER",
     "AGENT_CONTEXT_WINDOW_TOKENS",
+    "AGENT_DEFAULT_REASONING_EFFORT",
     "AGENT_TASK_CUSTOM",
     "AGENT_TASK_SOLVE",
     "AGENT_TASK_TESTDATA",
@@ -346,13 +415,16 @@ __all__ = [
     "build_solution_agent_prompt",
     "build_testdata_agent_prompt",
     "endpoint_supports_harness",
+    "default_reasoning_effort_for_harness",
     "harness_options",
     "list_launch_endpoints_by_harness",
     "normalize_agent_access_role",
+    "normalize_agent_reasoning_effort",
     "normalize_agent_task_kind",
     "normalize_launch_endpoint_ref",
     "normalize_launch_harness",
     "resolve_launch_endpoint",
+    "reasoning_effort_options_by_harness",
     "skill_for_agent_task",
     "token_pricing_from_endpoint",
     "validate_launch_endpoint_revision",

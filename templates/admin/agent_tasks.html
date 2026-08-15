@@ -20,6 +20,8 @@
 {% set preferred_harness = preference.harness|default('', true) %}
 {% set preferred_endpoint = preference.endpoint_id|default('', true)|string %}
 {% set preferred_role = preference.access_role|default('user', true) %}
+{% set reasoning_effort_mapping = reasoning_efforts_by_harness|default({}, true) %}
+{% set reasoning_effort_options = reasoning_effort_mapping.get(preferred_harness, []) %}
 {% set harness_labels = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'} %}
 {% set quota_summary = agent_quota_summary|default({}, true) %}
 {% set agent_is_admin = user and user.is_admin == 1 %}
@@ -77,6 +79,16 @@
             ) }}
           </div>
 
+          <div class="agent-composer-choice agent-composer-choice--effort"
+               data-agent-reasoning-effort-choice
+               {% if not reasoning_effort_options %}hidden{% endif %}>
+            {{ choice_picker(
+              'agentReasoningEffort', 'reasoning_effort', 'high',
+              '高', 'fa-brain',
+              'agent-choice agent-choice--effort', not reasoning_effort_options, true, false, '选择思考深度'
+            ) }}
+          </div>
+
           {% if agent_is_admin %}
           <div class="agent-composer-choice agent-composer-choice--role">
             {{ choice_picker(
@@ -120,6 +132,7 @@
 
     <script type="application/json" data-agent-harnesses-json>{{ harnesses|default([], true)|tojson }}</script>
     <script type="application/json" data-agent-endpoints-json>{{ endpoints_by_harness|default({}, true)|tojson }}</script>
+    <script type="application/json" data-agent-reasoning-efforts-json>{{ reasoning_efforts_by_harness|default({}, true)|tojson }}</script>
     <script type="application/json" data-agent-preference-json>{{ preference|default({}, true)|tojson }}</script>
   </section>
 

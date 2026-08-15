@@ -21,6 +21,7 @@ from oj_modules.db_services import get_user_by_username
 from oj_modules.problems.agent_launch import (
     AGENT_TASK_CUSTOM,
     normalize_agent_access_role,
+    normalize_agent_reasoning_effort,
     normalize_agent_task_kind,
     normalize_launch_harness,
     resolve_launch_endpoint,
@@ -72,6 +73,7 @@ def _initial_generic_state(
         "task_kind": AGENT_TASK_CUSTOM,
         "access_role": str(access_role or ""),
         "harness": str(harness or ""),
+        "reasoning_effort": "default",
         "endpoint_id": endpoint_id,
         "status": "Running",
         "message": "通用 Agent 启动中",
@@ -407,9 +409,14 @@ def register_agent_run_turn_task(celery_app):
                 normalized_role,
                 task_kind=session_task_kind,
             )
+            normalized_reasoning_effort = normalize_agent_reasoning_effort(
+                session.get("reasoning_effort"),
+                normalized_harness,
+            )
         except Exception as exc:
             return _generic_failure(state, str(exc) or "Agent 会话状态无效")
         state["native_session_id"] = normalized_resume_session_id
+        state["reasoning_effort"] = normalized_reasoning_effort
 
         endpoint_source = str(
             session.get("endpoint_source") or "global"
@@ -483,6 +490,7 @@ def register_agent_run_turn_task(celery_app):
             "endpoint_id": int(endpoint["id"]),
             "endpoint_source": endpoint_source,
             "endpoint_model": str(endpoint.get("model") or ""),
+            "reasoning_effort": normalized_reasoning_effort,
         })
         _update_agent_state(
             state,
@@ -557,6 +565,7 @@ def register_agent_run_turn_task(celery_app):
                 problem_id=session.get("problem_id"),
                 requested_by=requested_by,
                 harness=normalized_harness,
+                reasoning_effort=normalized_reasoning_effort,
                 endpoint=endpoint,
                 session_cookie=session_cookie,
                 session_cookie_name=session_cookie_name,

@@ -780,6 +780,7 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
         "problem_title": None,
         "access_role": "user",
         "harness": "pi",
+        "reasoning_effort": "high",
         "endpoint_id": 8,
         "endpoint_source": "global",
         "endpoint_revision": 4,
@@ -844,6 +845,7 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
     )
 
     def run_harness(**kwargs):
+        assert kwargs["reasoning_effort"] == "high"
         result = kwargs["usage_callback"]({
             "source": "pi",
             "id": "request-1",
@@ -881,4 +883,5 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
     assert result["success"] is True
     assert len(charged) == 1
     assert charged[0]["usage_event_id"] == "request-1"
+    assert snapshots[-1]["reasoning_effort"] == "high"
     assert snapshots[-1]["session_charged_amount_rmb"] == "1.5"

@@ -372,6 +372,88 @@ def test_runtime_env_does_not_derive_harness_settings_from_endpoint_url():
     assert "AJ_PI_THINKING_FORMAT" not in env
 
 
+@pytest.mark.parametrize(
+    ("harness", "reasoning_effort"),
+    [("pi", "minimal"), ("claude_code", "xhigh")],
+)
+def test_runtime_env_injects_frozen_native_reasoning_effort(
+    harness,
+    reasoning_effort,
+):
+    env = _runtime_env(
+        _endpoint(),
+        harness,
+        "custom",
+        reasoning_effort=reasoning_effort,
+    )
+
+    assert env["AJ_EFFORT"] == reasoning_effort
+
+
+def test_runtime_env_omits_reasoning_effort_for_legacy_default():
+    endpoint = _endpoint()
+    endpoint["thinking_enabled"] = False
+    endpoint["thinking_format"] = "none"
+    env = _runtime_env(endpoint, "pi", "custom")
+
+    assert "AJ_EFFORT" not in env
+    assert env["AJ_ENDPOINT_THINKING_ENABLED"] == "0"
+    assert env["AJ_ENDPOINT_THINKING_FORMAT"] == "none"
+
+
+@pytest.mark.parametrize(
+    (
+        "harness",
+        "reasoning_effort",
+        "protocol",
+        "endpoint_enabled",
+        "expected_enabled",
+        "expected_format",
+    ),
+    [
+        ("pi", "off", "openai", True, "0", "none"),
+        ("pi", "high", "openai", False, "1", "enable_thinking"),
+        ("pi", "minimal", "anthropic", False, "1", "thinking_type"),
+        ("claude_code", "xhigh", "anthropic", False, "1", "thinking_type"),
+    ],
+)
+def test_runtime_env_reasoning_effort_overrides_endpoint_thinking_switch(
+    harness,
+    reasoning_effort,
+    protocol,
+    endpoint_enabled,
+    expected_enabled,
+    expected_format,
+):
+    endpoint = _endpoint()
+    endpoint["protocol"] = protocol
+    endpoint["thinking_enabled"] = endpoint_enabled
+    endpoint["thinking_format"] = (
+        "thinking_type" if protocol == "anthropic" else "enable_thinking"
+    ) if endpoint_enabled else "none"
+
+    env = _runtime_env(
+        endpoint,
+        harness,
+        "custom",
+        reasoning_effort=reasoning_effort,
+    )
+
+    assert env["AJ_EFFORT"] == reasoning_effort
+    assert env["AJ_ENDPOINT_THINKING_ENABLED"] == expected_enabled
+    assert env["AJ_ENDPOINT_THINKING_FORMAT"] == expected_format
+
+
+def test_runtime_env_rejects_reasoning_effort_unsupported_by_harness():
+    with pytest.raises(ValueError, match="不支持该思考深度"):
+        _runtime_env(
+            _endpoint(),
+            "claude_code",
+            "custom",
+            reasoning_effort="minimal",
+        )
+
+
 def test_run_exits_before_workspace_creation_when_already_canceled(
     monkeypatch,
     tmp_path,

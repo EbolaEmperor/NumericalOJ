@@ -191,6 +191,8 @@
   flex: 0 1 auto;
 }
 
+.agent-composer-choice[hidden] { display: none; }
+
 .agent-choice .rk-choice-trigger {
   min-height: 32px;
   padding: 6px 9px;
@@ -220,6 +222,7 @@
 }
 
 .agent-choice--endpoint .rk-choice-menu { width: 290px; }
+.agent-choice--effort .rk-choice-menu { width: 184px; }
 .agent-choice--role .rk-choice-menu { width: 280px; }
 
 .agent-composer-choice,
@@ -233,6 +236,7 @@
 
 .agent-composer-choice--harness { max-width: 150px; }
 .agent-composer-choice--endpoint { max-width: 260px; }
+.agent-composer-choice--effort { max-width: 108px; }
 .agent-composer-choice--role { max-width: 160px; }
 
 .agent-choice .rk-choice-trigger {
@@ -612,6 +616,13 @@
     right: auto;
     left: 50%;
     width: min(290px, calc(100vw - 32px));
+    transform: translateX(-50%);
+  }
+
+  .agent-choice--effort .rk-choice-menu {
+    right: auto;
+    left: 50%;
+    width: min(184px, calc(100vw - 32px));
     transform: translateX(-50%);
   }
 
