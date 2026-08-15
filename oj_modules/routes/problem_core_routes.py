@@ -636,7 +636,7 @@ def _agent_token_usage_from_state(state):
 
 
 class _AgentHistoricalTokenUsages(list):
-    """历史用量及请求 task 是否仍位于当前可见会话分支。"""
+    """历史用量及请求 task 是否仍属于这条会话 lineage。"""
 
     def __init__(self, values=(), *, current_task_visible=True):
         super().__init__(values)
@@ -644,12 +644,15 @@ class _AgentHistoricalTokenUsages(list):
 
 
 def _load_agent_historical_token_usages(session_id, current_task_id):
-    """为 SSE/状态响应一次性读取历史轮次的规范任务轨迹。"""
+    """读取整场会话用量；重试替换的轮次也属于实际消耗。"""
 
     current_task_id = str(current_task_id or '').strip()
     usages = []
     current_task_visible = False
-    for turn in get_agent_session_turns(session_id):
+    for turn in get_agent_session_turns(
+        session_id,
+        include_superseded=True,
+    ):
         task_id = str(turn.get('task_id') or '').strip()
         if task_id == current_task_id:
             current_task_visible = True
@@ -821,8 +824,8 @@ def _agent_state_with_loaded_session_token_usage(state):
             )
         except Exception:
             # 用量展示不能阻断状态接口。历史读取失败时，只在数据层仍能确认
-            # 请求 task 是会话当前轮次的情况下保留其实时统计；否则 fail
-            # closed，避免已被 retry supersede 的旧轮次重新计入成本。
+            # 请求 task 属于该会话时保留它自己的实时统计；其它历史轮次待
+            # 下一次成功读取后再补齐。
             logger.warning(
                 '读取 Agent 会话历史用量失败',
                 extra={
@@ -838,9 +841,6 @@ def _agent_state_with_loaded_session_token_usage(state):
                     isinstance(owning_session, dict)
                     and str(owning_session.get('session_id') or '').strip()
                     == session_id
-                    and str(
-                        owning_session.get('current_task_id') or ''
-                    ).strip() == current_task_id
                 )
             except Exception:
                 logger.warning(
@@ -1189,7 +1189,7 @@ def _agent_state_for_response(
 
 
 def _hydrate_agent_state_trace_if_needed(state):
-    """Redis 快照已含 worker 投影的轨迹时避免再次读取整个 journal。"""
+    """Redis 快照已有可展示轨迹时避免再次读取整个 journal。"""
 
     if not isinstance(state, dict):
         return hydrate_agent_run_snapshot(state)
@@ -1208,6 +1208,7 @@ def _hydrate_agent_state_trace_if_needed(state):
         expected_status in {'running', 'pending'}
         and isinstance(trace, dict)
         and trace.get('status') == expected_status
+        and bool(_agent_trace_messages(trace))
     ):
         snapshot = dict(state)
         snapshot.pop('events', None)
@@ -1873,6 +1874,7 @@ def agent_run_stream(task_id):
             usage.get("input_cached_tokens"),
             usage.get("output_tokens"),
             usage.get("cost_rmb"),
+            snapshot.get("session_charged_amount_rmb"),
             tuple(
                 (item.get("path"), item.get("size"))
                 for item in files if isinstance(item, dict)

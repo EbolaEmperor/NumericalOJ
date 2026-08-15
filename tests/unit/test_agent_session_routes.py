@@ -1441,8 +1441,8 @@ def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_co
     assert usage["cost_rmb"] == "0.25"
 
 
-def test_superseded_retry_source_is_excluded_from_session_usage(monkeypatch):
-    """重试后只统计当前可见分支，不能把被替代轮次重新加回成本。"""
+def test_superseded_retry_source_remains_in_session_usage(monkeypatch):
+    """重试只替换消息历史；实际发生过的模型用量继续累计。"""
 
     retry_usage = {
         "source": "codex",
@@ -1456,9 +1456,12 @@ def test_superseded_retry_source_is_excluded_from_session_usage(monkeypatch):
     monkeypatch.setattr(
         routes,
         "get_agent_session_turns",
-        lambda session_id: (
-            turn_calls.append(session_id)
-            or [{"task_id": "turn-retry"}]
+        lambda session_id, include_superseded=False: (
+            turn_calls.append((session_id, include_superseded))
+            or [
+                {"task_id": "turn-superseded"},
+                {"task_id": "turn-retry"},
+            ]
         ),
     )
     monkeypatch.setattr(
@@ -1473,23 +1476,28 @@ def test_superseded_retry_source_is_excluded_from_session_usage(monkeypatch):
 
     historical = routes._load_agent_historical_token_usages(
         "session-1",
-        "turn-superseded",
+        "turn-retry",
     )
     projected = routes._agent_state_with_session_token_usage(
         {
-            "task_id": "turn-superseded",
+            "task_id": "turn-retry",
             "execution_trace": {"token_usage": {
                 **retry_usage,
-                "cost_rmb": "9.99",
+                "input_uncached_tokens": 30,
+                "input_cached_tokens": 10,
+                "output_tokens": 8,
+                "cost_rmb": "0.40",
             }},
         },
         historical,
     )
 
-    assert turn_calls == ["session-1"]
-    assert historical.current_task_visible is False
-    assert projected["session_token_usage"]["request_count"] == 1
-    assert projected["session_token_usage"]["cost_rmb"] == "0.25"
+    assert turn_calls == [("session-1", True)]
+    assert historical.current_task_visible is True
+    assert projected["session_token_usage"]["request_count"] == 2
+    assert projected["session_token_usage"]["input_total_tokens"] == 60
+    assert projected["session_token_usage"]["output_tokens"] == 13
+    assert projected["session_token_usage"]["cost_rmb"] == "0.65"
 
 
 def test_session_usage_cost_prefers_frozen_quota_ledger_amount():

@@ -264,6 +264,22 @@ def test_agent_detail_live_refreshes_do_not_overlap_or_poll_beside_healthy_sse()
     assert "if (!messageStream || !messageStreamHealthy)" in poll_finally
 
 
+def test_agent_detail_falls_back_when_task_stream_has_no_first_payload():
+    controller = _read("static/app/agents/conversation.js")
+
+    assert "var streamFirstPayloadTimer = null;" in controller
+    assert "function clearStreamFirstPayloadTimer()" in controller
+    assert "function stopTaskPolling()" in controller
+    assert "var receivedPayload = false;" in controller
+    assert "markStreamPayloadReceived()" in controller
+    assert "streamFirstPayloadTimer = global.setTimeout(function ()" in controller
+    assert "receivedPayload || !isCurrent(taskId, generation, activeStream)" in controller
+    assert "activeStream.close();" in controller
+    assert "startPolling(taskId, generation);" in controller
+    assert "}, 2000);" in controller
+    assert "clearStreamFirstPayloadTimer();\n    stopTaskPolling();" in controller
+
+
 def test_agent_detail_defers_folded_trace_until_first_expand():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
