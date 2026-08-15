@@ -56,6 +56,8 @@
   var usageCached = root.querySelector('[data-agent-usage-cached]');
   var usageOutput = root.querySelector('[data-agent-usage-output]');
   var usageCost = root.querySelector('[data-agent-usage-cost]');
+  var contextMeter = root.querySelector('[data-agent-context-meter]');
+  var contextValue = root.querySelector('[data-agent-context-value]');
   var resumeForm = root.querySelector('[data-agent-resume-form]');
   var resumeMessage = root.querySelector('[data-agent-resume-message]');
   var resumeFile = root.querySelector('[data-agent-resume-file]');
@@ -225,6 +227,35 @@
       usesPersonalEndpoint
         ? '用户自费'
         : (hasCost ? formatMoneyValue(usage.cost_rmb) + ' 元' : '—')
+    );
+  }
+
+  function formatContextTokens(tokens) {
+    return Math.round(tokens / 1000) + 'k';
+  }
+
+  function renderContextUsage(contextUsage) {
+    if (!contextMeter) return;
+    contextUsage = contextUsage && typeof contextUsage === 'object'
+      ? contextUsage : {};
+    var rawUsed = contextUsage.used_tokens;
+    var usedTokens = rawUsed === null || rawUsed === undefined || rawUsed === ''
+      ? NaN : Number(rawUsed);
+    var rawWindow = contextUsage.window_tokens;
+    var windowTokens = rawWindow === null || rawWindow === undefined || rawWindow === ''
+      ? Number(contextMeter.dataset.contextWindowTokens) : Number(rawWindow);
+    var hasUsed = Number.isFinite(usedTokens) && usedTokens >= 0;
+    var hasWindow = Number.isFinite(windowTokens) && windowTokens > 0;
+    var value = (hasUsed ? formatContextTokens(usedTokens) : '—')
+      + ' / ' + (hasWindow ? formatContextTokens(windowTokens) : '—');
+    var percent = hasUsed && hasWindow
+      ? Math.min(100, Math.max(0, usedTokens / windowTokens * 100)) : 0;
+    contextMeter.style.setProperty('--agent-context-percent', String(percent));
+    setUsageValue(contextValue, value);
+    contextMeter.setAttribute(
+      'aria-label',
+      hasUsed ? '上下文 ' + value : '上下文用量暂不可用，上限 '
+        + (hasWindow ? formatContextTokens(windowTokens) : '未知')
     );
   }
 
@@ -1327,6 +1358,7 @@
       sessionTitle.title = nextTitle;
     }
     renderHeaderTokenUsage(state.session_token_usage);
+    renderContextUsage(state.context_usage);
     if (state.quota_summary || state.agent_quota) {
       applyQuotaSummary(state.quota_summary || state.agent_quota);
     }
@@ -1476,6 +1508,7 @@
         message: '任务排队中',
         execution_trace: {}
       };
+      renderContextUsage(null);
     }
     liveGeneration += 1;
     var generation = liveGeneration;
@@ -2758,6 +2791,12 @@
   bindLazyHistoricalTraces();
   paintSessionAvatars();
   renderHeaderTokenUsage(currentState && currentState.session_token_usage);
+  renderContextUsage(currentState && currentState.context_usage);
+  if (contextMeter) {
+    contextMeter.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') contextMeter.blur();
+    });
+  }
   messageState = Object.assign({
     current_task_id: currentTaskId,
     status: currentState.status || root.dataset.status,

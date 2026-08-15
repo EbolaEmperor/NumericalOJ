@@ -1386,6 +1386,8 @@ def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path)
         "reasoning_output_tokens": 5,
         "source": "codex",
         "incremental": True,
+        "last_input_total_tokens": 100,
+        "last_output_tokens": 20,
     }
 
 
@@ -1494,6 +1496,8 @@ def test_canonical_reader_deduplicates_native_trace_and_usage_ids(tmp_path):
     assert [item["text"] for item in messages] == ["只展示一次"]
     assert usage["request_count"] == 2
     assert usage["input_total_tokens"] == 30
+    assert usage["last_input_total_tokens"] == 20
+    assert usage["last_output_tokens"] == 5
     assert usage["output_tokens"] == 8
 
 
