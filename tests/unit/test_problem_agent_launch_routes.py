@@ -521,45 +521,48 @@ def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("source", "visible_values", "expected_input", "expected_requests"),
+    ("source", "earlier_values", "expected_input", "expected_requests"),
     [
-        ("codex", (100, 40), 140, 2),
-        ("claude_code", (100, 160), 160, 2),
+        ("codex", (100, 40), 200, 3),
+        ("claude_code", (100, 160), 320, 4),
     ],
 )
-def test_superseded_task_status_never_readds_discarded_usage(
+def test_superseded_task_status_keeps_whole_session_usage(
     monkeypatch,
     source,
-    visible_values,
+    earlier_values,
     expected_input,
     expected_requests,
 ):
     monkeypatch.setattr(
         routes,
         "get_agent_session_turns",
-        lambda _session_id: [
+        lambda _session_id, include_superseded=False: [
             {"task_id": "turn-1"},
+            {"task_id": "turn-superseded"},
             {"task_id": "turn-replacement"},
         ],
     )
-    visible_usages = {
+    historical_usages = {
         "turn-1": {
             "source": source,
             "request_count": 1,
-            "input_uncached_tokens": visible_values[0],
+            "input_uncached_tokens": earlier_values[0],
             "input_cached_tokens": 0,
             "input_cache_write_tokens": 0,
             "output_tokens": 10,
             "cost_rmb": "0.10",
+            "incremental": True,
         },
         "turn-replacement": {
             "source": source,
             "request_count": 2 if source == "claude_code" else 1,
-            "input_uncached_tokens": visible_values[1],
+            "input_uncached_tokens": earlier_values[1],
             "input_cached_tokens": 0,
             "input_cache_write_tokens": 0,
             "output_tokens": 20,
             "cost_rmb": "0.20",
+            "incremental": True,
         },
     }
     monkeypatch.setattr(
@@ -567,7 +570,7 @@ def test_superseded_task_status_never_readds_discarded_usage(
         "get_agent_run_by_task_id",
         lambda task_id: {
             "task_id": task_id,
-            "execution_trace": {"token_usage": visible_usages[task_id]},
+            "execution_trace": {"token_usage": historical_usages[task_id]},
         },
     )
     monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
@@ -576,12 +579,13 @@ def test_superseded_task_status_never_readds_discarded_usage(
         "session_id": "session-1",
         "execution_trace": {"token_usage": {
             "source": source,
-            "request_count": 99,
-            "input_uncached_tokens": 999_999,
+            "request_count": 1,
+            "input_uncached_tokens": 60,
             "input_cached_tokens": 0,
             "input_cache_write_tokens": 0,
-            "output_tokens": 99_999,
-            "cost_rmb": "999.00",
+            "output_tokens": 15,
+            "cost_rmb": "0.30",
+            "incremental": True,
         }},
     }
 
@@ -592,18 +596,17 @@ def test_superseded_task_status_never_readds_discarded_usage(
     usage = projected["session_token_usage"]
     assert usage["input_uncached_tokens"] == expected_input
     assert usage["request_count"] == expected_requests
-    expected_cost = "0.2" if source == "claude_code" else "0.3"
-    assert usage["cost_rmb"] == expected_cost
+    assert usage["cost_rmb"] == "0.6"
 
 
 @pytest.mark.parametrize(
     ("task_id", "session_current_task_id", "expected_cost"),
     [
-        ("turn-superseded", "turn-replacement", None),
+        ("turn-superseded", "turn-replacement", "0.2"),
         ("turn-replacement", "turn-replacement", "0.2"),
     ],
 )
-def test_historical_usage_failure_only_keeps_visible_current_task_usage(
+def test_historical_usage_failure_keeps_requested_session_task_usage(
     monkeypatch,
     task_id,
     session_current_task_id,
@@ -868,6 +871,111 @@ def test_agent_run_stream_includes_historical_and_current_session_usage(
     assert usage["output_tokens"] == 18
     assert usage["cost_rmb"] == "0.18"
     assert pubsub.closed is True
+
+
+def test_agent_run_stream_emits_live_usage_and_cost_updates(monkeypatch):
+    initial_usage = {
+        "source": "codex",
+        "request_count": 1,
+        "input_uncached_tokens": 80,
+        "input_cached_tokens": 20,
+        "input_cache_write_tokens": 0,
+        "input_total_tokens": 100,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "cost_rmb": "0.10",
+        "incremental": True,
+    }
+    updated_usage = {
+        **initial_usage,
+        "request_count": 2,
+        "input_uncached_tokens": 140,
+        "input_cached_tokens": 60,
+        "input_total_tokens": 200,
+        "output_tokens": 40,
+    }
+    initial = {
+        "task_id": "turn-live-usage",
+        "session_id": "session-live-usage",
+        "harness": "codex",
+        "status": "Running",
+        "session_charged_amount_rmb": "0.10",
+        "execution_trace": {
+            "status": "running",
+            "trace_id": "trace-live-usage",
+            "trace_messages": [{"kind": "tool", "text": "working"}],
+            "trace_files": [],
+            "token_usage": initial_usage,
+            "incremental": True,
+        },
+    }
+    token_update = {
+        **initial,
+        "execution_trace": {
+            **initial["execution_trace"],
+            "token_usage": updated_usage,
+        },
+    }
+    cost_update = {
+        **token_update,
+        "session_charged_amount_rmb": "0.25",
+    }
+    completed = {
+        **cost_update,
+        "status": "Completed",
+        "execution_trace": {
+            **cost_update["execution_trace"],
+            "status": "passed",
+        },
+    }
+
+    class PubSub:
+        def __init__(self):
+            self.snapshots = iter((token_update, cost_update, completed))
+
+        def get_message(self, **_kwargs):
+            return {
+                "type": "message",
+                "data": json.dumps(next(self.snapshots)),
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: initial)
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _tid: PubSub())
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _session_id, _task_id: [],
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/turn-live-usage"):
+        body = routes.admin_agent_run_stream("turn-live-usage").get_data(as_text=True)
+
+    status_states = []
+    for block in body.split("\n\n"):
+        if not block.startswith("event: status\n"):
+            continue
+        data = next(
+            line.removeprefix("data: ")
+            for line in block.splitlines()
+            if line.startswith("data: ")
+        )
+        status_states.append(json.loads(data))
+
+    assert len(status_states) == 4
+    assert status_states[1]["session_token_usage"]["input_total_tokens"] == 200
+    assert status_states[1]["session_token_usage"]["input_cached_tokens"] == 60
+    assert status_states[1]["session_token_usage"]["output_tokens"] == 40
+    assert status_states[2]["session_token_usage"]["cost_rmb"] == "0.25"
 
 
 def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):
@@ -1561,6 +1669,51 @@ def test_agent_run_state_reuses_worker_projected_redis_trace(monkeypatch):
     state = routes._get_agent_run_state("task-cached-trace")
 
     assert state["execution_trace"]["trace_messages"][0]["text"] == "正在分析"
+
+
+def test_agent_run_state_hydrates_empty_worker_trace_from_journal(monkeypatch):
+    empty_trace = {
+        "status": "running",
+        "trace_messages": [],
+        "trace_files": [],
+        "token_usage": None,
+    }
+    journal_trace = {
+        **empty_trace,
+        "trace_messages": [{"kind": "thinking", "text": "已经开始工作"}],
+        "token_usage": {
+            "source": "codex",
+            "input_total_tokens": 120,
+            "input_cached_tokens": 80,
+            "output_tokens": 20,
+        },
+    }
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_snapshot",
+        lambda _task_id: {
+            "task_id": "task-empty-cached-trace",
+            "status": "Running",
+            "execution_trace": empty_trace,
+        },
+    )
+    monkeypatch.setattr(routes, "get_agent_run_by_task_id", lambda _task_id: None)
+    monkeypatch.setattr(routes, "_agent_solve_problem_task", None)
+    hydrated = []
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda state: hydrated.append(state) or {
+            **state,
+            "execution_trace": journal_trace,
+        },
+    )
+
+    state = routes._get_agent_run_state("task-empty-cached-trace")
+
+    assert len(hydrated) == 1
+    assert state["execution_trace"]["trace_messages"][0]["text"] == "已经开始工作"
+    assert state["execution_trace"]["token_usage"]["input_cached_tokens"] == 80
 
 
 def test_agent_run_stream_skips_duplicate_snapshot_before_markdown(monkeypatch):

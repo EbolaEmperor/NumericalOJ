@@ -13,7 +13,9 @@
   var nativeSessionId = asText(root.dataset.nativeSessionId).trim();
   var liveGeneration = 0;
   var stream = null;
+  var streamFirstPayloadTimer = null;
   var pollingTimer = null;
+  var taskPolling = false;
   var workspaceTimer = null;
   var workspaceFinalRefreshPending = false;
   var currentState = readJson('[data-agent-current-state-json]', {});
@@ -1348,15 +1350,24 @@
     scheduleWorkspaceRefresh(stateIsRunning ? 1800 : 0);
   }
 
+  function clearStreamFirstPayloadTimer() {
+    if (streamFirstPayloadTimer) global.clearTimeout(streamFirstPayloadTimer);
+    streamFirstPayloadTimer = null;
+  }
+
+  function stopTaskPolling() {
+    taskPolling = false;
+    if (pollingTimer) global.clearTimeout(pollingTimer);
+    pollingTimer = null;
+  }
+
   function stopLiveUpdates() {
     if (stream) {
       stream.close();
       stream = null;
     }
-    if (pollingTimer) {
-      global.clearTimeout(pollingTimer);
-      pollingTimer = null;
-    }
+    clearStreamFirstPayloadTimer();
+    stopTaskPolling();
   }
 
   function requestTaskState(taskId) {
@@ -1419,22 +1430,35 @@
     });
   }
 
+  function pollTaskState(taskId, generation) {
+    if (!taskPolling || !isCurrent(taskId, generation)) return;
+    fetchState(taskId, generation).then(function (state) {
+      if (!taskPolling || !isCurrent(taskId, generation) || isFinishedState(state)) return;
+      pollingTimer = global.setTimeout(function () {
+        pollTaskState(taskId, generation);
+      }, 2200);
+    }).catch(function () {
+      if (!taskPolling || !isCurrent(taskId, generation)) return;
+      pollingTimer = global.setTimeout(function () {
+        pollTaskState(taskId, generation);
+      }, 3200);
+    });
+  }
+
   function startPolling(taskId, generation) {
     if (!isCurrent(taskId, generation)) return;
-    fetchState(taskId, generation).then(function (state) {
-      if (!isCurrent(taskId, generation) || isFinishedState(state)) return;
-      pollingTimer = global.setTimeout(function () { startPolling(taskId, generation); }, 2200);
-    }).catch(function () {
-      if (!isCurrent(taskId, generation)) return;
-      pollingTimer = global.setTimeout(function () { startPolling(taskId, generation); }, 3200);
-    });
+    stopTaskPolling();
+    taskPolling = true;
+    pollTaskState(taskId, generation);
   }
 
   function parseStreamState(event, taskId, generation) {
     try {
       applyState(JSON.parse(event.data), taskId, generation);
+      return true;
     } catch (_error) {
       setResumeFeedback('实时状态数据异常，正在重试。', true);
+      return false;
     }
   }
 
@@ -1467,19 +1491,33 @@
     }
     var activeStream = new global.EventSource(taskUrl(root.dataset.streamUrlTemplate, taskId));
     stream = activeStream;
+    var receivedPayload = false;
+    function markStreamPayloadReceived() {
+      receivedPayload = true;
+      clearStreamFirstPayloadTimer();
+      stopTaskPolling();
+    }
+    streamFirstPayloadTimer = global.setTimeout(function () {
+      streamFirstPayloadTimer = null;
+      if (receivedPayload || !isCurrent(taskId, generation, activeStream)) return;
+      activeStream.close();
+      if (stream === activeStream) stream = null;
+      startPolling(taskId, generation);
+    }, 2000);
     activeStream.addEventListener('status', function (event) {
       if (!isCurrent(taskId, generation, activeStream)) return;
-      parseStreamState(event, taskId, generation);
+      if (parseStreamState(event, taskId, generation)) markStreamPayloadReceived();
     });
     activeStream.addEventListener('done', function (event) {
       if (!isCurrent(taskId, generation, activeStream)) return;
-      parseStreamState(event, taskId, generation);
+      if (parseStreamState(event, taskId, generation)) markStreamPayloadReceived();
       activeStream.close();
       if (stream === activeStream) stream = null;
     });
     activeStream.addEventListener('error', function () {
       if (!isCurrent(taskId, generation, activeStream)) return;
       if (activeStream.readyState === global.EventSource.CLOSED) {
+        clearStreamFirstPayloadTimer();
         activeStream.close();
         if (stream === activeStream) stream = null;
         startPolling(taskId, generation);
