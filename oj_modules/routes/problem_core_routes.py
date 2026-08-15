@@ -100,6 +100,7 @@ from oj_modules.problems.agent_runs import (
     hydrate_agent_run_snapshot,
 )
 from oj_modules.problems.agent_launch import (
+    AGENT_CONTEXT_WINDOW_TOKENS,
     AgentLaunchValidationError,
     build_solution_agent_prompt,
     build_testdata_agent_prompt,
@@ -635,6 +636,29 @@ def _agent_token_usage_from_state(state):
     return usage if isinstance(usage, dict) else None
 
 
+def _agent_last_context_tokens(usage):
+    """读取最近一次模型交互占用的上下文；与会话累计用量独立。"""
+
+    if not isinstance(usage, dict):
+        return None
+    values = (
+        usage.get('last_input_total_tokens'),
+        usage.get('last_output_tokens', 0),
+    )
+    tokens = 0
+    for value in values:
+        if isinstance(value, bool):
+            return None
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return None
+        if count < 0:
+            return None
+        tokens += count
+    return tokens
+
+
 class _AgentHistoricalTokenUsages(list):
     """历史用量及请求 task 是否仍属于这条会话 lineage。"""
 
@@ -793,6 +817,16 @@ def _agent_state_with_session_token_usage(
         return state
     projected = dict(state)
     ledger_usage = dict(ledger_usage) if isinstance(ledger_usage, dict) else None
+    current_task_id = str(projected.get('task_id') or '').strip()
+    ledger_context_task_id = str(
+        (ledger_usage or {}).pop('_latest_context_task_id', '') or ''
+    ).strip()
+    ledger_context_tokens = (ledger_usage or {}).pop(
+        '_latest_context_tokens', None
+    )
+    ledger_context_request_count = (ledger_usage or {}).pop(
+        '_latest_context_request_count', 0
+    )
     ledger_task_ids = {
         str(task_id or '').strip()
         for task_id in (ledger_usage or {}).pop('_task_ids', ())
@@ -810,7 +844,6 @@ def _agent_state_with_session_token_usage(
         )
     ]
     current_usage = _agent_token_usage_from_state(projected)
-    current_task_id = str(projected.get('task_id') or '').strip()
     if (
         current_task_visible
         and current_task_id
@@ -839,6 +872,35 @@ def _agent_state_with_session_token_usage(
         session_usage['cost_rmb'] = str(ledger_cost)
         session_usage['cost_complete'] = True
     projected['session_token_usage'] = session_usage
+
+    current_context_tokens = _agent_last_context_tokens(current_usage)
+    current_request_count = int((current_usage or {}).get('request_count') or 0)
+    ledger_context_is_current = bool(
+        current_task_id and ledger_context_task_id == current_task_id
+    )
+    current_trace_is_fresh = bool(
+        current_context_tokens is not None
+        and (
+            not ledger_context_is_current
+            or (
+                (current_usage or {}).get('incremental') is True
+                and current_request_count >= int(ledger_context_request_count or 0)
+            )
+        )
+    )
+    if current_trace_is_fresh:
+        context_tokens = current_context_tokens
+    elif ledger_context_is_current:
+        try:
+            context_tokens = max(0, int(ledger_context_tokens))
+        except (TypeError, ValueError):
+            context_tokens = None
+    else:
+        context_tokens = current_context_tokens
+    projected['context_usage'] = {
+        'used_tokens': context_tokens,
+        'window_tokens': AGENT_CONTEXT_WINDOW_TOKENS,
+    }
     return projected
 
 
@@ -3415,6 +3477,7 @@ def agent_task_detail(session_id):
         agent_personal_endpoints=agent_personal_endpoints,
         agent_quota_pending_count=len(pending_requests),
         agent_quota_pending_requests=pending_requests,
+        agent_context_window_tokens=AGENT_CONTEXT_WINDOW_TOKENS,
     ))
     response.headers['Cache-Control'] = 'private, no-store'
     return response

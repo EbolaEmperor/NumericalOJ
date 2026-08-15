@@ -453,9 +453,13 @@ def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):
         "state": {
             "task_id": "task-1",
             "status": "Canceled",
-            "message": "任务已由管理员终止",
-            "session_token_usage": None,
-        },
+                "message": "任务已由管理员终止",
+                "session_token_usage": None,
+                "context_usage": {
+                    "used_tokens": None,
+                    "window_tokens": routes.AGENT_CONTEXT_WINDOW_TOKENS,
+                },
+            },
     }
 
 
@@ -533,6 +537,9 @@ def test_old_session_without_trace_usage_uses_ledger_summary(monkeypatch):
         "reasoning_output_tokens": 4,
         "cost_rmb": "0.42",
         "cost_complete": True,
+        "_latest_context_task_id": "turn-old",
+        "_latest_context_tokens": 172,
+        "_latest_context_request_count": 3,
     }
     monkeypatch.setattr(
         routes,
@@ -557,6 +564,10 @@ def test_old_session_without_trace_usage_uses_ledger_summary(monkeypatch):
     assert projected["session_token_usage"]["output_tokens"] == 20
     assert projected["session_token_usage"]["cost_rmb"] == "0.42"
     assert projected["session_charged_amount_rmb"] == "0.42"
+    assert projected["context_usage"] == {
+        "used_tokens": 172,
+        "window_tokens": routes.AGENT_CONTEXT_WINDOW_TOKENS,
+    }
 
 
 def test_partial_ledger_coverage_keeps_unbilled_historical_trace_usage():
@@ -609,6 +620,46 @@ def test_partial_ledger_coverage_keeps_unbilled_historical_trace_usage():
     assert usage["input_total_tokens"] == 150
     assert usage["output_tokens"] == 20
     assert usage["cost_rmb"] == "0.3"
+
+
+def test_context_usage_prefers_fresh_current_trace_over_session_totals():
+    projected = routes._agent_state_with_session_token_usage(
+        {
+            "task_id": "turn-current",
+            "execution_trace": {"token_usage": {
+                "source": "codex",
+                "request_count": 3,
+                "input_uncached_tokens": 180,
+                "input_cached_tokens": 120,
+                "input_cache_write_tokens": 0,
+                "output_tokens": 30,
+                "last_input_total_tokens": 92,
+                "last_output_tokens": 11,
+                "incremental": True,
+            }},
+        },
+        ledger_usage={
+            "source": "session",
+            "request_count": 8,
+            "turn_count": 2,
+            "input_uncached_tokens": 900,
+            "input_cached_tokens": 700,
+            "input_cache_write_tokens": 20,
+            "output_tokens": 100,
+            "cost_rmb": "0.8",
+            "cost_complete": True,
+            "_task_ids": ["turn-earlier", "turn-current"],
+            "_latest_context_task_id": "turn-current",
+            "_latest_context_tokens": 81,
+            "_latest_context_request_count": 2,
+        },
+    )
+
+    assert projected["session_token_usage"]["input_total_tokens"] == 1620
+    assert projected["context_usage"] == {
+        "used_tokens": 103,
+        "window_tokens": routes.AGENT_CONTEXT_WINDOW_TOKENS,
+    }
 
 
 @pytest.mark.parametrize(

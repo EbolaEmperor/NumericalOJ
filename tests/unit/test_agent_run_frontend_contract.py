@@ -138,6 +138,7 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
     styles = _read("static/app/agents/conversation.css")
+    routes = _read("oj_modules/routes/problem_core_routes.py")
 
     header_start = template.index('<header class="agent-session-header">')
     header_end = template.index("</header>", header_start)
@@ -160,6 +161,14 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     composer = template[composer_start:composer_end]
     assert "harness_logo(agent_session.harness)" in composer
     assert "agent_session.endpoint_model" in composer
+    assert "data-agent-context-meter" in composer
+    assert "data-agent-context-value" in composer
+    assert 'role="tooltip"' in composer
+    assert 'aria-describedby="agentContextTooltip"' in composer
+    meter_start = composer.index('class="agent-context-meter"')
+    meter_end = composer.index("</button>", meter_start)
+    assert " title=" not in composer[meter_start:meter_end]
+    assert "agent_context_window_tokens=AGENT_CONTEXT_WINDOW_TOKENS" in routes
 
     assert "querySelectorAll('[data-agent-session-avatar]')" in controller
     assert "identicon.paint(avatar, identicon.cellsForSeed(seed), label)" in controller
@@ -181,6 +190,11 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "usesPersonalEndpoint ? '用户自费' : '—'" in controller
     assert "'用户自费' if uses_personal_endpoint else '—'" in template
     assert "renderHeaderTokenUsage(state.session_token_usage);" in controller
+    assert "function renderContextUsage(contextUsage)" in controller
+    assert "Math.round(tokens / 1000) + 'k'" in controller
+    assert "Math.min(100, Math.max(0, usedTokens / windowTokens * 100))" in controller
+    assert "renderContextUsage(state.context_usage);" in controller
+    assert "renderContextUsage(currentState && currentState.context_usage);" in controller
     assert "renderHeaderTokenUsage(null);" not in controller
     assert (
         "renderHeaderTokenUsage(currentState && currentState.session_token_usage);"
@@ -199,6 +213,10 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert ".agent-session-usage-fact--cost { display: none; }" not in styles
     assert ".agent-session-usage-fact--cached { display: none; }" not in styles
     assert ".agent-session-usage { display: none; }" not in styles
+    assert ".agent-context-meter-value" in styles
+    assert ".agent-context-tooltip" in styles
+    assert ".agent-context-meter:hover .agent-context-tooltip" in styles
+    assert ".agent-context-meter:focus-visible .agent-context-tooltip" in styles
     desktop_preview = styles.split("@media (min-width: 992px)", 1)[1]
     assert ".agent-session.has-file .agent-session-header-side" in desktop_preview
     assert "display: none;" in desktop_preview

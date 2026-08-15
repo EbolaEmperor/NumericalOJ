@@ -360,9 +360,9 @@ def test_session_usage_cost_uses_ledger_sum_and_distinguishes_no_records(
 
 
 @pytest.mark.parametrize(
-    ("rows", "expected"),
+    ("rows", "latest_context", "expected"),
     [
-        ([], None),
+        ([], None, None),
         ([{
             "task_id": "turn-1",
             "request_count": 2,
@@ -382,6 +382,12 @@ def test_session_usage_cost_uses_ledger_sum_and_distinguishes_no_records(
             "reasoning_output_tokens": 3,
             "charged_amount": Decimal("0.05000000000000"),
         }], {
+            "task_id": "turn-2",
+            "input_uncached_tokens": 17,
+            "input_cached_tokens": 19,
+            "input_cache_write_tokens": 3,
+            "output_tokens": 7,
+        }, {
             "source": "session",
             "request_count": 3,
             "turn_count": 2,
@@ -394,11 +400,19 @@ def test_session_usage_cost_uses_ledger_sum_and_distinguishes_no_records(
             "cost_rmb": "0.125",
             "cost_complete": True,
             "_task_ids": ["turn-1", "turn-2"],
+            "_latest_context_task_id": "turn-2",
+            "_latest_context_tokens": 46,
+            "_latest_context_request_count": 1,
         }),
     ],
 )
-def test_session_token_usage_comes_from_frozen_ledger(monkeypatch, rows, expected):
-    observed = {}
+def test_session_token_usage_comes_from_frozen_ledger(
+    monkeypatch,
+    rows,
+    latest_context,
+    expected,
+):
+    observed = {"sql": [], "params": []}
 
     class Cursor:
         def __enter__(self):
@@ -408,11 +422,14 @@ def test_session_token_usage_comes_from_frozen_ledger(monkeypatch, rows, expecte
             return False
 
         def execute(self, sql, params):
-            observed["sql"] = " ".join(sql.split())
-            observed["params"] = params
+            observed["sql"].append(" ".join(sql.split()))
+            observed["params"].append(params)
 
         def fetchall(self):
             return rows
+
+        def fetchone(self):
+            return latest_context
 
     class Connection:
         def cursor(self):
@@ -424,8 +441,10 @@ def test_session_token_usage_comes_from_frozen_ledger(monkeypatch, rows, expecte
     monkeypatch.setattr(quota, "get_db_connection", Connection)
 
     assert quota.get_agent_session_token_usage("session-ledger") == expected
-    assert "GROUP BY task_id" in observed["sql"]
-    assert observed["params"] == ("session-ledger",)
+    assert "GROUP BY task_id" in observed["sql"][0]
+    if rows:
+        assert "ORDER BY id DESC LIMIT 1" in observed["sql"][1]
+    assert observed["params"] == [("session-ledger",)] * (2 if rows else 1)
     assert observed["closed"] is True
 
 

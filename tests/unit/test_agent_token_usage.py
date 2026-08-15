@@ -42,6 +42,8 @@ def test_claude_usage_deduplicates_content_events_by_provider_message_id(tmp_pat
         "output_tokens": 50,
         "reasoning_output_tokens": 0,
         "source": "claude_code",
+        "last_input_total_tokens": 30,
+        "last_output_tokens": 5,
     }
 
 
@@ -67,6 +69,8 @@ def test_pi_usage_deduplicates_resumed_session_entries(tmp_path):
     usage = collect_agent_token_usage(tmp_path)
     assert usage["request_count"] == 1
     assert usage["input_total_tokens"] == 357
+    assert usage["last_input_total_tokens"] == 357
+    assert usage["last_output_tokens"] == 67
     assert usage["output_tokens"] == 67
     assert usage["reasoning_output_tokens"] == 22
     assert usage["source"] == "pi"
@@ -87,6 +91,8 @@ def test_codex_and_opencode_usage_use_their_native_cache_semantics(tmp_path):
     assert codex["input_uncached_tokens"] == 300
     assert codex["input_cached_tokens"] == 700
     assert codex["input_total_tokens"] == 1_000
+    assert codex["last_input_total_tokens"] == 1_000
+    assert codex["last_output_tokens"] == 90
     assert codex["output_tokens"] == 90
     assert codex["source"] == "codex"
 
@@ -105,6 +111,8 @@ def test_codex_and_opencode_usage_use_their_native_cache_semantics(tmp_path):
     }])
     opencode = collect_agent_token_usage(opencode_dir)
     assert opencode["input_total_tokens"] == 720
+    assert opencode["last_input_total_tokens"] == 720
+    assert opencode["last_output_tokens"] == 100
     assert opencode["output_tokens"] == 100
     assert opencode["reasoning_output_tokens"] == 70
     assert opencode["source"] == "opencode"

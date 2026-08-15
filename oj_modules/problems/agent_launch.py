@@ -34,6 +34,10 @@ ALLOWED_AGENT_ACCESS_ROLES = (
     AGENT_ACCESS_ROLE_ADMIN,
 )
 
+# 普通 Agent 的四种 harness 共用同一上下文窗口。宿主运行参数与详情页
+# 展示必须引用同一个值，避免 UI 显示的占比和容器实际限制不一致。
+AGENT_CONTEXT_WINDOW_TOKENS = 128_000
+
 _HARNESS_LABELS = {
     "claude_code": "Claude Code",
     "codex": "Codex",
@@ -330,6 +334,7 @@ def validate_launch_endpoint_revision(endpoint, expected_revision):
 __all__ = [
     "AGENT_ACCESS_ROLE_ADMIN",
     "AGENT_ACCESS_ROLE_USER",
+    "AGENT_CONTEXT_WINDOW_TOKENS",
     "AGENT_TASK_CUSTOM",
     "AGENT_TASK_SOLVE",
     "AGENT_TASK_TESTDATA",

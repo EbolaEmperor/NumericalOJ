@@ -364,6 +364,21 @@
             <span>{{ harness_logo(agent_session.harness) }}{{ harness_name }}</span>
             {% set composer_model = agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) %}
             <span>{{ model_logo(composer_model) }}{{ composer_model }}</span>
+            <button class="agent-context-meter" type="button"
+                    data-agent-context-meter
+                    data-context-window-tokens="{{ agent_context_window_tokens }}"
+                    aria-label="上下文用量暂不可用，上限 {{ (agent_context_window_tokens / 1000)|round|int }}k"
+                    aria-describedby="agentContextTooltip">
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <circle class="agent-context-meter-track" cx="10" cy="10" r="7.5"></circle>
+                <circle class="agent-context-meter-value" cx="10" cy="10" r="7.5"
+                        pathLength="100"></circle>
+              </svg>
+              <span class="agent-context-tooltip" id="agentContextTooltip" role="tooltip">
+                <span>上下文</span>
+                <strong data-agent-context-value>— / {{ (agent_context_window_tokens / 1000)|round|int }}k</strong>
+              </span>
+            </button>
           </div>
           <div class="agent-resume-actions">
             <input id="agentResumeAttachments" class="visually-hidden" type="file"

@@ -30,6 +30,7 @@ from oj_modules.config import (
 )
 from oj_modules.problems.agent_launch import (
     AGENT_ACCESS_ROLE_USER,
+    AGENT_CONTEXT_WINDOW_TOKENS,
     normalize_agent_access_role,
     normalize_agent_task_kind,
     normalize_launch_harness,
@@ -50,7 +51,6 @@ _STDOUT_MIRROR_LIMIT_BYTES = 8 * 1024 * 1024
 _CANONICAL_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
 _CANONICAL_JOURNAL_RECORD_MAX_BYTES = 16 * 1024 * 1024
 _CANONICAL_JOURNAL_TAIL_RESERVE_BYTES = 17 * 1024 * 1024
-_AGENT_CONTEXT_WINDOW_TOKENS = 128_000
 _AGENT_MAX_OUTPUT_TOKENS = 16_384
 _IDENTITY_CONFIG_PATH = "/workspace/.numoj-agent/identity.json"
 _SKILL_CONFIG_ENV = {
@@ -1158,7 +1158,7 @@ def _runtime_env(
         "AJ_ENDPOINT_BASE_URL": base_url,
         "AJ_ENDPOINT_API_KEY": api_key,
         "AJ_ENDPOINT_MODEL": model,
-        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(_AGENT_CONTEXT_WINDOW_TOKENS),
+        "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(AGENT_CONTEXT_WINDOW_TOKENS),
         "AJ_ENDPOINT_MAX_OUTPUT_TOKENS": str(_AGENT_MAX_OUTPUT_TOKENS),
         "AJ_ENDPOINT_THINKING_ENABLED": "1" if thinking_enabled else "0",
         "AJ_ENDPOINT_THINKING_FORMAT": thinking_format,

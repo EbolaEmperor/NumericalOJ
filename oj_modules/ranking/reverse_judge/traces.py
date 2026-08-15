@@ -1166,6 +1166,8 @@ def _collect_usage_from_jsonl(path, source):
         'output_tokens': 0,
         'reasoning_output_tokens': 0,
     }
+    last_input_total_tokens = None
+    last_output_tokens = None
     seen = set()
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as stream:
@@ -1184,6 +1186,15 @@ def _collect_usage_from_jsonl(path, source):
                     if key in seen:
                         continue
                     seen.add(key)
+                last_input_total_tokens = sum(
+                    record[field]
+                    for field in (
+                        'input_uncached_tokens',
+                        'input_cached_tokens',
+                        'input_cache_write_tokens',
+                    )
+                )
+                last_output_tokens = record['output_tokens']
                 totals['request_count'] += 1
                 for field in (
                     'input_uncached_tokens',
@@ -1203,6 +1214,8 @@ def _collect_usage_from_jsonl(path, source):
         + totals['input_cache_write_tokens']
     )
     totals['source'] = source
+    totals['last_input_total_tokens'] = last_input_total_tokens
+    totals['last_output_tokens'] = last_output_tokens
     return totals
 
 
@@ -1237,6 +1250,8 @@ def _collect_canonical_token_usage(path):
         'output_tokens': 0,
         'reasoning_output_tokens': 0,
     }
+    last_input_total_tokens = None
+    last_output_tokens = None
     seen = set()
     source = ''
     try:
@@ -1261,6 +1276,17 @@ def _collect_canonical_token_usage(path):
                     if record_id in seen:
                         continue
                     seen.add(record_id)
+                last_input_total_tokens = sum(
+                    _nonnegative_token_count(usage.get(field))
+                    for field in (
+                        'input_uncached_tokens',
+                        'input_cached_tokens',
+                        'input_cache_write_tokens',
+                    )
+                )
+                last_output_tokens = _nonnegative_token_count(
+                    usage.get('output_tokens')
+                )
                 totals['request_count'] += max(
                     1, _nonnegative_token_count(usage.get('request_count')),
                 )
@@ -1286,6 +1312,8 @@ def _collect_canonical_token_usage(path):
     )
     totals['source'] = source or 'canonical'
     totals['incremental'] = True
+    totals['last_input_total_tokens'] = last_input_total_tokens
+    totals['last_output_tokens'] = last_output_tokens
     return totals
 
 

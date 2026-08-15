@@ -409,6 +409,7 @@ def get_agent_session_token_usage(session_id):
     if not normalized_session_id or len(normalized_session_id) > 64:
         raise AgentQuotaValidationError("Agent session_id 无效")
     conn = get_db_connection()
+    latest_context = None
     try:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -427,6 +428,20 @@ def get_agent_session_token_usage(session_id):
                 (normalized_session_id,),
             )
             rows = cursor.fetchall()
+            if rows:
+                cursor.execute(
+                    """
+                    SELECT task_id, input_uncached_tokens,
+                           input_cached_tokens, input_cache_write_tokens,
+                           output_tokens
+                    FROM agent_usage_ledger
+                    WHERE session_id=%s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (normalized_session_id,),
+                )
+                latest_context = cursor.fetchone()
     finally:
         conn.close()
     if not rows:
@@ -462,6 +477,26 @@ def get_agent_session_token_usage(session_id):
         + usage["input_cached_tokens"]
         + usage["input_cache_write_tokens"]
     )
+    if latest_context:
+        latest_task_id = str(latest_context.get("task_id") or "").strip()
+        usage["_latest_context_task_id"] = latest_task_id
+        usage["_latest_context_tokens"] = sum(
+            int(latest_context.get(field) or 0)
+            for field in (
+                "input_uncached_tokens",
+                "input_cached_tokens",
+                "input_cache_write_tokens",
+                "output_tokens",
+            )
+        )
+        usage["_latest_context_request_count"] = next(
+            (
+                int(row.get("request_count") or 0)
+                for row in rows
+                if str(row.get("task_id") or "").strip() == latest_task_id
+            ),
+            0,
+        )
     return usage
 
 
