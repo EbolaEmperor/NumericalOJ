@@ -594,16 +594,14 @@ def begin_agent_session_retry(
                 ) from None
             source_turn_index = max(1, int(source.get("turn_index") or 1))
             if (
-                str(row.get("task_kind") or "custom").strip().lower()
-                in {"solve", "testdata"}
+                str(row.get("task_kind") or "").strip().lower() == "testdata"
+                and str(row.get("access_role") or "").strip().lower() == "user"
                 and source_turn_index == 1
             ):
-                # 专用任务首轮由各自 worker 负责验收和发布，不能通过通用
-                # worker 重放；但它们之后的普通会话消息本来就走通用 worker，
-                # 应允许按相同的 runtime/native 基线重试。
-                raise AgentSessionBusyError(
-                    "解题或造数据 Agent 的首轮暂不支持重试"
-                )
+                # 升级前的造数据首轮把标准程序保存在 message 私有 payload，
+                # 而非普通附件；重试无法按通用契约复原它。新版 admin 会话
+                # 使用附件，不受这个迁移限制。
+                raise AgentSessionBusyError("升级前造数据 Agent 的首轮不支持重试")
             if not base_runtime_checkpoint_id:
                 if source_turn_index != 1 or not fallback_base_checkpoint_id:
                     raise AgentSessionBusyError(

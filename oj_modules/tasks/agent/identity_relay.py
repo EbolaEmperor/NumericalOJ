@@ -32,6 +32,7 @@ from urllib.parse import (
 )
 
 from oj_modules.problems.agent_launch import (
+    AGENT_ACCESS_ROLE_ADMIN,
     AGENT_ACCESS_ROLE_USER,
     AGENT_TASK_CUSTOM,
     AGENT_TASK_SOLVE,
@@ -445,7 +446,7 @@ class _ForwardPlan:
 
 
 class _IdentityRelayPolicy:
-    """任务路由白名单及本代理创建 submission 的状态机。"""
+    """限制身份入口，并记录兼容 worker 在本轮创建的 submission。"""
 
     def __init__(
         self,
@@ -505,16 +506,14 @@ class _IdentityRelayPolicy:
         pid = self.problem_id
         allowed = False
         if self.task_kind == AGENT_TASK_SOLVE:
-            if normalized_method == "GET":
-                allowed = path in {
-                    f"/api/problems/{pid}",
-                    f"/api/problems/{pid}/submit-context",
-                    "/me/classes",
-                } or self._created_submission_allowed(path)
-            elif normalized_method == "POST":
-                allowed = path == f"/submit/{pid}"
+            # 解题按钮只代发一条普通用户消息。路由能力必须和直接在本地
+            # 启动的 user Agent 一致，具体题目、提交与资源权限由 Flask
+            # 中的当前用户和会话题目范围统一判断，不能依赖单轮 relay 状态。
+            allowed = self._custom_route_allowed(normalized_method, path)
         elif self.task_kind == AGENT_TASK_TESTDATA:
-            if normalized_method == "GET":
+            if self.access_role == AGENT_ACCESS_ROLE_ADMIN:
+                allowed = self._custom_route_allowed(normalized_method, path)
+            elif normalized_method == "GET":
                 allowed = path in {
                     f"/api/problems/{pid}",
                     "/me/classes",

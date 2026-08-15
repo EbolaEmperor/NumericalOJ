@@ -159,12 +159,14 @@ def test_agent_session_freezes_llm_endpoint_revision():
         agent_launch.validate_launch_endpoint_revision(endpoint, None)
 
 
-def test_custom_agent_skill_follows_role_and_problem_tasks_stay_user():
+def test_button_tasks_pin_their_skill_while_custom_sessions_follow_role():
     assert agent_launch.normalize_agent_task_kind("custom") == "custom"
     assert agent_launch.skill_for_agent_task("custom", "user") == "numoj-user"
     assert agent_launch.skill_for_agent_task("custom", "admin") == "numoj-admin"
     assert agent_launch.skill_for_agent_task("solve", "user") == "numoj-user"
+    # user 仅用于恢复升级前已落库的造数据会话；新版按钮固定持久化 admin。
     assert agent_launch.skill_for_agent_task("testdata", "user") == "numoj-user"
+    assert agent_launch.skill_for_agent_task("testdata", "admin") == "numoj-admin"
 
     with pytest.raises(
         agent_launch.AgentLaunchValidationError,

@@ -168,11 +168,22 @@ jobs:
           tags: numericaloj-judger-lite:latest
           cache-from: type=gha,scope=judger-lite
           cache-to: type=gha,mode=max,scope=judger-lite
+      - name: Build the pinned Lean4 and Mathlib runtime
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/lean4
+          outputs: type=local,dest=${{ runner.temp }}/numericaloj-lean4-rootfs
+          cache-from: type=gha,scope=lean4
+          cache-to: type=gha,mode=max,scope=lean4
       - name: Build the Agent Judge lite image
         uses: docker/build-push-action@v7
         with:
           context: docker
           file: docker/agent_judge-lite/Dockerfile
+          build-contexts: |
+            numericaloj-lean4-rootfs=${{ runner.temp }}/numericaloj-lean4-rootfs
+          build-args: |
+            LEAN4_IMAGE=numericaloj-lean4-rootfs
           load: true
           tags: numericaloj-agent-judge-lite:latest
           cache-from: type=gha,scope=agent-judge-lite

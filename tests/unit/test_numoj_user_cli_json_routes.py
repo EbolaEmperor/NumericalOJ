@@ -299,22 +299,189 @@ def test_problem_detail_outputs_necessary_user_facing_fields(monkeypatch, capsys
     }
 
 
-def test_lean_workspace_submit_uses_form_redirect_contract(
+def test_problem_download_writes_statement_and_ordinary_initial_code(
     monkeypatch, capsys, tmp_path
 ):
     cli = _load_numoj_user_cli_module()
-    workspace = tmp_path / "lean-workspace"
+    payload = _problem_detail_payload()
+    client = _SequenceClient([_PayloadResponse(payload)])
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
+    workspace = tmp_path / "workspace"
+
+    cli.problem_download(Namespace(
+        problem_id=42,
+        output=str(workspace),
+        force=False,
+    ))
+
+    assert client.requests == [("GET", "/api/problems/42", {})]
+    assert (workspace / "PROBLEM.md").read_text(encoding="utf-8") == (
+        payload["problem"]["content"]
+    )
+    assert (workspace / "solution.cpp").read_text(encoding="utf-8") == (
+        payload["initial_code"]
+    )
+    snapshot = cli.json.loads(
+        (workspace / "numoj-problem.json").read_text(encoding="utf-8")
+    )
+    assert snapshot == {
+        "schema_version": 1,
+        "problem_id": 42,
+        "submit_kind": "prompt",
+        "problem": {"title": "Slitherlink", "lang": "cpp", "type": 1},
+        "resources": ["PROBLEM.md", "solution.cpp"],
+    }
+    assert cli.json.loads(capsys.readouterr().out) == {
+        "success": True,
+        "problem_id": 42,
+        "path": str(workspace.resolve()),
+        "files": ["PROBLEM.md", "solution.cpp", "numoj-problem.json"],
+    }
+
+
+def test_problem_download_writes_all_lean_files_and_generic_snapshot(
+    monkeypatch, capsys, tmp_path
+):
+    cli = _load_numoj_user_cli_module()
+    payload = {
+        "success": True,
+        "problem": {
+            "id": 42,
+            "title": "Lean theorem",
+            "content": "Prove it.",
+            "lang": "lean4",
+            "type": 1,
+        },
+        "initial_code": "do not create solution.lean",
+        "submit": {"input_kind": "lean_workspace"},
+        "user": {"username": "must-not-enter-snapshot"},
+        "lean_workspace": {
+            "schema_version": 1,
+            "revision": "revision-2",
+            "revision_number": 2,
+            "default_file": "Submission.lean",
+            "verification": {
+                "entry_decl": "Submission.answer",
+                "allowed_axioms": ["propext"],
+            },
+            "files": [
+                {
+                    "path": "Submission.lean",
+                    "mode": "writable",
+                    "build_order": 2,
+                    "content": "theorem answer : True := by trivial\n",
+                },
+                {
+                    "path": "Problem/Statement.lean",
+                    "mode": "readonly",
+                    "build_order": 1,
+                    "content": "def statement : Prop := True\n",
+                },
+            ],
+        },
+    }
+    client = _SequenceClient([_PayloadResponse(payload)])
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
+    workspace = tmp_path / "workspace"
+
+    cli.problem_download(Namespace(
+        problem_id=42,
+        output=str(workspace),
+        force=False,
+    ))
+
+    assert (workspace / "PROBLEM.md").read_text(encoding="utf-8") == "Prove it."
+    assert (workspace / "Problem/Statement.lean").read_text(encoding="utf-8") == (
+        "def statement : Prop := True\n"
+    )
+    assert (workspace / "Submission.lean").read_text(encoding="utf-8") == (
+        "theorem answer : True := by trivial\n"
+    )
+    assert not (workspace / "solution.lean").exists()
+    snapshot = cli.json.loads(
+        (workspace / "numoj-problem.json").read_text(encoding="utf-8")
+    )
+    assert snapshot["problem_id"] == 42
+    assert snapshot["submit_kind"] == "lean_workspace"
+    assert snapshot["lean_workspace"] == {
+        "schema_version": 1,
+        "revision": "revision-2",
+        "default_file": "Submission.lean",
+        "files": [
+            {
+                "path": "Problem/Statement.lean",
+                "mode": "readonly",
+                "build_order": 1,
+            },
+            {
+                "path": "Submission.lean",
+                "mode": "writable",
+                "build_order": 2,
+            },
+        ],
+        "build_order": ["Problem/Statement.lean", "Submission.lean"],
+        "verification": {
+            "entry_decl": "Submission.answer",
+            "allowed_axioms": ["propext"],
+        },
+    }
+    assert "user" not in snapshot
+    capsys.readouterr()
+
+
+def test_problem_download_refuses_overwrite_without_force(monkeypatch, tmp_path):
+    cli = _load_numoj_user_cli_module()
+    workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "numoj-lean.json").write_text(
+    (workspace / "PROBLEM.md").write_text("local work", encoding="utf-8")
+    payload = _problem_detail_payload()
+    client = _SequenceClient([
+        _PayloadResponse(payload),
+        _PayloadResponse(payload),
+    ])
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
+
+    with pytest.raises(cli.CliError, match="Refusing to overwrite"):
+        cli.problem_download(Namespace(
+            problem_id=42,
+            output=str(workspace),
+            force=False,
+        ))
+
+    assert (workspace / "PROBLEM.md").read_text(encoding="utf-8") == "local work"
+    assert not (workspace / "solution.cpp").exists()
+
+    cli.problem_download(Namespace(
+        problem_id=42,
+        output=str(workspace),
+        force=True,
+    ))
+
+    assert (workspace / "PROBLEM.md").read_text(encoding="utf-8") == (
+        payload["problem"]["content"]
+    )
+    assert (workspace / "solution.cpp").is_file()
+
+
+def test_lean_workspace_submit_uses_generic_snapshot_and_form_redirect_contract(
+    monkeypatch, capsys, tmp_path
+):
+    cli = _load_numoj_user_cli_module()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "numoj-problem.json").write_text(
         cli.json.dumps(
             {
                 "schema_version": 1,
                 "problem_id": 42,
-                "revision": "revision-1",
-                "files": [
-                    {"path": "Problem.lean", "mode": "readonly"},
-                    {"path": "Submission.lean", "mode": "writable"},
-                ],
+                "submit_kind": "lean_workspace",
+                "lean_workspace": {
+                    "revision": "revision-1",
+                    "files": [
+                        {"path": "Problem.lean", "mode": "readonly"},
+                        {"path": "Submission.lean", "mode": "writable"},
+                    ],
+                },
             }
         ),
         encoding="utf-8",
@@ -358,6 +525,50 @@ def test_lean_workspace_submit_uses_form_redirect_contract(
             "Submission.lean": "theorem answer : True := by trivial\n"
         },
     }
+
+
+def test_lean_workspace_submit_accepts_legacy_manifest_fallback(
+    monkeypatch, capsys, tmp_path
+):
+    cli = _load_numoj_user_cli_module()
+    workspace = tmp_path / "legacy-workspace"
+    workspace.mkdir()
+    (workspace / "numoj-lean.json").write_text(
+        cli.json.dumps({
+            "problem_id": 42,
+            "revision": "legacy-revision",
+            "files": [{"path": "Submission.lean", "mode": "writable"}],
+        }),
+        encoding="utf-8",
+    )
+    (workspace / "Submission.lean").write_text("example : True := by trivial\n")
+
+    class _RedirectResponse(_FakeResponse):
+        status_code = 302
+        headers = {"Location": "/submission_detail/322"}
+
+    client = _SequenceClient([
+        _PayloadResponse({"submit": {"input_kind": "lean_workspace"}}),
+        _RedirectResponse(),
+    ])
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
+
+    cli.problem_submit(Namespace(
+        problem_id=42,
+        workspace=str(workspace),
+        file=None,
+        code=None,
+        code_file=None,
+        prompt=None,
+        prompt_file=None,
+    ))
+
+    payload = cli.json.loads(client.requests[1][2]["data"]["lean_workspace"])
+    assert payload == {
+        "revision": "legacy-revision",
+        "files": {"Submission.lean": "example : True := by trivial\n"},
+    }
+    assert cli.json.loads(capsys.readouterr().out)["submission_id"] == 322
 
 
 def _submission_list_payload():
@@ -764,10 +975,21 @@ def test_numoj_user_json_query_commands_do_not_accept_output_option():
 def test_numoj_user_download_commands_keep_output_option():
     cli = _load_numoj_user_cli_module()
     parser = cli.build_parser()
+    args = parser.parse_args(["problem", "download", "42", "-o", "/tmp/problem"])
+    assert args.output == "/tmp/problem"
+    assert args.force is False
     args = parser.parse_args(["submission", "output-image", "123", "0", "-o", "/tmp/out.bmp"])
     assert args.output == "/tmp/out.bmp"
     args = parser.parse_args(["submission", "last-code", "42", "-o", "/tmp/solution.py"])
     assert args.output == "/tmp/solution.py"
+
+
+@pytest.mark.parametrize("command", ["lean-workspace", "lean-init"])
+def test_numoj_user_problem_removes_lean_specific_download_commands(command):
+    cli = _load_numoj_user_cli_module()
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["problem", command, "42"])
 
 
 def test_user_ranking_submit_allows_missing_base_model_and_omits_it_from_request(monkeypatch, capsys, tmp_path):

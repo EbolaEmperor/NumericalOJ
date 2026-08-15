@@ -26,6 +26,7 @@ def _app(cookie_name="session"):
 def _patch_agent_runtime_checkpoint_io(monkeypatch):
     """启动路由单测不触碰真实会话 workspace/checkpoint。"""
 
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
     monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _sid: None)
     monkeypatch.setattr(
         routes,
@@ -37,6 +38,18 @@ def _patch_agent_runtime_checkpoint_io(monkeypatch):
         "remove_agent_runtime_checkpoint",
         lambda _session_id, _checkpoint_id, *, missing_ok=True: None,
     )
+    monkeypatch.setattr(
+        routes,
+        "save_agent_attachments",
+        lambda session_id, message_id, uploads: [
+            {
+                "name": upload.filename,
+                "path": f"attachments/{message_id}/{upload.filename}",
+            }
+            for upload in uploads
+        ],
+    )
+    monkeypatch.setattr(routes, "remove_agent_attachments", lambda *_args: 0)
 
 
 @pytest.fixture(autouse=True)
@@ -148,7 +161,7 @@ def test_solve_launch_persists_outbox_and_wakes_dispatcher(
     monkeypatch.setattr(
         routes,
         "create_agent_session",
-        lambda **kwargs: sessions.append(kwargs),
+        lambda **kwargs: sessions.append(kwargs) or kwargs,
     )
     monkeypatch.setattr(
         routes,
@@ -184,7 +197,10 @@ def test_solve_launch_persists_outbox_and_wakes_dispatcher(
         "endpoint_id": 12,
         "endpoint_revision": 6,
         "endpoint_model": "selected-model",
-        "user_message": "解决题目 #9：题",
+        "user_message": routes.build_solution_agent_prompt(
+            problem_id=9,
+            problem_title="题",
+        ),
         "task_kind": "solve",
         "access_role": "user",
         "problem_id": 9,
@@ -227,7 +243,7 @@ def test_solve_launch_rejects_non_object_json(monkeypatch):
     assert response.get_json()["message"] == "请求参数格式无效"
 
 
-def test_testdata_launch_persists_skill_inputs_in_outbox(
+def test_testdata_launch_creates_admin_session_with_standard_solution_attachment(
     monkeypatch,
     _queue_dispatcher,
 ):
@@ -255,7 +271,7 @@ def test_testdata_launch_persists_skill_inputs_in_outbox(
     monkeypatch.setattr(
         routes,
         "create_agent_session",
-        lambda **kwargs: sessions.append(kwargs),
+        lambda **kwargs: sessions.append(kwargs) or kwargs,
     )
     monkeypatch.setattr(
         routes,
@@ -300,19 +316,24 @@ def test_testdata_launch_persists_skill_inputs_in_outbox(
         "endpoint_id": 18,
         "endpoint_revision": 7,
         "endpoint_model": "selected-model",
-        "user_message": f"为题目 #9 生成 4 个测试点。\n\n{requirement}",
+        "user_message": routes.build_testdata_agent_prompt(
+            problem_id=9,
+            problem_title="题",
+            test_point_count=4,
+            data_requirement=requirement,
+        ),
+        "attachments": [{
+            "name": "standard_solution.py",
+            "path": (
+                f"attachments/{payload['task_id']}/standard_solution.py"
+            ),
+        }],
         "task_kind": "testdata",
-        "access_role": "user",
+        "access_role": "admin",
         "problem_id": 9,
         "problem_title": "题",
         "base_runtime_checkpoint_id": payload["task_id"],
         "base_native_session_id": "",
-        "dispatch_payload": {
-            "test_point_count": 4,
-            "standard_code": "print(1)\n",
-            "data_requirement": requirement,
-            "standard_filename": "standard_solution.py",
-        },
     }]
     assert task.calls == []
     assert _queue_dispatcher.calls == [{

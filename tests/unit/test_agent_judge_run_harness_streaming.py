@@ -46,33 +46,6 @@ def _set_endpoint(
     monkeypatch.setenv("AJ_ENDPOINT_MODEL", model)
 
 
-def _write_pi_terminal_message(session_dir, session_id, **terminal_fields):
-    session_path = session_dir / "--workspace--" / f"native_{session_id}.jsonl"
-    session_path.parent.mkdir(parents=True, exist_ok=True)
-    if not session_path.exists():
-        session_path.write_text(
-            json.dumps({
-                "type": "session",
-                "version": 3,
-                "id": session_id,
-                "cwd": "/workspace",
-            }) + "\n",
-            encoding="utf-8",
-        )
-    message = {
-        "role": "assistant",
-        "content": [{"type": "text", "text": "state"}],
-        **terminal_fields,
-    }
-    with session_path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps({
-            "type": "message",
-            "id": f"assistant-{session_path.stat().st_size}",
-            "message": message,
-        }) + "\n")
-    return session_path
-
-
 def _set_anthropic_endpoint(monkeypatch, module, model="generic-model"):
     _set_endpoint(monkeypatch, protocol="anthropic", model=model)
 
@@ -838,11 +811,12 @@ def test_codex_responses_bridge_preserves_tool_round_trip():
     }
 
 
-def test_codex_responses_bridge_explicitly_disables_freeform_apply_patch():
+def test_codex_responses_bridge_drops_unsupported_tools_without_prompt_rewrite():
     module = _load_run_harness()
 
     converted = json.loads(module._codex_responses_request_to_chat(json.dumps({
         "model": "generic-model",
+        "instructions": "keep this system prompt unchanged",
         "input": [{"role": "user", "content": "edit it"}],
         "tools": [
             {
@@ -867,10 +841,10 @@ def test_codex_responses_bridge_explicitly_disables_freeform_apply_patch():
         ],
     }).encode("utf-8")))
 
-    assert converted["messages"][0]["role"] == "system"
-    assert "apply_patch 工具不可用" in converted["messages"][0]["content"]
-    assert "namespace 工具不可用" in converted["messages"][0]["content"]
-    assert "web_search 工具不可用" in converted["messages"][0]["content"]
+    assert converted["messages"] == [
+        {"role": "system", "content": "keep this system prompt unchanged"},
+        {"role": "user", "content": "edit it"},
+    ]
     assert [item["function"]["name"] for item in converted["tools"]] == [
         "shell",
     ]
@@ -1327,9 +1301,9 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
         "--no-skills",
         "--no-prompt-templates",
         "--no-themes",
-        "--no-context-files",
     ):
         assert flag in args
+    assert "--no-context-files" not in args
     assert "--thinking" not in args
     assert "--tools" not in args
     assert env["AJ_ENDPOINT_API_KEY"] == "temporary-token"
@@ -1363,18 +1337,7 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
     assert recorded[0][2] == resume_id
 
 
-@pytest.mark.parametrize(
-    "terminal_fields",
-    [
-        {"stopReason": "length"},
-        {"stopReason": "error", "rawStopReason": "max_tokens"},
-    ],
-)
-def test_pi_ordinary_agent_auto_resumes_output_limit_in_same_native_session(
-    monkeypatch,
-    tmp_path,
-    terminal_fields,
-):
+def test_pi_problem_agent_runs_exactly_one_native_cli_turn(monkeypatch, tmp_path):
     module = _load_run_harness()
     config_dir = tmp_path / "pi-agent"
     session_dir = config_dir / "sessions"
@@ -1390,18 +1353,6 @@ def test_pi_ordinary_agent_auto_resumes_output_limit_in_same_native_session(
 
     def run(args, **_kwargs):
         calls.append(list(args))
-        if len(calls) == 1:
-            _write_pi_terminal_message(
-                session_dir,
-                session_id,
-                **terminal_fields,
-            )
-        else:
-            _write_pi_terminal_message(
-                session_dir,
-                session_id,
-                stopReason="stop",
-            )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(module, "_run", run)
@@ -1413,149 +1364,10 @@ def test_pi_ordinary_agent_auto_resumes_output_limit_in_same_native_session(
 
     assert module._run_pi("solve") == 0
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert "--session" not in calls[0]
-    assert calls[1][calls[1].index("--session") + 1] == session_id
-    assert calls[1][calls[1].index("--thinking") + 1] == "off"
-
-
-def test_pi_output_limit_continuation_fails_when_native_session_does_not_advance(
-    monkeypatch,
-    tmp_path,
-):
-    module = _load_run_harness()
-    config_dir = tmp_path / "pi-agent"
-    session_dir = config_dir / "sessions"
-    session_id = "44444444-4444-4444-4444-444444444444"
-    calls = []
-    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
-    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
-    monkeypatch.delenv("AJ_PHASE", raising=False)
-    monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
-    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
-    monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
-    _set_endpoint(monkeypatch)
-
-    def run(args, **_kwargs):
-        calls.append(list(args))
-        if len(calls) == 1:
-            _write_pi_terminal_message(
-                session_dir,
-                session_id,
-                stopReason="length",
-            )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(module, "_run", run)
-    monkeypatch.setattr(
-        module,
-        "_record_session",
-        lambda *_args, **_kwargs: session_id,
-    )
-
-    assert module._run_pi("solve") == 2
-    assert len(calls) == 2
-
-
-@pytest.mark.parametrize(
-    ("stop_reason", "raw_stop_reason"),
-    [("error", "upstream_error"), ("stop", "stop")],
-)
-def test_pi_ordinary_agent_does_not_resume_normal_or_error(
-    monkeypatch,
-    tmp_path,
-    stop_reason,
-    raw_stop_reason,
-):
-    module = _load_run_harness()
-    config_dir = tmp_path / "pi-agent"
-    session_dir = config_dir / "sessions"
-    session_id = "44444444-4444-4444-4444-444444444444"
-    calls = []
-    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
-    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
-    monkeypatch.delenv("AJ_PHASE", raising=False)
-    monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
-    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
-    monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
-    _set_endpoint(monkeypatch)
-    _write_pi_terminal_message(
-        session_dir,
-        session_id,
-        stopReason=stop_reason,
-        rawStopReason=raw_stop_reason,
-    )
-    monkeypatch.setattr(
-        module,
-        "_run",
-        lambda args, **_kwargs: (
-            calls.append(list(args))
-            or SimpleNamespace(returncode=0, stdout="", stderr="")
-        ),
-    )
-    monkeypatch.setattr(
-        module,
-        "_record_session",
-        lambda *_args, **_kwargs: session_id,
-    )
-
-    assert module._run_pi("solve") == 0
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize(
-    ("phase", "audit_read_only", "problem_agent_scope"),
-    [
-        ("reverse_solve", False, True),
-        ("", True, True),
-        ("", False, False),
-    ],
-)
-def test_pi_nonordinary_or_unscoped_runs_do_not_auto_resume_output_limit(
-    monkeypatch,
-    tmp_path,
-    phase,
-    audit_read_only,
-    problem_agent_scope,
-):
-    module = _load_run_harness()
-    config_dir = tmp_path / "pi-agent"
-    session_dir = config_dir / "sessions"
-    session_id = "44444444-4444-4444-4444-444444444444"
-    calls = []
-    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
-    monkeypatch.setattr(module, "PI_SESSION_DIR", str(session_dir))
-    if phase:
-        monkeypatch.setenv("AJ_PHASE", phase)
-    else:
-        monkeypatch.delenv("AJ_PHASE", raising=False)
-    if audit_read_only:
-        monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "1")
-    else:
-        monkeypatch.delenv("AJ_AUDIT_READ_ONLY", raising=False)
-    if problem_agent_scope:
-        monkeypatch.setenv("AJ_TASK_SCOPE", "problem_agent")
-    else:
-        monkeypatch.delenv("AJ_TASK_SCOPE", raising=False)
-    monkeypatch.delenv("AJ_RESUME_SESSION_ID", raising=False)
-    _set_endpoint(monkeypatch)
-    _write_pi_terminal_message(session_dir, session_id, stopReason="length")
-    monkeypatch.setattr(
-        module,
-        "_run",
-        lambda args, **_kwargs: (
-            calls.append(list(args))
-            or SimpleNamespace(returncode=0, stdout="", stderr="")
-        ),
-    )
-    monkeypatch.setattr(
-        module,
-        "_record_session",
-        lambda *_args, **_kwargs: session_id,
-    )
-
-    assert module._run_pi("solve") == 0
-    assert len(calls) == 1
+    assert calls[0][-1] == "solve"
+    assert "--thinking" not in calls[0]
 
 
 def test_pi_explicitly_loads_only_the_trusted_web_search_mcp_extension(
@@ -2229,8 +2041,7 @@ def test_pi_rpc_rejects_start_without_waiting_for_settled(monkeypatch):
     ] == [("__start__", "rejected", "model unavailable")]
 
 
-def test_pi_rpc_output_limit_continues_without_retaining_intermediate_failure(
-        monkeypatch):
+def test_pi_rpc_output_limit_stops_without_hidden_continuation(monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["pi"])
     events = _event_queue(
@@ -2253,22 +2064,6 @@ def test_pi_rpc_output_limit_continues_without_retaining_intermediate_failure(
             },
         },
         {"type": "agent_settled"},
-        {
-            "type": "response",
-            "id": "__numoj-cont-1",
-            "command": "prompt",
-            "success": True,
-        },
-        {
-            "type": "message_end",
-            "message": {
-                "role": "assistant",
-                "id": "final-answer",
-                "content": [{"type": "text", "text": "完成"}],
-                "stopReason": "stop",
-            },
-        },
-        {"type": "agent_settled"},
     )
     monkeypatch.setattr(module, "_start_json_process", lambda *_args, **_kwargs: (proc, events))
     monkeypatch.setattr(module, "_emit_numoj", lambda _item: None)
@@ -2282,12 +2077,11 @@ def test_pi_rpc_output_limit_continues_without_retaining_intermediate_failure(
         "",
     )
 
-    assert completed.returncode == 0
+    assert completed.returncode == 2
     assert [item["type"] for item in proc.stdin.frames] == [
-        "get_state", "prompt", "prompt",
+        "get_state", "prompt",
     ]
-    assert proc.stdin.frames[-1]["id"] == "__numoj-cont-1"
-    assert proc.stdin.frames[-1]["message"] == module.PI_OUTPUT_LIMIT_CONTINUATION_PROMPT
+    assert proc.stdin.frames[-1]["message"] == "开始"
 
 
 def test_codex_app_server_adapter_uses_expected_turn_for_steer(monkeypatch):

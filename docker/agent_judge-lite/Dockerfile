@@ -1,6 +1,10 @@
 # 打榜赛 Agent-as-Judge 轻量评测镜像：预装四种 Harness CLI + 常用工具链。
 # 构建（上下文必须是 docker/，这样可复用 agent_judge/report 与 run_harness）：
+#   docker build -t numericaloj-lean4:latest docker/lean4
 #   docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker
+ARG LEAN4_IMAGE=numericaloj-lean4:latest
+FROM ${LEAN4_IMAGE} AS lean4_runtime
+
 FROM node:24-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -63,6 +67,18 @@ RUN npm install -g --ignore-scripts \
 # bubblewrap。按镜像缓存约束追加在 Harness 安装层之后，不改动前面的系统包层。
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
     && rm -rf /var/lib/apt/lists/*
+
+# lite 只缩减通用工具链，不缩减 Agent 可用的语言环境。Lean/Mathlib 与
+# 生产 Agent 镜像复用同一个固定证明镜像和启动 wrapper。
+COPY --from=lean4_runtime /opt/elan /opt/elan
+COPY --from=lean4_runtime /opt/numoj-lean-project /opt/numoj-lean-project
+COPY --from=lean4_runtime /opt/numoj-lean-path /opt/numoj-lean-path
+COPY agent_judge/lean /usr/local/bin/lean
+ENV ELAN_HOME=/opt/elan
+ENV PATH=/usr/local/bin:/opt/elan/bin:${PATH}
+RUN chmod 0755 /usr/local/bin/lean \
+    && lean --version \
+    && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
 # report / run_harness 与原版镜像复用同一份脚本。
 COPY agent_judge/report /usr/local/bin/report

@@ -35,8 +35,7 @@ USER_COMMAND_PATHS = [
     ["problem", "list"],
     ["problem", "detail"],
     ["problem", "submit-page"],
-    ["problem", "lean-workspace"],
-    ["problem", "lean-init"],
+    ["problem", "download"],
     ["problem", "submit"],
     ["submission"],
     ["submission", "list"],
@@ -222,7 +221,11 @@ ADMIN_EXTRA_COMMAND_PATHS = [
 ]
 
 
-ADMIN_COMMAND_PATHS = USER_COMMAND_PATHS + ADMIN_EXTRA_COMMAND_PATHS
+ADMIN_COMMAND_PATHS = (
+    [path for path in USER_COMMAND_PATHS if path != ["problem", "download"]]
+    + [["problem", "lean-workspace"], ["problem", "lean-init"]]
+    + ADMIN_EXTRA_COMMAND_PATHS
+)
 
 
 @pytest.mark.e2e

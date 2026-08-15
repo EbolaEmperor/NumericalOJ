@@ -15,6 +15,7 @@ from oj_modules.db_services import (
 from oj_modules.problems.agent_launch import (
     AGENT_ACCESS_ROLE_USER,
     AGENT_TASK_SOLVE,
+    build_solution_agent_prompt,
     resolve_launch_endpoint,
     validate_launch_endpoint_revision,
 )
@@ -41,44 +42,9 @@ from oj_modules.tasks.agent.titles import (
 from oj_modules.agents.sessions import get_agent_session
 
 
-SOLUTION_AGENT_PROMPT = (
-    "请帮我用 numoj-user skill 读取题号 {problem_id} 的问题：{problem_title}，并解决这个问题。"
-    "请使用 `problem detail {problem_id}` 读取题目，并始终使用该题号提交。"
-    "本地充分测试，确认无误后提交。如果没有通过就继续尝试，直到通过为止。"
-)
-
-_LEAN4_SOLUTION_AGENT_PROMPT = (
-    "\n\n本题是 Lean 4 多文件定理证明题。先阅读 numoj-user skill 引用的 Lean 4 专用 reference，"
-    "再执行 `problem lean-init {problem_id} ./lean-workspace` 初始化题目当前版本。"
-    "只修改 `numoj-lean.json` 中标记为 `writable` 的完整文件；可以自行添加辅助引理或定理，"
-    "但必须保留题目要求的证明入口。不要只提交 `by ...` 证明片段，也不要修改只读定义。"
-    "禁止使用 `sorry`、`admit`、`axiom` 或其它绕过 Lean kernel 与公理检查的手段。"
-    "每次提交前，必须按 manifest 的 `build_order` 在 `./lean-workspace` 中编译全部模块，"
-    "使用容器内预装的 Lean 4 和 Mathlib 修复所有错误，再执行 "
-    "`problem submit {problem_id} --workspace ./lean-workspace`。"
-    "提交后必须等待该 submission 进入终态；如果不是 `Accepted`，就读取评测诊断，继续修改、"
-    "本地检查并重新提交，直到 `Accepted`。"
-)
-
 __all__ = [
-    "SOLUTION_AGENT_PROMPT",
-    "build_solution_agent_prompt",
     "register_agent_solve_problem_task",
 ]
-
-
-def build_solution_agent_prompt(*, problem_id, problem_title, problem_lang=""):
-    """用任务已解析的全站题号构造解题指令。"""
-
-    prompt = SOLUTION_AGENT_PROMPT.format(
-        problem_id=int(problem_id),
-        problem_title=str(problem_title or ""),
-    )
-    if str(problem_lang or "").strip().lower() not in {"lean", "lean4"}:
-        return prompt
-    return prompt + _LEAN4_SOLUTION_AGENT_PROMPT.format(
-        problem_id=int(problem_id),
-    )
 
 
 def _created_submissions(username, problem_id, created_ids):
@@ -270,7 +236,6 @@ def register_agent_solve_problem_task(celery_app):
         agent_prompt = build_solution_agent_prompt(
             problem_id=problem_id,
             problem_title=title,
-            problem_lang=problem.get("lang"),
         )
         session_title = generate_initial_agent_session_title(
             task_id,
