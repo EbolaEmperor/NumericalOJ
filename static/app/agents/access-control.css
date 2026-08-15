@@ -65,7 +65,7 @@
 
 .agent-access-modal .modal-dialog { max-width: 680px; }
 
-.agent-access-modal .modal-content {
+.agent-access-modal > .modal-dialog > .modal-content {
   overflow: hidden;
   border: 1px solid #d8d0c2;
   border-radius: 18px;
@@ -276,7 +276,7 @@
   display: grid;
   min-width: 0;
   overflow: hidden;
-  grid-template-columns: minmax(0, 1fr) minmax(124px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(168px, auto);
   align-items: stretch;
   border: 1px solid #e2ddd3;
   border-radius: 10px;
@@ -317,17 +317,28 @@
 .agent-rate-card-name small { color: #999185; font: 550 7.5px/1.2 var(--agent-access-mono); }
 .agent-rate-values {
   display: grid;
-  min-width: 124px;
+  min-width: 168px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-content: center;
-  gap: 5px;
+  justify-self: end;
   margin: 0;
-  padding: 9px 11px;
+  padding: 10px 8px;
   border-left: 1px solid #e9e4db;
   background: #f6f3ed;
 }
-.agent-rate-value { display: grid; min-width: 0; grid-template-columns: auto minmax(42px, 1fr); align-items: baseline; gap: 9px; text-align: right; }
+.agent-rate-value {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: auto auto;
+  align-content: center;
+  justify-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  text-align: center;
+}
+.agent-rate-value + .agent-rate-value { border-left: 1px solid #e3ddd3; }
 .agent-rate-value dt { color: #a0998e; font: 600 6.5px/1 var(--agent-access-mono); }
-.agent-rate-value dd { overflow: hidden; margin: 0; color: #4a4640; font: 670 9px/1 var(--agent-access-mono); text-overflow: ellipsis; white-space: nowrap; }
+.agent-rate-value dd { width: 100%; overflow: hidden; margin: 0; color: #4a4640; font: 670 9px/1 var(--agent-access-mono); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 
 .agent-access-loading,
 .agent-access-empty { padding: 22px 12px; color: #928b80; font-size: 10px; text-align: center; }
@@ -494,7 +505,7 @@
   .agent-access-fab { right: 16px; bottom: 18px; width: 48px; height: 48px; }
   .agent-session-shell .agent-access-fab { right: 14px; bottom: 76px; }
   .agent-access-modal .modal-dialog { min-height: 100%; margin: 0; align-items: end; }
-  .agent-access-modal .modal-content { border-radius: 17px 17px 0 0; }
+  .agent-access-modal > .modal-dialog > .modal-content { border-radius: 17px 17px 0 0; }
   .agent-access-modal-header { padding: 18px 17px 15px; }
   .agent-access-balance,
   .agent-access-section { padding: 18px 17px; }
@@ -527,7 +538,7 @@
   max-width: 67vw;
 }
 
-.agent-access-modal .modal-content {
+.agent-access-modal > .modal-dialog > .modal-content {
   position: relative;
   isolation: isolate;
   height: 88dvh;
@@ -1047,7 +1058,7 @@
 
 @media (max-width: 575.98px) {
   .agent-access-modal .modal-dialog { width: 100%; max-width: 100%; }
-  .agent-access-modal .modal-content { height: 94dvh; max-height: 94dvh; }
+  .agent-access-modal > .modal-dialog > .modal-content { height: 94dvh; max-height: 94dvh; }
   .agent-access-user-tabs { padding: 8px 12px; }
   .agent-access-user-tabs button { min-height: 42px; padding: 6px; }
   .agent-access-user-tabs button i { display: none; }

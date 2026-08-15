@@ -283,21 +283,17 @@
     var layerOpener = null;
     var pendingDeleteEndpoint = null;
     var modalNode = root.querySelector('#agentAccessModal');
-    var accessModal = modalNode && global.bootstrap
-      ? global.bootstrap.Modal.getOrCreateInstance(modalNode) : null;
-    var personalModalNode = root.querySelector('#agentPersonalEndpointModal');
-    var personalModal = personalModalNode && global.bootstrap
-      ? global.bootstrap.Modal.getOrCreateInstance(personalModalNode) : null;
-    var personalModalOpener = null;
-    var switchingToPersonalModal = false;
-    var returningFromPersonalModal = false;
     var modalContent = modalNode && modalNode.querySelector('.modal-content');
     var modalHeader = modalContent && modalContent.querySelector(':scope > .agent-access-modal-header');
     var modalScroll = modalContent && modalContent.querySelector(':scope > .agent-access-modal-scroll');
-    var personalForm = root.querySelector('[data-endpoint-editor][data-endpoint-editor-mode="personal"]');
+    var personalEditorLayer = root.querySelector('[data-agent-personal-endpoint-layer]');
+    var personalDeleteLayer = root.querySelector('[data-agent-personal-delete-layer]');
+    var personalForm = personalEditorLayer
+      && personalEditorLayer.querySelector('[data-endpoint-editor][data-endpoint-editor-mode="personal"]');
     var personalEditorRevision = 0;
     var personalTestRequestRevision = 0;
     var personalSaveRequestRevision = 0;
+    var personalDeleteRequestRevision = 0;
     var personalTestToken = '';
     var personalFormFingerprint = '';
     var personalEditor = personalForm && global.NumOJEndpointEditor.mount(personalForm, {
@@ -340,6 +336,42 @@
       setMainInert(true);
     }
 
+    function isPersonalEditorOpen() {
+      return Boolean(personalEditorLayer)
+        && activeLayer === personalEditorLayer
+        && !personalEditorLayer.hidden;
+    }
+
+    function closePersonalEditorLayer(restoreFocus) {
+      if (!isPersonalEditorOpen()) return;
+      personalEditorRevision += 1;
+      personalTestRequestRevision += 1;
+      personalSaveRequestRevision += 1;
+      setEndpointButtonBusy(personalTestButton, false);
+      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-save]'), false);
+      invalidatePersonalEndpointTest(false);
+      closeLayer(restoreFocus);
+    }
+
+    function openPersonalEditorLayer(opener) {
+      if (!personalEditorLayer || activeLayer) return;
+      openLayer(personalEditorLayer, opener, '[data-endpoint-editor-title]');
+    }
+
+    function isPersonalDeleteOpen() {
+      return Boolean(personalDeleteLayer)
+        && activeLayer === personalDeleteLayer
+        && !personalDeleteLayer.hidden;
+    }
+
+    function closePersonalDeleteLayer(restoreFocus) {
+      if (!isPersonalDeleteOpen()) return;
+      personalDeleteRequestRevision += 1;
+      pendingDeleteEndpoint = null;
+      if (deleteConfirm) deleteConfirm.disabled = false;
+      closeLayer(restoreFocus);
+    }
+
     function personalEndpointPayload() {
       var payload = personalEditor.values();
       delete payload.name;
@@ -361,24 +393,6 @@
       if (clearResult !== false && personalEditor) personalEditor.clearResult();
     }
 
-    function showPersonalEndpointModal(opener) {
-      if (!personalModal || !accessModal) return;
-      if (switchingToPersonalModal || returningFromPersonalModal
-          || personalModalNode.classList.contains('show')) return;
-      personalModalOpener = opener || document.activeElement;
-      switchingToPersonalModal = true;
-      if (modalNode.classList.contains('show')) {
-        modalNode.addEventListener('hidden.bs.modal', function () {
-          switchingToPersonalModal = false;
-          personalModal.show();
-        }, {once: true});
-        accessModal.hide();
-      } else {
-        switchingToPersonalModal = false;
-        personalModal.show();
-      }
-    }
-
     function resetPersonalForm() {
       if (!personalEditor) return;
       personalEditorRevision += 1;
@@ -393,8 +407,7 @@
 
     function editPersonalEndpoint(endpoint, opener) {
       if (!personalEditor) return;
-      if (switchingToPersonalModal || returningFromPersonalModal
-          || personalModalNode.classList.contains('show')) return;
+      if (activeLayer) return;
       personalEditorRevision += 1;
       personalTestRequestRevision += 1;
       personalSaveRequestRevision += 1;
@@ -411,7 +424,7 @@
         thinking_format: endpoint.thinking_format || 'none'
       });
       invalidatePersonalEndpointTest(false);
-      showPersonalEndpointModal(opener);
+      openPersonalEditorLayer(opener);
     }
 
     function endpointUrl(id) {
@@ -652,10 +665,6 @@
     }
 
     if (modalNode) modalNode.addEventListener('show.bs.modal', function () {
-      if (returningFromPersonalModal) {
-        returningFromPersonalModal = false;
-        return;
-      }
       if (isAdmin) {
         loadReviews().catch(function (error) {
           var list = root.querySelector('[data-agent-review-list]');
@@ -666,34 +675,19 @@
       var jobs = [loadSummary(), loadPrices(), loadPersonalEndpoints()];
       Promise.allSettled(jobs).then(function () { loaded = true; });
     });
+    if (modalNode) modalNode.addEventListener('hide.bs.modal', function (event) {
+      if (!activeLayer) return;
+      event.preventDefault();
+      if (isPersonalEditorOpen()) closePersonalEditorLayer(true);
+      else if (isPersonalDeleteOpen()) closePersonalDeleteLayer(true);
+      else closeLayer(true);
+    });
     if (modalNode) modalNode.addEventListener('hidden.bs.modal', function () {
-      if (switchingToPersonalModal) return;
-      closeLayer(false);
+      if (isPersonalEditorOpen()) closePersonalEditorLayer(false);
+      else closeLayer(false);
       setClassPickerOpen(false);
       pendingDeleteEndpoint = null;
       resetPersonalForm();
-    });
-    if (personalModalNode) personalModalNode.addEventListener('shown.bs.modal', function () {
-      var title = personalForm && personalForm.querySelector('[data-endpoint-editor-title]');
-      if (title) title.focus({preventScroll: true});
-    });
-    if (personalModalNode) personalModalNode.addEventListener('hidden.bs.modal', function () {
-      personalEditorRevision += 1;
-      personalTestRequestRevision += 1;
-      personalSaveRequestRevision += 1;
-      setEndpointButtonBusy(personalTestButton, false);
-      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-save]'), false);
-      invalidatePersonalEndpointTest(false);
-      if (!accessModal || !document.contains(modalNode)) return;
-      var opener = personalModalOpener;
-      personalModalOpener = null;
-      returningFromPersonalModal = true;
-      modalNode.addEventListener('shown.bs.modal', function () {
-        var target = opener && document.contains(opener)
-          ? opener : root.querySelector('[data-agent-personal-endpoint-create]');
-        if (target) target.focus({preventScroll: true});
-      }, {once: true});
-      accessModal.show();
     });
 
     var requestForm = root.querySelector('[data-agent-quota-request-form]');
@@ -748,7 +742,7 @@
       }).then(function (response) {
         if (requestRevision !== personalTestRequestRevision
             || editorRevision !== personalEditorRevision
-            || !personalModalNode.classList.contains('show')) return;
+            || !isPersonalEditorOpen()) return;
         if (endpointFingerprint(personalEndpointPayload()) !== testedFingerprint) {
           invalidatePersonalEndpointTest(false);
           personalEditor.setResult('字段已经变化，请重新测试连接。', 'error');
@@ -772,7 +766,7 @@
       }).catch(function (error) {
         if (requestRevision !== personalTestRequestRevision
             || editorRevision !== personalEditorRevision
-            || !personalModalNode.classList.contains('show')) return;
+            || !isPersonalEditorOpen()) return;
         invalidatePersonalEndpointTest(false);
         personalEditor.setResult(error.message, 'error');
       }).finally(function () {
@@ -814,14 +808,14 @@
         if (!upsertPersonalEndpoint(endpoint)) loadPersonalEndpoints().catch(function () {});
         if (requestRevision === personalSaveRequestRevision
             && editorRevision === personalEditorRevision
-            && personalModalNode.classList.contains('show')) {
-          personalModal.hide();
+            && isPersonalEditorOpen()) {
+          closePersonalEditorLayer(true);
         }
         setFeedback(root.querySelector('[data-agent-personal-endpoint-feedback]'), id ? '端点已更新。' : '端点已创建。', false);
       }).catch(function (error) {
         if (requestRevision !== personalSaveRequestRevision
             || editorRevision !== personalEditorRevision
-            || !personalModalNode.classList.contains('show')) return;
+            || !isPersonalEditorOpen()) return;
         personalEditor.setResult(error.message, 'error');
       }).finally(function () {
         if (requestRevision !== personalSaveRequestRevision) return;
@@ -835,16 +829,20 @@
 
     var createEndpoint = root.querySelector('[data-agent-personal-endpoint-create]');
     if (createEndpoint) createEndpoint.addEventListener('click', function () {
-      if (switchingToPersonalModal || returningFromPersonalModal
-          || personalModalNode.classList.contains('show')) return;
+      if (activeLayer) return;
       resetPersonalForm();
-      showPersonalEndpointModal(createEndpoint);
+      openPersonalEditorLayer(createEndpoint);
+    });
+
+    root.querySelectorAll('[data-endpoint-editor-dismiss]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        closePersonalEditorLayer(true);
+      });
     });
 
     root.querySelectorAll('[data-agent-delete-dismiss]').forEach(function (button) {
       button.addEventListener('click', function () {
-        pendingDeleteEndpoint = null;
-        closeLayer(true);
+        closePersonalDeleteLayer(true);
       });
     });
 
@@ -853,8 +851,9 @@
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        pendingDeleteEndpoint = null;
-        closeLayer(true);
+        if (isPersonalEditorOpen()) closePersonalEditorLayer(true);
+        else if (isPersonalDeleteOpen()) closePersonalDeleteLayer(true);
+        else closeLayer(true);
         return;
       }
       if (event.key !== 'Tab') return;
@@ -887,17 +886,20 @@
       }
       var id = endpoint.id || endpoint.endpoint_id;
       if (!id) return;
+      personalDeleteRequestRevision += 1;
+      if (deleteConfirm) deleteConfirm.disabled = false;
       pendingDeleteEndpoint = endpoint;
       var name = root.querySelector('[data-agent-personal-delete-name]');
       if (name) name.textContent = endpoint.name || endpoint.label || endpoint.model || '这个端点';
       setFeedback(root.querySelector('[data-agent-personal-endpoint-delete-feedback]'), '', false);
-      openLayer(root.querySelector('[data-agent-personal-delete-layer]'), button, '#agentPersonalEndpointDeleteTitle');
+      openLayer(personalDeleteLayer, button, '#agentPersonalEndpointDeleteTitle');
     });
 
     var deleteConfirm = root.querySelector('[data-agent-personal-endpoint-delete-confirm]');
     if (deleteConfirm) deleteConfirm.addEventListener('click', function () {
       var endpoint = pendingDeleteEndpoint;
       var id = endpoint && (endpoint.id || endpoint.endpoint_id);
+      var requestRevision = ++personalDeleteRequestRevision;
       var feedback = root.querySelector('[data-agent-personal-endpoint-delete-feedback]');
       if (!id) return;
       deleteConfirm.disabled = true;
@@ -907,11 +909,16 @@
           return personalEndpointId(candidate) !== asText(id);
         });
         renderPersonalEndpoints();
-        deleteConfirm.disabled = false;
-        pendingDeleteEndpoint = null;
-        closeLayer(true);
+        if (requestRevision === personalDeleteRequestRevision
+            && pendingDeleteEndpoint === endpoint
+            && isPersonalDeleteOpen()) {
+          closePersonalDeleteLayer(true);
+        }
         setFeedback(root.querySelector('[data-agent-personal-endpoint-feedback]'), '端点已删除。', false);
       }).catch(function (error) {
+        if (requestRevision !== personalDeleteRequestRevision
+            || pendingDeleteEndpoint !== endpoint
+            || !isPersonalDeleteOpen()) return;
         deleteConfirm.disabled = false;
         setFeedback(feedback, error.message, true);
       });

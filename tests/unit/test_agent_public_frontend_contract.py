@@ -107,9 +107,10 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
         assert f'data-agent-user-tab="{tab_name}"' in template
         assert f'data-agent-user-panel="{tab_name}"' in template
     assert 'role="tablist"' in template
-    assert "data-agent-personal-endpoint-layer" not in template
-    assert 'id="agentPersonalEndpointModal"' in template
-    assert 'class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"' in template
+    assert "data-agent-personal-endpoint-layer" in template
+    assert "agent-access-layer--endpoint" in template
+    assert 'id="agentPersonalEndpointModal"' not in template
+    assert 'class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"' not in template
     assert "data-agent-personal-delete-layer" in template
     assert "data-agent-personal-endpoint-create" in template
     assert "components/endpoint_editor.html" in template
@@ -121,7 +122,7 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "requested_amount" not in controller
     assert "name=\"approved_amount\"" in controller
     assert "赠送额度" in controller
-    assert "endpoint_editor('agentPersonalEndpoint', mode='personal'" in template
+    assert "endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点', surface='layer')" in template
     assert 'data-endpoint-editor data-endpoint-editor-mode="{{ mode }}"' in endpoint_editor
     assert 'data-endpoint-editor-thinking' in endpoint_editor
     for class_picker_contract in (
@@ -158,10 +159,15 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "personalTestToken" in controller
     assert "personalFormFingerprint" in controller
     assert "agentAccessPersonalEndpointTestUrl" in controller
-    assert "personalModal.show()" in controller
-    assert "personalModal.hide()" in controller
-    assert "accessModal.hide()" in controller
-    assert "accessModal.show()" in controller
+    assert "openLayer(personalEditorLayer, opener, '[data-endpoint-editor-title]')" in controller
+    assert "activeLayer === personalEditorLayer" in controller
+    assert "function closePersonalEditorLayer(restoreFocus)" in controller
+    assert "modalNode.addEventListener('hide.bs.modal'" in controller
+    assert "personalDeleteRequestRevision" in controller
+    assert "personalModal.show()" not in controller
+    assert "personalModal.hide()" not in controller
+    assert "accessModal.hide()" not in controller
+    assert "accessModal.show()" not in controller
     assert "正在测试连接并保存" not in controller
     assert "global.NumOJEndpointEditor = Object.freeze({mount: mount})" in endpoint_editor_controller
     assert "global.confirm(" not in controller
@@ -175,8 +181,11 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert ".agent-class-grant-options" in styles
     assert ".agent-rate-card" in styles
     assert ".agent-rate-logo" in styles
-    assert "grid-template-columns: minmax(0, 1fr) minmax(124px, auto)" in styles
+    assert "grid-template-columns: minmax(0, 1fr) minmax(168px, auto)" in styles
     assert ".agent-rate-values" in styles
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in styles
+    assert "grid-template-rows: auto auto" in styles
+    assert "justify-items: center" in styles
     assert "border-left: 1px solid #e9e4db" in styles
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in styles
     assert "@media (max-width: 767.98px)" in styles
