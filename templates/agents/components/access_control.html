@@ -12,6 +12,7 @@
        data-agent-access-request-url="{{ access_urls.request|default('/api/agent/quota/requests', true) }}"
        data-agent-access-prices-url="{{ access_urls.prices|default('/api/agent/endpoints/prices', true) }}"
        data-agent-access-personal-endpoints-url="{{ access_urls.personal_endpoints|default('/api/agent/endpoints', true) }}"
+       data-agent-access-personal-endpoint-test-url="{{ access_urls.personal_endpoint_test|default('/api/agent/endpoints/test', true) }}"
        data-agent-access-personal-endpoint-url-template="{{ access_urls.personal_endpoint|default('/api/agent/endpoints/__ENDPOINT_ID__', true) }}"
        data-agent-access-reviews-url="{{ access_urls.reviews|default('/api/agent/quota/requests/pending', true) }}"
        data-agent-access-review-url-template="{{ access_urls.review|default('/api/agent/quota/requests/__REQUEST_ID__/review', true) }}"
@@ -161,15 +162,13 @@
                 <span class="agent-access-status" data-agent-request-status hidden></span>
               </header>
               <form class="agent-quota-request-form" data-agent-quota-request-form novalidate>
-                <label class="agent-access-field">
-                  <span>申请金额</span>
-                  <span class="agent-access-input-shell agent-access-money-input"><b>¥</b><input name="requested_amount" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00"></span>
-                </label>
-                <label class="agent-access-field wide">
+                <label class="agent-access-field agent-quota-request-reason">
                   <span>申请理由</span>
                   <span class="agent-access-input-shell is-textarea"><textarea name="reason" rows="3" maxlength="1000" required placeholder="简要说明你准备让 Agent 完成什么任务"></textarea></span>
                 </label>
-                <button class="agent-access-primary" type="submit" data-agent-quota-request-submit>提交申请</button>
+                <button class="agent-access-primary agent-quota-request-submit" type="submit" data-agent-quota-request-submit>
+                  <span>提交申请</span><i class="fas fa-arrow-right" aria-hidden="true"></i>
+                </button>
               </form>
               <p class="agent-access-feedback" data-agent-quota-request-feedback role="status" aria-live="polite" hidden></p>
             </section>
@@ -201,13 +200,6 @@
         </div>
 
         {% if not access_is_admin %}
-        <section class="agent-access-layer" data-agent-personal-endpoint-layer hidden
-                 role="dialog" aria-modal="true" aria-labelledby="agentPersonalEndpoint-title">
-          <button class="agent-access-layer-scrim" type="button" tabindex="-1"
-                  data-agent-layer-dismiss aria-label="关闭端点编辑器"></button>
-          {{ endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建自定义端点', surface='layer') }}
-        </section>
-
         <section class="agent-access-layer is-compact" data-agent-personal-delete-layer hidden
                  role="alertdialog" aria-modal="true" aria-labelledby="agentPersonalEndpointDeleteTitle">
           <button class="agent-access-layer-scrim" type="button" tabindex="-1"
@@ -229,6 +221,15 @@
       </div>
     </div>
   </div>
+
+  {% if not access_is_admin %}
+  <div class="modal fade numoj-endpoint-editor-modal" id="agentPersonalEndpointModal" tabindex="-1"
+       aria-labelledby="agentPersonalEndpoint-title" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+      {{ endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点') }}
+    </div>
+  </div>
+  {% endif %}
 
   <script type="application/json" data-agent-access-summary-json>{{ access_summary|tojson }}</script>
   <script type="application/json" data-agent-access-prices-json>{{ agent_priced_endpoints|default(endpoints_by_harness|default({}, true), true)|tojson }}</script>

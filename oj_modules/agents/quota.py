@@ -170,7 +170,11 @@ def _request_from_row(row):
         "id": int(row.get("id") or 0),
         "user_id": int(row.get("user_id") or 0),
         "username": str(row.get("username") or ""),
-        "requested_amount": _money_text(row.get("requested_amount")),
+        "requested_amount": (
+            _money_text(row.get("requested_amount"))
+            if row.get("requested_amount") is not None
+            else None
+        ),
         "approved_amount": (
             _money_text(row.get("approved_amount"))
             if row.get("approved_amount") is not None
@@ -416,11 +420,10 @@ def list_agent_quota_requests(user_id, *, limit=20):
         conn.close()
 
 
-def create_agent_quota_request(user_id, requested_amount, reason):
+def create_agent_quota_request(user_id, reason):
     """创建额度申请；同一用户同时只能有一条待审核申请。"""
 
     user_id = _positive_int(user_id, "用户 ID")
-    amount = _money(requested_amount, "申请额度", positive=True)
     reason = str(reason or "").strip()
     if not reason:
         raise AgentQuotaValidationError("申请理由不能为空")
@@ -453,10 +456,10 @@ def create_agent_quota_request(user_id, requested_amount, reason):
             cursor.execute(
                 """
                 INSERT INTO agent_quota_requests
-                    (user_id, requested_amount, reason, status)
-                VALUES (%s, %s, %s, 'pending')
+                    (user_id, reason, status)
+                VALUES (%s, %s, 'pending')
                 """,
-                (user_id, amount, reason),
+                (user_id, reason),
             )
             request_id = cursor.lastrowid
             cursor.execute(
@@ -552,6 +555,11 @@ def review_agent_quota_request(
     reviewer_user_id = _positive_int(reviewer_user_id, "管理员用户 ID")
     if not isinstance(approved, bool):
         raise AgentQuotaValidationError("审核结果必须是布尔值")
+    granted = (
+        _money(approved_amount, "批准额度", positive=True)
+        if approved
+        else None
+    )
     review_note = str(review_note or "").strip()
     if len(review_note) > 2000:
         raise AgentQuotaValidationError("审核意见不能超过 2000 个字符")
@@ -570,16 +578,8 @@ def review_agent_quota_request(
             if str(request_row.get("status")) != "pending":
                 raise AgentQuotaConflictError("额度申请已经审核")
 
-            granted = None
             status = "rejected"
             if approved:
-                granted = _money(
-                    approved_amount
-                    if approved_amount not in (None, "")
-                    else request_row.get("requested_amount"),
-                    "批准额度",
-                    positive=True,
-                )
                 status = "approved"
                 cursor.execute(
                     """

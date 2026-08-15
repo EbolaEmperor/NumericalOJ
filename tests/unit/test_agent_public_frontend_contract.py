@@ -84,6 +84,7 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
         "data-agent-access-request-url",
         "data-agent-access-prices-url",
         "data-agent-access-personal-endpoints-url",
+        "data-agent-access-personal-endpoint-test-url",
         "data-agent-access-reviews-url",
         "data-agent-access-review-url-template",
         "data-agent-access-class-grant-url",
@@ -106,10 +107,20 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
         assert f'data-agent-user-tab="{tab_name}"' in template
         assert f'data-agent-user-panel="{tab_name}"' in template
     assert 'role="tablist"' in template
-    assert "data-agent-personal-endpoint-layer" in template
+    assert "data-agent-personal-endpoint-layer" not in template
+    assert 'id="agentPersonalEndpointModal"' in template
+    assert 'class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"' in template
     assert "data-agent-personal-delete-layer" in template
     assert "data-agent-personal-endpoint-create" in template
     assert "components/endpoint_editor.html" in template
+    assert "agent-quota-request-reason" in template
+    assert "agent-quota-request-submit" in template
+    assert '"reason reason"' in styles
+    assert '". submit"' in styles
+    assert "requested_amount" not in template
+    assert "requested_amount" not in controller
+    assert "name=\"approved_amount\"" in controller
+    assert "赠送额度" in controller
     assert "endpoint_editor('agentPersonalEndpoint', mode='personal'" in template
     assert 'data-endpoint-editor data-endpoint-editor-mode="{{ mode }}"' in endpoint_editor
     assert 'data-endpoint-editor-thinking' in endpoint_editor
@@ -132,6 +143,9 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "new Set()" in controller
     assert "user_ids" in controller
     assert "global.NumojModelFamily.iconClass(model)" in controller
+    assert "function protocolText(value)" in controller
+    assert "protocolText(endpoint.protocol)" in controller
+    assert "<small>节点 #" not in controller
     assert "agent-rate-logo" in controller
     assert "action: action" in controller
     assert "amount_rmb: grantForm.elements.amount_rmb.value" in controller
@@ -141,8 +155,14 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "node.inert = inert" in controller
     assert "global.NumOJEndpointEditor.mount(personalForm," in controller
     assert "personalEditor.values()" in controller
-    assert "thinking_enabled: payload.thinking_enabled" in controller
-    assert "thinking_format: payload.thinking_format" in controller
+    assert "personalTestToken" in controller
+    assert "personalFormFingerprint" in controller
+    assert "agentAccessPersonalEndpointTestUrl" in controller
+    assert "personalModal.show()" in controller
+    assert "personalModal.hide()" in controller
+    assert "accessModal.hide()" in controller
+    assert "accessModal.show()" in controller
+    assert "正在测试连接并保存" not in controller
     assert "global.NumOJEndpointEditor = Object.freeze({mount: mount})" in endpoint_editor_controller
     assert "global.confirm(" not in controller
     assert "reportValidity(" not in controller
@@ -155,6 +175,9 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert ".agent-class-grant-options" in styles
     assert ".agent-rate-card" in styles
     assert ".agent-rate-logo" in styles
+    assert "grid-template-columns: minmax(0, 1fr) minmax(124px, auto)" in styles
+    assert ".agent-rate-values" in styles
+    assert "border-left: 1px solid #e9e4db" in styles
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in styles
     assert "@media (max-width: 767.98px)" in styles
     assert "width: 67vw" in styles
@@ -192,6 +215,17 @@ def test_agent_access_composite_fields_draw_only_the_outer_rounded_focus_ring():
         ".agent-access-input-shell.is-invalid:focus-within {", 1
     )[1].split("}", 1)[0]
     assert "box-shadow: 0 0 0 2px var(--agent-access-danger)" in invalid_focus_rule
+    icon_rule = styles.split(
+        ".agent-access-input-shell > i,", 1
+    )[1].split("}", 1)[0]
+    assert "font:" not in icon_rule
+    assert "font-family:" not in icon_rule
+    assert "font-size: 10px" in icon_rule
+    amount_rule = styles.rsplit(
+        "\n.agent-access-input-shell > b {", 1
+    )[1].split("}", 1)[0]
+    assert "font-family: var(--agent-access-mono)" in amount_rule
+    assert "font-weight: 700" in amount_rule
     assert "@media (forced-colors: active)" in styles
 
 

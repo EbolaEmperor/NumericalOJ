@@ -20,8 +20,20 @@ def test_agent_quota_schema_is_part_of_incremental_schema_source():
     )
     assert (
         specs["agent_quota_requests"].columns["requested_amount"].lower()
-        == "decimal(30,14) not null"
+        == "decimal(30,14) default null"
     )
+    assert init_db_schema._column_needs_definition_change(
+        "agent_quota_requests",
+        "requested_amount",
+        {"Type": "decimal(30,14)", "Null": "NO"},
+        specs["agent_quota_requests"].columns["requested_amount"],
+    ) is True
+    assert init_db_schema._column_needs_definition_change(
+        "agent_quota_requests",
+        "requested_amount",
+        {"Type": "decimal(30,14)", "Null": "YES"},
+        specs["agent_quota_requests"].columns["requested_amount"],
+    ) is False
     assert (
         specs["agent_quota_grants"].columns["amount"].lower()
         == "decimal(30,14) not null"
@@ -67,6 +79,17 @@ def test_usage_charge_uses_price_snapshot_and_adaptive_money_text():
     assert quota._money_text(charged) == "1.35"
     assert quota._money_text(Decimal("1.00000000000000")) == "1"
     assert quota._money_text(Decimal("10")) == "10"
+
+
+def test_quota_request_payload_preserves_legacy_amount_and_allows_new_null():
+    base = {"id": 9, "user_id": 7, "status": "pending"}
+
+    assert quota._request_from_row(
+        {**base, "requested_amount": Decimal("1.25000000000000")}
+    )["requested_amount"] == "1.25"
+    assert quota._request_from_row(
+        {**base, "requested_amount": None}
+    )["requested_amount"] is None
 
 
 @pytest.mark.parametrize(
@@ -506,12 +529,31 @@ def test_batch_class_grant_deduplicates_classes_and_writes_one_audit_per_user(
     assert all(row[2] == "a" * 32 for row in grant_rows)
 
 
-@pytest.mark.parametrize("amount", ["0", "-1", "nan", "10000000000000000"])
-def test_quota_request_amount_rejects_invalid_values_before_db(monkeypatch, amount):
+@pytest.mark.parametrize("reason", [None, "", "  ", "x" * 2001])
+def test_quota_request_reason_rejects_invalid_values_before_db(monkeypatch, reason):
     monkeypatch.setattr(
         quota,
         "get_db_connection",
-        lambda: pytest.fail("非法金额不应访问数据库"),
+        lambda: pytest.fail("非法申请理由不应访问数据库"),
     )
     with pytest.raises(quota.AgentQuotaValidationError):
-        quota.create_agent_quota_request(7, amount, "课程项目")
+        quota.create_agent_quota_request(7, reason)
+
+
+@pytest.mark.parametrize("amount", [None, "", "0", "-1", "nan"])
+def test_quota_approval_requires_admin_decided_positive_amount_before_db(
+    monkeypatch,
+    amount,
+):
+    monkeypatch.setattr(
+        quota,
+        "get_db_connection",
+        lambda: pytest.fail("非法批准额度不应访问数据库"),
+    )
+    with pytest.raises(quota.AgentQuotaValidationError):
+        quota.review_agent_quota_request(
+            9,
+            reviewer_user_id=1,
+            approved=True,
+            approved_amount=amount,
+        )

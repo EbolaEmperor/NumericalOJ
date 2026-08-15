@@ -6,7 +6,7 @@ This script is intentionally non-destructive:
 - it creates missing databases/tables;
 - it adds missing columns;
 - it modifies columns only when the stored data type differs from the current
-  schema definition;
+  schema definition, plus explicitly listed nullable-column migrations;
 - it adds missing indexes;
 - it never drops tables, drops columns, truncates rows, imports seed data, or
   updates existing row content.
@@ -47,6 +47,10 @@ REQUIRED_AGENT_QUOTA_TABLES = (
 REQUIRED_AGENT_PUBLIC_TABLES = (
     "agent_user_endpoints",
 )
+# 这类变更只放宽列约束、不改写历史数据，并按声明式 schema 保持幂等。
+NULLABLE_COLUMN_MIGRATIONS = {
+    ("agent_quota_requests", "requested_amount"),
+}
 
 CLASS_HOMEWORK_CREATE_SQL = """
 CREATE TABLE `{table}` (
@@ -241,6 +245,25 @@ def _column_needs_type_change(existing_type: str, desired_definition: str) -> bo
     return _normalize_type(existing_type) != _normalize_type(_column_type(desired_definition))
 
 
+def _column_needs_definition_change(
+    table: str,
+    column: str,
+    existing: dict,
+    desired_definition: str,
+) -> bool:
+    if _column_needs_type_change(existing.get("Type"), desired_definition):
+        return True
+    if (table, column) not in NULLABLE_COLUMN_MIGRATIONS:
+        return False
+    desired_nullable = not re.search(
+        r"\bNOT\s+NULL\b",
+        desired_definition,
+        re.IGNORECASE,
+    )
+    existing_nullable = str(existing.get("Null") or "").strip().upper() == "YES"
+    return desired_nullable != existing_nullable
+
+
 def _existing_columns(cursor, table: str) -> dict[str, dict]:
     cursor.execute(f"SHOW COLUMNS FROM {_quote_identifier(table)}")
     return {row["Field"]: row for row in cursor.fetchall()}
@@ -287,7 +310,12 @@ def _sync_table(cursor, spec: TableSpec, dry_run: bool, actions: list[str]) -> N
         if column not in existing:
             position = f" AFTER {_quote_identifier(previous_col)}" if previous_col else " FIRST"
             _run(cursor, f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_column} {definition}{position}", dry_run, actions)
-        elif _column_needs_type_change(existing[column].get("Type"), definition):
+        elif _column_needs_definition_change(
+            table,
+            column,
+            existing[column],
+            definition,
+        ):
             _run(cursor, f"ALTER TABLE {quoted_table} MODIFY COLUMN {quoted_column} {definition}", dry_run, actions)
         previous_col = column
 

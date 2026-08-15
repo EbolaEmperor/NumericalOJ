@@ -11,7 +11,7 @@ def _app(monkeypatch, user):
     app.secret_key = "test"
     app.register_blueprint(
         routes.create_agent_access_blueprint(
-            endpoint_tester=lambda _candidate: {
+            endpoint_tester=lambda _candidate, **_kwargs: {
                 "passed": True,
                 "message": "ok",
                 "latency_ms": 1,
@@ -43,6 +43,7 @@ def test_quota_and_price_apis_use_public_agent_paths(monkeypatch):
             {
                 "id": 3,
                 "model": "model-a",
+                "protocol": "anthropic",
                 "category": "text",
                 "api_key_configured": True,
                 "input_price_per_million": "1",
@@ -61,6 +62,7 @@ def test_quota_and_price_apis_use_public_agent_paths(monkeypatch):
         {
             "id": 3,
             "model": "model-a",
+            "protocol": "anthropic",
             "input_price_per_million": "1",
             "cached_input_price_per_million": "0.25",
             "output_price_per_million": "4.5",
@@ -89,25 +91,92 @@ def test_admin_pending_payload_includes_class_user_ids(monkeypatch):
     assert payload["classes"][0]["user_ids"] == [7, 8]
 
 
+def test_quota_request_only_submits_reason_and_ignores_legacy_amount(monkeypatch):
+    app = _app(monkeypatch, {"id": 7, "username": "alice", "is_admin": 0})
+    seen = []
+    monkeypatch.setattr(
+        routes.quota,
+        "create_agent_quota_request",
+        lambda user_id, reason: seen.append((user_id, reason)) or {"id": 9},
+    )
+    monkeypatch.setattr(
+        routes.quota,
+        "get_agent_quota_summary",
+        lambda user_id: {"user_id": user_id},
+    )
+
+    response = app.test_client().post(
+        "/api/agent/quota/requests",
+        json={"requested_amount": "999", "reason": "课程项目"},
+    )
+
+    assert response.status_code == 201
+    assert seen == [(7, "课程项目")]
+
+
 def test_personal_endpoint_mutations_are_scoped_to_logged_in_user(monkeypatch):
     app = _app(monkeypatch, {"id": 7, "username": "alice", "is_admin": 0})
     seen = []
 
-    def save(payload, *, user_id, tester, endpoint_id=None):
-        seen.append((payload, user_id, endpoint_id, tester({})["passed"]))
+    def save(payload, *, user_id, test_token, endpoint_id=None):
+        seen.append((payload, user_id, endpoint_id, test_token))
         return {"id": endpoint_id or 12, "name": payload["name"]}
 
     monkeypatch.setattr(routes.user_endpoints, "save_user_agent_endpoint", save)
     client = app.test_client()
     created = client.post(
         "/api/agent/endpoints",
-        json={"name": "自己的节点"},
+        json={"name": "自己的节点", "test_token": "create-token"},
     )
     updated = client.put(
         "/api/agent/endpoints/12",
-        json={"name": "改名后的节点"},
+        json={"name": "改名后的节点", "test_token": "update-token"},
     )
 
     assert created.status_code == 201
     assert updated.status_code == 200
     assert [(item[1], item[2]) for item in seen] == [(7, None), (7, 12)]
+    assert [item[3] for item in seen] == ["create-token", "update-token"]
+
+
+def test_personal_endpoint_test_uses_same_user_scoped_payload(monkeypatch):
+    app = _app(monkeypatch, {"id": 7, "username": "alice", "is_admin": 0})
+    seen = []
+
+    def test_payload(payload, *, user_id, endpoint_id, tester):
+        seen.append((payload, user_id, endpoint_id, tester))
+        return {
+            "passed": True,
+            "status": "passed",
+            "message": "测试通过",
+            "latency_ms": 12,
+            "test_token": "test-token",
+            "expires_in_seconds": 600,
+        }
+
+    monkeypatch.setattr(
+        routes.user_endpoints,
+        "test_user_agent_endpoint_payload",
+        test_payload,
+    )
+    response = app.test_client().post(
+        "/api/agent/endpoints/test",
+        json={
+            "endpoint_id": 12,
+            "protocol": "openai",
+            "category": "text",
+            "model": "private-model",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["test"] == {
+        "passed": True,
+        "status": "passed",
+        "message": "测试通过",
+        "latency_ms": 12,
+    }
+    assert response.get_json()["test_token"] == "test-token"
+    assert response.get_json()["expires_in_seconds"] == 600
+    assert seen[0][1:3] == (7, 12)
+    assert seen[0][0]["category"] == "text"

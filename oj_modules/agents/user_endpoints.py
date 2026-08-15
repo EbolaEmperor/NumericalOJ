@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+import json
+import secrets
+from datetime import datetime, timedelta
 
 from oj_modules.agents.endpoint_egress import (
     AgentEndpointEgressError,
@@ -14,6 +17,10 @@ from oj_modules.agents.endpoint_egress import (
 )
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.site_config import services as config_service
+
+
+USER_ENDPOINT_TEST_GRANT_KIND = "user_agent_endpoint"
+USER_ENDPOINT_TEST_GRANT_TTL_SECONDS = 10 * 60
 
 
 def _positive_id(value, label):
@@ -33,46 +40,43 @@ def _candidate_from_row(row):
         return None
     return {
         "protocol": row.get("protocol"),
-        "category": "text",
+        "category": row.get("category") or "text",
         "base_url": row.get("base_url"),
         "api_key": row.get("api_key"),
         "model": row.get("model"),
         "thinking_enabled": bool(row.get("thinking_enabled")),
         "thinking_format": row.get("thinking_format") or "none",
-        # 自有端点不参与额度扣减；零价只用于复用全站端点的协议校验器。
-        "input_price_per_million": "0",
-        "cached_input_price_per_million": "0",
-        "output_price_per_million": "0",
+        # 个人端点不参与平台计费，价格只用于复用全站端点校验器。
+        **{field: "0" for field in config_service.LLM_PRICE_FIELDS},
     }
 
 
 def normalize_user_agent_endpoint_payload(payload, *, existing=None):
     raw = dict(payload or {})
-    name = str(raw.get("name", (existing or {}).get("name") or "")).strip()
-    if not name:
-        raise config_service.DynamicConfigValidationError("端点名称不能为空")
-    if len(name) > 100:
-        raise config_service.DynamicConfigValidationError("端点名称不能超过 100 个字符")
-    raw["category"] = "text"
-    raw["input_price_per_million"] = "0"
-    raw["cached_input_price_per_million"] = "0"
-    raw["output_price_per_million"] = "0"
+    # 用户自带密钥不扣平台额度，也不记录展示价格。
+    for field in config_service.LLM_PRICE_FIELDS:
+        raw[field] = "0"
     candidate = config_service.normalize_llm_endpoint_payload(
         raw,
         existing=_candidate_from_row(existing),
     )
+    # name 是个人端点旧版 UI 的兼容字段。新版与全站端点共用同一套字段，
+    # 未显式提供显示名称时直接使用模型名，避免继续维护额外表单分支。
+    name = str(raw.get("name") or candidate["model"]).strip()
+    if len(name) > 255:
+        raise config_service.DynamicConfigValidationError("端点名称不能超过 255 个字符")
     return {
         "name": name,
         **{
             key: candidate[key]
             for key in (
-            "protocol",
-            "category",
-            "base_url",
-            "api_key",
-            "model",
-            "thinking_enabled",
-            "thinking_format",
+                "protocol",
+                "category",
+                "base_url",
+                "api_key",
+                "model",
+                "thinking_enabled",
+                "thinking_format",
             )
         },
     }
@@ -91,6 +95,161 @@ def test_user_agent_endpoint(candidate, *, egress_target, timeout_seconds=30):
         )
 
 
+def _owned_endpoint_row(endpoint_id, user_id):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT * FROM agent_user_endpoints WHERE id=%s AND user_id=%s",
+                (endpoint_id, user_id),
+            )
+            row = cursor.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise config_service.DynamicConfigNotFoundError("自有 Agent 端点不存在")
+    return row
+
+
+def _test_candidate(candidate, tester):
+    try:
+        egress_target = resolve_public_endpoint_url(candidate["base_url"])
+    except AgentEndpointEgressError as exc:
+        raise config_service.DynamicConfigValidationError(str(exc)) from None
+    result = config_service.run_dynamic_config_tester(
+        lambda tested: tester(tested, egress_target=egress_target),
+        candidate,
+    )
+    if not result["passed"]:
+        raise config_service.DynamicConfigTestFailedError(
+            result["message"],
+            result=result,
+        )
+    return result
+
+
+def _candidate_fingerprint(candidate):
+    encoded = json.dumps(
+        candidate,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _token_hash(token):
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _validate_test_grant(
+    cursor,
+    *,
+    token,
+    endpoint_id,
+    base_revision,
+    fingerprint,
+    user_id,
+):
+    if not str(token or "").strip():
+        raise config_service.DynamicConfigValidationError(
+            "保存前必须先通过真实连接测试"
+        )
+    cursor.execute(
+        "SELECT * FROM dynamic_config_test_grants WHERE token_hash=%s FOR UPDATE",
+        (_token_hash(token),),
+    )
+    grant = cursor.fetchone()
+    if not grant:
+        raise config_service.DynamicConfigValidationError(
+            "测试凭证无效，请重新测试"
+        )
+    target_matches = (
+        (endpoint_id is None and grant.get("target_id") is None)
+        or int(grant.get("target_id") or 0) == int(endpoint_id or 0)
+    )
+    if (
+        grant.get("config_kind") != USER_ENDPOINT_TEST_GRANT_KIND
+        or not target_matches
+        or int(grant.get("base_revision") or 0) != int(base_revision)
+        or grant.get("payload_fingerprint") != fingerprint
+        or int(grant.get("created_by_user_id") or 0) != int(user_id)
+        or grant.get("status") != "passed"
+    ):
+        raise config_service.DynamicConfigConflictError(
+            "配置已变化或测试凭证不匹配，请重新测试"
+        )
+    if grant.get("consumed_at") is not None:
+        raise config_service.DynamicConfigConflictError(
+            "测试凭证已使用，请重新测试"
+        )
+    expires_at = grant.get("expires_at")
+    if not expires_at or expires_at < datetime.utcnow():
+        raise config_service.DynamicConfigConflictError(
+            "测试凭证已过期，请重新测试"
+        )
+    return grant
+
+
+def test_user_agent_endpoint_payload(
+    payload,
+    *,
+    user_id,
+    tester,
+    endpoint_id=None,
+):
+    """测试与当前用户已有端点合并后的完整候选配置。"""
+
+    user_id = _positive_id(user_id, "用户 ID")
+    endpoint_id = (
+        _positive_id(endpoint_id, "端点 ID")
+        if endpoint_id is not None
+        else None
+    )
+    existing = (
+        _owned_endpoint_row(endpoint_id, user_id)
+        if endpoint_id is not None
+        else None
+    )
+    candidate = normalize_user_agent_endpoint_payload(payload, existing=existing)
+    result = _test_candidate(candidate, tester)
+    token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO dynamic_config_test_grants
+                    (token_hash, config_kind, target_id, base_revision,
+                     payload_fingerprint, status, test_message, test_latency_ms,
+                     created_by_user_id, created_at, expires_at)
+                VALUES (%s, %s, %s, %s, %s, 'passed', %s, %s, %s, %s, %s)
+                """,
+                (
+                    _token_hash(token),
+                    USER_ENDPOINT_TEST_GRANT_KIND,
+                    endpoint_id,
+                    int((existing or {}).get("revision") or 0),
+                    _candidate_fingerprint(candidate),
+                    result["message"],
+                    result["latency_ms"],
+                    user_id,
+                    now,
+                    now + timedelta(seconds=USER_ENDPOINT_TEST_GRANT_TTL_SECONDS),
+                ),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    result["test_token"] = token
+    result["expires_in_seconds"] = USER_ENDPOINT_TEST_GRANT_TTL_SECONDS
+    return result
+
+
 def _public_endpoint(row, *, include_secret=False):
     if not row:
         return None
@@ -102,7 +261,7 @@ def _public_endpoint(row, *, include_secret=False):
         "source": "user",
         "name": str(row.get("name") or row.get("model") or ""),
         "protocol": str(row.get("protocol") or ""),
-        "category": "text",
+        "category": str(row.get("category") or "text"),
         "base_url": str(row.get("base_url") or ""),
         "model": str(row.get("model") or ""),
         "thinking_enabled": bool(row.get("thinking_enabled")),
@@ -169,10 +328,10 @@ def save_user_agent_endpoint(
     payload,
     *,
     user_id,
-    tester,
+    test_token,
     endpoint_id=None,
 ):
-    """真实测试成功后创建或更新当前用户的端点。"""
+    """消费与候选配置完全匹配的一次性测试凭证后保存端点。"""
 
     user_id = _positive_id(user_id, "用户 ID")
     endpoint_id = (
@@ -182,59 +341,45 @@ def save_user_agent_endpoint(
     )
     existing = None
     if endpoint_id is not None:
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT * FROM agent_user_endpoints WHERE id=%s AND user_id=%s",
-                    (endpoint_id, user_id),
-                )
-                existing = cursor.fetchone()
-        finally:
-            conn.close()
-        if not existing:
-            raise config_service.DynamicConfigNotFoundError("自有 Agent 端点不存在")
+        existing = _owned_endpoint_row(endpoint_id, user_id)
 
     candidate = normalize_user_agent_endpoint_payload(payload, existing=existing)
-    try:
-        egress_target = resolve_public_endpoint_url(candidate["base_url"])
-    except AgentEndpointEgressError as exc:
-        raise config_service.DynamicConfigValidationError(str(exc)) from None
-    result = config_service.run_dynamic_config_tester(
-        lambda tested: tester(tested, egress_target=egress_target),
-        candidate,
-    )
-    if not result["passed"]:
-        raise config_service.DynamicConfigTestFailedError(
-            result["message"],
-            result=result,
-        )
-
-    now = datetime.utcnow()
+    fingerprint = _candidate_fingerprint(candidate)
+    base_revision = int((existing or {}).get("revision") or 0)
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            grant = _validate_test_grant(
+                cursor,
+                token=test_token,
+                endpoint_id=endpoint_id,
+                base_revision=base_revision,
+                fingerprint=fingerprint,
+                user_id=user_id,
+            )
+            tested_at = grant.get("created_at") or datetime.utcnow()
             values = (
                 candidate["name"],
                 candidate["protocol"],
+                candidate["category"],
                 candidate["base_url"],
                 candidate["api_key"],
                 candidate["model"],
                 int(candidate["thinking_enabled"]),
                 candidate["thinking_format"],
-                result["status"],
-                result["message"],
-                result["latency_ms"],
-                now,
+                grant["test_message"],
+                grant["test_latency_ms"],
+                tested_at,
             )
             if endpoint_id is None:
                 cursor.execute(
                     """
                     INSERT INTO agent_user_endpoints
-                        (user_id, name, protocol, base_url, api_key, model,
-                         thinking_enabled, thinking_format, test_status,
+                        (user_id, name, protocol, category, base_url, api_key,
+                         model, thinking_enabled, thinking_format, test_status,
                          test_message, test_latency_ms, tested_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'passed',
+                            %s, %s, %s)
                     """,
                     (user_id, *values),
                 )
@@ -243,18 +388,23 @@ def save_user_agent_endpoint(
                 cursor.execute(
                     """
                     UPDATE agent_user_endpoints
-                    SET name=%s, protocol=%s, base_url=%s, api_key=%s, model=%s,
-                        thinking_enabled=%s, thinking_format=%s,
-                        test_status=%s, test_message=%s, test_latency_ms=%s,
+                    SET name=%s, protocol=%s, category=%s, base_url=%s,
+                        api_key=%s, model=%s, thinking_enabled=%s,
+                        thinking_format=%s, test_status='passed',
+                        test_message=%s, test_latency_ms=%s,
                         tested_at=%s, revision=revision+1
                     WHERE id=%s AND user_id=%s AND revision=%s
                     """,
-                    (*values, endpoint_id, user_id, int(existing["revision"])),
+                    (*values, endpoint_id, user_id, base_revision),
                 )
                 if cursor.rowcount != 1:
                     raise config_service.DynamicConfigConflictError(
                         "自有端点已被其它请求修改，请刷新后重试"
                     )
+            cursor.execute(
+                "UPDATE dynamic_config_test_grants SET consumed_at=%s WHERE id=%s",
+                (datetime.utcnow(), grant["id"]),
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -293,4 +443,5 @@ __all__ = [
     "normalize_user_agent_endpoint_payload",
     "save_user_agent_endpoint",
     "test_user_agent_endpoint",
+    "test_user_agent_endpoint_payload",
 ]

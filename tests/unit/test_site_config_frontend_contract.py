@@ -295,7 +295,8 @@ def test_endpoint_model_is_the_only_display_name():
     assert "site-config-endpoint-model" not in f"{script}\n{_read(STYLESHEET)}"
     assert "endpoint.name" not in external_displays
     assert "{{ endpoint.name }}" not in external_displays
-    assert "mode == 'personal'" in endpoint_editor
+    assert '<input type="hidden" name="name" value="" disabled>' in endpoint_editor
+    assert "显示名称" not in endpoint_editor
     assert '<input name="model" maxlength="200" required' in endpoint_editor
     assert "modelIconClass(endpoint.model)" in script
     assert "${escapeHtml(endpoint.model)}</span></h3>" in script

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from oj_modules.agents import user_endpoints
 
 
@@ -10,8 +12,15 @@ def test_agent_user_endpoint_schema_and_source_columns_are_declared():
     endpoint = specs["agent_user_endpoints"]
 
     assert endpoint.columns["user_id"].lower() == "int not null"
-    assert endpoint.columns["name"].lower() == "varchar(100) not null"
+    assert endpoint.columns["name"].lower() == "varchar(255) not null"
     assert endpoint.columns["api_key"].lower() == "text not null"
+    assert endpoint.columns["category"].lower() == "varchar(16) not null default 'text'"
+    for field in (
+        "input_price_per_million",
+        "cached_input_price_per_million",
+        "output_price_per_million",
+    ):
+        assert field not in endpoint.columns
     assert "idx_agent_user_endpoints_user_model" in endpoint.indexes
     assert (
         specs["agent_sessions"].columns["endpoint_source"].lower()
@@ -27,24 +36,25 @@ def test_agent_user_endpoint_schema_and_source_columns_are_declared():
     )
 
 
-def test_personal_endpoint_normalization_forces_text_and_unmetered_prices():
+def test_personal_endpoint_normalization_preserves_category_without_prices():
     normalized = user_endpoints.normalize_user_agent_endpoint_payload({
         "protocol": "openai",
-        "name": "私人节点",
         "base_url": "https://example.test/v1",
         "api_key": "secret",
         "model": "private-model",
         "thinking_enabled": False,
         "thinking_format": "none",
-        "category": "embedding",
-        "input_price_per_million": "999",
-        "cached_input_price_per_million": "999",
-        "output_price_per_million": "999",
+        "category": "vision",
+        "input_price_per_million": "1.25",
+        "cached_input_price_per_million": "0.125",
+        "output_price_per_million": "5",
     })
 
-    assert normalized["category"] == "text"
-    assert normalized["name"] == "私人节点"
+    assert normalized["name"] == "private-model"
+    assert normalized["category"] == "vision"
     assert "input_price_per_million" not in normalized
+    assert "cached_input_price_per_million" not in normalized
+    assert "output_price_per_million" not in normalized
 
 
 def test_personal_endpoint_public_view_hides_secret_and_has_stable_ref():
@@ -53,6 +63,7 @@ def test_personal_endpoint_public_view_hides_secret_and_has_stable_ref():
         "user_id": 4,
         "name": "我的 Claude",
         "protocol": "anthropic",
+        "category": "omni",
         "base_url": "https://example.test",
         "api_key": "secret",
         "model": "private-model",
@@ -67,8 +78,156 @@ def test_personal_endpoint_public_view_hides_secret_and_has_stable_ref():
 
     assert public["ref"] == "user:8"
     assert public["name"] == "我的 Claude"
-    assert public["category"] == "text"
+    assert public["category"] == "omni"
+    assert "input_price_per_million" not in public
+    assert "cached_input_price_per_million" not in public
+    assert "output_price_per_million" not in public
     assert public["metered"] is False
     assert public["api_key"] == ""
     assert public["api_key_configured"] is True
     assert private["api_key"] == "secret"
+
+
+def test_personal_endpoint_test_issues_scoped_one_time_grant(monkeypatch):
+    executed = []
+    observed = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params):
+            executed.append((" ".join(sql.split()), params))
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(user_endpoints, "get_db_connection", Connection)
+    monkeypatch.setattr(
+        user_endpoints,
+        "resolve_public_endpoint_url",
+        lambda _url: object(),
+    )
+    monkeypatch.setattr(
+        user_endpoints.secrets,
+        "token_urlsafe",
+        lambda _length: "personal-test-token",
+    )
+
+    result = user_endpoints.test_user_agent_endpoint_payload(
+        {
+            "protocol": "openai",
+            "category": "text",
+            "base_url": "https://example.test/v1",
+            "api_key": "secret",
+            "model": "private-model",
+            "thinking_enabled": False,
+            "thinking_format": "none",
+        },
+        user_id=7,
+        tester=lambda candidate, **_kwargs: (
+            observed.append(candidate)
+            or {"passed": True, "message": "ok", "latency_ms": 2}
+        ),
+    )
+
+    assert result["test_token"] == "personal-test-token"
+    assert result["expires_in_seconds"] == 600
+    assert observed[0]["category"] == "text"
+    assert "input_price_per_million" not in observed[0]
+    assert "INSERT INTO dynamic_config_test_grants" in executed[0][0]
+    assert executed[0][1][1] == user_endpoints.USER_ENDPOINT_TEST_GRANT_KIND
+
+
+def test_personal_endpoint_create_persists_category_without_prices(monkeypatch):
+    executed = []
+    payload = {
+        "protocol": "openai",
+        "category": "omni",
+        "base_url": "https://example.test/v1",
+        "api_key": "secret",
+        "model": "private-model",
+        "thinking_enabled": False,
+        "thinking_format": "none",
+    }
+    candidate = user_endpoints.normalize_user_agent_endpoint_payload(payload)
+    grant = {
+        "id": 23,
+        "config_kind": user_endpoints.USER_ENDPOINT_TEST_GRANT_KIND,
+        "target_id": None,
+        "base_revision": 0,
+        "payload_fingerprint": user_endpoints._candidate_fingerprint(candidate),
+        "created_by_user_id": 7,
+        "status": "passed",
+        "test_message": "ok",
+        "test_latency_ms": 2,
+        "created_at": datetime.utcnow(),
+        "expires_at": datetime.utcnow() + timedelta(minutes=5),
+        "consumed_at": None,
+    }
+
+    class Cursor:
+        lastrowid = 19
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params):
+            executed.append((" ".join(sql.split()), params))
+
+        def fetchone(self):
+            return grant
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(user_endpoints, "get_db_connection", Connection)
+    monkeypatch.setattr(
+        user_endpoints,
+        "resolve_public_endpoint_url",
+        lambda _url: object(),
+    )
+    monkeypatch.setattr(
+        user_endpoints,
+        "get_user_agent_endpoint",
+        lambda endpoint_id, user_id: {"id": endpoint_id, "user_id": user_id},
+    )
+
+    saved = user_endpoints.save_user_agent_endpoint(
+        payload,
+        user_id=7,
+        test_token="valid-token",
+    )
+
+    sql, params = executed[1]
+    assert "protocol, category, base_url" in sql
+    assert "input_price_per_million" not in sql
+    assert params[3] == "omni"
+    assert "UPDATE dynamic_config_test_grants SET consumed_at" in executed[2][0]
+    assert saved == {"id": 19, "user_id": 7}
