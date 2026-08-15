@@ -2005,6 +2005,28 @@ def test_pi_rpc_adapter_maps_steer_and_abort_with_real_ack(monkeypatch):
     )
 
 
+def test_pi_usage_uses_response_id_when_message_has_no_id(monkeypatch):
+    module = _load_run_harness()
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    module._normalize_stream_event("pi", {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "responseId": "response-pi-1",
+            "content": [{"type": "text", "text": "完成"}],
+            "usage": {"input": 10, "cacheRead": 4, "output": 3},
+        },
+    })
+
+    trace = next(item for item in emitted if item["type"] == "numoj_trace")
+    usage = next(item for item in emitted if item["type"] == "numoj_usage")
+    assert trace["event"]["id"].startswith("response-pi-1")
+    assert usage["id"] == "response-pi-1"
+    assert usage["usage"]["input_cached_tokens"] == 4
+
+
 def test_pi_rpc_rejects_start_without_waiting_for_settled(monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["pi"])

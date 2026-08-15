@@ -1729,6 +1729,40 @@ def test_tail_reader_drains_mirror_while_result_capture_stays_bounded():
     assert sizes["stdout"] == runtime._CAPTURE_LIMIT_BYTES
 
 
+def test_tail_reader_prefers_available_pipe_bytes_over_waiting_for_full_block():
+    class InteractivePipe:
+        def __init__(self):
+            self.blocks = iter((b'{"type":"numoj_trace"}\n', b""))
+            self.closed = False
+
+        def read1(self, size):
+            assert size == 65536
+            return next(self.blocks)
+
+        def read(self, _size):
+            raise AssertionError("交互管道不能使用等待填满的 read(size)")
+
+        def close(self):
+            self.closed = True
+
+    stream = InteractivePipe()
+    chunks = runtime.deque()
+    sizes = {"stdout": 0}
+    observed = []
+
+    runtime._tail_reader(
+        stream,
+        chunks,
+        sizes,
+        "stdout",
+        runtime._CAPTURE_LIMIT_BYTES,
+        block_observer=observed.append,
+    )
+
+    assert observed == [b'{"type":"numoj_trace"}\n']
+    assert stream.closed is True
+
+
 def test_stdout_mirror_publishes_a_bounded_record_aligned_tail(tmp_path):
     destination = tmp_path / "stdout.jsonl"
     records = [f'{{"n":{index}}}\n'.encode("ascii") for index in range(1, 5)]

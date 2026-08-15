@@ -359,6 +359,76 @@ def test_session_usage_cost_uses_ledger_sum_and_distinguishes_no_records(
     assert observed["closed"] is True
 
 
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        ([], None),
+        ([{
+            "task_id": "turn-1",
+            "request_count": 2,
+            "input_uncached_tokens": 60,
+            "input_cached_tokens": 50,
+            "input_cache_write_tokens": 5,
+            "output_tokens": 12,
+            "reasoning_output_tokens": 5,
+            "charged_amount": Decimal("0.07500000000000"),
+        }, {
+            "task_id": "turn-2",
+            "request_count": 1,
+            "input_uncached_tokens": 40,
+            "input_cached_tokens": 20,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 8,
+            "reasoning_output_tokens": 3,
+            "charged_amount": Decimal("0.05000000000000"),
+        }], {
+            "source": "session",
+            "request_count": 3,
+            "turn_count": 2,
+            "input_uncached_tokens": 100,
+            "input_cached_tokens": 70,
+            "input_cache_write_tokens": 5,
+            "input_total_tokens": 175,
+            "output_tokens": 20,
+            "reasoning_output_tokens": 8,
+            "cost_rmb": "0.125",
+            "cost_complete": True,
+            "_task_ids": ["turn-1", "turn-2"],
+        }),
+    ],
+)
+def test_session_token_usage_comes_from_frozen_ledger(monkeypatch, rows, expected):
+    observed = {}
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, params):
+            observed["sql"] = " ".join(sql.split())
+            observed["params"] = params
+
+        def fetchall(self):
+            return rows
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            observed["closed"] = True
+
+    monkeypatch.setattr(quota, "get_db_connection", Connection)
+
+    assert quota.get_agent_session_token_usage("session-ledger") == expected
+    assert "GROUP BY task_id" in observed["sql"]
+    assert observed["params"] == ("session-ledger",)
+    assert observed["closed"] is True
+
+
 def test_start_gate_allows_personal_endpoint_but_not_when_public_is_off(monkeypatch):
     monkeypatch.setattr(quota, "get_agent_public_enabled", lambda: True)
     monkeypatch.setattr(

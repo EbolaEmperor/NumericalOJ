@@ -63,7 +63,7 @@ from oj_modules.agents.quota import (
     AgentQuotaError,
     get_agent_quota_summary,
     get_agent_runtime_quota_summary,
-    get_agent_session_usage_cost,
+    get_agent_session_token_usage,
     list_pending_agent_quota_requests,
     require_agent_start_eligibility,
 )
@@ -643,10 +643,20 @@ class _AgentHistoricalTokenUsages(list):
         self.current_task_visible = bool(current_task_visible)
 
 
-def _load_agent_historical_token_usages(session_id, current_task_id):
+def _load_agent_historical_token_usages(
+    session_id,
+    current_task_id,
+    *,
+    exclude_task_ids=(),
+):
     """读取整场会话用量；重试替换的轮次也属于实际消耗。"""
 
     current_task_id = str(current_task_id or '').strip()
+    excluded = {
+        str(task_id or '').strip()
+        for task_id in exclude_task_ids or ()
+        if str(task_id or '').strip()
+    }
     usages = []
     current_task_visible = False
     for turn in get_agent_session_turns(
@@ -657,7 +667,7 @@ def _load_agent_historical_token_usages(session_id, current_task_id):
         if task_id == current_task_id:
             current_task_visible = True
             continue
-        if not task_id:
+        if not task_id or task_id in excluded:
             continue
         persisted = get_agent_run_by_task_id(task_id)
         if not isinstance(persisted, dict):
@@ -771,24 +781,60 @@ def _agent_state_with_loaded_session_trace_delta(state):
     return _agent_state_with_trace_delta(state, previous_messages, harness)
 
 
-def _agent_state_with_session_token_usage(state, historical_usages=()):
+def _agent_state_with_session_token_usage(
+    state,
+    historical_usages=(),
+    *,
+    ledger_usage=None,
+):
     """把历史基线与当前任务实时快照合成为会话级权威用量。"""
 
     if not isinstance(state, dict):
         return state
     projected = dict(state)
+    ledger_usage = dict(ledger_usage) if isinstance(ledger_usage, dict) else None
+    ledger_task_ids = {
+        str(task_id or '').strip()
+        for task_id in (ledger_usage or {}).pop('_task_ids', ())
+        if str(task_id or '').strip()
+    }
     current_task_visible = bool(
         getattr(historical_usages, 'current_task_visible', True)
     )
-    task_usages = list(historical_usages or ())
+    task_usages = [
+        item for item in historical_usages or ()
+        if (
+            isinstance(item, (tuple, list))
+            and len(item) == 2
+            and str(item[0] or '').strip() not in ledger_task_ids
+        )
+    ]
     current_usage = _agent_token_usage_from_state(projected)
     current_task_id = str(projected.get('task_id') or '').strip()
-    if current_task_visible and current_task_id and current_usage is not None:
+    if (
+        current_task_visible
+        and current_task_id
+        and current_task_id not in ledger_task_ids
+        and current_usage is not None
+    ):
         # aggregate helper 按 task_id 最后写入覆盖，避免历史/current 重复计数。
         task_usages.append((current_task_id, current_usage))
+    if ledger_usage is not None:
+        ledger_usage['incremental'] = True
+        task_usages.append(('__quota_ledger__', ledger_usage))
     session_usage = aggregate_agent_session_token_usage(task_usages)
+    if session_usage is not None and ledger_usage is not None:
+        session_usage = dict(session_usage)
+        session_usage['turn_count'] += max(
+            0,
+            int(ledger_usage.get('turn_count') or 0) - 1,
+        )
     ledger_cost = projected.get('session_charged_amount_rmb')
-    if session_usage is not None and ledger_cost is not None:
+    if (
+        session_usage is not None
+        and ledger_usage is None
+        and ledger_cost is not None
+    ):
         session_usage = dict(session_usage)
         session_usage['cost_rmb'] = str(ledger_cost)
         session_usage['cost_complete'] = True
@@ -805,11 +851,12 @@ def _agent_state_with_loaded_session_token_usage(state):
     current_task_id = str(state.get('task_id') or '').strip()
     projected = dict(state)
     historical_usages = ()
-    if session_id and projected.get('session_charged_amount_rmb') is None:
+    ledger_usage = None
+    if session_id:
         try:
-            ledger_cost = get_agent_session_usage_cost(session_id)
-            if ledger_cost is not None:
-                projected['session_charged_amount_rmb'] = ledger_cost
+            ledger_usage = get_agent_session_token_usage(session_id)
+            if ledger_usage is not None:
+                projected['session_charged_amount_rmb'] = ledger_usage['cost_rmb']
         except Exception:
             logger.warning(
                 '读取 Agent 会话计费账本失败',
@@ -821,6 +868,9 @@ def _agent_state_with_loaded_session_token_usage(state):
             historical_usages = _load_agent_historical_token_usages(
                 session_id,
                 current_task_id,
+                **({
+                    'exclude_task_ids': ledger_usage['_task_ids'],
+                } if (ledger_usage or {}).get('_task_ids') else {}),
             )
         except Exception:
             # 用量展示不能阻断状态接口。历史读取失败时，只在数据层仍能确认
@@ -855,7 +905,11 @@ def _agent_state_with_loaded_session_token_usage(state):
                 (),
                 current_task_visible=current_task_visible,
             )
-    return _agent_state_with_session_token_usage(projected, historical_usages)
+    return _agent_state_with_session_token_usage(
+        projected,
+        historical_usages,
+        ledger_usage=ledger_usage,
+    )
 
 
 def _decorate_agent_session_message(message):
@@ -1885,12 +1939,17 @@ def agent_run_stream(task_id):
     def generate():
         historical_usages = ()
         loaded_session_id = ''
+        loaded_usage_task_ids = frozenset()
+        ledger_cache_key = None
+        ledger_usage_cache = None
         previous_trace_messages = ()
         loaded_trace_session_id = ''
         loaded_trace_harness = ''
 
         def with_session_projection(snapshot):
             nonlocal historical_usages, loaded_session_id
+            nonlocal loaded_usage_task_ids
+            nonlocal ledger_cache_key, ledger_usage_cache
             nonlocal previous_trace_messages
             nonlocal loaded_trace_session_id, loaded_trace_harness
             if not isinstance(snapshot, dict):
@@ -1912,11 +1971,56 @@ def agent_run_stream(task_id):
                     )
             session_id = session_id or loaded_trace_session_id
             harness = harness or loaded_trace_harness
-            if session_id and session_id != loaded_session_id:
+            ledger_usage = None
+            if (
+                session_id
+                and snapshot.get('session_charged_amount_rmb') is not None
+            ):
+                next_ledger_key = (
+                    session_id,
+                    str(snapshot.get('session_charged_amount_rmb')),
+                )
+                if (
+                    next_ledger_key != ledger_cache_key
+                    or next_ledger_key[1] == '0'
+                ):
+                    try:
+                        ledger_usage_cache = get_agent_session_token_usage(
+                            session_id
+                        )
+                        ledger_cache_key = next_ledger_key
+                    except Exception:
+                        logger.warning(
+                            '读取 Agent SSE 会话计费账本失败',
+                            extra={
+                                'session_id': session_id,
+                                'task_id': task_id,
+                            },
+                            exc_info=True,
+                        )
+                if ledger_cache_key == next_ledger_key:
+                    ledger_usage = ledger_usage_cache
+            ledger_task_ids = frozenset(
+                str(covered_task_id or '').strip()
+                for covered_task_id in (ledger_usage or {}).get(
+                    '_task_ids', ()
+                )
+                if str(covered_task_id or '').strip()
+            )
+            if (
+                session_id
+                and (
+                    session_id != loaded_session_id
+                    or ledger_task_ids != loaded_usage_task_ids
+                )
+            ):
                 try:
                     historical_usages = _load_agent_historical_token_usages(
                         session_id,
                         task_id,
+                        **({
+                            'exclude_task_ids': ledger_task_ids,
+                        } if ledger_task_ids else {}),
                     )
                 except Exception:
                     historical_usages = ()
@@ -1929,6 +2033,7 @@ def agent_run_stream(task_id):
                         exc_info=True,
                     )
                 loaded_session_id = session_id
+                loaded_usage_task_ids = ledger_task_ids
             trace_context_changed = (
                 session_id != loaded_trace_session_id
                 or harness != loaded_trace_harness
@@ -1957,6 +2062,7 @@ def agent_run_stream(task_id):
             projected = _agent_state_with_session_token_usage(
                 snapshot,
                 historical_usages,
+                ledger_usage=ledger_usage,
             )
             return _agent_state_with_trace_delta(
                 projected,

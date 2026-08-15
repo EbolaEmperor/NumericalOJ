@@ -515,8 +515,14 @@ def _tail_reader(
     block_observer=None,
 ):
     try:
+        read_block = getattr(stream, "read1", None)
+        if not callable(read_block):
+            read_block = stream.read
         while True:
-            block = stream.read(65536)
+            # BufferedReader.read(size) 会等待填满 size 或 EOF；交互 harness
+            # 往往长期保持 stdout 开放且单轮输出不足 64 KiB，导致运行轨迹
+            # 直到任务结束才出现。read1() 只读取当前可用字节。
+            block = read_block(65536)
             if not block:
                 break
             if mirror_stream is not None:

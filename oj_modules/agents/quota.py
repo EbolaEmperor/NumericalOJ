@@ -402,6 +402,69 @@ def get_agent_session_usage_cost(session_id):
     return _money_text(row["charged_amount"])
 
 
+def get_agent_session_token_usage(session_id):
+    """从计费账本返回会话累计 Token 与冻结后的实际费用。"""
+
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id or len(normalized_session_id) > 64:
+        raise AgentQuotaValidationError("Agent session_id 无效")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT task_id, COUNT(*) AS request_count,
+                       SUM(input_uncached_tokens) AS input_uncached_tokens,
+                       SUM(input_cached_tokens) AS input_cached_tokens,
+                       SUM(input_cache_write_tokens) AS input_cache_write_tokens,
+                       SUM(output_tokens) AS output_tokens,
+                       SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                       SUM(charged_amount) AS charged_amount
+                FROM agent_usage_ledger
+                WHERE session_id=%s
+                GROUP BY task_id
+                """,
+                (normalized_session_id,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return None
+    usage = {
+        "source": "session",
+        "request_count": sum(int(row.get("request_count") or 0) for row in rows),
+        "turn_count": len(rows),
+        "input_uncached_tokens": sum(
+            int(row.get("input_uncached_tokens") or 0) for row in rows
+        ),
+        "input_cached_tokens": sum(
+            int(row.get("input_cached_tokens") or 0) for row in rows
+        ),
+        "input_cache_write_tokens": sum(
+            int(row.get("input_cache_write_tokens") or 0) for row in rows
+        ),
+        "output_tokens": sum(
+            int(row.get("output_tokens") or 0) for row in rows
+        ),
+        "reasoning_output_tokens": sum(
+            int(row.get("reasoning_output_tokens") or 0) for row in rows
+        ),
+        "cost_rmb": _money_text(sum(
+            (_decimal_from_row(row.get("charged_amount")) for row in rows),
+            start=Decimal("0"),
+        )),
+        "cost_complete": True,
+        "_task_ids": [str(row.get("task_id") or "") for row in rows],
+    }
+    usage["input_total_tokens"] = (
+        usage["input_uncached_tokens"]
+        + usage["input_cached_tokens"]
+        + usage["input_cache_write_tokens"]
+    )
+    return usage
+
+
 def list_agent_quota_requests(user_id, *, limit=20):
     user_id = _positive_int(user_id, "用户 ID")
     limit = min(_positive_int(limit, "查询数量"), 100)
@@ -1183,6 +1246,7 @@ __all__ = [
     "get_agent_public_enabled",
     "get_agent_quota_summary",
     "get_agent_runtime_quota_summary",
+    "get_agent_session_token_usage",
     "get_agent_session_usage_cost",
     "list_agent_quota_grant_classes",
     "list_agent_quota_requests",
