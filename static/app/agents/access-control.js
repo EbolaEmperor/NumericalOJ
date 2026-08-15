@@ -1,6 +1,11 @@
 (function (global) {
   'use strict';
 
+  var PROTOCOL_LABELS = {
+    openai: 'OpenAI 兼容',
+    anthropic: 'Anthropic 兼容'
+  };
+
   function asText(value) {
     return value == null ? '' : String(value).trim();
   }
@@ -27,6 +32,12 @@
   function moneyText(value) {
     var formatted = decimalText(value);
     return formatted ? formatted + ' 元' : '—';
+  }
+
+  function protocolText(value) {
+    var protocol = asText(value).toLowerCase();
+    if (!protocol) protocol = 'openai';
+    return PROTOCOL_LABELS[protocol] || asText(value) + ' 兼容';
   }
 
   function multiplyDecimal(value, multiplier) {
@@ -251,14 +262,14 @@
         return;
       }
       list.innerHTML = prices.map(function (endpoint) {
-        var id = endpoint.id != null ? endpoint.id : endpoint.endpoint_id;
-        var model = endpoint.model || endpoint.name || ('节点 #' + id);
+        var model = endpoint.model || endpoint.name || '未命名模型';
+        var protocol = protocolText(endpoint.protocol);
         var logoClass = global.NumojModelFamily
           ? global.NumojModelFamily.iconClass(model)
           : 'fas fa-microchip';
         return '<article class="agent-rate-card">'
           + '<header class="agent-rate-card-header"><span class="agent-rate-logo"><i class="' + escapeHtml(logoClass) + '" data-model-family-logo data-model-name="' + escapeHtml(model) + '" aria-hidden="true"></i></span>'
-          + '<div class="agent-rate-card-name"><strong title="' + escapeHtml(model) + '">' + escapeHtml(model) + '</strong><small>节点 #' + escapeHtml(id) + '</small></div></header>'
+          + '<div class="agent-rate-card-name"><strong title="' + escapeHtml(model) + '">' + escapeHtml(model) + '</strong><small>' + escapeHtml(protocol) + '</small></div></header>'
           + '<dl class="agent-rate-values" aria-label="节点价格，人民币每百万 Token">'
           + '<div class="agent-rate-value"><dt>INPUT</dt><dd>' + escapeHtml(decimalText(endpoint.input_price_per_million) || '—') + '</dd></div>'
           + '<div class="agent-rate-value"><dt>CACHED</dt><dd>' + escapeHtml(decimalText(endpoint.cached_input_price_per_million) || '—') + '</dd></div>'
@@ -272,13 +283,25 @@
     var layerOpener = null;
     var pendingDeleteEndpoint = null;
     var modalNode = root.querySelector('#agentAccessModal');
+    var accessModal = modalNode && global.bootstrap
+      ? global.bootstrap.Modal.getOrCreateInstance(modalNode) : null;
+    var personalModalNode = root.querySelector('#agentPersonalEndpointModal');
+    var personalModal = personalModalNode && global.bootstrap
+      ? global.bootstrap.Modal.getOrCreateInstance(personalModalNode) : null;
+    var personalModalOpener = null;
+    var switchingToPersonalModal = false;
+    var returningFromPersonalModal = false;
     var modalContent = modalNode && modalNode.querySelector('.modal-content');
     var modalHeader = modalContent && modalContent.querySelector(':scope > .agent-access-modal-header');
     var modalScroll = modalContent && modalContent.querySelector(':scope > .agent-access-modal-scroll');
     var personalForm = root.querySelector('[data-endpoint-editor][data-endpoint-editor-mode="personal"]');
     var personalEditorRevision = 0;
+    var personalTestRequestRevision = 0;
+    var personalSaveRequestRevision = 0;
+    var personalTestToken = '';
+    var personalFormFingerprint = '';
     var personalEditor = personalForm && global.NumOJEndpointEditor.mount(personalForm, {
-      createKeyNote: '密钥只用于你的 Agent 会话。',
+      createKeyNote: '新建端点必须填写 API 密钥。',
       editKeyNote: '留空表示继续使用已保存的密钥。'
     });
 
@@ -317,31 +340,78 @@
       setMainInert(true);
     }
 
+    function personalEndpointPayload() {
+      var payload = personalEditor.values();
+      delete payload.name;
+      delete payload.input_price_per_million;
+      delete payload.cached_input_price_per_million;
+      delete payload.output_price_per_million;
+      return payload;
+    }
+
+    function endpointFingerprint(payload) {
+      return JSON.stringify(payload, Object.keys(payload).sort());
+    }
+
+    function invalidatePersonalEndpointTest(clearResult) {
+      personalTestToken = '';
+      personalFormFingerprint = '';
+      var save = personalForm && personalForm.querySelector('[data-endpoint-editor-save]');
+      if (save) save.disabled = true;
+      if (clearResult !== false && personalEditor) personalEditor.clearResult();
+    }
+
+    function showPersonalEndpointModal(opener) {
+      if (!personalModal || !accessModal) return;
+      if (switchingToPersonalModal || returningFromPersonalModal
+          || personalModalNode.classList.contains('show')) return;
+      personalModalOpener = opener || document.activeElement;
+      switchingToPersonalModal = true;
+      if (modalNode.classList.contains('show')) {
+        modalNode.addEventListener('hidden.bs.modal', function () {
+          switchingToPersonalModal = false;
+          personalModal.show();
+        }, {once: true});
+        accessModal.hide();
+      } else {
+        switchingToPersonalModal = false;
+        personalModal.show();
+      }
+    }
+
     function resetPersonalForm() {
       if (!personalEditor) return;
       personalEditorRevision += 1;
-      personalEditor.configure({title: '新建自定义端点'});
+      personalTestRequestRevision += 1;
+      personalSaveRequestRevision += 1;
+      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-test]'), false);
+      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-save]'), false);
+      personalEditor.configure({title: '新建端点'});
       personalEditor.reset({protocol: 'openai', category: 'text'});
-      personalForm.querySelector('[data-endpoint-editor-save]').disabled = false;
+      invalidatePersonalEndpointTest(false);
     }
 
     function editPersonalEndpoint(endpoint, opener) {
-      var layer = root.querySelector('[data-agent-personal-endpoint-layer]');
       if (!personalEditor) return;
+      if (switchingToPersonalModal || returningFromPersonalModal
+          || personalModalNode.classList.contains('show')) return;
       personalEditorRevision += 1;
-      personalEditor.configure({title: '编辑自定义端点'});
+      personalTestRequestRevision += 1;
+      personalSaveRequestRevision += 1;
+      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-test]'), false);
+      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-save]'), false);
+      personalEditor.configure({title: '编辑端点'});
       personalEditor.fill({
         endpoint_id: endpoint.id || endpoint.endpoint_id || '',
-        name: endpoint.name || endpoint.label || '',
         model: endpoint.model || '',
         protocol: endpoint.protocol || 'openai',
-        category: 'text',
+        category: endpoint.category || 'text',
         base_url: endpoint.base_url || '',
         thinking_enabled: Boolean(endpoint.thinking_enabled),
         thinking_format: endpoint.thinking_format || 'none'
       });
-      personalForm.querySelector('[data-endpoint-editor-save]').disabled = false;
-      openLayer(layer, opener, '[data-endpoint-editor-title]');
+      invalidatePersonalEndpointTest(false);
+      showPersonalEndpointModal(opener);
     }
 
     function endpointUrl(id) {
@@ -373,11 +443,11 @@
       var list = root.querySelector('[data-agent-personal-endpoint-list]');
       if (!list) return;
       if (!personalEndpoints.length) {
-        list.innerHTML = '<div class="agent-access-empty">还没有自定义端点。创建后即可使用自己的密钥运行 Agent。</div>';
+        list.innerHTML = '';
         return;
       }
       list.innerHTML = personalEndpoints.map(function (endpoint, index) {
-        var protocol = endpoint.protocol === 'anthropic' ? 'Anthropic 兼容' : 'OpenAI 兼容';
+        var protocol = protocolText(endpoint.protocol);
         var id = endpoint.id || endpoint.endpoint_id || (index + 1);
         var name = endpoint.name || endpoint.label || endpoint.model || '自定义端点';
         var keyState = endpoint.api_key_configured === false ? '密钥未配置' : '密钥已配置';
@@ -414,11 +484,11 @@
         var username = item.username || item.user_name || ('用户 #' + item.user_id);
         var className = asText(item.class_name || item.class_label || item.class_en);
         return '<article class="agent-access-review-card" data-review-id="' + escapeHtml(id) + '">'
-          + '<header><div><span class="agent-personal-endpoint-number">额度申请 #' + escapeHtml(id) + '</span><h3>' + escapeHtml(username) + '</h3></div><div class="agent-access-review-meta"><strong>' + escapeHtml(moneyText(item.requested_amount)) + '</strong><time>' + escapeHtml(item.created_at || '') + '</time></div></header>'
+          + '<header><div><span class="agent-personal-endpoint-number">额度申请 #' + escapeHtml(id) + '</span><h3>' + escapeHtml(username) + '</h3></div><div class="agent-access-review-meta"><time>' + escapeHtml(item.created_at || '') + '</time></div></header>'
           + (className ? '<span class="agent-access-review-class"><i class="fas fa-users" aria-hidden="true"></i>' + escapeHtml(className) + '</span>' : '')
           + '<p class="agent-access-review-reason">' + escapeHtml(item.reason || '未填写申请理由') + '</p>'
           + '<form class="agent-access-review-form" novalidate>'
-          + '<label class="agent-access-field"><span>批准额度</span><span class="agent-access-input-shell agent-access-money-input"><b>¥</b><input name="approved_amount" type="number" min="0.01" step="0.01" value="' + escapeHtml(decimalText(item.requested_amount)) + '" aria-label="批准金额" required></span></label>'
+          + '<label class="agent-access-field"><span>赠送额度</span><span class="agent-access-input-shell agent-access-money-input"><b>¥</b><input name="approved_amount" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" aria-label="赠送额度" required></span></label>'
           + '<label class="agent-access-field"><span>审核意见</span><span class="agent-access-input-shell"><i class="fas fa-pen" aria-hidden="true"></i><input name="review_note" maxlength="1000" placeholder="可选" aria-label="审核意见"></span></label>'
           + '<div class="agent-access-review-actions"><button type="submit" data-review-action="approve">通过申请</button><button type="submit" data-review-action="reject">驳回</button></div></form>'
           + '<p class="agent-access-feedback" data-review-feedback role="status" hidden></p>'
@@ -582,6 +652,10 @@
     }
 
     if (modalNode) modalNode.addEventListener('show.bs.modal', function () {
+      if (returningFromPersonalModal) {
+        returningFromPersonalModal = false;
+        return;
+      }
       if (isAdmin) {
         loadReviews().catch(function (error) {
           var list = root.querySelector('[data-agent-review-list]');
@@ -593,10 +667,33 @@
       Promise.allSettled(jobs).then(function () { loaded = true; });
     });
     if (modalNode) modalNode.addEventListener('hidden.bs.modal', function () {
+      if (switchingToPersonalModal) return;
       closeLayer(false);
       setClassPickerOpen(false);
       pendingDeleteEndpoint = null;
       resetPersonalForm();
+    });
+    if (personalModalNode) personalModalNode.addEventListener('shown.bs.modal', function () {
+      var title = personalForm && personalForm.querySelector('[data-endpoint-editor-title]');
+      if (title) title.focus({preventScroll: true});
+    });
+    if (personalModalNode) personalModalNode.addEventListener('hidden.bs.modal', function () {
+      personalEditorRevision += 1;
+      personalTestRequestRevision += 1;
+      personalSaveRequestRevision += 1;
+      setEndpointButtonBusy(personalTestButton, false);
+      setEndpointButtonBusy(personalForm.querySelector('[data-endpoint-editor-save]'), false);
+      invalidatePersonalEndpointTest(false);
+      if (!accessModal || !document.contains(modalNode)) return;
+      var opener = personalModalOpener;
+      personalModalOpener = null;
+      returningFromPersonalModal = true;
+      modalNode.addEventListener('shown.bs.modal', function () {
+        var target = opener && document.contains(opener)
+          ? opener : root.querySelector('[data-agent-personal-endpoint-create]');
+        if (target) target.focus({preventScroll: true});
+      }, {once: true});
+      accessModal.show();
     });
 
     var requestForm = root.querySelector('[data-agent-quota-request-form]');
@@ -610,7 +707,6 @@
       request(root.dataset.agentAccessRequestUrl, {
         method: 'POST',
         body: {
-          requested_amount: requestForm.elements.requested_amount.value,
           reason: requestForm.elements.reason.value.trim()
         }
       }).then(function (payload) {
@@ -625,50 +721,124 @@
       });
     });
 
+    function setEndpointButtonBusy(button, busy, label) {
+      if (!button) return;
+      if (busy) {
+        if (!button.dataset.idleHtml) button.dataset.idleHtml = button.innerHTML;
+        button.disabled = true;
+        button.textContent = label;
+      } else {
+        if (button.dataset.idleHtml) button.innerHTML = button.dataset.idleHtml;
+        button.disabled = false;
+      }
+    }
+
+    var personalTestButton = personalForm && personalForm.querySelector('[data-endpoint-editor-test]');
+    if (personalTestButton) personalTestButton.addEventListener('click', function () {
+      if (!personalEditor.validate()) return;
+      var payload = personalEndpointPayload();
+      var testedFingerprint = endpointFingerprint(payload);
+      var editorRevision = personalEditorRevision;
+      var requestRevision = ++personalTestRequestRevision;
+      setEndpointButtonBusy(personalTestButton, true, '测试中…');
+      personalEditor.setResult('测试中…', 'pending');
+      request(root.dataset.agentAccessPersonalEndpointTestUrl, {
+        method: 'POST',
+        body: payload
+      }).then(function (response) {
+        if (requestRevision !== personalTestRequestRevision
+            || editorRevision !== personalEditorRevision
+            || !personalModalNode.classList.contains('show')) return;
+        if (endpointFingerprint(personalEndpointPayload()) !== testedFingerprint) {
+          invalidatePersonalEndpointTest(false);
+          personalEditor.setResult('字段已经变化，请重新测试连接。', 'error');
+          return;
+        }
+        var test = response.test || response;
+        personalTestToken = asText(response.test_token || (test && test.test_token));
+        if (!personalTestToken || test.passed === false) {
+          invalidatePersonalEndpointTest(false);
+          personalEditor.setResult(asText(test.message) || '连接测试失败。', 'error');
+          return;
+        }
+        personalFormFingerprint = testedFingerprint;
+        personalEditor.setResult(
+          '连接成功'
+            + (test.latency_ms != null ? ' · ' + test.latency_ms + ' ms' : '')
+            + (test.message ? ' · ' + test.message : ''),
+          'ok'
+        );
+        personalForm.querySelector('[data-endpoint-editor-save]').disabled = false;
+      }).catch(function (error) {
+        if (requestRevision !== personalTestRequestRevision
+            || editorRevision !== personalEditorRevision
+            || !personalModalNode.classList.contains('show')) return;
+        invalidatePersonalEndpointTest(false);
+        personalEditor.setResult(error.message, 'error');
+      }).finally(function () {
+        if (requestRevision === personalTestRequestRevision) {
+          setEndpointButtonBusy(personalTestButton, false);
+        }
+      });
+    });
+
+    if (personalForm) personalForm.addEventListener('input', function () {
+      personalEditorRevision += 1;
+      invalidatePersonalEndpointTest(true);
+    });
+    if (personalForm) personalForm.addEventListener('change', function () {
+      personalEditorRevision += 1;
+      invalidatePersonalEndpointTest(true);
+    });
+
     if (personalForm) personalForm.addEventListener('submit', function (event) {
       event.preventDefault();
-      var payload = personalEditor.values();
+      var payload = personalEndpointPayload();
       var id = asText(payload.endpoint_id);
       var button = personalForm.querySelector('[data-endpoint-editor-save]');
       var editorRevision = personalEditorRevision;
-      var editorLayer = root.querySelector('[data-agent-personal-endpoint-layer]');
+      var requestRevision = ++personalSaveRequestRevision;
       if (!personalEditor.validate()) return;
-      button.disabled = true;
-      personalEditor.setResult('正在测试连接并保存…', 'pending');
+      if (!personalTestToken || personalFormFingerprint !== endpointFingerprint(payload)) {
+        invalidatePersonalEndpointTest(false);
+        personalEditor.setResult('字段已经变化，请重新测试连接。', 'error');
+        return;
+      }
+      payload.test_token = personalTestToken;
+      setEndpointButtonBusy(button, true, '保存中…');
       request(id ? endpointUrl(id) : root.dataset.agentAccessPersonalEndpointsUrl, {
         method: id ? 'PUT' : 'POST',
-        body: {
-          name: payload.name,
-          model: payload.model,
-          protocol: payload.protocol,
-          base_url: payload.base_url,
-          api_key: payload.api_key,
-          thinking_enabled: payload.thinking_enabled,
-          thinking_format: payload.thinking_format
-        }
-      }).then(function (payload) {
-        var endpoint = payload && (payload.endpoint || payload.data);
+        body: payload
+      }).then(function (response) {
+        var endpoint = response && (response.endpoint || response.data);
         if (!upsertPersonalEndpoint(endpoint)) loadPersonalEndpoints().catch(function () {});
-        if (editorRevision === personalEditorRevision && activeLayer === editorLayer) {
-          button.disabled = false;
-          closeLayer(true);
+        if (requestRevision === personalSaveRequestRevision
+            && editorRevision === personalEditorRevision
+            && personalModalNode.classList.contains('show')) {
+          personalModal.hide();
         }
         setFeedback(root.querySelector('[data-agent-personal-endpoint-feedback]'), id ? '端点已更新。' : '端点已创建。', false);
       }).catch(function (error) {
-        if (editorRevision !== personalEditorRevision || activeLayer !== editorLayer) return;
-        button.disabled = false;
+        if (requestRevision !== personalSaveRequestRevision
+            || editorRevision !== personalEditorRevision
+            || !personalModalNode.classList.contains('show')) return;
         personalEditor.setResult(error.message, 'error');
+      }).finally(function () {
+        if (requestRevision !== personalSaveRequestRevision) return;
+        setEndpointButtonBusy(button, false);
+        if (!personalTestToken
+            || personalFormFingerprint !== endpointFingerprint(personalEndpointPayload())) {
+          button.disabled = true;
+        }
       });
     });
 
     var createEndpoint = root.querySelector('[data-agent-personal-endpoint-create]');
     if (createEndpoint) createEndpoint.addEventListener('click', function () {
+      if (switchingToPersonalModal || returningFromPersonalModal
+          || personalModalNode.classList.contains('show')) return;
       resetPersonalForm();
-      openLayer(root.querySelector('[data-agent-personal-endpoint-layer]'), createEndpoint, '[data-endpoint-editor-title]');
-    });
-
-    root.querySelectorAll('[data-endpoint-editor-dismiss], [data-agent-layer-dismiss]').forEach(function (button) {
-      button.addEventListener('click', function () { closeLayer(true); });
+      showPersonalEndpointModal(createEndpoint);
     });
 
     root.querySelectorAll('[data-agent-delete-dismiss]').forEach(function (button) {

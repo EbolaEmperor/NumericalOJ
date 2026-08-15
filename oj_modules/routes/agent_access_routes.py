@@ -69,6 +69,7 @@ def _priced_global_endpoints():
         result.append({
             "id": int(endpoint["id"]),
             "model": str(endpoint.get("model") or ""),
+            "protocol": str(endpoint.get("protocol") or "openai").strip().lower(),
             **{field: str(endpoint[field]) for field in fields},
         })
     return result
@@ -99,7 +100,6 @@ def create_agent_access_blueprint(*, endpoint_tester=None):
         payload = _json_body()
         created = quota.create_agent_quota_request(
             user["id"],
-            payload.get("requested_amount"),
             payload.get("reason"),
         )
         summary = quota.get_agent_quota_summary(user["id"])
@@ -119,15 +119,41 @@ def create_agent_access_blueprint(*, endpoint_tester=None):
         endpoints = user_endpoints.list_user_agent_endpoints(user["id"])
         return jsonify(success=True, endpoints=endpoints)
 
+    @blueprint.post("/api/agent/endpoints/test")
+    @login_required
+    @_api_errors
+    def personal_endpoint_test():
+        user = current_user()
+        payload = _json_body()
+        endpoint_id = payload.get("endpoint_id", payload.get("id"))
+        result = user_endpoints.test_user_agent_endpoint_payload(
+            payload,
+            user_id=user["id"],
+            endpoint_id=endpoint_id,
+            tester=tester,
+        )
+        public_test = {
+            key: value
+            for key, value in result.items()
+            if key not in {"test_token", "expires_in_seconds"}
+        }
+        return jsonify(
+            success=True,
+            test=public_test,
+            test_token=result["test_token"],
+            expires_in_seconds=result["expires_in_seconds"],
+        )
+
     @blueprint.post("/api/agent/endpoints")
     @login_required
     @_api_errors
     def personal_endpoint_create():
         user = current_user()
+        payload = _json_body()
         endpoint = user_endpoints.save_user_agent_endpoint(
-            _json_body(),
+            payload,
             user_id=user["id"],
-            tester=tester,
+            test_token=payload.get("test_token"),
         )
         return jsonify(success=True, endpoint=endpoint), 201
 
@@ -136,11 +162,12 @@ def create_agent_access_blueprint(*, endpoint_tester=None):
     @_api_errors
     def personal_endpoint_update(endpoint_id):
         user = current_user()
+        payload = _json_body()
         endpoint = user_endpoints.save_user_agent_endpoint(
-            _json_body(),
+            payload,
             user_id=user["id"],
             endpoint_id=endpoint_id,
-            tester=tester,
+            test_token=payload.get("test_token"),
         )
         return jsonify(success=True, endpoint=endpoint)
 

@@ -241,7 +241,7 @@ def test_llm_probe_sends_through_injected_pinned_transport():
     assert calls[0][1]["stream"] is False
 
 
-def test_user_endpoint_save_rejects_unsafe_target_before_tester_or_write(
+def test_user_endpoint_probe_rejects_unsafe_target_before_tester_or_write(
     monkeypatch,
 ):
     tester_called = []
@@ -259,9 +259,10 @@ def test_user_endpoint_save_rejects_unsafe_target_before_tester_or_write(
         config_service.DynamicConfigValidationError,
         match="只能连接公网地址",
     ):
-        user_endpoints.save_user_agent_endpoint(
+        user_endpoints.test_user_agent_endpoint_payload(
             {
                 "protocol": "openai",
+                "category": "text",
                 "name": "危险节点",
                 "base_url": "http://127.0.0.1/v1",
                 "api_key": "secret",

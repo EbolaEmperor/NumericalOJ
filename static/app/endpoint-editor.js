@@ -3,13 +3,13 @@
 
   var DEFAULT_PROTOCOLS = [
     {value: 'openai', label: 'OpenAI 兼容', icon: 'fa-code'},
-    {value: 'anthropic', label: 'Anthropic 兼容', icon: 'fa-terminal'}
+    {value: 'anthropic', label: 'Anthropic 兼容', icon: 'fa-brain'}
   ];
   var DEFAULT_CATEGORIES = [
-    {value: 'omni', label: '全模态', icon: 'fa-shapes'},
-    {value: 'text', label: '文本', icon: 'fa-font'},
-    {value: 'vision', label: '视觉', icon: 'fa-eye'},
-    {value: 'embedding', label: '向量', icon: 'fa-project-diagram'}
+    {value: 'omni', label: '全模态', icon: 'fa-layer-group'},
+    {value: 'text', label: '纯文本', icon: 'fa-font'},
+    {value: 'vision', label: '视觉理解', icon: 'fa-eye'},
+    {value: 'embedding', label: 'Embedding', icon: 'fa-vector-square'}
   ];
 
   function entries(items, fallback) {
@@ -38,7 +38,6 @@
     var editing = false;
 
     function choiceValue(name, value) {
-      if (name === 'category' && settings.mode === 'personal') value = 'text';
       var controller = name === 'protocol' ? protocolController : categoryController;
       var input = form.elements[name];
       if (controller) controller.setValue(value, false);
@@ -112,8 +111,7 @@
         if (form.elements[name] && !form.elements[name].disabled) form.elements[name].value = initial[name] || '';
       });
       ['input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
-        if (settings.mode === 'personal') form.elements[name].value = '0';
-        else if (initial[name] != null) form.elements[name].value = initial[name];
+        form.elements[name].value = initial[name] != null ? initial[name] : '';
       });
       updateKeyState(); setThinking(Boolean(initial.thinking_enabled));
       return controller;
@@ -124,8 +122,7 @@
       form.elements.endpoint_id.value = value.endpoint_id || value.id || '';
       choiceValue('protocol', value.protocol || 'openai'); choiceValue('category', value.category || 'text');
       ['name', 'model', 'base_url', 'input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
-        if (form.elements[name] && !form.elements[name].disabled && value[name] != null &&
-            !(settings.mode === 'personal' && name.indexOf('_price_per_million') > 0)) form.elements[name].value = value[name];
+        if (form.elements[name] && !form.elements[name].disabled && value[name] != null) form.elements[name].value = value[name];
       });
       form.elements.api_key.value = ''; updateKeyState(); setThinking(Boolean(value.thinking_enabled)); clearResult();
       return controller;

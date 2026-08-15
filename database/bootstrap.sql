@@ -754,8 +754,9 @@ DROP TABLE IF EXISTS `agent_user_endpoints`;
 CREATE TABLE `agent_user_endpoints` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
-  `name` varchar(100) NOT NULL,
+  `name` varchar(255) NOT NULL,
   `protocol` varchar(16) NOT NULL,
+  `category` varchar(16) NOT NULL DEFAULT 'text',
   `base_url` varchar(1024) NOT NULL,
   `api_key` text NOT NULL,
   `model` varchar(255) NOT NULL,
@@ -1851,7 +1852,7 @@ DROP TABLE IF EXISTS `agent_quota_requests`;
 CREATE TABLE `agent_quota_requests` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
-  `requested_amount` decimal(30,14) NOT NULL,
+  `requested_amount` decimal(30,14) DEFAULT NULL,
   `approved_amount` decimal(30,14) DEFAULT NULL,
   `reason` text NOT NULL,
   `status` varchar(16) NOT NULL DEFAULT 'pending',

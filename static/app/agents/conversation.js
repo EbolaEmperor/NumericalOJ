@@ -199,7 +199,7 @@
       [usageInput, usageCached, usageOutput].forEach(function (element) {
         setUsageValue(element, '—');
       });
-      setUsageValue(usageCost, usesPersonalEndpoint ? '不计额度' : '—');
+      setUsageValue(usageCost, usesPersonalEndpoint ? '用户自费' : '—');
       return;
     }
 
@@ -221,7 +221,7 @@
     setUsageValue(
       usageCost,
       usesPersonalEndpoint
-        ? '不计额度'
+        ? '用户自费'
         : (hasCost ? formatMoneyValue(usage.cost_rmb) + ' 元' : '—')
     );
   }

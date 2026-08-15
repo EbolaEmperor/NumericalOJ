@@ -1,21 +1,15 @@
-{% macro endpoint_editor(id_prefix, mode='global', title='新建端点', surface='modal') -%}
-<form class="numoj-endpoint-editor{% if surface == 'modal' %} modal-content{% else %} numoj-endpoint-editor--layer{% endif %}"
-      data-endpoint-editor data-endpoint-editor-mode="{{ mode }}" data-endpoint-editor-surface="{{ surface }}"
+{% macro endpoint_editor(id_prefix, mode='global', title='新建端点') -%}
+<form class="numoj-endpoint-editor modal-content"
+      data-endpoint-editor data-endpoint-editor-mode="{{ mode }}" data-endpoint-editor-surface="modal"
       autocomplete="off" novalidate>
   <header class="numoj-endpoint-editor__header">
     <div><p>ENDPOINT EDITOR</p><h2 id="{{ id_prefix }}-title" data-endpoint-editor-title tabindex="-1">{{ title }}</h2></div>
-    <button type="button" class="btn-close" aria-label="关闭"
-            {% if surface == 'modal' %}data-bs-dismiss="modal"{% else %}data-endpoint-editor-dismiss{% endif %}></button>
+    <button type="button" class="btn-close" aria-label="关闭" data-bs-dismiss="modal"></button>
   </header>
   <div class="numoj-endpoint-editor__body">
     <input type="hidden" name="endpoint_id">
-    {% if mode == 'personal' %}
-      <label><span>显示名称</span><input name="name" maxlength="100" required autocomplete="off"></label>
-      <input type="hidden" name="category" value="text">
-    {% else %}
-      <input type="hidden" name="name" value="" disabled>
-    {% endif %}
-    <label{% if mode == 'global' %} class="wide"{% endif %}><span>模型名称</span><input name="model" maxlength="200" required autocomplete="off"></label>
+    <input type="hidden" name="name" value="" disabled>
+    <label class="wide"><span>模型名称</span><input name="model" maxlength="200" required autocomplete="off"></label>
     <label>
       <span>兼容协议</span>
       <div class="rk-choice numoj-endpoint-editor__choice" data-endpoint-editor-choice="protocol">
@@ -28,20 +22,18 @@
         <div class="rk-choice-menu" id="{{ id_prefix }}-protocol-menu" role="listbox" aria-labelledby="{{ id_prefix }}-protocol-trigger"></div>
       </div>
     </label>
-    {% if mode == 'global' %}
-      <label>
-        <span>能力类别</span>
-        <div class="rk-choice numoj-endpoint-editor__choice" data-endpoint-editor-choice="category">
-          <input class="rk-choice-value" type="hidden" name="category" value="text" data-choice-required="true">
-          <button class="rk-choice-trigger" id="{{ id_prefix }}-category-trigger" type="button" role="combobox"
-                  aria-haspopup="listbox" aria-expanded="false" aria-controls="{{ id_prefix }}-category-menu">
-            <span class="rk-choice-trigger-main"><i class="fas fa-font" data-rk-choice-icon aria-hidden="true"></i><span data-rk-choice-label></span></span>
-            <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
-          </button>
-          <div class="rk-choice-menu" id="{{ id_prefix }}-category-menu" role="listbox" aria-labelledby="{{ id_prefix }}-category-trigger"></div>
-        </div>
-      </label>
-    {% endif %}
+    <label>
+      <span>能力类别</span>
+      <div class="rk-choice numoj-endpoint-editor__choice" data-endpoint-editor-choice="category">
+        <input class="rk-choice-value" type="hidden" name="category" value="text" data-choice-required="true">
+        <button class="rk-choice-trigger" id="{{ id_prefix }}-category-trigger" type="button" role="combobox"
+                aria-haspopup="listbox" aria-expanded="false" aria-controls="{{ id_prefix }}-category-menu">
+          <span class="rk-choice-trigger-main"><i class="fas fa-font" data-rk-choice-icon aria-hidden="true"></i><span data-rk-choice-label></span></span>
+          <i class="fas fa-chevron-down rk-choice-caret" aria-hidden="true"></i>
+        </button>
+        <div class="rk-choice-menu" id="{{ id_prefix }}-category-menu" role="listbox" aria-labelledby="{{ id_prefix }}-category-trigger"></div>
+      </div>
+    </label>
     <label class="wide"><span>基础地址</span><input name="base_url" type="url" required autocomplete="url" placeholder="https://api.example.com/v1"></label>
     <label><span>API 密钥</span><input name="api_key" type="password" autocomplete="new-password" placeholder="sk-..."><small data-endpoint-editor-key-note></small></label>
     <label data-endpoint-editor-thinking-field>
@@ -58,14 +50,16 @@
         <label><span>输出单价（RMB / 1M Token）</span><input name="output_price_per_million" type="number" min="0" step="any" inputmode="decimal" required></label>
       </div>
     {% else %}
-      <input type="hidden" name="input_price_per_million" value="0"><input type="hidden" name="cached_input_price_per_million" value="0"><input type="hidden" name="output_price_per_million" value="0">
+      <input type="hidden" name="input_price_per_million" value="">
+      <input type="hidden" name="cached_input_price_per_million" value="">
+      <input type="hidden" name="output_price_per_million" value="">
     {% endif %}
     <p class="numoj-endpoint-editor__result wide" data-endpoint-editor-result role="status" aria-live="polite" hidden></p>
   </div>
   <footer class="numoj-endpoint-editor__footer">
-    <button class="numoj-endpoint-editor__secondary" type="button" {% if surface == 'modal' %}data-bs-dismiss="modal"{% else %}data-endpoint-editor-dismiss{% endif %}>放弃</button>
-    {% if mode == 'global' %}<button class="numoj-endpoint-editor__secondary" type="button" data-endpoint-editor-test><i class="fas fa-vial" aria-hidden="true"></i>测试</button>{% endif %}
-    <button class="numoj-endpoint-editor__primary" type="submit" data-endpoint-editor-save{% if mode == 'global' %} disabled{% endif %}>保存</button>
+    <button class="numoj-endpoint-editor__secondary" type="button" data-bs-dismiss="modal">放弃</button>
+    <button class="numoj-endpoint-editor__secondary" type="button" data-endpoint-editor-test><i class="fas fa-vial" aria-hidden="true"></i>测试</button>
+    <button class="numoj-endpoint-editor__primary" type="submit" data-endpoint-editor-save disabled>保存</button>
   </footer>
 </form>
 {%- endmacro %}

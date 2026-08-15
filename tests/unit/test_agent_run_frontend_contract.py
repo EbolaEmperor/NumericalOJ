@@ -178,7 +178,8 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "Math.min(100, cachedTokens / inputTokens * 100)" in controller
     assert "setUsageValue(usageCached, cachedPercent.toFixed(2) + '%');" in controller
     assert "formatMoneyValue(usage.cost_rmb) + ' 元'" in controller
-    assert "usesPersonalEndpoint ? '不计额度' : '—'" in controller
+    assert "usesPersonalEndpoint ? '用户自费' : '—'" in controller
+    assert "'用户自费' if uses_personal_endpoint else '—'" in template
     assert "renderHeaderTokenUsage(state.session_token_usage);" in controller
     assert "renderHeaderTokenUsage(null);" not in controller
     assert (
