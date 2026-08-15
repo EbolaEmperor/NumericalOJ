@@ -520,6 +520,97 @@ def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
     assert usage["cost_rmb"] == "0.18"
 
 
+def test_old_session_without_trace_usage_uses_ledger_summary(monkeypatch):
+    ledger_usage = {
+        "source": "session",
+        "request_count": 3,
+        "turn_count": 1,
+        "input_uncached_tokens": 100,
+        "input_cached_tokens": 80,
+        "input_cache_write_tokens": 5,
+        "input_total_tokens": 185,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 4,
+        "cost_rmb": "0.42",
+        "cost_complete": True,
+    }
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_token_usage",
+        lambda _session_id: ledger_usage,
+    )
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _session_id, _task_id: [],
+    )
+
+    projected = routes._agent_state_with_loaded_session_token_usage({
+        "task_id": "turn-old",
+        "session_id": "session-old",
+        "status": "Completed",
+        "execution_trace": {"token_usage": None},
+    })
+
+    assert projected["session_token_usage"]["input_total_tokens"] == 185
+    assert projected["session_token_usage"]["input_cached_tokens"] == 80
+    assert projected["session_token_usage"]["output_tokens"] == 20
+    assert projected["session_token_usage"]["cost_rmb"] == "0.42"
+    assert projected["session_charged_amount_rmb"] == "0.42"
+
+
+def test_partial_ledger_coverage_keeps_unbilled_historical_trace_usage():
+    ledger_usage = {
+        "source": "session",
+        "request_count": 2,
+        "turn_count": 1,
+        "input_uncached_tokens": 70,
+        "input_cached_tokens": 30,
+        "input_cache_write_tokens": 0,
+        "input_total_tokens": 100,
+        "output_tokens": 12,
+        "reasoning_output_tokens": 0,
+        "cost_rmb": "0.20",
+        "cost_complete": True,
+        "_task_ids": ["turn-2"],
+    }
+    historical = [("turn-1", {
+        "source": "codex",
+        "request_count": 1,
+        "input_uncached_tokens": 40,
+        "input_cached_tokens": 10,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 8,
+        "cost_rmb": "0.10",
+        "incremental": True,
+    })]
+
+    projected = routes._agent_state_with_session_token_usage(
+        {
+            "task_id": "turn-2",
+            "execution_trace": {"token_usage": {
+                "source": "codex",
+                "request_count": 99,
+                "input_uncached_tokens": 999,
+                "input_cached_tokens": 0,
+                "input_cache_write_tokens": 0,
+                "output_tokens": 999,
+                "cost_rmb": "99",
+                "incremental": True,
+            }},
+        },
+        historical,
+        ledger_usage=ledger_usage,
+    )
+
+    usage = projected["session_token_usage"]
+    assert usage["request_count"] == 3
+    assert usage["turn_count"] == 2
+    assert usage["input_total_tokens"] == 150
+    assert usage["output_tokens"] == 20
+    assert usage["cost_rmb"] == "0.3"
+
+
 @pytest.mark.parametrize(
     ("source", "earlier_values", "expected_input", "expected_requests"),
     [
@@ -955,6 +1046,11 @@ def test_agent_run_stream_emits_live_usage_and_cost_updates(monkeypatch):
         "_load_agent_historical_token_usages",
         lambda _session_id, _task_id: [],
     )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_token_usage",
+        lambda _session_id: None,
+    )
 
     app = _app()
     with app.test_request_context("/admin/agent_run_stream/turn-live-usage"):
@@ -976,6 +1072,132 @@ def test_agent_run_stream_emits_live_usage_and_cost_updates(monkeypatch):
     assert status_states[1]["session_token_usage"]["input_cached_tokens"] == 60
     assert status_states[1]["session_token_usage"]["output_tokens"] == 40
     assert status_states[2]["session_token_usage"]["cost_rmb"] == "0.25"
+
+
+@pytest.mark.parametrize(
+    ("initial_cost", "updated_cost", "expected_ledger_calls"),
+    [("0.10", "0.25", 2), ("0", "0", 3)],
+)
+def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
+    monkeypatch,
+    initial_cost,
+    updated_cost,
+    expected_ledger_calls,
+):
+    initial = {
+        "task_id": "turn-ledger-live",
+        "session_id": "session-ledger-live",
+        "harness": "pi",
+        "status": "Running",
+        "session_charged_amount_rmb": initial_cost,
+        "execution_trace": {
+            "status": "running",
+            "trace_id": "trace-ledger-live",
+            "trace_messages": [{"kind": "tool", "text": "working"}],
+            "trace_files": [],
+            "token_usage": None,
+        },
+    }
+    updated = {
+        **initial,
+        "session_charged_amount_rmb": updated_cost,
+        "execution_trace": {
+            **initial["execution_trace"],
+            "trace_messages": [
+                *initial["execution_trace"]["trace_messages"],
+                {"kind": "tool_result", "text": "next"},
+            ],
+        },
+    }
+    completed = {
+        **updated,
+        "status": "Completed",
+        "execution_trace": {
+            **updated["execution_trace"],
+            "status": "passed",
+        },
+    }
+    usage_before = {
+        "source": "session",
+        "request_count": 1,
+        "turn_count": 1,
+        "input_uncached_tokens": 80,
+        "input_cached_tokens": 20,
+        "input_cache_write_tokens": 0,
+        "input_total_tokens": 100,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "cost_rmb": initial_cost,
+        "cost_complete": True,
+    }
+    usage_after = {
+        **usage_before,
+        "request_count": 2,
+        "input_uncached_tokens": 140,
+        "input_cached_tokens": 60,
+        "input_total_tokens": 200,
+        "output_tokens": 40,
+        "cost_rmb": updated_cost,
+    }
+
+    class PubSub:
+        def __init__(self):
+            self.snapshots = iter((updated, completed))
+
+        def get_message(self, **_kwargs):
+            return {
+                "type": "message",
+                "data": json.dumps(next(self.snapshots)),
+            }
+
+        def close(self):
+            pass
+
+    ledger_usages = iter(
+        (usage_before, usage_after, usage_after)[:expected_ledger_calls]
+    )
+    ledger_calls = []
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: initial)
+    monkeypatch.setattr(routes, "_subscribe_agent_run_events", lambda _tid: PubSub())
+    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
+    monkeypatch.setattr(
+        routes,
+        "_load_agent_historical_token_usages",
+        lambda _session_id, _task_id: [],
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_session_token_usage",
+        lambda session_id: ledger_calls.append(session_id) or next(ledger_usages),
+    )
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/turn-ledger-live"):
+        body = routes.admin_agent_run_stream("turn-ledger-live").get_data(
+            as_text=True
+        )
+
+    states = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert states[0]["session_token_usage"]["input_total_tokens"] == 100
+    assert states[0]["session_token_usage"]["cost_rmb"] == (
+        "0.1" if initial_cost == "0.10" else "0"
+    )
+    assert states[1]["session_token_usage"]["input_total_tokens"] == 200
+    assert states[1]["session_token_usage"]["input_cached_tokens"] == 60
+    assert states[1]["session_token_usage"]["output_tokens"] == 40
+    assert states[-1]["session_token_usage"]["cost_rmb"] == (
+        "0.25" if updated_cost == "0.25" else "0"
+    )
+    assert ledger_calls == ["session-ledger-live"] * expected_ledger_calls
 
 
 def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):

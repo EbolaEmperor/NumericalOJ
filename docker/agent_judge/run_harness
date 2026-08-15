@@ -424,7 +424,8 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
             or (typ == "message" and is_assistant_message)
         ):
             message_id = _stable_trace_event_id(
-                message.get("id"), event.get("uuid"), event.get("id"),
+                message.get("id"), message.get("responseId"),
+                event.get("uuid"), event.get("id"),
             )
             for block_index, block in enumerate(_content_blocks(message)):
                 block_type = str(block.get("type") or "")
@@ -464,7 +465,10 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
                     "input_cache_write_tokens": _token_count(usage.get("cache_creation_input_tokens") or usage.get("cacheWrite")),
                     "output_tokens": _token_count(usage.get("output_tokens") or usage.get("output")),
                     "reasoning_output_tokens": _token_count(usage.get("reasoning")),
-                }, str(message.get("id") or event.get("uuid") or event.get("id") or ""))
+                }, str(
+                    message.get("id") or message.get("responseId")
+                    or event.get("uuid") or event.get("id") or ""
+                ))
             elif usage and source == "claude_code":
                 # Claude 的一个 CLI turn 可能包含多个 assistant/tool 模型
                 # 回合。每条 assistant message 的 usage 才是增量；result 上
