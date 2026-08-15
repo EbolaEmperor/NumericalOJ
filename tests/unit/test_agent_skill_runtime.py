@@ -44,8 +44,14 @@ def test_numoj_user_skill_documents_lean4_agent_workflow(tmp_path):
     reference = reference_path.read_text(encoding="utf-8")
 
     assert "references/lean4-problems.md" in rendered
-    assert "--workspace ./lean-workspace" in reference
-    assert "problem lean-init" in reference
+    assert 'problem download <problem_id> -o /workspace' in reference
+    assert "--workspace /workspace" in reference
+    assert "numoj-problem.json" in reference
+    assert "不会创建 Lake 工程" in reference
+    assert "不要进入 skill 目录" in reference
+    assert 'python3 "$NUMOJ_USER_CLI"' in rendered
+    assert "Never `cd` into the skill directory" in rendered
+    assert "problem lean-init" not in reference
     assert "readonly" in reference
     assert "writable" in reference
     for forbidden in ("`sorry`", "`admit`", "`axiom`"):

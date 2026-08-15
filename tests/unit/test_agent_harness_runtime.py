@@ -68,6 +68,34 @@ def test_docker_args_make_workspace_the_only_writable_filesystem(tmp_path):
     assert not any("session-cookie" in item for item in args)
 
 
+def test_docker_args_mount_materialized_skill_read_only_inside_workspace(
+    tmp_path,
+):
+    skill = tmp_path / ".runtime/home/.agents/skills/numoj-user"
+    skill.mkdir(parents=True)
+    env = _runtime_env(_endpoint(), "codex", "solve")
+
+    args = runtime._docker_args(
+        container_name="numoj-agent-test",
+        workspace=tmp_path,
+        env=env,
+        readonly_workspace_paths=(skill,),
+    )
+
+    volumes = [
+        args[index + 1]
+        for index, value in enumerate(args)
+        if value == "--volume"
+    ]
+    assert volumes == [
+        f"{tmp_path.resolve()}:/workspace:rw",
+        (
+            f"{skill.resolve()}:"
+            "/workspace/.runtime/home/.agents/skills/numoj-user:ro"
+        ),
+    ]
+
+
 def test_docker_args_use_colima_compatible_user_only_on_darwin(
     monkeypatch,
     tmp_path,
@@ -161,6 +189,17 @@ def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
     assert testdata_env["NUMOJ_USER_CONFIG"] == "/workspace/.numoj-agent/identity.json"
     assert "NUMOJ_CLI_CONFIG" not in testdata_env
     assert "AJ_PI_THINKING_FORMAT" not in testdata_env
+
+    testdata_admin_env = _runtime_env(
+        _endpoint(),
+        "pi",
+        "testdata",
+        access_role="admin",
+    )
+    assert testdata_admin_env["NUMOJ_CLI_CONFIG"] == (
+        "/workspace/.numoj-agent/identity.json"
+    )
+    assert "NUMOJ_USER_CONFIG" not in testdata_admin_env
 
 
 def test_custom_admin_runtime_uses_admin_skill_and_native_resume():
@@ -393,19 +432,30 @@ def test_retry_restores_runtime_before_checking_workspace_quota(
 
 
 @pytest.mark.parametrize(
-    ("task_kind", "harness", "skill_path", "config_env"),
+    (
+        "task_kind",
+        "access_role",
+        "harness",
+        "skill_name",
+        "skill_path",
+        "config_env",
+    ),
     [
         (
             "solve",
+            "user",
             "claude_code",
+            "numoj-user",
             ".runtime/home/.claude/skills/numoj-user/SKILL.md",
             "NUMOJ_USER_CONFIG=/workspace/.numoj-agent/identity.json",
         ),
         (
             "testdata",
+            "admin",
             "pi",
-            ".runtime/pi/skills/numoj-user/SKILL.md",
-            "NUMOJ_USER_CONFIG=/workspace/.numoj-agent/identity.json",
+            "numoj-admin",
+            ".runtime/pi/skills/numoj-admin/SKILL.md",
+            "NUMOJ_CLI_CONFIG=/workspace/.numoj-agent/identity.json",
         ),
     ],
 )
@@ -413,7 +463,9 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     monkeypatch,
     tmp_path,
     task_kind,
+    access_role,
     harness,
+    skill_name,
     skill_path,
     config_env,
 ):
@@ -665,6 +717,7 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     result = runtime.run_agent_harness(
         task_id="task-1",
         task_kind=task_kind,
+        access_role=access_role,
         problem_id=17,
         requested_by="admin",
         harness=harness,
@@ -696,9 +749,9 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
                 "task_id": "task-1",
                 "session_id": "task-1",
                 "task_kind": task_kind,
-                "access_role": "user",
+                "access_role": access_role,
                 "problem_id": 17,
-            "skill": "numoj-user",
+            "skill": skill_name,
         },
     }
     assert observed["identity_mode"] == 0o600
@@ -733,6 +786,19 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
         observed["create_args"].index("--name") + 1
     ]
     assert container_name == "numoj-agent-task-1"
+    workspace = workspace_root / "sessions/task-1/workspace"
+    docker_volumes = [
+        observed["create_args"][index + 1]
+        for index, value in enumerate(observed["create_args"])
+        if value == "--volume"
+    ]
+    assert docker_volumes == [
+        f"{workspace.resolve()}:/workspace:rw",
+        (
+            f"{(workspace / skill_path).parent.resolve()}:"
+            f"/workspace/{Path(skill_path).parent.as_posix()}:ro"
+        ),
+    ]
     assert observed["create_args"][-4:] == [
         str(runtime.AGENT_JUDGE_DOCKER_IMAGE), "bash", "-lc", "tail -f /dev/null",
     ]

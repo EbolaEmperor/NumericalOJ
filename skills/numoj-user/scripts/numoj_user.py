@@ -52,8 +52,7 @@ necessary_problem_detail_payload = problem.necessary_problem_detail_payload
 problem_list = problem.problem_list
 problem_detail = problem.problem_detail
 problem_submit_page = problem.problem_submit_page
-problem_lean_workspace = problem.problem_lean_workspace
-problem_lean_init = problem.problem_lean_init
+problem_download = problem.problem_download
 problem_submit = problem.problem_submit
 
 forum_list = forum.forum_list

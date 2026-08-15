@@ -1148,7 +1148,13 @@ def _runtime_env(
     return env
 
 
-def _docker_args(*, container_name, workspace, env):
+def _docker_args(
+    *,
+    container_name,
+    workspace,
+    env,
+    readonly_workspace_paths=(),
+):
     # Colima/virtiofs 会把 macOS bind mount 的属主统一投影为容器 root，数值
     # keep-id 反而无法写入任务目录。本地 Darwin 仅在已经只读根、无 capability、
     # no-new-privileges 的容器中使用 root；Linux 生产仍严格沿用部署用户 UID/GID。
@@ -1185,6 +1191,17 @@ def _docker_args(*, container_name, workspace, env):
         "--workdir",
         "/workspace",
     ]
+    # /workspace 本身承载项目文件和原生 Harness session，必须持续可写；
+    # 仓库投影的受信任 skill 则通过更深一层的只读 bind mount 覆盖，避免
+    # Agent 在运行中删除或改写它，同时不影响同一 HOME 下的其它配置。
+    for source in readonly_workspace_paths:
+        source_path = Path(source).resolve()
+        relative_path = source_path.relative_to(workspace_path)
+        container_path = Path("/workspace") / relative_path
+        args.extend([
+            "--volume",
+            f"{source_path}:{container_path}:ro",
+        ])
     # 只把变量名放进 docker 命令行；值通过 docker 客户端自身的环境继承，
     # 避免 LLM API Key 出现在宿主进程参数和常规进程清单中。
     for key in env:
@@ -1428,7 +1445,11 @@ def run_agent_harness(
                 additional_files=_SKILL_WORKSPACE_RESERVATION_FILES,
                 additional_entries=_SKILL_WORKSPACE_RESERVATION_DIRECTORIES,
             )
-            materialize_skill(workspace, harness, skill_name)
+            materialized_skill = materialize_skill(
+                workspace,
+                harness,
+                skill_name,
+            )
             check_agent_workspace_quota(normalized_session_id)
             web_search_settings = get_web_search_settings(include_secret=True)
             with _secret_relay_context(
@@ -1458,6 +1479,7 @@ def run_agent_harness(
                     container_name=container_name,
                     workspace=workspace,
                     env=env,
+                    readonly_workspace_paths=(materialized_skill,),
                 )
                 docker_process_env = _docker_process_env(env)
                 identity_temporary_secrets = tuple(

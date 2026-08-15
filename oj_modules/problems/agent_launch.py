@@ -38,7 +38,6 @@ _HARNESS_LABELS = {
 }
 _TASK_SKILLS = {
     AGENT_TASK_SOLVE: "numoj-user",
-    AGENT_TASK_TESTDATA: "numoj-user",
 }
 _ACCESS_ROLE_SKILLS = {
     AGENT_ACCESS_ROLE_USER: "numoj-user",
@@ -51,9 +50,54 @@ _TOKEN_PRICE_FIELDS = (
     "output_price_per_million",
 )
 
+SOLUTION_AGENT_PROMPT = (
+    "请帮我求解 NumOJ 上的《{problem_title}》这道题，题目编号是 {problem_id}。"
+    "请在本地写好 solution 并充分测试，确认无误后用 numoj-user skill "
+    "提交到 NumOJ 评测。"
+)
+
+TESTDATA_AGENT_PROMPT = (
+    "请帮我为 NumOJ 上的《{problem_title}》这道题生成 {test_point_count} 个高质量测试点，"
+    "题目编号是 {problem_id}。标准程序已经作为本条消息的附件提供。"
+    "{data_requirement}请使用 numoj-admin skill 获取题目和管理员可见的相关资源，"
+    "在本地生成并充分验证测试数据，确认无误后用 numoj-admin skill 上传到 NumOJ。"
+)
+
 
 class AgentLaunchValidationError(ValueError):
     """本次 Agent 启动参数不合法。"""
+
+
+def build_solution_agent_prompt(*, problem_id, problem_title):
+    """构造并持久化为首轮用户消息的统一解题指令。"""
+
+    return SOLUTION_AGENT_PROMPT.format(
+        problem_id=int(problem_id),
+        problem_title=str(problem_title or ""),
+    )
+
+
+def build_testdata_agent_prompt(
+    *,
+    problem_id,
+    problem_title,
+    test_point_count,
+    data_requirement="",
+):
+    """构造造数据按钮代发的首轮普通用户消息。"""
+
+    requirement = str(data_requirement or "").strip()
+    requirement_text = (
+        f"数据要求：{requirement}。"
+        if requirement
+        else "请自行覆盖边界、典型与压力场景。"
+    )
+    return TESTDATA_AGENT_PROMPT.format(
+        problem_id=int(problem_id),
+        problem_title=str(problem_title or ""),
+        test_point_count=int(test_point_count),
+        data_requirement=requirement_text,
+    )
 
 
 def normalize_agent_task_kind(value):
@@ -76,17 +120,17 @@ def normalize_launch_harness(value):
 
 
 def normalize_agent_access_role(value, *, task_kind=AGENT_TASK_CUSTOM):
-    """校验任务执行身份；题目解题和造数据始终降级为 user。"""
+    """校验任务执行身份；解题按钮固定使用普通用户权限。"""
 
     normalized_task_kind = normalize_agent_task_kind(task_kind)
     access_role = str(value or AGENT_ACCESS_ROLE_USER).strip().lower()
     if access_role not in ALLOWED_AGENT_ACCESS_ROLES:
         raise AgentLaunchValidationError("Agent 执行身份无效")
     if (
-        normalized_task_kind in {AGENT_TASK_SOLVE, AGENT_TASK_TESTDATA}
+        normalized_task_kind == AGENT_TASK_SOLVE
         and access_role != AGENT_ACCESS_ROLE_USER
     ):
-        raise AgentLaunchValidationError("解题和造数据 Agent 只能使用 user 身份")
+        raise AgentLaunchValidationError("解题 Agent 只能使用 user 身份")
     return access_role
 
 
@@ -228,6 +272,10 @@ __all__ = [
     "ALLOWED_AGENT_ACCESS_ROLES",
     "ALLOWED_AGENT_TASK_KINDS",
     "AgentLaunchValidationError",
+    "SOLUTION_AGENT_PROMPT",
+    "TESTDATA_AGENT_PROMPT",
+    "build_solution_agent_prompt",
+    "build_testdata_agent_prompt",
     "endpoint_supports_harness",
     "harness_options",
     "list_launch_endpoints_by_harness",

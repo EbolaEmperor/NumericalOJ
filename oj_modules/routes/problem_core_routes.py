@@ -7,10 +7,12 @@ import logging
 import re
 import time
 from datetime import datetime
+from io import BytesIO
 from uuid import uuid4
 from urllib.parse import quote
 
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
+from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from oj_modules.db_services import (
@@ -89,6 +91,8 @@ from oj_modules.problems.agent_runs import (
 )
 from oj_modules.problems.agent_launch import (
     AgentLaunchValidationError,
+    build_solution_agent_prompt,
+    build_testdata_agent_prompt,
     harness_options,
     list_launch_endpoints_by_harness,
     normalize_agent_task_kind,
@@ -1361,7 +1365,7 @@ def admin_agent_solve_problem(problem_id):
         return jsonify(success=False, message='题目不存在'), 404
     if int(problem.get('type') or 1) != 1:
         return jsonify(success=False, message='仅支持编程题'), 400
-    if _agent_solve_problem_task is None or _agent_queue_dispatch_task is None:
+    if _agent_run_turn_task is None or _agent_queue_dispatch_task is None:
         return jsonify(success=False, message='Agent 任务未初始化'), 500
 
     payload = request.get_json(silent=True) or {}
@@ -1388,30 +1392,18 @@ def admin_agent_solve_problem(problem_id):
         return jsonify(success=False, message='当前登录身份不可用于 Agent'), 401
 
     task_id = uuid4().hex
-    pending_state = {
-        "task_id": task_id,
-        "session_id": task_id,
-        "problem_id": int(problem.get("id") or problem_id),
-        "problem_title": problem.get("title"),
-        "requested_by": user.get("username"),
-        "task_kind": "solve",
-        "harness": harness,
-        "endpoint_id": endpoint_id,
-        "endpoint_model": endpoint.get("model"),
-        "status": "Pending",
-        "message": "任务排队中",
-        "best_score": 0,
-        "latest_submission_id": None,
-        "final_submission_id": None,
-        "attempts": [],
-    }
-    upsert_agent_run_snapshot(pending_state)
+    problem_id_value = int(problem.get('id') or problem_id)
+    problem_title = str(problem.get('title') or '').strip()
+    user_message = build_solution_agent_prompt(
+        problem_id=problem_id_value,
+        problem_title=problem_title,
+    )
     runtime_checkpoint_id = ''
     try:
         ensure_agent_workspace(task_id)
         runtime_checkpoint_id = task_id
         create_empty_agent_runtime_checkpoint(task_id, runtime_checkpoint_id)
-        create_agent_session(
+        agent_session = create_agent_session(
             session_id=task_id,
             task_id=task_id,
             requested_by=user['username'],
@@ -1419,13 +1411,10 @@ def admin_agent_solve_problem(problem_id):
             endpoint_id=endpoint_id,
             endpoint_revision=endpoint.get('revision'),
             endpoint_model=endpoint.get("model"),
-            user_message=(
-                f"解决题目 #{int(problem.get('id') or problem_id)}："
-                f"{str(problem.get('title') or '').strip()}"
-            ),
+            user_message=user_message,
             task_kind="solve",
             access_role="user",
-            problem_id=int(problem.get("id") or problem_id),
+            problem_id=problem_id_value,
             problem_title=problem.get("title"),
             base_runtime_checkpoint_id=runtime_checkpoint_id,
             base_native_session_id='',
@@ -1436,10 +1425,16 @@ def admin_agent_solve_problem(problem_id):
             runtime_checkpoint_id,
         )
         logger.exception('创建解题 Agent 会话失败')
-        pending_state["status"] = "Failed"
-        pending_state["message"] = "无法创建 Agent 会话"
-        upsert_agent_run_snapshot(pending_state)
-        return jsonify(success=False, message=pending_state["message"]), 500
+        return jsonify(success=False, message='无法创建 Agent 会话'), 500
+
+    try:
+        upsert_agent_run_snapshot(_pending_agent_run_state(agent_session, task_id))
+    except Exception:
+        logger.warning(
+            '写入解题 Agent 首轮兼容快照失败，dispatcher 将重建',
+            extra={'session_id': task_id, 'task_id': task_id},
+            exc_info=True,
+        )
 
     try:
         _agent_queue_dispatch_task.apply_async(args=(task_id,))
@@ -1477,7 +1472,7 @@ def admin_agent_generate_testdata(problem_id):
         return jsonify(success=False, message='Promptly 评分题不支持造数据 Agent'), 400
     if programming_mode != 1:
         return jsonify(success=False, message='造数据 Agent 仅支持标准测试点评分模式'), 400
-    if _agent_generate_testdata_task is None or _agent_queue_dispatch_task is None:
+    if _agent_run_turn_task is None or _agent_queue_dispatch_task is None:
         return jsonify(success=False, message='数据生成 Agent 任务未初始化'), 500
 
     if request.mimetype != 'multipart/form-data':
@@ -1523,31 +1518,31 @@ def admin_agent_generate_testdata(problem_id):
         return jsonify(success=False, message='当前登录身份不可用于 Agent'), 401
 
     task_id = uuid4().hex
-    pending_state = {
-        "task_id": task_id,
-        "session_id": task_id,
-        "problem_id": int(problem.get("id") or problem_id),
-        "problem_title": problem.get("title"),
-        "requested_by": user.get("username"),
-        "task_kind": "testdata",
-        "harness": harness,
-        "endpoint_id": endpoint_id,
-        "endpoint_model": endpoint.get("model"),
-        "status": "Pending",
-        "message": "数据生成 Agent 任务排队中",
-        "best_score": 0,
-        "latest_submission_id": None,
-        "final_submission_id": None,
-        "attempts": [],
-    }
-    upsert_agent_run_snapshot(pending_state)
+    problem_id_value = int(problem.get('id') or problem_id)
+    problem_title = str(problem.get('title') or '').strip()
+    user_message = build_testdata_agent_prompt(
+        problem_id=problem_id_value,
+        problem_title=problem_title,
+        test_point_count=test_point_count,
+        data_requirement=data_requirement,
+    )
+    attachments = []
     runtime_checkpoint_id = ''
     try:
-        requirement_summary = data_requirement or "请自行覆盖边界、典型与压力场景"
         ensure_agent_workspace(task_id)
         runtime_checkpoint_id = task_id
         create_empty_agent_runtime_checkpoint(task_id, runtime_checkpoint_id)
-        create_agent_session(
+        attachment_upload = FileStorage(
+            stream=BytesIO(standard_code.encode('utf-8')),
+            filename=standard_filename,
+            content_type='text/plain; charset=utf-8',
+        )
+        attachments = save_agent_attachments(
+            task_id,
+            task_id,
+            [attachment_upload],
+        )
+        agent_session = create_agent_session(
             session_id=task_id,
             task_id=task_id,
             requested_by=user['username'],
@@ -1555,33 +1550,32 @@ def admin_agent_generate_testdata(problem_id):
             endpoint_id=endpoint_id,
             endpoint_revision=endpoint.get('revision'),
             endpoint_model=endpoint.get("model"),
-            user_message=(
-                f"为题目 #{int(problem.get('id') or problem_id)} 生成 "
-                f"{test_point_count} 个测试点。\n\n{requirement_summary}"
-            ),
+            user_message=user_message,
+            attachments=attachments,
             task_kind="testdata",
-            access_role="user",
-            problem_id=int(problem.get("id") or problem_id),
+            access_role="admin",
+            problem_id=problem_id_value,
             problem_title=problem.get("title"),
             base_runtime_checkpoint_id=runtime_checkpoint_id,
             base_native_session_id='',
-            dispatch_payload={
-                'test_point_count': test_point_count,
-                'standard_code': standard_code,
-                'data_requirement': data_requirement,
-                'standard_filename': standard_filename,
-            },
         )
     except Exception:
+        _remove_agent_attachments_best_effort(task_id, attachments)
         _remove_agent_runtime_checkpoint_best_effort(
             task_id,
             runtime_checkpoint_id,
         )
         logger.exception('创建造数据 Agent 会话失败')
-        pending_state["status"] = "Failed"
-        pending_state["message"] = "无法创建 Agent 会话"
-        upsert_agent_run_snapshot(pending_state)
-        return jsonify(success=False, message=pending_state["message"]), 500
+        return jsonify(success=False, message='无法创建 Agent 会话'), 500
+
+    try:
+        upsert_agent_run_snapshot(_pending_agent_run_state(agent_session, task_id))
+    except Exception:
+        logger.warning(
+            '写入造数据 Agent 首轮兼容快照失败，dispatcher 将重建',
+            extra={'session_id': task_id, 'task_id': task_id},
+            exc_info=True,
+        )
 
     try:
         _agent_queue_dispatch_task.apply_async(args=(task_id,))
@@ -3019,14 +3013,15 @@ def admin_agent_task_detail(session_id):
         int(latest_turn.get('turn_index') or 1) == 1
         and not str(latest_turn.get('base_native_session_id') or '').strip()
     )
+    preupgrade_testdata_first_turn = bool(
+        str(agent_session.get('task_kind') or '').strip().lower() == 'testdata'
+        and str(agent_session.get('access_role') or '').strip().lower() == 'user'
+        and int(latest_turn.get('turn_index') or 1) == 1
+    )
     can_retry = bool(
         owns_session
         and not agent_session.get('is_legacy')
-        and (
-            str(agent_session.get('task_kind') or '').strip().lower()
-            == 'custom'
-            or int(latest_turn.get('turn_index') or 1) > 1
-        )
+        and not preupgrade_testdata_first_turn
         and str(latest_turn.get('task_id') or '') == current_task_id
         and retry_has_baseline
     )

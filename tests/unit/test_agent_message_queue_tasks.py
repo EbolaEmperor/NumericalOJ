@@ -263,7 +263,7 @@ def test_dispatch_retry_restores_the_superseded_turn_baseline(monkeypatch):
     assert kwargs["args"][10] == "checkpoint-before-failure"
 
 
-def test_dispatch_first_solve_turn_uses_specialized_task(monkeypatch):
+def test_dispatch_first_solve_turn_uses_generic_session_task(monkeypatch):
     run_turn = _RecordedTask()
     solve = _RecordedTask()
     claim = {
@@ -275,6 +275,9 @@ def test_dispatch_first_solve_turn_uses_specialized_task(monkeypatch):
         "problem_id": 9,
         "access_role": "user",
         "endpoint_revision": 4,
+        "user_message": "请帮我解题并提交",
+        "attachments": [],
+        "native_session_id": "",
     }
     monkeypatch.setattr(
         queue,
@@ -290,13 +293,26 @@ def test_dispatch_first_solve_turn_uses_specialized_task(monkeypatch):
 
     dispatch(SimpleNamespace(retry=lambda **_kwargs: None), "solve-1")
 
-    assert run_turn.calls == []
-    _args, kwargs = solve.calls[0]
+    assert solve.calls == []
+    _args, kwargs = run_turn.calls[0]
     assert kwargs["task_id"] == "solve-1"
-    assert kwargs["args"] == (9, "admin", "pi", 8, "", "session", 4)
+    assert kwargs["args"] == (
+        "solve-1",
+        "admin",
+        "user",
+        "pi",
+        8,
+        "",
+        "请帮我解题并提交",
+        "session",
+        "",
+        True,
+        "",
+        False,
+    )
 
 
-def test_dispatch_first_testdata_turn_restores_private_payload(monkeypatch):
+def test_dispatch_first_testdata_turn_uses_admin_generic_session_task(monkeypatch):
     run_turn = _RecordedTask()
     testdata = _RecordedTask()
     claim = {
@@ -306,10 +322,66 @@ def test_dispatch_first_testdata_turn_restores_private_payload(monkeypatch):
         "turn_index": 1,
         "task_kind": "testdata",
         "problem_id": 9,
+        "access_role": "admin",
+        "endpoint_revision": 5,
+        "user_message": "请生成并上传测试数据",
+        "attachments": [{"path": "attachments/testdata-1/answer.py"}],
+        "native_session_id": "",
+        "dispatch_payload": {},
+    }
+    monkeypatch.setattr(
+        queue,
+        "claim_next_agent_session_message",
+        lambda _sid, **_kwargs: claim,
+    )
+    monkeypatch.setattr(queue, "upsert_agent_run_snapshot", lambda _state: None)
+    dispatch, _recover = queue.register_agent_queue_tasks(
+        _FakeCelery(),
+        run_turn,
+        agent_generate_testdata_task=testdata,
+    )
+
+    dispatch(SimpleNamespace(retry=lambda **_kwargs: None), "testdata-1")
+
+    assert testdata.calls == []
+    _args, kwargs = run_turn.calls[0]
+    assert kwargs["task_id"] == "testdata-1"
+    assert kwargs["args"] == (
+        "testdata-1",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "",
+        (
+            "请生成并上传测试数据\n\n"
+            "用户随本条消息上传了以下附件，文件已经放入 workspace。"
+            "请在需要时直接读取：\n"
+            "- /workspace/attachments/testdata-1/answer.py"
+        ),
+        "session",
+        "",
+        True,
+        "",
+        False,
+    )
+
+
+def test_dispatch_recovers_preupgrade_testdata_payload_with_legacy_task(monkeypatch):
+    run_turn = _RecordedTask()
+    testdata = _RecordedTask()
+    claim = {
+        **_claim(),
+        "task_id": "testdata-old",
+        "session_id": "testdata-old",
+        "turn_index": 1,
+        "task_kind": "testdata",
+        "problem_id": 9,
         "access_role": "user",
         "endpoint_revision": 5,
+        "native_session_id": "",
         "dispatch_payload": {
-            "test_point_count": 6,
+            "test_point_count": 4,
             "standard_code": "print(1)\n",
             "data_requirement": "覆盖边界",
             "standard_filename": "answer.py",
@@ -327,24 +399,26 @@ def test_dispatch_first_testdata_turn_restores_private_payload(monkeypatch):
         agent_generate_testdata_task=testdata,
     )
 
-    dispatch(SimpleNamespace(retry=lambda **_kwargs: None), "testdata-1")
+    dispatch(SimpleNamespace(retry=lambda **_kwargs: None), "testdata-old")
 
     assert run_turn.calls == []
     _args, kwargs = testdata.calls[0]
-    assert kwargs["task_id"] == "testdata-1"
-    assert kwargs["args"] == (
-        9,
-        "admin",
-        6,
-        "print(1)\n",
-        "覆盖边界",
-        "answer.py",
-        "pi",
-        8,
-        "",
-        "session",
-        5,
-    )
+    assert kwargs == {
+        "args": (
+            9,
+            "admin",
+            4,
+            "print(1)\n",
+            "覆盖边界",
+            "answer.py",
+            "pi",
+            8,
+            "",
+            "session",
+            5,
+        ),
+        "task_id": "testdata-old",
+    }
 
 
 def test_recovery_schedules_every_authoritative_candidate(monkeypatch):

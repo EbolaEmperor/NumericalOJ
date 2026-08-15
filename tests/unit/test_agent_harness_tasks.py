@@ -4,6 +4,7 @@ from string import Formatter
 
 import pytest
 
+from oj_modules.problems import agent_launch
 from oj_modules.tasks.agent import generate_testdata as data_task
 from oj_modules.tasks.agent import solve as solve_task
 from oj_modules.tasks.agent.harness_runtime import HarnessRunResult
@@ -81,7 +82,7 @@ def test_solution_prompt_template_requires_authoritative_problem_identity():
     fields = {
         field_name
         for _, field_name, _, _ in Formatter().parse(
-            solve_task.SOLUTION_AGENT_PROMPT,
+            agent_launch.SOLUTION_AGENT_PROMPT,
         )
         if field_name
     }
@@ -89,38 +90,16 @@ def test_solution_prompt_template_requires_authoritative_problem_identity():
     assert {"problem_id", "problem_title"} <= fields
 
 
-@pytest.mark.parametrize("problem_lang", ["", "python", "cpp", "matlab"])
-def test_solution_prompt_keeps_other_language_workflow_unchanged(problem_lang):
-    expected = solve_task.SOLUTION_AGENT_PROMPT.format(
+def test_solution_prompt_is_a_language_agnostic_user_instruction():
+    expected = agent_launch.SOLUTION_AGENT_PROMPT.format(
         problem_id=5,
         problem_title="快照题",
     )
 
-    assert solve_task.build_solution_agent_prompt(
+    assert agent_launch.build_solution_agent_prompt(
         problem_id=5,
         problem_title="快照题",
-        problem_lang=problem_lang,
     ) == expected
-
-
-@pytest.mark.parametrize("problem_lang", ["lean", "lean4", " LEAN4 "])
-def test_solution_prompt_adds_complete_lean4_proof_workflow(problem_lang):
-    prompt = solve_task.build_solution_agent_prompt(
-        problem_id=5,
-        problem_title="Lean 证明题",
-        problem_lang=problem_lang,
-    )
-
-    assert "`problem lean-init 5 ./lean-workspace`" in prompt
-    assert "标记为 `writable` 的完整文件" in prompt
-    assert "自行添加辅助引理或定理" in prompt
-    assert "容器内预装的 Lean 4 和 Mathlib" in prompt
-    assert "`build_order`" in prompt
-    assert "`problem submit 5 --workspace ./lean-workspace`" in prompt
-    assert "等待该 submission 进入终态" in prompt
-    assert "直到 `Accepted`" in prompt
-    for forbidden in ("`sorry`", "`admit`", "`axiom`"):
-        assert forbidden in prompt
 
 
 @pytest.mark.parametrize(
@@ -368,6 +347,7 @@ def test_testdata_task_exports_parses_then_publishes(
     assert len(harness_calls) == 1
     harness_call = harness_calls[0]
     assert harness_call["task_kind"] == "testdata"
+    assert harness_call["access_role"] == "user"
     assert harness_call["session_cookie"] == "session-cookie"
     assert harness_call["session_cookie_name"] == "numoj_session"
     assert harness_call["workspace_files"] == {
@@ -721,7 +701,6 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
     assert prompt_requests == [{
         "problem_id": 5,
         "problem_title": "快照题",
-        "problem_lang": "python",
     }]
 
 

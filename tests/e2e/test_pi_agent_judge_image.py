@@ -499,7 +499,7 @@ def test_pi_lite_image_openai_endpoint_uses_standard_roles(
     )
 
 
-def test_pi_lite_image_problem_agent_auto_resumes_output_limit(
+def test_pi_lite_image_problem_agent_does_not_hide_output_limit_continuation(
         docker_shared_tmp_path: Path):
     tmp_path = docker_shared_tmp_path
     if shutil.which("docker") is None:
@@ -537,22 +537,14 @@ def test_pi_lite_image_problem_agent_auto_resumes_output_limit(
 
     assert proc.returncode == 0, proc.stderr
     answer_path = workspace / "answer.txt"
-    assert answer_path.is_file(), json.dumps({
+    assert not answer_path.exists(), json.dumps({
         "stdout": proc.stdout,
         "stderr": proc.stderr,
         "requests": _PiLengthFinalizeHandler.requests,
     }, ensure_ascii=False, indent=2)
-    assert answer_path.read_text(encoding="utf-8") == (
-        _FINALIZED_ANSWER + "\n"
-    )
     requests = _PiLengthFinalizeHandler.requests
-    assert len(requests) == 3
+    assert len(requests) == 1
     assert requests[0].get("reasoning_effort") == "high"
-    assert all("reasoning_effort" not in request for request in requests[1:])
-    assert sum(
-        message.get("role") == "user"
-        for message in requests[1]["messages"]
-    ) >= 2
 
 
 def test_claude_lite_image_honors_one_million_context_and_384k_output_contract():

@@ -62,6 +62,7 @@ def _session(*, task_kind="custom", access_role="admin", status="Completed"):
 def _patch_admin(monkeypatch):
     monkeypatch.setattr(routes, "current_user", lambda: dict(ADMIN))
     monkeypatch.setattr(routes, "_agent_queue_dispatch_task", _WakeTask())
+    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
 
 
 def _patch_frozen_endpoint(monkeypatch, *, revision=3):
@@ -114,6 +115,18 @@ def _patch_runtime_checkpoints(monkeypatch):
         "mark_agent_turn_runtime_restore_failed",
         lambda _session_id, _task_id, _message: None,
     )
+    monkeypatch.setattr(
+        routes,
+        "save_agent_attachments",
+        lambda session_id, message_id, uploads: [
+            {
+                "name": upload.filename,
+                "path": f"attachments/{message_id}/{upload.filename}",
+            }
+            for upload in uploads
+        ],
+    )
+    monkeypatch.setattr(routes, "remove_agent_attachments", lambda *_args: 0)
 
 
 def test_task_id_query_redirects_historical_turn_to_owning_session(monkeypatch):
@@ -430,7 +443,7 @@ def test_same_client_message_creation_conflict_keeps_winner_checkpoint(
 
 @pytest.mark.parametrize(
     ("task_kind", "access_role"),
-    [("custom", "admin"), ("solve", "user"), ("testdata", "user")],
+    [("custom", "admin"), ("solve", "user"), ("testdata", "admin")],
 )
 def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
     monkeypatch,
@@ -833,15 +846,29 @@ def test_session_without_native_resume_point_is_blocked_before_attachments(
     assert "未建立可恢复的原生会话" in response.get_json()["message"]
 
 
-def test_retry_legacy_first_turn_reuses_message_and_restores_empty_runtime(
+@pytest.mark.parametrize(
+    ("task_kind", "access_role"),
+    [
+        ("custom", "admin"),
+        ("solve", "user"),
+        ("testdata", "admin"),
+    ],
+)
+def test_retry_first_turn_reuses_message_and_restores_empty_runtime(
     monkeypatch,
+    task_kind,
+    access_role,
 ):
     _patch_admin(monkeypatch)
     _patch_frozen_endpoint(monkeypatch)
     task = _Task()
     monkeypatch.setattr(routes, "_agent_run_turn_task", task)
     monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
-    session = _session(status="Failed")
+    session = _session(
+        task_kind=task_kind,
+        access_role=access_role,
+        status="Failed",
+    )
     session["native_session_id"] = ""
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: dict(session))
 
@@ -878,8 +905,8 @@ def test_retry_legacy_first_turn_reuses_message_and_restores_empty_runtime(
             retry_calls.append((session_id, kwargs))
             or {
                 "turn_index": 2,
-                "task_kind": "custom",
-                "access_role": "admin",
+                "task_kind": task_kind,
+                "access_role": access_role,
                 "harness": "codex",
                 "endpoint_id": 12,
                 "endpoint_revision": 3,
@@ -1050,43 +1077,6 @@ def test_retry_rejects_new_attachments_before_creating_checkpoint(monkeypatch):
     assert "不能同时上传新附件" in response.get_json()["message"]
 
 
-@pytest.mark.parametrize("task_kind", ["solve", "testdata"])
-def test_specialized_first_turn_cannot_be_retried_as_a_generic_turn(
-    monkeypatch,
-    task_kind,
-):
-    _patch_admin(monkeypatch)
-    _patch_frozen_endpoint(monkeypatch)
-    monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
-    monkeypatch.setattr(
-        routes,
-        "get_agent_session",
-        lambda _sid: _session(task_kind=task_kind, access_role="user"),
-    )
-    monkeypatch.setattr(
-        routes,
-        "begin_agent_session_retry",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AgentSessionBusyError("解题或造数据 Agent 的首轮暂不支持重试")
-        ),
-    )
-
-    app = _app()
-    with app.test_request_context(
-        "/admin/agent_tasks/session-1",
-        method="POST",
-        data={"retry_last": "1", "expected_task_id": "turn-1"},
-        content_type="multipart/form-data",
-        environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
-    ):
-        response, status = routes.admin_agent_task_detail("session-1")
-
-    assert status == 409
-    assert response.get_json()["message"] == (
-        "解题或造数据 Agent 的首轮暂不支持重试"
-    )
-
-
 def test_retry_race_removes_unreferenced_fallback_checkpoint(monkeypatch):
     _patch_admin(monkeypatch)
     _patch_frozen_endpoint(monkeypatch)
@@ -1124,7 +1114,7 @@ def test_retry_race_removes_unreferenced_fallback_checkpoint(monkeypatch):
     assert removed == [("session-1", "turn-2-turn-2", True)]
 
 
-def test_specialized_solve_launch_creates_a_resumable_user_session(monkeypatch):
+def test_solve_button_creates_a_resumable_generic_user_session(monkeypatch):
     _patch_admin(monkeypatch)
     monkeypatch.setattr(routes, "_agent_solve_problem_task", _Task())
     monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="solve-1"))
@@ -1148,7 +1138,7 @@ def test_specialized_solve_launch_creates_a_resumable_user_session(monkeypatch):
     monkeypatch.setattr(
         routes,
         "create_agent_session",
-        lambda **kwargs: create_calls.append(kwargs),
+        lambda **kwargs: create_calls.append(kwargs) or kwargs,
     )
     monkeypatch.setattr(
         routes,
@@ -1170,12 +1160,16 @@ def test_specialized_solve_launch_creates_a_resumable_user_session(monkeypatch):
     assert create_calls[0]["task_id"] == "solve-1"
     assert create_calls[0]["task_kind"] == "solve"
     assert create_calls[0]["access_role"] == "user"
+    assert create_calls[0]["user_message"] == routes.build_solution_agent_prompt(
+        problem_id=9,
+        problem_title="数值积分",
+    )
     assert create_calls[0]["problem_id"] == 9
     assert create_calls[0]["base_runtime_checkpoint_id"] == "solve-1"
     assert create_calls[0]["base_native_session_id"] == ""
 
 
-def test_specialized_testdata_launch_creates_a_resumable_user_session(
+def test_testdata_button_creates_a_resumable_generic_admin_session(
     monkeypatch,
 ):
     _patch_admin(monkeypatch)
@@ -1206,7 +1200,7 @@ def test_specialized_testdata_launch_creates_a_resumable_user_session(
     monkeypatch.setattr(
         routes,
         "create_agent_session",
-        lambda **kwargs: create_calls.append(kwargs),
+        lambda **kwargs: create_calls.append(kwargs) or kwargs,
     )
     monkeypatch.setattr(
         routes,
@@ -1234,16 +1228,21 @@ def test_specialized_testdata_launch_creates_a_resumable_user_session(
     assert create_calls[0]["session_id"] == "testdata-1"
     assert create_calls[0]["task_id"] == "testdata-1"
     assert create_calls[0]["task_kind"] == "testdata"
-    assert create_calls[0]["access_role"] == "user"
+    assert create_calls[0]["access_role"] == "admin"
     assert create_calls[0]["problem_id"] == 9
     assert create_calls[0]["base_runtime_checkpoint_id"] == "testdata-1"
     assert create_calls[0]["base_native_session_id"] == ""
-    assert create_calls[0]["dispatch_payload"] == {
-        "test_point_count": 4,
-        "standard_code": "print(1)\n",
-        "data_requirement": "覆盖病态输入",
-        "standard_filename": "answer.py",
-    }
+    assert create_calls[0]["user_message"] == routes.build_testdata_agent_prompt(
+        problem_id=9,
+        problem_title="数值积分",
+        test_point_count=4,
+        data_requirement="覆盖病态输入",
+    )
+    assert create_calls[0]["attachments"] == [{
+        "name": "answer.py",
+        "path": "attachments/testdata-1/answer.py",
+    }]
+    assert "dispatch_payload" not in create_calls[0]
 
 
 def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):

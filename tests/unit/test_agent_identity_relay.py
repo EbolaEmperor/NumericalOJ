@@ -15,7 +15,7 @@ def _headers(**values):
     return headers
 
 
-def test_solve_policy_only_allows_current_problem_and_proxy_created_submissions():
+def test_solve_policy_matches_normal_user_agent_across_continuations():
     policy = relay._IdentityRelayPolicy(
         "solve",
         17,
@@ -25,26 +25,17 @@ def test_solve_policy_only_allows_current_problem_and_proxy_created_submissions(
     assert policy.upstream_url == "http://127.0.0.1:2025"
     for path in (
         "/api/problems/17",
+        "/api/problems/18",
         "/api/problems/17/submit-context",
         "/me/classes",
+        "/submission_status/91",
+        "/submission_status_stream/91",
+        "/api/submissions/92",
     ):
         assert policy.plan("GET", path).target_url == (
             "http://127.0.0.1:2025" + path
         )
     submit = policy.plan("POST", "/submit/17")
-
-    for path in (
-        "/api/problems/18",
-        "/api/problems",
-        "/submit/18",
-        "/api/admin/users?page=1",
-        "/submission_status/91",
-        "/submission_status_stream/91",
-        "/api/submissions/91",
-    ):
-        with pytest.raises(relay._RequestRejected) as exc_info:
-            policy.plan("GET" if not path.startswith("/submit/") else "POST", path)
-        assert exc_info.value.status == 404
 
     location = policy.inspect_redirect(
         submit,
@@ -61,11 +52,15 @@ def test_solve_policy_only_allows_current_problem_and_proxy_created_submissions(
     assert policy.plan("GET", "/api/submissions/91").path == (
         "/api/submissions/91"
     )
+    assert policy.plan("GET", "/api/submissions/92").path == (
+        "/api/submissions/92"
+    )
+
     with pytest.raises(relay._RequestRejected):
-        policy.plan("GET", "/api/submissions/92")
+        policy.plan("POST", "/admin/agent_solve_problem/17")
 
 
-def test_solve_policy_allows_query_but_rejects_absolute_form_and_unlisted_methods():
+def test_solve_policy_allows_normal_methods_but_rejects_unsafe_targets():
     policy = relay._IdentityRelayPolicy("solve", 3, "https://oj.example.test")
 
     assert policy.plan("GET", "/api/problems/3?extra=1").target_url == (
@@ -77,15 +72,16 @@ def test_solve_policy_allows_query_but_rejects_absolute_form_and_unlisted_method
     for method, target, expected_status in (
         ("GET", "https://oj.example.test/api/problems/3", 400),
         ("GET", "//evil.example/api/problems/3", 400),
-        ("DELETE", "/api/problems/3", 404),
         ("GET", "/api/problems/3#fragment", 400),
     ):
         with pytest.raises(relay._RequestRejected) as exc_info:
             policy.plan(method, target)
         assert exc_info.value.status == expected_status
 
+    assert policy.plan("DELETE", "/api/problems/3").path == "/api/problems/3"
 
-def test_testdata_policy_is_read_only_and_uses_user_skill_routes():
+
+def test_preupgrade_testdata_user_policy_remains_read_only():
     policy = relay._IdentityRelayPolicy(
         "testdata",
         8,
@@ -100,15 +96,31 @@ def test_testdata_policy_is_read_only_and_uses_user_skill_routes():
     for method, path in (
         ("GET", "/api/problems/8/submit-context"),
         ("GET", "/api/admin/users"),
-        ("GET", "/api/admin/users?page=1"),
-        ("GET", "/api/admin/users?page=2"),
-        ("GET", "/api/admin/users?page=1&limit=1"),
         ("POST", "/admin/upload_testdata/8"),
         ("POST", "/submit/8"),
     ):
         with pytest.raises(relay._RequestRejected) as exc_info:
             policy.plan(method, path)
         assert exc_info.value.status == 404
+
+
+def test_testdata_admin_policy_matches_a_normal_admin_agent():
+    policy = relay._IdentityRelayPolicy(
+        "testdata",
+        8,
+        "http://127.0.0.1:2025",
+        access_role="admin",
+    )
+
+    assert policy.plan("GET", "/api/problems/8").path == "/api/problems/8"
+    assert policy.plan("GET", "/api/admin/users?page=1").path == (
+        "/api/admin/users"
+    )
+    assert policy.plan("POST", "/admin/upload_testdata/8").path == (
+        "/admin/upload_testdata/8"
+    )
+    with pytest.raises(relay._RequestRejected):
+        policy.plan("POST", "/admin/agent_generate_testdata/8")
 
 
 @pytest.mark.parametrize("access_role", ["user", "admin"])
@@ -338,8 +350,7 @@ def test_redirect_to_another_origin_or_ambiguous_location_is_refused(location):
         policy.inspect_redirect(plan, 302, _headers(Location=location))
 
     assert exc_info.value.status == 502
-    with pytest.raises(relay._RequestRejected):
-        policy.plan("GET", "/submission_status/91")
+    assert policy.created_submission_ids() == ()
 
 
 def test_same_origin_absolute_redirect_is_rewritten_and_records_submission():

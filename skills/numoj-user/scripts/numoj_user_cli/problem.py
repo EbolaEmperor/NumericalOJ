@@ -9,7 +9,20 @@ from typing import Any, Dict
 from . import common
 
 
-LEAN_MANIFEST_FILENAME = "numoj-lean.json"
+PROBLEM_SNAPSHOT_FILENAME = "numoj-problem.json"
+LEGACY_LEAN_MANIFEST_FILENAME = "numoj-lean.json"
+
+_SOURCE_FILENAMES = {
+    "matlab": "solution.m",
+    "octave": "solution.m",
+    "c": "solution.c",
+    "cpp": "solution.cpp",
+    "c++": "solution.cpp",
+    "python": "solution.py",
+    "python3": "solution.py",
+    "lean": "solution.lean",
+    "lean4": "solution.lean",
+}
 
 
 def _lean_workspace_from_payload(payload: Any) -> Dict[str, Any]:
@@ -28,18 +41,21 @@ def _lean_relative_path(raw_path: Any) -> PurePosixPath:
     return path
 
 
-def _lean_manifest(problem_id: int, workspace: Dict[str, Any]) -> Dict[str, Any]:
+def _lean_snapshot(workspace: Dict[str, Any]) -> Dict[str, Any]:
     ordered = sorted(
         workspace.get("files") or [],
         key=lambda item: int(item.get("build_order") or 0),
     )
     return {
         "schema_version": int(workspace.get("schema_version") or 1),
-        "problem_id": int(problem_id),
         "revision": str(workspace["revision"]),
         "default_file": str(workspace.get("default_file") or ""),
         "files": [
-            {"path": str(item.get("path") or ""), "mode": str(item.get("mode") or "")}
+            {
+                "path": str(item.get("path") or ""),
+                "mode": str(item.get("mode") or ""),
+                "build_order": int(item.get("build_order") or 0),
+            }
             for item in ordered
         ],
         "build_order": [str(item.get("path") or "") for item in ordered],
@@ -47,57 +63,117 @@ def _lean_manifest(problem_id: int, workspace: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-def _write_lean_workspace(
-    *, problem_id: int, workspace: Dict[str, Any], directory: str, force: bool
+def _problem_snapshot(problem_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    problem = payload.get("problem")
+    if not isinstance(problem, dict):
+        raise common.CliError("The server returned an invalid problem.")
+    submit = payload.get("submit")
+    submit_kind = (
+        str(submit.get("input_kind") or "").strip()
+        if isinstance(submit, dict)
+        else ""
+    )
+    snapshot = {
+        "schema_version": 1,
+        "problem_id": int(problem_id),
+        "submit_kind": submit_kind,
+        "problem": {
+            "title": str(problem.get("title") or ""),
+            "lang": str(problem.get("lang") or ""),
+            "type": int(problem.get("type") or 0),
+        },
+    }
+    workspace = payload.get("lean_workspace")
+    if isinstance(workspace, dict) and workspace.get("revision"):
+        snapshot["lean_workspace"] = _lean_snapshot(workspace)
+    return snapshot
+
+
+def _initial_code_filename(problem: Dict[str, Any]) -> str:
+    language = str(problem.get("lang") or "").strip().lower()
+    return _SOURCE_FILENAMES.get(language, "solution.txt")
+
+
+def _write_problem_download(
+    *, problem_id: int, payload: Dict[str, Any], directory: str, force: bool
 ) -> Dict[str, Any]:
     root = Path(directory).expanduser().resolve()
-    manifest = _lean_manifest(problem_id, workspace)
-    outputs = [root / LEAN_MANIFEST_FILENAME]
-    for item in workspace.get("files") or []:
-        outputs.append(root.joinpath(*_lean_relative_path(item.get("path")).parts))
+    snapshot = _problem_snapshot(problem_id, payload)
+    problem = payload["problem"]
+    files: Dict[PurePosixPath, str] = {
+        PurePosixPath("PROBLEM.md"): str(problem.get("content") or ""),
+    }
+
+    workspace = payload.get("lean_workspace")
+    if isinstance(workspace, dict) and workspace.get("revision"):
+        workspace = _lean_workspace_from_payload(payload)
+        for item in workspace.get("files") or []:
+            relative = _lean_relative_path(item.get("path"))
+            files[relative] = str(item.get("content") or "")
+    else:
+        initial_code = str(payload.get("initial_code") or "")
+        if initial_code:
+            files[PurePosixPath(_initial_code_filename(problem))] = initial_code
+
+    snapshot["resources"] = [path.as_posix() for path in files]
+    files[PurePosixPath(PROBLEM_SNAPSHOT_FILENAME)] = (
+        json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n"
+    )
+    outputs = [root.joinpath(*relative.parts) for relative in files]
     existing = [path for path in outputs if path.exists()]
     if existing and not force:
         raise common.CliError(
-            f"Refusing to overwrite {existing[0]}; pass --force to replace the initialized workspace."
+            f"Refusing to overwrite {existing[0]}; pass --force to replace downloaded files."
         )
     root.mkdir(parents=True, exist_ok=True)
-    for item in workspace.get("files") or []:
-        target = root.joinpath(*_lean_relative_path(item.get("path")).parts)
+    for relative, content in files.items():
+        target = root.joinpath(*relative.parts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(item.get("content") or ""), encoding="utf-8")
-    (root / LEAN_MANIFEST_FILENAME).write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+        target.write_text(content, encoding="utf-8")
     return {
         "success": True,
         "problem_id": int(problem_id),
-        "revision": manifest["revision"],
         "path": str(root),
-        "default_file": manifest["default_file"],
-        "files": manifest["files"],
+        "files": [relative.as_posix() for relative in files],
     }
 
 
 def _read_lean_submission(directory: str, *, problem_id: int) -> Dict[str, Any]:
     root = Path(directory).expanduser().resolve()
-    manifest_path = root / LEAN_MANIFEST_FILENAME
+    manifest_path = root / PROBLEM_SNAPSHOT_FILENAME
+    legacy = False
+    if not manifest_path.exists():
+        manifest_path = root / LEGACY_LEAN_MANIFEST_FILENAME
+        legacy = True
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise common.CliError(f"Lean workspace is missing {manifest_path}.") from exc
+        raise common.CliError(
+            f"Problem workspace is missing {root / PROBLEM_SNAPSHOT_FILENAME}. "
+            "Run problem download first."
+        ) from exc
     except (OSError, json.JSONDecodeError) as exc:
-        raise common.CliError(f"Cannot read Lean workspace manifest {manifest_path}: {exc}") from exc
-    if not isinstance(manifest, dict) or not str(manifest.get("revision") or "").strip():
-        raise common.CliError("Run problem lean-init first; the workspace manifest has no server revision.")
+        raise common.CliError(f"Cannot read problem snapshot {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise common.CliError(f"Problem snapshot {manifest_path} is invalid.")
+    if legacy:
+        workspace = manifest
+    else:
+        if str(manifest.get("submit_kind") or "") != "lean_workspace":
+            raise common.CliError("This downloaded problem is not a Lean 4 workspace.")
+        workspace = manifest.get("lean_workspace")
+        if not isinstance(workspace, dict):
+            raise common.CliError("The problem snapshot has no Lean 4 workspace metadata.")
+    if not str(workspace.get("revision") or "").strip():
+        raise common.CliError("The problem snapshot has no server revision.")
     manifest_problem_id = manifest.get("problem_id")
     if manifest_problem_id is not None and int(manifest_problem_id) != int(problem_id):
         raise common.CliError(
             f"This workspace belongs to problem {manifest_problem_id}, not problem {problem_id}."
         )
-    descriptors = manifest.get("files")
+    descriptors = workspace.get("files")
     if not isinstance(descriptors, list):
-        raise common.CliError("Lean workspace manifest.files must be an array.")
+        raise common.CliError("Lean workspace metadata.files must be an array.")
     files: Dict[str, str] = {}
     for descriptor in descriptors:
         if not isinstance(descriptor, dict) or descriptor.get("mode") != "writable":
@@ -109,8 +185,8 @@ def _read_lean_submission(directory: str, *, problem_id: int) -> Dict[str, Any]:
         except OSError as exc:
             raise common.CliError(f"Cannot read writable Lean file {source}: {exc}") from exc
     if not files:
-        raise common.CliError("Lean workspace manifest does not declare any writable files.")
-    return {"revision": str(manifest["revision"]), "files": files}
+        raise common.CliError("Lean workspace metadata does not declare any writable files.")
+    return {"revision": str(workspace["revision"]), "files": files}
 
 
 def _lean_workspace_summary(workspace: Dict[str, Any]) -> Dict[str, Any]:
@@ -258,29 +334,17 @@ def problem_submit_page(args: argparse.Namespace) -> None:
     print(resp.text.strip())
 
 
-def problem_lean_workspace(args: argparse.Namespace) -> None:
+def problem_download(args: argparse.Namespace) -> None:
     client = common.client_from_args(args)
     resp = client.request("GET", f"/api/problems/{args.problem_id}")
     common.ensure_ok(resp, allow_redirect=False)
     payload = resp.json() if common.response_is_json(resp) else {}
-    workspace = _lean_workspace_from_payload(payload)
-    common.output_json({
-        "success": True,
-        "problem_id": int(args.problem_id),
-        "lean_workspace": workspace if args.full else _lean_workspace_summary(workspace),
-    })
-
-
-def problem_lean_init(args: argparse.Namespace) -> None:
-    client = common.client_from_args(args)
-    resp = client.request("GET", f"/api/problems/{args.problem_id}")
-    common.ensure_ok(resp, allow_redirect=False)
-    payload = resp.json() if common.response_is_json(resp) else {}
-    workspace = _lean_workspace_from_payload(payload)
-    common.output_json(_write_lean_workspace(
+    if not isinstance(payload, dict):
+        raise common.CliError("The server returned an invalid problem.")
+    common.output_json(_write_problem_download(
         problem_id=args.problem_id,
-        workspace=workspace,
-        directory=args.directory,
+        payload=payload,
+        directory=args.output,
         force=args.force,
     ))
 
@@ -357,7 +421,7 @@ def problem_submit(args: argparse.Namespace) -> None:
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
-    problem = common.add_cli_parser(subparsers, "problem", "Browse problems and submit code, Lean workspaces, Promptly prompts, or written-homework files.")
+    problem = common.add_cli_parser(subparsers, "problem", "Browse or download problems and submit code, Lean workspaces, Promptly prompts, or written-homework files.")
     problem_sub = problem.add_subparsers(dest="cmd", required=True)
     pa = common.add_cli_parser(problem_sub, "list", "List assigned homework/problem rows as JSON.")
     pa.add_argument("--limit", type=int, help="Maximum number of homework/problem rows to request.")
@@ -368,15 +432,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = common.add_cli_parser(problem_sub, "submit-page", "Fetch the submit-context metadata for a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID whose submit context should be fetched.")
     pa.set_defaults(func=problem_submit_page)
-    pa = common.add_cli_parser(problem_sub, "lean-workspace", "Inspect the current Lean 4 workspace revision and file map.")
-    pa.add_argument("problem_id", type=int, help="Lean 4 problem ID to inspect.")
-    pa.add_argument("--full", action="store_true", help="Include all source-file contents and verification metadata.")
-    pa.set_defaults(func=problem_lean_workspace)
-    pa = common.add_cli_parser(problem_sub, "lean-init", "Initialize a local directory from the current Lean 4 workspace.")
-    pa.add_argument("problem_id", type=int, help="Lean 4 problem ID to initialize.")
-    pa.add_argument("directory", help="Directory to populate with the complete Lean 4 workspace.")
-    pa.add_argument("--force", action="store_true", help="Replace files already present at the initialized paths.")
-    pa.set_defaults(func=problem_lean_init)
+    pa = common.add_cli_parser(problem_sub, "download", "Download a visible problem statement and provided source files.")
+    pa.add_argument("problem_id", type=int, help="Problem ID to download.")
+    pa.add_argument("-o", "--output", required=True, help="Directory that receives PROBLEM.md, provided source files, and numoj-problem.json.")
+    pa.add_argument("--force", action="store_true", help="Replace files that this download writes when they already exist.")
+    pa.set_defaults(func=problem_download)
     pa = common.add_cli_parser(problem_sub, "submit", "Submit source code, a Lean workspace, a Promptly prompt, or a written-homework file to a problem.")
     pa.add_argument("problem_id", type=int, help="Problem ID to submit to.")
     sg = pa.add_mutually_exclusive_group(required=True)
@@ -385,7 +445,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     sg.add_argument("--prompt", help="Promptly submission text, or @file to read the prompt from a file.")
     sg.add_argument("--prompt-file", help="Promptly submission file path.")
     sg.add_argument("--file", help="Written-homework PDF or ZIP file path.")
-    sg.add_argument("--workspace", help="Initialized Lean 4 workspace directory containing numoj-lean.json.")
+    sg.add_argument("--workspace", help="Downloaded Lean 4 problem directory containing numoj-problem.json.")
     pa.add_argument(
         "--no-wait-promptly",
         dest="wait_promptly",

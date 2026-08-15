@@ -318,20 +318,81 @@ def test_retry_clones_current_turn_and_rolls_back_to_recorded_base(
     assert connection.rollbacks == 0
 
 
-def test_retry_rejects_specialized_first_turn_before_superseding(monkeypatch):
+@pytest.mark.parametrize(
+    ("task_kind", "access_role"),
+    [("solve", "user"), ("testdata", "admin")],
+)
+def test_retry_problem_agent_first_turn_uses_the_generic_contract(
+    monkeypatch,
+    task_kind,
+    access_role,
+):
     connection = _ScriptedConnection(one_values=[
         {
-            "current_task_id": "solve-first",
+            "current_task_id": "problem-first",
             "status": "Failed",
             "turn_count": 1,
-            "task_kind": "solve",
+            "task_kind": task_kind,
+            "problem_id": 9,
+            "requested_by": "admin",
+            "access_role": access_role,
+            "harness": "codex",
+            "endpoint_id": 7,
+            "endpoint_revision": 2,
+            "endpoint_model": "gpt-test",
+            "native_session_id": "native-after-failure",
         },
         {
-            "task_id": "solve-first",
+            "task_id": "problem-first",
             "turn_index": 1,
-            "user_message": "解决题目",
+            "user_message": "处理这道题",
             "attachments_json": "[]",
-            "base_runtime_checkpoint_id": "checkpoint-before-solve",
+            "base_runtime_checkpoint_id": "checkpoint-before-first",
+            "base_native_session_id": None,
+            "superseded_by_task_id": None,
+            "superseded_at": None,
+        },
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    claim = sessions.begin_agent_session_retry(
+        "problem-session",
+        "problem-retry",
+        "problem-first",
+        "unused-fallback",
+    )
+
+    assert claim["task_kind"] == task_kind
+    assert claim["access_role"] == access_role
+    assert claim["user_message"] == "处理这道题"
+    assert claim["base_runtime_checkpoint_id"] == "checkpoint-before-first"
+    assert claim["base_native_session_id"] == ""
+    assert connection.commits == 1
+    assert connection.rollbacks == 0
+
+
+def test_retry_rejects_preupgrade_testdata_first_turn(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {
+            "current_task_id": "testdata-first",
+            "status": "Failed",
+            "turn_count": 1,
+            "task_kind": "testdata",
+            "problem_id": 9,
+            "requested_by": "admin",
+            "access_role": "user",
+            "harness": "codex",
+            "endpoint_id": 7,
+            "endpoint_revision": 2,
+            "endpoint_model": "gpt-test",
+            "native_session_id": "",
+        },
+        {
+            "task_id": "testdata-first",
+            "turn_index": 1,
+            "user_message": "生成测试数据",
+            "attachments_json": "[]",
+            "base_runtime_checkpoint_id": "checkpoint-before-first",
             "base_native_session_id": None,
             "superseded_by_task_id": None,
             "superseded_at": None,
@@ -341,16 +402,15 @@ def test_retry_rejects_specialized_first_turn_before_superseding(monkeypatch):
 
     with pytest.raises(
         sessions.AgentSessionBusyError,
-        match="首轮暂不支持重试",
+        match="升级前造数据 Agent 的首轮不支持重试",
     ):
         sessions.begin_agent_session_retry(
-            "solve-session",
-            "solve-retry",
-            "solve-first",
+            "testdata-session",
+            "testdata-retry",
+            "testdata-first",
             "unused-fallback",
         )
 
-    assert len(connection.cursor_instance.calls) == 2
     assert connection.commits == 0
     assert connection.rollbacks == 1
 

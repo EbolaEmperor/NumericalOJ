@@ -145,7 +145,12 @@ def register_agent_queue_tasks(
     agent_solve_problem_task=None,
     agent_generate_testdata_task=None,
 ):
-    """注册 FIFO 调度与崩溃窗口恢复任务。"""
+    """注册 FIFO 调度与崩溃窗口恢复任务。
+
+    解题与新版造数据按钮创建的首轮消息和后续聊天一样，统一交给普通
+    会话 worker。专用造数据 task 只接管升级前已经持久化、源码仍放在
+    dispatch_payload 中的队首，避免部署时丢失尚未派发的数据。
+    """
 
     dispatch_existing = celery_app.tasks.get(AGENT_QUEUE_DISPATCH_TASK_NAME)
     recovery_existing = celery_app.tasks.get(AGENT_QUEUE_RECOVERY_TASK_NAME)
@@ -208,31 +213,20 @@ def register_agent_queue_tasks(
             try:
                 upsert_agent_run_snapshot(state)
                 turn_index = int(claim.get("turn_index") or 1)
-                task_kind = str(claim.get("task_kind") or "custom").strip().lower()
                 payload = claim.get("dispatch_payload") or {}
                 common = {
                     "task_id": task_id,
                 }
-                if turn_index == 1 and task_kind == "solve":
-                    if agent_solve_problem_task is None:
-                        raise RuntimeError("解题 Agent 任务未注册")
-                    agent_solve_problem_task.apply_async(
-                        args=(
-                            int(claim.get("problem_id")),
-                            claim.get("requested_by") or "",
-                            claim.get("harness") or "",
-                            int(claim.get("endpoint_id")),
-                            "",
-                            "session",
-                            claim.get("endpoint_revision"),
-                        ),
-                        **common,
-                    )
-                elif turn_index == 1 and task_kind == "testdata":
+                legacy_testdata = (
+                    turn_index == 1
+                    and str(claim.get("task_kind") or "").strip().lower()
+                    == "testdata"
+                    and isinstance(payload, dict)
+                    and "standard_code" in payload
+                )
+                if legacy_testdata:
                     if agent_generate_testdata_task is None:
-                        raise RuntimeError("造数据 Agent 任务未注册")
-                    if not isinstance(payload, dict):
-                        raise RuntimeError("造数据 Agent 恢复参数无效")
+                        raise RuntimeError("旧版造数据 Agent 任务未注册")
                     agent_generate_testdata_task.apply_async(
                         args=(
                             int(claim.get("problem_id")),
