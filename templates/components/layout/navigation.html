@@ -36,21 +36,21 @@
       <span class="numoj-nav-label">提交记录</span>
       <span class="numoj-nav-count d-none" data-numoj-nav-count="submissions"></span>
     </a>
-    <a class="numoj-nav-item{% if request.blueprint == 'repository' %} active{% endif %}" href="{{ url_for('repository.code_repository') }}" title="代码仓库">
-      {{ icon('repository') }}<span class="numoj-nav-label">代码仓库</span>
+    <a class="numoj-nav-item{% if request.blueprint == 'ranking' %} active{% endif %}" href="{{ url_for('ranking.ranking_list') }}" title="打榜赛">
+      {{ icon('ranking') }}<span class="numoj-nav-label">打榜赛</span>
     </a>
     <a class="numoj-nav-item{% if current_endpoint in ('problem_core.agent_tasks', 'problem_core.agent_task_detail') %} active{% endif %}" href="{{ url_for('problem_core.agent_tasks') }}" title="Agent 任务">
       {{ icon('agent') }}<span class="numoj-nav-label">Agent 任务</span>
       <span class="numoj-nav-dot d-none" data-numoj-agent-active aria-label="存在运行中的 Agent 任务"></span>
     </a>
+    <a class="numoj-nav-item{% if request.blueprint == 'vibehub' %} active{% endif %}" href="{{ url_for('vibehub.index') }}" title="VibeHub">
+      {{ icon('vibehub') }}<span class="numoj-nav-label">VibeHub</span>
+    </a>
     <a class="numoj-nav-item{% if request.blueprint == 'forum' %} active{% endif %}" href="{{ url_for('forum.forum_index') }}" title="讨论区">
       {{ icon('forum') }}<span class="numoj-nav-label">讨论区</span>
     </a>
-    <a class="numoj-nav-item{% if request.blueprint == 'ranking' %} active{% endif %}" href="{{ url_for('ranking.ranking_list') }}" title="打榜赛">
-      {{ icon('ranking') }}<span class="numoj-nav-label">打榜赛</span>
-    </a>
-    <a class="numoj-nav-item{% if request.blueprint == 'vibehub' %} active{% endif %}" href="{{ url_for('vibehub.index') }}" title="VibeHub">
-      {{ icon('vibehub') }}<span class="numoj-nav-label">VibeHub</span>
+    <a class="numoj-nav-item{% if request.blueprint == 'repository' %} active{% endif %}" href="{{ url_for('repository.code_repository') }}" title="代码仓库">
+      {{ icon('repository') }}<span class="numoj-nav-label">代码仓库</span>
     </a>
   </section>
 

@@ -26,8 +26,6 @@
     {% if access_is_admin %}
       <span class="agent-access-fab-badge" data-agent-review-badge
             {% if access_pending_count < 1 %}hidden{% endif %}>{{ access_pending_count }}</span>
-    {% else %}
-      <span class="agent-access-fab-meter" data-agent-fab-balance aria-hidden="true">—</span>
     {% endif %}
   </button>
 
@@ -45,11 +43,13 @@
 
         <div class="agent-access-modal-scroll">
         {% if access_is_admin %}
-          <nav class="agent-access-admin-tabs" aria-label="额度管理" data-agent-admin-tabs>
-            <button type="button" class="is-current" data-agent-admin-tab="reviews" aria-selected="true">申请审核</button>
-            <button type="button" data-agent-admin-tab="grants" aria-selected="false">批量赠送</button>
+          <nav class="agent-access-admin-tabs" role="tablist" aria-label="额度管理" data-agent-admin-tabs>
+            <button id="agentReviewTab" type="button" role="tab" class="is-current"
+                    aria-controls="agentReviewPanel" data-agent-admin-tab="reviews" aria-selected="true">申请审核</button>
+            <button id="agentGrantTab" type="button" role="tab" tabindex="-1"
+                    aria-controls="agentGrantPanel" data-agent-admin-tab="grants" aria-selected="false">批量赠送</button>
           </nav>
-          <section data-agent-admin-panel="reviews">
+          <section id="agentReviewPanel" role="tabpanel" aria-labelledby="agentReviewTab" data-agent-admin-panel="reviews">
             <div class="agent-access-review-summary">
               <span>等待处理</span>
               <strong><b data-agent-review-count>{{ access_pending_count }}</b> 项</strong>
@@ -58,22 +58,23 @@
               <div class="agent-access-loading">读取申请中</div>
             </div>
           </section>
-          <section class="agent-class-grant-panel" data-agent-admin-panel="grants" hidden>
+          <section id="agentGrantPanel" class="agent-class-grant-panel" role="tabpanel"
+                   aria-labelledby="agentGrantTab" data-agent-admin-panel="grants" hidden>
             <header>
               <span>CLASS GRANT</span>
               <h3>按班级赠送额度</h3>
               <p>同一用户出现在多个班级时只赠送一次，管理员不会计入。</p>
             </header>
-            <form data-agent-class-grant-form>
+            <form data-agent-class-grant-form novalidate>
               <fieldset>
                 <legend>选择班级</legend>
                 <div class="agent-class-grant-options" data-agent-class-grant-options>
                   <div class="agent-access-loading">读取班级中</div>
                 </div>
               </fieldset>
-              <label class="agent-class-grant-amount">
+              <label class="agent-class-grant-amount agent-access-field">
                 <span>每人赠送</span>
-                <span class="agent-access-money-input"><b>¥</b><input name="amount_rmb" type="number" min="0.01" step="0.01" inputmode="decimal" required></span>
+                <span class="agent-access-input-shell agent-access-money-input"><b>¥</b><input name="amount_rmb" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00"></span>
               </label>
               <dl class="agent-class-grant-preview" aria-live="polite">
                 <div><dt>去重用户</dt><dd><b data-agent-class-grant-users>0</b> 人</dd></div>
@@ -84,96 +85,160 @@
             <p class="agent-access-feedback" data-agent-class-grant-feedback role="status" aria-live="polite" hidden></p>
           </section>
         {% else %}
-          <div class="agent-access-public-notice" data-agent-public-notice
-               {% if access_public_enabled %}hidden{% endif %}>
-            <i class="fas fa-pause-circle" aria-hidden="true"></i>
-            <div><strong>Agent 暂停向普通用户开放</strong><span>已有会话仍可查看，但不能申请额度、创建任务或继续对话。</span></div>
-          </div>
+          <nav class="agent-access-user-tabs" role="tablist" aria-label="Agent 额度与端点" data-agent-user-tabs>
+            <button class="is-current" id="agentAccessQuotaTab" type="button" role="tab"
+                    aria-selected="true" aria-controls="agentAccessQuotaPanel" data-agent-user-tab="quota">
+              <i class="fas fa-wallet" aria-hidden="true"></i><span>额度与申请</span>
+            </button>
+            <button id="agentAccessPricesTab" type="button" role="tab" tabindex="-1"
+                    aria-selected="false" aria-controls="agentAccessPricesPanel" data-agent-user-tab="prices">
+              <i class="fas fa-tags" aria-hidden="true"></i><span>端点价格</span>
+            </button>
+            <button id="agentAccessPersonalTab" type="button" role="tab" tabindex="-1"
+                    aria-selected="false" aria-controls="agentAccessPersonalPanel" data-agent-user-tab="personal">
+              <i class="fas fa-key" aria-hidden="true"></i><span>自定义端点</span>
+            </button>
+          </nav>
 
-          <section class="agent-access-balance" aria-labelledby="agentBalanceTitle">
-            <header>
-              <span>ACCOUNT</span>
-              <h3 id="agentBalanceTitle">额度概览</h3>
-            </header>
-            <dl>
-              <div>
-                <dt>累计额度</dt>
-                <dd data-agent-quota-total>—</dd>
-              </div>
-              <div>
-                <dt>已用额度</dt>
-                <dd data-agent-quota-used>—</dd>
-              </div>
-              <div class="is-remaining" data-agent-quota-remaining-card>
-                <dt>剩余额度</dt>
-                <dd data-agent-quota-remaining>—</dd>
-              </div>
-            </dl>
-            <p class="agent-access-balance-note" data-agent-quota-note>
-              使用全站端点时，每次模型请求完成后实时扣减。
-            </p>
+          <section id="agentAccessQuotaPanel" role="tabpanel" aria-labelledby="agentAccessQuotaTab"
+                   data-agent-user-panel="quota">
+            <div class="agent-access-public-notice" data-agent-public-notice
+                 {% if access_public_enabled %}hidden{% endif %}>
+              <i class="fas fa-pause-circle" aria-hidden="true"></i>
+              <div><strong>Agent 暂停向普通用户开放</strong><span>已有会话仍可查看，但不能申请额度、创建任务或继续对话。</span></div>
+            </div>
+
+            <section class="agent-access-balance" aria-labelledby="agentBalanceTitle">
+              <header>
+                <span>ACCOUNT</span>
+                <h3 id="agentBalanceTitle">额度概览</h3>
+              </header>
+              <dl>
+                <div>
+                  <dt>已用额度</dt>
+                  <dd data-agent-quota-used>—</dd>
+                </div>
+                <div class="is-remaining" data-agent-quota-remaining-card>
+                  <dt>剩余额度</dt>
+                  <dd data-agent-quota-remaining>—</dd>
+                </div>
+              </dl>
+              <p class="agent-access-balance-note" data-agent-quota-note hidden></p>
+            </section>
+
+            <section class="agent-access-section" aria-labelledby="agentQuotaRequestTitle">
+              <header>
+                <div><span>REQUEST</span><h3 id="agentQuotaRequestTitle">申请额度</h3></div>
+                <span class="agent-access-status" data-agent-request-status hidden></span>
+              </header>
+              <form class="agent-quota-request-form" data-agent-quota-request-form novalidate>
+                <label class="agent-access-field">
+                  <span>申请金额</span>
+                  <span class="agent-access-input-shell agent-access-money-input"><b>¥</b><input name="requested_amount" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00"></span>
+                </label>
+                <label class="agent-access-field wide">
+                  <span>申请理由</span>
+                  <span class="agent-access-input-shell is-textarea"><textarea name="reason" rows="3" maxlength="1000" required placeholder="简要说明你准备让 Agent 完成什么任务"></textarea></span>
+                </label>
+                <button class="agent-access-primary" type="submit" data-agent-quota-request-submit>提交申请</button>
+              </form>
+              <p class="agent-access-feedback" data-agent-quota-request-feedback role="status" aria-live="polite" hidden></p>
+            </section>
           </section>
 
-          <section class="agent-access-section" aria-labelledby="agentQuotaRequestTitle">
-            <header>
-              <div><span>REQUEST</span><h3 id="agentQuotaRequestTitle">申请额度</h3></div>
-              <span class="agent-access-status" data-agent-request-status hidden></span>
-            </header>
-            <form class="agent-quota-request-form" data-agent-quota-request-form>
-              <label>
-                <span>申请金额</span>
-                <span class="agent-access-money-input"><b>¥</b><input name="requested_amount" type="number" min="0.01" step="0.01" inputmode="decimal" required></span>
-              </label>
-              <label class="wide">
-                <span>申请理由</span>
-                <textarea name="reason" rows="3" maxlength="1000" required placeholder="简要说明你准备让 Agent 完成什么任务"></textarea>
-              </label>
-              <button type="submit" data-agent-quota-request-submit>提交申请</button>
-            </form>
-            <p class="agent-access-feedback" data-agent-quota-request-feedback role="status" aria-live="polite" hidden></p>
-          </section>
-
-          <section class="agent-access-section" aria-labelledby="agentEndpointPriceTitle">
-            <header>
-              <div><span>RATE CARD</span><h3 id="agentEndpointPriceTitle">全站端点价格</h3></div>
-              <small>元 / 1M Token</small>
-            </header>
+          <section id="agentAccessPricesPanel" role="tabpanel" aria-labelledby="agentAccessPricesTab"
+                   data-agent-user-panel="prices" hidden>
+            <div class="agent-access-panel-intro">
+              <div><span>RATE CARD</span><h3>全站端点价格</h3></div>
+              <p>使用全站端点时按实际 Token 实时结算，以下价格单位均为元 / 1M Token。</p>
+            </div>
             <div class="agent-rate-list" data-agent-rate-list>
               <div class="agent-access-loading">读取价格中</div>
             </div>
           </section>
 
-          <section class="agent-access-section agent-personal-endpoints" aria-labelledby="agentPersonalEndpointTitle">
-            <header>
-              <div><span>BRING YOUR OWN KEY</span><h3 id="agentPersonalEndpointTitle">我的端点</h3></div>
-              <small>不消耗平台额度</small>
+          <section id="agentAccessPersonalPanel" role="tabpanel" aria-labelledby="agentAccessPersonalTab"
+                   class="agent-personal-endpoints" data-agent-user-panel="personal" hidden>
+            <header class="agent-personal-endpoints-heading">
+              <div><span>BRING YOUR OWN KEY</span><h3>自定义端点</h3><p>自有端点使用你的 API 密钥，不消耗平台额度。</p></div>
+              <button class="agent-access-secondary is-strong" type="button" data-agent-personal-endpoint-create>
+                <i class="fas fa-plus" aria-hidden="true"></i>新建端点
+              </button>
             </header>
             <div class="agent-personal-endpoint-list" data-agent-personal-endpoint-list></div>
-            <details class="agent-personal-endpoint-editor" data-agent-personal-endpoint-editor>
-              <summary><i class="fas fa-plus" aria-hidden="true"></i><span data-agent-personal-editor-label>添加端点</span></summary>
-              <form data-agent-personal-endpoint-form autocomplete="off">
-                <input type="hidden" name="endpoint_id">
-                <label><span>显示名称</span><input name="name" maxlength="100" required></label>
-                <label><span>模型名称</span><input name="model" maxlength="200" required></label>
-                <label>
-                  <span>兼容协议</span>
-                  <select name="protocol" required>
-                    <option value="openai">OpenAI 兼容</option>
-                    <option value="anthropic">Anthropic 兼容</option>
-                  </select>
-                </label>
-                <label class="wide"><span>基础地址</span><input name="base_url" type="url" required autocomplete="url"></label>
-                <label class="wide"><span>API 密钥</span><input name="api_key" type="password" autocomplete="new-password"><small>编辑时留空表示沿用原密钥</small></label>
-                <div class="agent-personal-endpoint-actions wide">
-                  <button type="button" data-agent-personal-endpoint-cancel hidden>取消编辑</button>
-                  <button type="submit" data-agent-personal-endpoint-save>保存端点</button>
-                </div>
-              </form>
-            </details>
             <p class="agent-access-feedback" data-agent-personal-endpoint-feedback role="status" aria-live="polite" hidden></p>
           </section>
         {% endif %}
         </div>
+
+        {% if not access_is_admin %}
+        <section class="agent-access-layer" data-agent-personal-endpoint-layer hidden
+                 role="dialog" aria-modal="true" aria-labelledby="agentPersonalEndpointLayerTitle">
+          <button class="agent-access-layer-scrim" type="button" tabindex="-1"
+                  data-agent-layer-dismiss aria-label="关闭端点编辑器"></button>
+          <form class="agent-access-layer-panel" data-agent-personal-endpoint-form autocomplete="off" novalidate>
+            <header class="agent-access-modal-header">
+              <div><span>ENDPOINT EDITOR</span><h2 id="agentPersonalEndpointLayerTitle" data-agent-personal-editor-label tabindex="-1">新建自定义端点</h2></div>
+              <button type="button" class="btn-close" data-agent-layer-dismiss aria-label="关闭"></button>
+            </header>
+            <div class="agent-endpoint-editor-body">
+              <input type="hidden" name="endpoint_id">
+              <label class="agent-access-field">
+                <span>显示名称</span>
+                <span class="agent-access-input-shell"><i class="fas fa-tag" aria-hidden="true"></i><input name="name" maxlength="100" required placeholder="例如：我的 DeepSeek"></span>
+              </label>
+              <label class="agent-access-field">
+                <span>模型名称</span>
+                <span class="agent-access-input-shell"><i class="fas fa-cube" aria-hidden="true"></i><input name="model" maxlength="200" required placeholder="例如：deepseek-chat"></span>
+              </label>
+              <fieldset class="agent-access-field wide agent-protocol-picker" data-agent-protocol-picker>
+                <legend>兼容协议</legend>
+                <input type="hidden" name="protocol" value="openai">
+                <div>
+                  <button class="is-current" type="button" data-agent-protocol-option="openai" aria-pressed="true">
+                    <i class="fas fa-code" aria-hidden="true"></i><span><strong>OpenAI 兼容</strong><small>Chat Completions / Responses</small></span>
+                  </button>
+                  <button type="button" data-agent-protocol-option="anthropic" aria-pressed="false">
+                    <i class="fas fa-terminal" aria-hidden="true"></i><span><strong>Anthropic 兼容</strong><small>Messages API</small></span>
+                  </button>
+                </div>
+              </fieldset>
+              <label class="agent-access-field wide">
+                <span>基础地址</span>
+                <span class="agent-access-input-shell"><i class="fas fa-link" aria-hidden="true"></i><input name="base_url" type="url" required autocomplete="url" placeholder="https://api.example.com/v1"></span>
+              </label>
+              <label class="agent-access-field wide">
+                <span>API 密钥</span>
+                <span class="agent-access-input-shell"><i class="fas fa-lock" aria-hidden="true"></i><input name="api_key" type="password" autocomplete="new-password" placeholder="sk-..."></span>
+                <small data-agent-personal-key-note>密钥只用于你的 Agent 会话。</small>
+              </label>
+              <p class="agent-access-feedback wide" data-agent-personal-endpoint-editor-feedback role="status" aria-live="polite" hidden></p>
+            </div>
+            <footer class="agent-endpoint-editor-footer">
+              <button class="agent-access-secondary" type="button" data-agent-layer-dismiss>放弃</button>
+              <button class="agent-access-primary" type="submit" data-agent-personal-endpoint-save>保存端点</button>
+            </footer>
+          </form>
+        </section>
+
+        <section class="agent-access-layer is-compact" data-agent-personal-delete-layer hidden
+                 role="alertdialog" aria-modal="true" aria-labelledby="agentPersonalEndpointDeleteTitle">
+          <button class="agent-access-layer-scrim" type="button" tabindex="-1"
+                  data-agent-delete-dismiss aria-label="取消删除"></button>
+          <div class="agent-access-layer-panel">
+            <div class="agent-endpoint-delete-body">
+              <span class="agent-endpoint-delete-icon"><i class="fas fa-trash-alt" aria-hidden="true"></i></span>
+              <div><span>DELETE ENDPOINT</span><h2 id="agentPersonalEndpointDeleteTitle" tabindex="-1">删除自定义端点？</h2></div>
+              <p>将删除 <strong data-agent-personal-delete-name>这个端点</strong>。已有会话仍可查看，但不能再通过它继续运行。</p>
+              <p class="agent-access-feedback" data-agent-personal-endpoint-delete-feedback role="status" aria-live="polite" hidden></p>
+            </div>
+            <footer class="agent-endpoint-editor-footer">
+              <button class="agent-access-secondary" type="button" data-agent-delete-dismiss>保留端点</button>
+              <button class="agent-access-danger-button" type="button" data-agent-personal-endpoint-delete-confirm>确认删除</button>
+            </footer>
+          </div>
+        </section>
+        {% endif %}
       </div>
     </div>
   </div>
