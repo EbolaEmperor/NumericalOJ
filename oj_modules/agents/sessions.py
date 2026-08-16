@@ -947,13 +947,34 @@ def sync_agent_session_state_in_transaction(cursor, state):
         )
     ):
         return False
+    has_queued_messages = False
+    if incoming_status in {"canceled", "cancelled"}:
+        # 手动终止时只有仍有待发送的 FIFO 消息才需要把队列留在暂停态。
+        # enqueue 同样先锁会话行，因此这里在会话行锁内读取，避免把“空队列”
+        # 误判成需要暂停，导致下一条即时消息被降级为 queue。
+        cursor.execute(
+            """
+            SELECT 1
+            FROM agent_session_messages
+            WHERE session_id=%s AND delivery_mode='queue' AND status='queued'
+            LIMIT 1
+            """,
+            (raw_session_id,),
+        )
+        has_queued_messages = bool(cursor.fetchone())
+
     pause_queue = incoming_status in {
         "failed",
-        "canceled",
-        "cancelled",
         "cleanupfailed",
         "cleanup_failed",
-    }
+    } or (
+        incoming_status in {"canceled", "cancelled"}
+        and has_queued_messages
+    )
+    clear_queue_pause = (
+        incoming_status in {"canceled", "cancelled"}
+        and not has_queued_messages
+    )
     queue_pause_reason = message or "上一轮任务未正常完成"
     cursor.execute(
         """
@@ -965,8 +986,16 @@ def sync_agent_session_state_in_transaction(cursor, state):
                 WHEN %s <> '' THEN 0
                 ELSE fresh_native_session_pending
             END,
-            queue_paused=CASE WHEN %s THEN 1 ELSE queue_paused END,
-            queue_pause_reason=CASE WHEN %s THEN %s ELSE queue_pause_reason END
+            queue_paused=CASE
+                WHEN %s THEN 1
+                WHEN %s THEN 0
+                ELSE queue_paused
+            END,
+            queue_pause_reason=CASE
+                WHEN %s THEN %s
+                WHEN %s THEN NULL
+                ELSE queue_pause_reason
+            END
         WHERE session_id=%s AND current_task_id=%s
         """,
         (
@@ -976,8 +1005,10 @@ def sync_agent_session_state_in_transaction(cursor, state):
             native_session_id,
             native_session_id,
             1 if pause_queue else 0,
+            1 if clear_queue_pause else 0,
             1 if pause_queue else 0,
             queue_pause_reason,
+            1 if clear_queue_pause else 0,
             raw_session_id,
             raw_task_id,
         ),

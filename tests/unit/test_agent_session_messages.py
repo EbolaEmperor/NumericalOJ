@@ -483,7 +483,7 @@ def test_canceled_turn_stays_unsent_when_worker_never_confirmed_delivery():
         cursor,
         task_id="turn-current",
         status="Canceled",
-        reason="任务已由管理员终止",
+        reason="任务已被手动终止",
     )
 
     queries = [query for query, _params in cursor.calls]

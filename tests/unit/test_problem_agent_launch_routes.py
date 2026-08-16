@@ -475,7 +475,7 @@ def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):
             "state": {
                 "task_id": task_id,
                 "status": "Canceled",
-                "message": "任务已由管理员终止",
+                "message": "任务已被手动终止",
             },
         },
     )
@@ -490,17 +490,18 @@ def test_agent_run_cancel_returns_published_terminal_state(monkeypatch):
     assert calls == ["task-1"]
     assert response.get_json() == {
         "success": True,
-        "message": "任务已终止",
+        "message": "任务已被手动终止",
         "state": {
             "task_id": "task-1",
             "status": "Canceled",
-                "message": "任务已由管理员终止",
-                "session_token_usage": None,
-                "context_usage": {
-                    "used_tokens": None,
-                    "window_tokens": routes.DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
-                },
+            "message": "任务已被手动终止",
+            "session_token_usage": None,
+            "context_usage": {
+                "used_tokens": None,
+                "window_tokens": routes.DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
             },
+        },
+        "session_state": None,
     }
 
 
@@ -523,7 +524,7 @@ def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
                 "session_id": "session-1",
                 "harness": "codex",
                 "status": "Canceled",
-                "message": "任务已由管理员终止",
+                "message": "任务已被手动终止",
                 "execution_trace": {"token_usage": {
                     "source": "codex",
                     "request_count": 1,
@@ -1644,7 +1645,7 @@ def test_agent_run_state_overlays_session_cleanup_failure_on_sticky_cancel(
         lambda _task_id: {
             "task_id": "cleanup-task",
             "status": "Canceled",
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "execution_trace": {"trace_messages": []},
         },
     )
@@ -1675,7 +1676,7 @@ def test_agent_run_stream_overlays_cleanup_failure_on_pubsub_snapshot(monkeypatc
                 "data": json.dumps({
                     "task_id": "cleanup-stream",
                     "status": "Canceled",
-                    "message": "任务已由管理员终止",
+                    "message": "任务已被手动终止",
                     "execution_trace": {
                         "trace_messages": [
                             {"kind": "assistant", "text": "保留 **结论**"},
@@ -1939,7 +1940,7 @@ def test_agent_run_state_never_overlays_canceled_with_celery_failure(monkeypatch
     snapshot = {
         "task_id": "task-canceled",
         "status": "Canceled",
-        "message": "任务已由管理员终止",
+        "message": "任务已被手动终止",
         "attempts": [],
     }
     monkeypatch.setattr(routes, "_get_agent_run_snapshot", lambda _task_id: snapshot)
@@ -1957,7 +1958,7 @@ def test_agent_run_state_never_overlays_canceled_with_celery_failure(monkeypatch
     state = routes._get_agent_run_state("task-canceled")
 
     assert state["status"] == "Canceled"
-    assert state["message"] == "任务已由管理员终止"
+    assert state["message"] == "任务已被手动终止"
 
 
 def test_agent_run_state_prefers_persisted_cancel_over_stale_running_cache(
@@ -1980,7 +1981,7 @@ def test_agent_run_state_prefers_persisted_cancel_over_stale_running_cache(
         lambda _task_id: {
             "task_id": "task-canceled",
             "status": "Canceled",
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "attempts": [],
         },
     )
@@ -1988,7 +1989,7 @@ def test_agent_run_state_prefers_persisted_cancel_over_stale_running_cache(
     state = routes._get_agent_run_state("task-canceled")
 
     assert state["status"] == "Canceled"
-    assert state["message"] == "任务已由管理员终止"
+    assert state["message"] == "任务已被手动终止"
     assert state["harness"] == "codex"
 
 

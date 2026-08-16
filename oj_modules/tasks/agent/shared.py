@@ -211,7 +211,7 @@ def _publish_canceled_agent_snapshot(state):
     payload = json.dumps(snapshot, ensure_ascii=False)
     marker = json.dumps({
         "status": "Canceled",
-        "message": str(snapshot.get("message") or "任务已由管理员终止"),
+        "message": str(snapshot.get("message") or "任务已被手动终止"),
     }, ensure_ascii=False)
     try:
         eval_command = getattr(client, "eval", None)
@@ -326,7 +326,7 @@ def canceled_agent_task_result(task_id):
     return {
         "success": False,
         "canceled": True,
-        "message": "任务已由管理员终止",
+        "message": "任务已被手动终止",
         "task_id": str(task_id or ""),
     }
 
@@ -468,7 +468,7 @@ def finalize_unhandled_agent_failure(
     }
 
 
-def cancel_agent_run(task_id, message="任务已由管理员终止"):
+def cancel_agent_run(task_id, message="任务已被手动终止"):
     """先持久化终止标记，再将终态原子发布到 Redis/SSE。"""
 
     persisted, changed = cancel_agent_run_snapshot(task_id, message)
@@ -488,7 +488,7 @@ def cancel_agent_run(task_id, message="任务已由管理员终止"):
     if canceled:
         state["status"] = "Canceled"
         state["message"] = str(
-            persisted.get("message") or message or "任务已由管理员终止"
+            persisted.get("message") or message or "任务已被手动终止"
         )
         state["stage"] = "finished"
         state["harness_status"] = "canceled"

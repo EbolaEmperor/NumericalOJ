@@ -214,7 +214,7 @@ def test_testdata_redelivery_exits_before_creating_workspace(monkeypatch):
         lambda task_id: {
             "success": False,
             "canceled": True,
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "task_id": task_id,
         },
     )
@@ -614,7 +614,7 @@ def test_solution_redelivery_exits_before_creating_workspace(monkeypatch):
         lambda task_id: {
             "success": False,
             "canceled": True,
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "task_id": task_id,
         },
     )

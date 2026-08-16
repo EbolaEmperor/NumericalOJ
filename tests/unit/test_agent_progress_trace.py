@@ -53,7 +53,7 @@ def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
                 "task_id": "turn-2",
                 "session_id": "session-1",
                 "status": "Canceled",
-                "message": "任务已由管理员终止",
+                "message": "任务已被手动终止",
                 "attempts_json": "[]",
             }
 
@@ -98,7 +98,7 @@ def test_cancel_snapshot_keeps_owning_session_id(monkeypatch):
             "task_id": "turn-2",
             "session_id": "session-1",
             "status": "Canceled",
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "_preserve_conclusion": True,
         },
     )]
@@ -137,7 +137,7 @@ def test_cancel_snapshot_claims_current_session_before_run_snapshot_exists(
                     "endpoint_id": 17,
                     "endpoint_model": "gpt-test",
                     "status": "Canceled",
-                    "message": "任务已由管理员终止",
+                    "message": "任务已被手动终止",
                     "attempts_json": "[]",
                 },
             ])
@@ -274,7 +274,7 @@ def test_persisted_cancellation_overrides_late_worker_snapshot(monkeypatch):
         "upsert_agent_run_snapshot",
         lambda _state: {
             "status": "Canceled",
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
         },
     )
     monkeypatch.setattr(shared, "hydrate_agent_run_snapshot", lambda state: state)
@@ -295,7 +295,7 @@ def test_persisted_cancellation_overrides_late_worker_snapshot(monkeypatch):
     shared._update_agent_state(state, "迟到的失败", status="Failed")
 
     assert state["status"] == "Canceled"
-    assert state["message"] == "任务已由管理员终止"
+    assert state["message"] == "任务已被手动终止"
     published = json.loads(redis.values[-1][2])
     assert published["status"] == "Canceled"
     assert published["harness_status"] == "canceled"
@@ -430,7 +430,7 @@ def test_cancel_agent_run_publishes_terminal_snapshot_and_marker(monkeypatch):
             "task_id": "task-3",
             "session_id": "session-3",
             "status": "Canceled",
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "attempts": [],
         }, True),
     )

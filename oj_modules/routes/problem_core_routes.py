@@ -1945,26 +1945,45 @@ def agent_run_cancel(task_id):
         _agent_state_for_response(task_id, result.get('state'))
     )
     state = _agent_state_with_loaded_session_trace_delta(state)
+    session_state = None
+    session_id = str(state.get('session_id') or '').strip()
+    if session_id:
+        try:
+            agent_session = get_agent_session(session_id)
+            if isinstance(agent_session, dict):
+                session_state = _agent_session_message_snapshot(
+                    agent_session,
+                    current_state=state,
+                )
+        except Exception:
+            logger.warning(
+                '终止 Agent 任务后读取消息队列状态失败',
+                extra={'task_id': task_id, 'session_id': session_id},
+                exc_info=True,
+            )
     if not result.get('canceled'):
         return jsonify(
             success=False,
             message='Agent 任务已经结束，无法终止',
             state=state,
+            session_state=session_state,
         ), 409
 
     errors = [str(item) for item in result.get('errors') or [] if str(item)]
     if errors:
         return jsonify(
             success=False,
-            message='任务已标记为终止，但运行时清理失败',
+            message='任务已被手动终止，但运行时清理失败',
             state=state,
+            session_state=session_state,
             errors=errors,
         ), 500
 
     return jsonify(
         success=True,
-        message=('任务已终止' if result.get('changed') else '任务已经终止'),
+        message='任务已被手动终止',
         state=state,
+        session_state=session_state,
     )
 
 
@@ -3033,7 +3052,7 @@ def agent_task_detail(session_id):
                 refreshed_session = get_agent_session(session_id) or agent_session
                 return jsonify(
                     success=True,
-                    message=('插话已接收' if existing_mode == 'steer' else '消息已加入队列'),
+                    message='插话已接收' if existing_mode == 'steer' else '',
                     delivery_mode=existing_mode,
                     agent_message=_decorate_agent_session_message(existing_message),
                     session_state=_agent_session_message_snapshot(refreshed_session),
@@ -3140,9 +3159,7 @@ def agent_task_detail(session_id):
             session_state = _agent_session_message_snapshot(refreshed_session)
             return jsonify(
                 success=True,
-                message=(
-                    '插话已接收' if delivery_mode == 'steer' else '消息已加入队列'
-                ),
+                message='插话已接收' if delivery_mode == 'steer' else '',
                 delivery_mode=delivery_mode,
                 agent_message=_decorate_agent_session_message(agent_message),
                 session_state=session_state,

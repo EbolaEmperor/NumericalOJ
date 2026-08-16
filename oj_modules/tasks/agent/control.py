@@ -173,7 +173,7 @@ def build_agent_run_terminator(celery_app):
             if errors
             else str(
                 (result.get("state") or {}).get("message")
-                or "任务已由管理员终止"
+                or "任务已被手动终止"
             )
         )
         try:

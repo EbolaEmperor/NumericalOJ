@@ -178,6 +178,7 @@ def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
     assert "app/agents/conversation.js" in template
     assert ".numoj-content.container-fluid.agent-session-shell" in styles
     assert ".agent-session.has-file" in styles
+    assert "消息已" + "加入队列" not in controller
     assert "4.5fr" in styles
     assert "agent-file-image-stage" in styles
 
@@ -414,6 +415,7 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert "安排下一条消息…" in controller
     assert "function renderMessageQueue(state)" in controller
     assert "function renderSteerMessages(state)" in controller
+    assert "if (result.sessionState) applyMessageState(result.sessionState);" in controller
     assert "message.target_task_id || message.final_task_id || message.task_id" in controller
     assert "=== currentTaskId" in controller
     assert (

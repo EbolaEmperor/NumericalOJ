@@ -209,7 +209,7 @@ def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
 
     assert changed is True
     assert state['status'] == 'Canceled'
-    assert state['message'] == '任务已由管理员终止'
+    assert state['message'] == '任务已被手动终止'
 
     db.upsert_agent_run_snapshot({
         'task_id': 'tk-cancel-sticky',
@@ -222,7 +222,7 @@ def test_canceled_snapshot_is_sticky_against_late_worker_upsert():
     })
     row = _fetch_raw('tk-cancel-sticky')
     assert row['status'] == 'Canceled'
-    assert row['message'] == '任务已由管理员终止'
+    assert row['message'] == '任务已被手动终止'
     assert row['best_score'] == 10
     assert row['harness'] == 'pi'
     assert row['endpoint_id'] == 21
