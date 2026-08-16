@@ -301,6 +301,9 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "display: inline-flex;" in runtime_icon
     assert "align-items: center;" in runtime_icon
     assert "justify-content: center;" in runtime_icon
+    effort_icon = _css_rule(styles, ".agent-resume-effort > i {")
+    assert "font-size: 10px;" in effort_icon
+    assert "line-height: 1;" in effort_icon
     mobile = styles.split("@media (max-width: 575.98px)", 1)[1].split(
         "@media (hover: none)", 1
     )[0]
