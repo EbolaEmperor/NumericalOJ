@@ -1423,6 +1423,81 @@ def test_agent_run_stream_rechecks_state_when_pubsub_has_no_message(monkeypatch)
     assert "event: done" in body
 
 
+def test_agent_run_stream_detects_new_message_after_trace_reaches_cap(
+    monkeypatch,
+):
+    prefix = [
+        {"kind": "thinking", "text": f"step-{index}"}
+        for index in range(239)
+    ]
+    first = {
+        "task_id": "task-trace-cap",
+        "status": "Running",
+        "message": "Agent 正在工作",
+        "updated_at": "2026-08-17 12:00:00",
+        "execution_trace": {
+            "status": "running",
+            "trace_id": "trace-cap",
+            "trace_messages": [
+                *prefix,
+                {"kind": "user", "message_id": "steer-old", "text": "旧插话"},
+            ],
+            "trace_files": [],
+            "token_usage": None,
+        },
+    }
+    second = {
+        **first,
+        "execution_trace": {
+            **first["execution_trace"],
+            "trace_messages": [
+                *prefix,
+                {"kind": "user", "message_id": "steer-new", "text": "新插话"},
+            ],
+        },
+    }
+    completed = {
+        **second,
+        "status": "Completed",
+        "execution_trace": {**second["execution_trace"], "status": "passed"},
+    }
+    states = iter((first, second, completed))
+
+    class PubSub:
+        def get_message(self, **_kwargs):
+            return None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_state",
+        lambda _task_id: next(states),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_subscribe_agent_run_events",
+        lambda _task_id: PubSub(),
+    )
+    monkeypatch.setattr(routes.time, "sleep", lambda _seconds: None)
+
+    app = _app()
+    with app.test_request_context("/admin/agent_run_stream/task-trace-cap"):
+        body = routes.admin_agent_run_stream(
+            "task-trace-cap"
+        ).get_data(as_text=True)
+
+    assert body.count("event: status") == 3
+    assert "steer-new" in body
+    assert "event: done" in body
+
+
 def test_agent_run_stream_stays_open_past_the_previous_one_hour_cutoff(
     monkeypatch,
 ):

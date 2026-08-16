@@ -118,9 +118,10 @@ def sync_agent_trace(
     normalized = str(harness or "").strip().lower()
     trace_dir = str(Path(trace_dir))
     if canonical:
-        # 交互 adapter 已把各 CLI 的通知归一化为 NumOJ v1 journal；控制
-        # 回执不会写入这个宿主过滤后的 append-only 文件；它不受 stdout
-        # 结果尾部的 8 MiB 截断影响，因此早期 usage 也会保留。
+        # 交互 adapter 已把各 CLI 的通知归一化为 NumOJ v1 journal；宿主
+        # 只会把成功 steer 回执转换为不含 Prompt 的时间线锚点，其它
+        # 控制帧均不入盘。该文件不受 stdout 结果尾部的 8 MiB 截断
+        # 影响，因此早期 usage 也会保留。
         return _sync_canonical_agent_journal(stdout_path, trace_dir)
     if normalized == "claude_code":
         return sync_claude_project_jsonl(

@@ -3,6 +3,7 @@
 """Claude、Codex 与 Pi 运行轨迹的安全发现、读取和展示投影。"""
 
 import json
+import mmap
 import os
 from decimal import Decimal, InvalidOperation
 
@@ -234,6 +235,47 @@ def _read_jsonl_tail(path, limit):
         if line:
             rows.append((offset, line.decode('utf-8', 'replace')))
         offset += len(encoded)
+    return rows
+
+
+def _read_canonical_prefix_steer_rows(path, before_offset):
+    """只扫描尾读窗口之前的小型 steer 记录，不解析整份大 journal。"""
+
+    limit = max(0, int(before_offset or 0))
+    if limit <= 0:
+        return []
+    token = b'"numoj_steer"'
+    rows = []
+    try:
+        with open(path, 'rb') as source:
+            with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                cursor = 0
+                while cursor < limit:
+                    found = mapped.find(token, cursor, limit)
+                    if found < 0:
+                        break
+                    line_start = mapped.rfind(b'\n', 0, found) + 1
+                    line_end = mapped.find(b'\n', found, limit)
+                    if line_end < 0:
+                        line_end = limit
+                    # observer 生成的 marker 很小；拒绝把命中于普通大文本的
+                    # 假 token 当作候选整行读取。
+                    if 0 < line_end - line_start <= 4096:
+                        raw = bytes(mapped[line_start:line_end]).decode(
+                            'utf-8', 'replace'
+                        )
+                        try:
+                            record = json.loads(raw)
+                        except Exception:
+                            record = None
+                        if (
+                            isinstance(record, dict)
+                            and record.get('type') == 'numoj_steer'
+                        ):
+                            rows.append((line_start, raw))
+                    cursor = max(found + len(token), line_end + 1)
+    except (OSError, ValueError):
+        return []
     return rows
 
 
@@ -981,10 +1023,13 @@ def _collect_pi_trace_messages(path):
     return messages[-_TRACE_MAX_MESSAGES:]
 
 
-def _collect_trace_messages(trace_dir):
+def _collect_trace_messages(trace_dir, *, include_steer_markers=False):
     canonical_path = _canonical_trace_path(trace_dir)
     if canonical_path:
-        return _collect_canonical_trace_messages(canonical_path)
+        return _collect_canonical_trace_messages(
+            canonical_path,
+            include_steer_markers=include_steer_markers,
+        )
     claude_path = _latest_claude_jsonl(trace_dir)
     if claude_path:
         return _collect_claude_trace_messages(claude_path)
@@ -997,24 +1042,80 @@ def _collect_trace_messages(trace_dir):
     return []
 
 
-def _collect_canonical_trace_messages(path):
+def _trim_canonical_trace_messages(messages):
+    """裁剪展示轨迹时优先保留真实插话边界。"""
+
+    if len(messages) <= _TRACE_MAX_MESSAGES:
+        return messages
+    overflow = len(messages) - _TRACE_MAX_MESSAGES
+    kept = []
+    for message in messages:
+        if (
+            overflow > 0
+            and str(message.get('kind') or '').strip().lower() != 'steer'
+        ):
+            overflow -= 1
+            continue
+        kept.append(message)
+    if overflow > 0:
+        kept = kept[overflow:]
+    return kept
+
+
+def _collect_canonical_trace_messages(path, *, include_steer_markers=False):
     messages = []
     seen_event_ids = set()
+    seen_steer_ids = set()
     try:
         rows = _read_jsonl_tail(path, _CANONICAL_JSONL_TAIL_MAX_BYTES)
     except OSError:
         return []
+    if include_steer_markers:
+        try:
+            tail_start = max(
+                0,
+                int(os.path.getsize(path))
+                - _CANONICAL_JSONL_TAIL_MAX_BYTES,
+            )
+        except OSError:
+            tail_start = 0
+        prefix_end = rows[0][0] if rows else tail_start
+        if prefix_end > 0:
+            rows = _read_canonical_prefix_steer_rows(
+                path,
+                prefix_end,
+            ) + rows
     for line_no, (_offset, raw) in enumerate(rows, 1):
         try:
             record = json.loads(raw)
         except Exception:
             continue
-        if not isinstance(record, dict) or record.get('type') != 'numoj_trace':
+        if not isinstance(record, dict):
             continue
         try:
             if int(record.get('version')) != 1:
                 continue
         except (TypeError, ValueError):
+            continue
+        if record.get('type') == 'numoj_steer':
+            if not include_steer_markers:
+                continue
+            message_id = str(record.get('message_id') or '').strip()
+            if (
+                message_id
+                and len(message_id) <= _CANONICAL_EVENT_ID_MAX_CHARS
+            ):
+                if message_id in seen_steer_ids:
+                    continue
+                seen_steer_ids.add(message_id)
+                messages.append({
+                    'kind': 'steer',
+                    'message_id': message_id,
+                    'line': line_no,
+                })
+                messages = _trim_canonical_trace_messages(messages)
+            continue
+        if record.get('type') != 'numoj_trace':
             continue
         event = record.get('event') if isinstance(record.get('event'), dict) else {}
         kind = str(event.get('kind') or '').strip().lower()
@@ -1054,8 +1155,7 @@ def _collect_canonical_trace_messages(path):
         if fmt in {'json', 'text'}:
             message['format'] = fmt
         messages.append(message)
-        if len(messages) > _TRACE_MAX_MESSAGES:
-            messages = messages[-_TRACE_MAX_MESSAGES:]
+        messages = _trim_canonical_trace_messages(messages)
     return messages
 
 
@@ -1349,8 +1449,11 @@ def collect_agent_trace_files(trace_dir):
     return _collect_trace_files(trace_dir)
 
 
-def collect_agent_trace_messages(trace_dir):
-    return _collect_trace_messages(trace_dir)
+def collect_agent_trace_messages(trace_dir, *, include_steer_markers=False):
+    return _collect_trace_messages(
+        trace_dir,
+        include_steer_markers=include_steer_markers,
+    )
 
 
 __all__ = [

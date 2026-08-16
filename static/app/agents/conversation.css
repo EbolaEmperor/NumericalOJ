@@ -405,48 +405,24 @@
 }
 
 .agent-steer-messages:empty { display: none; }
+.agent-steer-messages > .agent-user-message { width: 100%; }
 
 .agent-steer-messages--historical {
   margin-top: -12px;
 }
 
-.agent-steer-message {
-  display: grid;
-  max-width: min(84%, 620px);
-  justify-items: end;
-  gap: 6px;
+.agent-turn.is-detail-expanded > .agent-steer-messages--historical
+  > .agent-timeline-steer--summary.is-trace-anchored,
+.agent-turn.is-detail-expanded > [data-agent-live-steers]
+  > .agent-timeline-steer--summary.is-trace-anchored { display: none; }
+
+.agent-turn-trace > .agent-timeline-steer {
+  width: 100%;
+  padding: 12px 0;
 }
 
-.agent-steer-message .agent-user-bubble {
-  max-width: 100%;
-  border-color: #dfd3c2;
-  border-radius: 16px 4px 16px 16px;
-  background: #fffaf1;
-  box-shadow: inset 3px 0 0 #d8b07a;
-}
-
-.agent-steer-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding-right: 3px;
-  color: #8f8577;
-  font: 600 7px/1.2 var(--agent-mono);
-}
-
-.agent-steer-status i {
-  width: 4px;
-  height: 4px;
-  border-radius: 99px;
-  background: currentColor;
-}
-
-.agent-steer-message--queued .agent-steer-status,
-.agent-steer-message--dispatching .agent-steer-status { color: #9b7441; }
-.agent-steer-message--sent .agent-steer-status,
-.agent-steer-message--delivered .agent-steer-status { color: var(--agent-success); }
-.agent-steer-message--failed .agent-steer-status { color: var(--agent-danger); }
-.agent-steer-message--unknown .agent-steer-status { color: #7d718b; }
+.agent-trace-event--before-steer::after,
+.agent-trace-event:has(+ .agent-timeline-steer)::after { display: none; }
 
 .agent-response {
   min-width: 0;
@@ -806,7 +782,7 @@
 .agent-queue-item {
   display: grid;
   min-width: 0;
-  grid-template-columns: 25px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
   padding: 7px 7px 7px 5px;
@@ -816,13 +792,9 @@
 }
 
 .agent-queue-item:hover { background: #fbf9f4; }
-.agent-queue-item.is-dragging { opacity: 0.35; }
-.agent-queue-item.is-drop-target { background: #fff5e7; }
 .agent-queue-item.is-pending { opacity: 0.58; pointer-events: none; }
 
-.agent-queue-drag,
-.agent-queue-action,
-.agent-queue-mobile-move {
+.agent-queue-action {
   display: grid;
   width: 24px;
   height: 24px;
@@ -835,10 +807,8 @@
   font-size: 7px;
 }
 
-.agent-queue-drag { cursor: grab; }
-.agent-queue-drag:active { cursor: grabbing; }
-.agent-queue-action:hover,
-.agent-queue-mobile-move:hover { background: #eee9e0; color: #504b44; }
+.agent-queue-action:hover { background: #eee9e0; color: #504b44; }
+.agent-queue-action--send { color: #6d685f; }
 .agent-queue-action--danger:hover { background: #fff0ed; color: var(--agent-danger); }
 
 .agent-queue-body { min-width: 0; }
@@ -878,11 +848,10 @@
 
 .agent-queue-actions { display: flex; align-items: center; gap: 1px; }
 .agent-queue-actions[hidden] { display: none; }
-.agent-queue-mobile-move { display: grid; }
 
 .agent-queue-editor {
   display: grid;
-  grid-column: 2 / -1;
+  grid-column: 1 / -1;
   gap: 7px;
   padding: 2px 1px 3px;
 }
@@ -1764,7 +1733,6 @@
 .agent-resume-attach:focus-visible,
 .agent-resume-send:focus-visible,
 .agent-queue-action:focus-visible,
-.agent-queue-mobile-move:focus-visible,
 .agent-message-queue-header button:focus-visible,
 .agent-stop-button:focus-visible,
 .agent-message-retry:focus-visible,
@@ -1957,15 +1925,13 @@
     gap: 8px;
     padding: 9px 7px 9px 10px;
   }
-  .agent-queue-drag { display: none; }
   .agent-queue-meta { font-size: 8.5px; }
   .agent-queue-actions {
     display: grid;
-    grid-template-columns: repeat(2, 34px);
+    grid-template-columns: repeat(3, 34px);
     gap: 2px;
   }
-  .agent-queue-action,
-  .agent-queue-mobile-move {
+  .agent-queue-action {
     width: 34px;
     height: 34px;
     font-size: 10px;
@@ -1981,7 +1947,7 @@
     height: 30px;
     margin: -4px -5px -4px 0;
   }
-  .agent-steer-message { max-width: 92%; }
+  .agent-timeline-steer .agent-user-bubble { max-width: 92%; }
   .agent-resume-footer {
     flex-wrap: wrap;
     gap: 6px;

@@ -471,6 +471,53 @@ def test_queue_delete_rejects_attachment_snapshot_changed_by_edit(monkeypatch):
     assert cancel_calls[0][2]["expected_attachments"] == [original]
 
 
+def test_queue_send_now_promotes_the_existing_message_without_dispatch_task(
+    monkeypatch,
+):
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        routes,
+        "read_agent_steer_capability",
+        lambda *_args: (True, ""),
+    )
+    promoted = []
+
+    def promote(session_id, message_id, *, task_id):
+        promoted.append((session_id, message_id, task_id))
+        return {
+            "message_id": message_id,
+            "session_id": session_id,
+            "delivery_mode": "steer",
+            "status": "queued",
+            "target_task_id": task_id,
+            "user_message": "现在就检查",
+            "attachments": [],
+        }
+
+    monkeypatch.setattr(
+        routes,
+        "steer_queued_agent_session_message",
+        promote,
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1/messages/message-1/send-now",
+        method="POST",
+        data={"expected_task_id": "task-1"},
+    ):
+        response = routes.admin_agent_task_message_send_now(
+            "session-1",
+            "message-1",
+        )
+
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["agent_message"]["delivery_mode"] == "steer"
+    assert promoted == [("session-1", "message-1", "task-1")]
+    assert payload["session_state"]["current_task_id"] == "task-1"
+
+
 def test_continue_queue_clears_pause_and_schedules_dispatch(monkeypatch):
     _patch_common(monkeypatch, status="Failed")
     queue_task = _QueueTask()

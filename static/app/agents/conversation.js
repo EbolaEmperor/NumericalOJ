@@ -97,8 +97,6 @@
   var retryMessageId = '';
   var retryExpectedTaskId = '';
   var stopPending = false;
-  var queueMutationPending = false;
-  var draggedQueueMessageId = '';
   var queueSignature = '';
   var taskTransitionProbePending = false;
   var steerSignature = '';
@@ -663,36 +661,60 @@
     });
   }
 
-  function queueItem(message, index, movableIndex, movableTotal) {
+  function canSendQueueMessageNow(message) {
+    return messageDeliveryStatus(message) === 'queued'
+      && running && !!currentTaskId && steerSupported && !blocked;
+  }
+
+  function updateQueueActionState() {
+    if (!queueList) return;
+    queueList.querySelectorAll('[data-agent-queue-item]').forEach(function (item) {
+      var queued = item.dataset.deliveryStatus === 'queued';
+      var sendNow = item.querySelector('[data-agent-queue-send-now]');
+      var edit = item.querySelector('[data-agent-queue-edit]');
+      var remove = item.querySelector('[data-agent-queue-delete]');
+      if (sendNow) {
+        sendNow.disabled = !queued || !running || !currentTaskId || !steerSupported || blocked;
+      }
+      if (edit) edit.disabled = hardBlocked || !queued;
+      if (remove) remove.disabled = hardBlocked || !queued;
+    });
+  }
+
+  function sendQueueMessageNow(item, message) {
+    if (!item || !canSendQueueMessageNow(message)) return;
+    var id = messageIdentifier(message);
+    var endpoint = messageUrl(root.dataset.queueSendNowUrlTemplate, id);
+    if (!endpoint || !id) return;
+    var body = new FormData();
+    body.append('expected_task_id', currentTaskId);
+    setQueueItemPending(item, true);
+    global.fetch(endpoint, {
+      method: 'POST', body: body, headers: {'Accept': 'application/json'},
+      credentials: 'same-origin', mathCurveLoader: false
+    }).then(function (response) {
+      return mutationResponse(response, '立刻发送排队消息失败');
+    }).then(function (payload) {
+      var state = responseMessageState(payload);
+      if (state) applyMessageState(state);
+      else scheduleMessageStateRefresh(0);
+      setResumeFeedback('', false);
+      scrollToLatest('smooth');
+    }).catch(function (error) {
+      setQueueItemPending(item, false);
+      updateQueueActionState();
+      setResumeFeedback(error.message || '立刻发送排队消息失败。', true);
+    });
+  }
+
+  function queueItem(message, index) {
     var id = messageIdentifier(message);
     var deliveryStatus = messageDeliveryStatus(message);
-    var movable = deliveryStatus === 'queued';
+    var queued = deliveryStatus === 'queued';
     var item = createElement('li', 'agent-queue-item');
     item.dataset.messageId = id;
     item.dataset.deliveryStatus = deliveryStatus;
     item.dataset.agentQueueItem = '';
-
-    var drag = queueActionButton('agent-queue-drag', 'fas fa-grip-vertical', '拖动调整顺序');
-    drag.draggable = true;
-    drag.dataset.agentQueueDrag = '';
-    drag.addEventListener('dragstart', function (event) {
-      if (hardBlocked || !movable || queueMutationPending) {
-        event.preventDefault();
-        return;
-      }
-      draggedQueueMessageId = id;
-      item.classList.add('is-dragging');
-      if (event.dataTransfer) {
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', id);
-      }
-    });
-    drag.addEventListener('dragend', function () {
-      draggedQueueMessageId = '';
-      queueList.querySelectorAll('.is-dragging, .is-drop-target').forEach(function (node) {
-        node.classList.remove('is-dragging', 'is-drop-target');
-      });
-    });
 
     var body = createElement('div', 'agent-queue-body');
     body.setAttribute('data-agent-queue-summary', '');
@@ -709,36 +731,19 @@
 
     var actions = createElement('div', 'agent-queue-actions');
     actions.setAttribute('data-agent-queue-actions', '');
-    var up = queueActionButton('agent-queue-mobile-move', 'fas fa-chevron-up', '向前移动');
-    var down = queueActionButton('agent-queue-mobile-move', 'fas fa-chevron-down', '向后移动');
-    up.disabled = !movable || movableIndex === 0;
-    down.disabled = !movable || movableIndex === movableTotal - 1;
-    up.addEventListener('click', function () { moveQueueMessage(id, -1); });
-    down.addEventListener('click', function () { moveQueueMessage(id, 1); });
+    var sendNow = queueActionButton('agent-queue-action agent-queue-action--send', 'fas fa-paper-plane', '立刻发送');
     var edit = queueActionButton('agent-queue-action', 'fas fa-pen', '编辑排队消息');
     var remove = queueActionButton('agent-queue-action agent-queue-action--danger', 'fas fa-trash-alt', '删除排队消息');
+    sendNow.dataset.agentQueueSendNow = '';
+    edit.dataset.agentQueueEdit = '';
+    remove.dataset.agentQueueDelete = '';
+    sendNow.addEventListener('click', function () { sendQueueMessageNow(item, message); });
     edit.addEventListener('click', function () { queueEditor(item, message); });
     remove.addEventListener('click', function () { deleteQueueMessage(item, message); });
-    if (hardBlocked || !movable) {
-      drag.disabled = up.disabled = down.disabled = edit.disabled = remove.disabled = true;
-    }
-    actions.append(up, down, edit, remove);
-    item.append(drag, body, actions);
-
-    item.addEventListener('dragover', function (event) {
-      if (hardBlocked || !movable || queueMutationPending
-          || !draggedQueueMessageId || draggedQueueMessageId === id) return;
-      event.preventDefault();
-      item.classList.add('is-drop-target');
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    });
-    item.addEventListener('dragleave', function () { item.classList.remove('is-drop-target'); });
-    item.addEventListener('drop', function (event) {
-      event.preventDefault();
-      item.classList.remove('is-drop-target');
-      if (hardBlocked || !movable || queueMutationPending) return;
-      reorderQueueDom(draggedQueueMessageId, id, event.clientY > item.getBoundingClientRect().top + item.offsetHeight / 2);
-    });
+    sendNow.disabled = !canSendQueueMessageNow(message);
+    edit.disabled = remove.disabled = hardBlocked || !queued;
+    actions.append(sendNow, edit, remove);
+    item.append(body, actions);
     return item;
   }
 
@@ -759,17 +764,9 @@
     ]);
     if (signature === queueSignature) return;
     queueSignature = signature;
-    var movableIds = messages.filter(function (message) {
-      return messageDeliveryStatus(message) === 'queued';
-    }).map(messageIdentifier);
     queueList.replaceChildren();
     messages.forEach(function (message, index) {
-      queueList.appendChild(queueItem(
-        message,
-        index,
-        movableIds.indexOf(messageIdentifier(message)),
-        movableIds.length
-      ));
+      queueList.appendChild(queueItem(message, index));
     });
     if (queueCount) queueCount.textContent = String(messages.length);
     if (queuePausedBanner) queuePausedBanner.hidden = !queuePaused;
@@ -783,127 +780,103 @@
     queuePanel.hidden = !messages.length && !queuePaused;
   }
 
-  function queueOrderFromDom() {
-    if (!queueList) return [];
-    return Array.prototype.map.call(
-      queueList.querySelectorAll(
-        '[data-agent-queue-item][data-delivery-status="queued"]'
-      ),
-      function (item) { return item.dataset.messageId; }
-    ).filter(Boolean);
-  }
-
-  function queueDomItem(messageId) {
-    if (!queueList) return null;
-    return Array.prototype.find.call(
-      queueList.querySelectorAll('[data-agent-queue-item]'),
-      function (item) { return item.dataset.messageId === messageId; }
-    ) || null;
-  }
-
-  function persistQueueOrder(messageIds) {
-    var endpoint = asText(root.dataset.queueReorderUrl).trim();
-    if (hardBlocked || !endpoint || queueMutationPending) return;
-    queueMutationPending = true;
-    updateSendState();
-    var body = new FormData();
-    messageIds.forEach(function (id) { body.append('message_ids', id); });
-    global.fetch(endpoint, {
-      method: 'POST', body: body, headers: {'Accept': 'application/json'},
-      credentials: 'same-origin', mathCurveLoader: false
-    }).then(function (response) {
-      return mutationResponse(response, '调整队列顺序失败');
-    }).then(function (payload) {
-      queueMutationPending = false;
-      updateSendState();
-      var state = responseMessageState(payload);
-      if (state) applyMessageState(state);
-      else refreshMessageState();
-    }).catch(function (error) {
-      queueMutationPending = false;
-      queueSignature = '';
-      updateSendState();
-      setResumeFeedback(error.message || '调整队列顺序失败。', true);
-      refreshMessageState().catch(function () {});
+  function sentSteerMessages(state, taskId) {
+    taskId = asText(taskId).trim();
+    return steerMessages(state).filter(function (message) {
+      var status = messageDeliveryStatus(message);
+      var target = asText(message && (
+        message.target_task_id || message.final_task_id || message.task_id
+      )).trim();
+      return (status === 'sent' || status === 'delivered')
+        && (!taskId || target === taskId);
     });
   }
 
-  function reorderQueueDom(sourceId, targetId, after) {
-    if (hardBlocked || !queueList || queueMutationPending
-        || !sourceId || !targetId || sourceId === targetId) return;
-    var source = queueDomItem(sourceId);
-    var target = queueDomItem(targetId);
-    if (!source || !target
-        || source.dataset.deliveryStatus !== 'queued'
-        || target.dataset.deliveryStatus !== 'queued') return;
-    queueList.insertBefore(source, after ? target.nextSibling : target);
-    persistQueueOrder(queueOrderFromDom());
+  function userTimelineMessage(message, extraClass) {
+    var row = createElement(
+      'section',
+      'agent-user-message agent-timeline-steer' + (extraClass ? ' ' + extraClass : '')
+    );
+    row.dataset.agentSteerMessage = '';
+    row.dataset.messageId = messageIdentifier(message)
+      || asText(message && message.message_id).trim();
+    var bubble = createElement('div', 'agent-user-bubble');
+    if (message && (message.html || message.user_message_html || message.message_html)) {
+      setServerHtml(
+        bubble,
+        message.html || message.user_message_html || message.message_html
+      );
+    } else {
+      bubble.appendChild(createElement('p', '', messageCopy(message)));
+    }
+    row.appendChild(bubble);
+    var attachments = messageAttachments(message);
+    if (attachments.length) {
+      var attachmentSummary = createElement('div', 'agent-message-attachments');
+      attachments.forEach(function (attachment) {
+        var path = attachmentPath(attachment);
+        var name = attachmentName(attachment);
+        var chip = createElement('span', 'agent-message-attachment');
+        chip.innerHTML = '<i class="fas fa-paperclip" aria-hidden="true"></i>';
+        if (path) {
+          var preview = createElement('button', '', name);
+          preview.type = 'button';
+          preview.dataset.agentOpenFile = path;
+          preview.title = '预览 ' + name;
+          chip.appendChild(preview);
+          var download = createElement('a');
+          download.href = downloadFileUrl(path);
+          download.title = '下载 ' + name;
+          download.setAttribute('aria-label', '下载 ' + name);
+          download.innerHTML = '<i class="fas fa-download" aria-hidden="true"></i>';
+          chip.appendChild(download);
+        } else {
+          chip.appendChild(createElement('span', '', name));
+        }
+        attachmentSummary.appendChild(chip);
+      });
+      row.appendChild(attachmentSummary);
+    }
+    return row;
   }
 
-  function moveQueueMessage(messageId, direction) {
-    if (hardBlocked || !queueList || queueMutationPending) return;
-    var order = queueOrderFromDom();
-    var index = order.indexOf(messageId);
-    var next = index + direction;
-    if (index < 0 || next < 0 || next >= order.length) return;
-    var swap = order[next];
-    order[next] = order[index];
-    order[index] = swap;
-    order.forEach(function (id) {
-      var item = queueDomItem(id);
-      if (item) queueList.appendChild(item);
+  function syncSteerSummaryAnchors(turn) {
+    if (!turn) return;
+    var anchored = Object.create(null);
+    turn.querySelectorAll(
+      '.agent-timeline-steer--detail[data-message-id]'
+    ).forEach(function (message) {
+      var id = asText(message.dataset.messageId).trim();
+      if (id) anchored[id] = true;
     });
-    persistQueueOrder(order);
-  }
-
-  function steerStatusLabel(status) {
-    return {
-      queued: '等待投递', dispatching: '等待投递', sent: '已发送', delivered: '已发送',
-      failed: '失败', unknown: '状态未知', canceled: '已取消'
-    }[status] || status;
+    turn.querySelectorAll(
+      '.agent-timeline-steer--summary[data-message-id]'
+    ).forEach(function (message) {
+      var id = asText(message.dataset.messageId).trim();
+      message.classList.toggle('is-trace-anchored', !!anchored[id]);
+    });
   }
 
   function renderSteerMessages(state) {
     if (!liveSteers) return;
-    var messages = steerMessages(state).filter(function (message) {
-      return asText(message && (message.target_task_id || message.task_id)) === currentTaskId;
+    var traced = traceMessages(currentState).filter(function (message) {
+      return messageKind(message) === 'user';
     });
+    var messages = running ? [] : uniqueMessages(
+      traced.concat(sentSteerMessages(state, currentTaskId))
+    );
     var signature = JSON.stringify(messages.map(function (message) {
-      return [messageIdentifier(message), messageDeliveryStatus(message), messageCopy(message), message.error_message, messageAttachments(message)];
+      return [messageIdentifier(message), messageCopy(message), messageAttachments(message)];
     }));
     if (signature === steerSignature) return;
     steerSignature = signature;
     liveSteers.replaceChildren();
     messages.forEach(function (message) {
-      var status = messageDeliveryStatus(message);
-      var row = createElement('section', 'agent-steer-message agent-steer-message--' + status);
-      row.dataset.agentSteerMessage = '';
-      row.dataset.messageId = messageIdentifier(message);
-      var bubble = createElement('div', 'agent-user-bubble');
-      if (message.user_message_html || message.message_html) {
-        setServerHtml(bubble, message.user_message_html || message.message_html);
-      } else {
-        bubble.appendChild(createElement('p', '', messageCopy(message)));
-      }
-      row.appendChild(bubble);
-      var attachments = messageAttachments(message);
-      if (attachments.length) {
-        var attachmentSummary = createElement('div', 'agent-message-attachments');
-        attachments.forEach(function (attachment) {
-          var chip = createElement('span', 'agent-message-attachment');
-          chip.innerHTML = '<i class="fas fa-paperclip" aria-hidden="true"></i>';
-          chip.appendChild(createElement('span', '', attachmentName(attachment)));
-          attachmentSummary.appendChild(chip);
-        });
-        row.appendChild(attachmentSummary);
-      }
-      var delivery = createElement('span', 'agent-steer-status', steerStatusLabel(status));
-      delivery.setAttribute('role', 'status');
-      delivery.prepend(createElement('i'));
-      if (message.error_message) delivery.title = asText(message.error_message);
-      row.appendChild(delivery);
-      liveSteers.appendChild(row);
+      liveSteers.appendChild(userTimelineMessage(
+        message, 'agent-timeline-steer--summary'
+      ));
     });
+    syncSteerSummaryAnchors(liveTurn);
     enhanceMarkdown(liveSteers);
   }
 
@@ -941,8 +914,9 @@
       : (queuePaused ? '队列已暂停，消息仍可排队…' : '继续这项任务…');
     if (stopButton) stopButton.hidden = !running || (hasMessage && !stopPending);
     if (queueResumeButton) {
-      queueResumeButton.disabled = hardBlocked || resumePending || queueMutationPending;
+      queueResumeButton.disabled = hardBlocked || resumePending;
     }
+    updateQueueActionState();
     var accessMessage = accessBlockedMessage();
     if (accessMessage && !resumePending) setResumeFeedback(accessMessage, true);
   }
@@ -1158,6 +1132,9 @@
 
   function traceEvent(message) {
     var kind = messageKind(message);
+    if (kind === 'user') {
+      return userTimelineMessage(message, 'agent-timeline-steer--detail');
+    }
     var resultKind = kind === 'tool_result' || kind === 'tool-result';
     var resultError = resultKind && message && message.is_error === true;
     var visualKind = resultKind ? (resultError ? 'error' : 'result') : kind.replace(/_/g, '-');
@@ -1200,26 +1177,45 @@
     return row;
   }
 
+  function appendTraceMessages(element, messages) {
+    (Array.isArray(messages) ? messages : []).forEach(function (message) {
+      var node = traceEvent(message || {});
+      if (
+        messageKind(message) === 'user'
+        && element.lastElementChild
+        && element.lastElementChild.classList.contains('agent-trace-event')
+      ) {
+        element.lastElementChild.classList.add('agent-trace-event--before-steer');
+      }
+      element.appendChild(node);
+    });
+  }
+
   function renderTrace(state) {
     if (!liveTrace) return;
     var messages = traceMessages(state);
     var signature = JSON.stringify(messages.map(function (message) {
-      return [message.kind, message.type, message.title, message.name, message.is_error, message.text, message.content, message.html];
+      return [
+        message.kind, message.type, message.title, message.name,
+        message.is_error, message.message_id, message.text, message.content,
+        message.html, message.attachments
+      ];
     }));
     if (signature === traceSignature) return;
     traceSignature = signature;
     liveTrace.replaceChildren();
     if (!messages.length && isRunningStatus(state && state.status)) {
       liveTrace.appendChild(mathLoader('Agent 正在工作', 'sm'));
+      syncSteerSummaryAnchors(liveTurn);
       return;
     }
     if (!messages.length) {
       liveTrace.appendChild(createElement('div', 'agent-workspace-empty', '本轮没有可展示的工作详情。'));
+      syncSteerSummaryAnchors(liveTurn);
       return;
     }
-    messages.forEach(function (message) {
-      liveTrace.appendChild(traceEvent(message || {}));
-    });
+    appendTraceMessages(liveTrace, messages);
+    syncSteerSummaryAnchors(liveTurn);
     enhanceMarkdown(liveTrace);
   }
 
@@ -1274,9 +1270,7 @@
       summaryLabel.append(caret, document.createTextNode('工作详情'));
       summary.appendChild(summaryLabel);
       var trace = createElement('div', 'agent-turn-trace');
-      messages.forEach(function (message) {
-        trace.appendChild(traceEvent(message || {}));
-      });
+      appendTraceMessages(trace, messages);
       details.append(summary, trace);
       response.appendChild(details);
     }
@@ -1314,6 +1308,7 @@
       target.appendChild(archivedSteers);
     }
     target.appendChild(historicalResponse(currentState));
+    bindTurnDetails(target);
     target.dataset.agentResponseArchived = 'true';
     liveTurn.hidden = true;
     enhanceMarkdown(target);
@@ -1332,7 +1327,7 @@
       liveConclusion.replaceChildren();
       liveConclusion.hidden = true;
     }
-    if (liveDetails) liveDetails.open = true;
+    setLiveDetailsOpen(true);
     if (liveSummary) liveSummary.textContent = 'Agent 正在工作';
     if (liveTurn) liveTurn.hidden = false;
   }
@@ -1358,14 +1353,15 @@
     }
     var stateIsRunning = isRunningStatus(state.status);
     setRunning(stateIsRunning, state.status, state.native_session_id);
+    renderSteerMessages(messageState);
     if (liveTurn) liveTurn.hidden = false;
     if (liveSummary) liveSummary.textContent = stateIsRunning ? 'Agent 正在工作' : '工作详情';
     renderTrace(state);
     if (stateIsRunning) {
-      if (liveDetails) liveDetails.open = true;
+      setLiveDetailsOpen(true);
       if (liveConclusion) liveConclusion.hidden = true;
     } else {
-      if (liveDetails) liveDetails.open = false;
+      setLiveDetailsOpen(false);
       renderConclusion(state);
       stopLiveUpdates();
       scheduleMessageStateRefresh(0);
@@ -1433,11 +1429,10 @@
       if (!messages.length) {
         body.appendChild(createElement('div', 'agent-workspace-empty', '本轮没有可展示的工作详情。'));
       } else {
-        messages.forEach(function (message) {
-          body.appendChild(traceEvent(message || {}));
-        });
+        appendTraceMessages(body, messages);
         enhanceMarkdown(body);
       }
+      syncSteerSummaryAnchors(details.closest('[data-agent-turn]'));
       details.dataset.agentLazyLoaded = 'true';
     }).catch(function () {
       body.replaceChildren(createElement(
@@ -1448,10 +1443,29 @@
     });
   }
 
-  function bindLazyHistoricalTraces() {
-    root.querySelectorAll('[data-agent-lazy-trace]').forEach(function (details) {
+  function syncTurnDetailState(details) {
+    if (!details) return;
+    var turn = details.closest('[data-agent-turn]');
+    if (turn) turn.classList.toggle('is-detail-expanded', details.open);
+  }
+
+  function setLiveDetailsOpen(value) {
+    if (!liveDetails) return;
+    liveDetails.open = value === true;
+    syncTurnDetailState(liveDetails);
+  }
+
+  function bindTurnDetails(scope) {
+    (scope || root).querySelectorAll('.agent-turn-details').forEach(function (details) {
+      if (details.dataset.agentDetailBound === 'true') return;
+      details.dataset.agentDetailBound = 'true';
+      syncTurnDetailState(details);
+      syncSteerSummaryAnchors(details.closest('[data-agent-turn]'));
       details.addEventListener('toggle', function () {
-        if (details.open) loadHistoricalTrace(details);
+        syncTurnDetailState(details);
+        if (details.open && details.hasAttribute('data-agent-lazy-trace')) {
+          loadHistoricalTrace(details);
+        }
       });
     });
   }
@@ -1509,7 +1523,7 @@
     stopLiveUpdates();
     setRunning(true, 'running');
     if (liveTurn) liveTurn.hidden = false;
-    if (liveDetails) liveDetails.open = true;
+    setLiveDetailsOpen(true);
     if (liveConclusion) liveConclusion.hidden = true;
     if (liveSummary) liveSummary.textContent = 'Agent 正在工作';
     if (!global.EventSource) {
@@ -1725,12 +1739,7 @@
         }
         clearResumeComposer();
         setResumePending(false);
-        setResumeFeedback(
-          actualMode === 'steer'
-            ? '插话已接收，将在当前动作结束后生效。'
-            : '消息已加入队列。',
-          false
-        );
+        setResumeFeedback(actualMode === 'queue' ? '消息已加入队列。' : '', false);
         if (actualMode === 'steer') scrollToLatest('smooth');
         return;
       }
@@ -2801,7 +2810,7 @@
   bindQueueControls();
   bindRename();
   bindWorkspaceAndFiles();
-  bindLazyHistoricalTraces();
+  bindTurnDetails(root);
   paintSessionAvatars();
   renderHeaderTokenUsage(currentState && currentState.session_token_usage);
   renderContextUsage(currentState && currentState.context_usage);

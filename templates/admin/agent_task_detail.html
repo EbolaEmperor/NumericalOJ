@@ -70,17 +70,7 @@
   {% set message_id = message.message_id|default('', true) %}
   {% set message_text = message.user_message|default(message.message|default('', true), true) %}
   {% set message_html = message.user_message_html|default(message.message_html|default('', true), true) %}
-  {% set delivery_status = message.status|default('queued', true)|lower %}
-  {% set delivery_labels = {
-    'queued': '等待投递',
-    'dispatching': '等待投递',
-    'sent': '已发送',
-    'delivered': '已发送',
-    'failed': '失败',
-    'unknown': '状态未知',
-    'canceled': '已取消'
-  } %}
-  <section class="agent-steer-message agent-steer-message--{{ delivery_status }}"
+  <section class="agent-user-message agent-timeline-steer agent-timeline-steer--summary"
            data-agent-steer-message data-message-id="{{ message_id }}">
     <div class="agent-user-bubble{% if message_html %} numoj-markdown{% endif %}"
          {% if message_html %}data-numoj-markdown{% endif %}>
@@ -91,15 +81,25 @@
         {% for attachment in message.attachments %}{{ attachment_item(attachment) }}{% endfor %}
       </div>
     {% endif %}
-    <span class="agent-steer-status" role="status">
-      <i aria-hidden="true"></i>{{ delivery_labels.get(delivery_status, delivery_status) }}
-    </span>
   </section>
 {% endmacro %}
 
 {% macro trace_message(message) %}
   {% set kind = message.kind|default(message.type|default('assistant', true), true)|lower %}
-  {% if kind in ('thinking', 'reasoning') %}
+  {% if kind == 'user' %}
+    <section class="agent-user-message agent-timeline-steer agent-timeline-steer--detail"
+             data-agent-steer-message data-message-id="{{ message.message_id|default('', true) }}">
+      <div class="agent-user-bubble{% if message.html %} numoj-markdown{% endif %}"
+           {% if message.html %}data-numoj-markdown{% endif %}>
+        {% if message.html %}{{ message.html|safe }}{% else %}<p>{{ message.text|default(message.content|default('', true), true) }}</p>{% endif %}
+      </div>
+      {% if message.attachments %}
+        <div class="agent-message-attachments">
+          {% for attachment in message.attachments %}{{ attachment_item(attachment) }}{% endfor %}
+        </div>
+      {% endif %}
+    </section>
+  {% elif kind in ('thinking', 'reasoning') %}
     <section class="agent-trace-event agent-trace-event--thinking">
       <span class="agent-trace-event-icon"><i class="fas fa-circle-notch" aria-hidden="true"></i></span>
       <div>
@@ -167,7 +167,7 @@
       data-session-stream-url="{{ message_urls['stream']|default('', true) }}"
       data-queue-update-url-template="{{ message_urls['update']|default('', true) }}"
       data-queue-delete-url-template="{{ message_urls['delete']|default('', true) }}"
-      data-queue-reorder-url="{{ message_urls['reorder']|default('', true) }}"
+      data-queue-send-now-url-template="{{ message_urls['send_now']|default('', true) }}"
       data-queue-resume-url="{{ message_urls['resume']|default('', true) }}"
       data-queue-paused="{{ 'true' if queue_paused else 'false' }}"
       data-steer-supported="{{ 'true' if steer_supported else 'false' }}"
@@ -346,7 +346,7 @@
           <span data-agent-queue-pause-reason>队列已暂停</span>
         </div>
         <ol class="agent-message-queue-list" data-agent-queue-list
-            aria-label="等待执行的消息，可使用箭头按钮调整顺序"></ol>
+            aria-label="等待执行的消息"></ol>
       </section>
       <form class="agent-resume-composer{% if is_running %} is-running{% endif %}{% if is_blocked %} is-blocked{% endif %}"
             method="post"

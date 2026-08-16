@@ -1413,7 +1413,9 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
         "delete": (
             "/agent/tasks/session-1/messages/__MESSAGE_ID__/delete"
         ),
-        "reorder": "/agent/tasks/session-1/queue/reorder",
+            "send_now": (
+                "/agent/tasks/session-1/messages/__MESSAGE_ID__/send-now"
+            ),
             "resume": "/agent/tasks/session-1/queue/resume",
             "rename": "/agent/tasks/session-1/title",
         }
@@ -1431,6 +1433,7 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
         "current_task_id": "turn-1",
         "current_state": current_state,
         "include_trace": False,
+        "steer_records": [],
     }
 
 

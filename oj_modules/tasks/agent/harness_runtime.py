@@ -668,7 +668,23 @@ class _CanonicalJournalObserver:
             offset += os.write(self._fd, payload[offset:])
         self._written += len(payload)
 
-    def _store_payload(self, payload):
+    def _drop_oldest_tail_record(self):
+        if not self._tail_records:
+            return None
+        remove_index = None
+        for index, (_payload, pinned) in enumerate(self._tail_records):
+            if not pinned:
+                remove_index = index
+                break
+        if remove_index is None:
+            payload, _pinned = self._tail_records.popleft()
+            return payload
+        self._tail_records.rotate(-remove_index)
+        payload, _pinned = self._tail_records.popleft()
+        self._tail_records.rotate(remove_index)
+        return payload
+
+    def _store_payload(self, payload, *, pinned=False):
         if len(payload) > self._max_bytes:
             return
         if (
@@ -680,13 +696,16 @@ class _CanonicalJournalObserver:
             self._write_payload(payload)
             return
         self._tail_mode = True
-        self._tail_records.append(payload)
+        self._tail_records.append((payload, bool(pinned)))
         self._tail_bytes += len(payload)
         while (
             self._tail_records
             and self._tail_bytes > self._tail_reserve_bytes
         ):
-            self._tail_bytes -= len(self._tail_records.popleft())
+            removed = self._drop_oldest_tail_record()
+            if removed is None:
+                break
+            self._tail_bytes -= len(removed)
 
     def _append_record(self, raw):
         try:
@@ -694,8 +713,25 @@ class _CanonicalJournalObserver:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
         if (
+            isinstance(event, dict)
+            and event.get("type") == "numoj_control"
+            and event.get("version") == 1
+            and str(event.get("status") or "").strip().lower() == "accepted"
+        ):
+            command_id = str(event.get("id") or "").strip()
+            if not command_id or command_id.startswith("__"):
+                return
+            # 不把 control 回执或 prompt 写入轨迹，只在同一 stdout
+            # 顺序点留下一个不含用户内容的插话边界。页面再用
+            # MySQL 中的持久消息补齐文本和附件。
+            event = {
+                "type": "numoj_steer",
+                "version": 1,
+                "message_id": command_id,
+            }
+        if (
             not isinstance(event, dict)
-            or event.get("type") not in self._EVENT_TYPES
+            or event.get("type") not in self._EVENT_TYPES | {"numoj_steer"}
             or event.get("version") != 1
         ):
             return
@@ -714,7 +750,10 @@ class _CanonicalJournalObserver:
         )
         # adapter usage 只用于轨迹和 token 展示。实际扣费以宿主 relay
         # 完整读取到的 provider usage 为准，不能在这里再次记账。
-        self._store_payload(payload)
+        self._store_payload(
+            payload,
+            pinned=event.get("type") == "numoj_steer",
+        )
 
     def feed(self, block):
         payload = bytes(block or b"")
@@ -746,7 +785,7 @@ class _CanonicalJournalObserver:
         with self._lock:
             if self._closed:
                 return
-            for payload in self._tail_records:
+            for payload, _pinned in self._tail_records:
                 if self._written + len(payload) > self._max_bytes:
                     break
                 self._write_payload(payload)

@@ -55,6 +55,7 @@ from oj_modules.agents.sessions import (
     mark_agent_turn_runtime_restore_failed,
     normalize_agent_message_id,
     reorder_queued_agent_session_messages,
+    steer_queued_agent_session_message,
     update_queued_agent_session_message,
     normalize_agent_access_role,
     rename_agent_session_title,
@@ -394,7 +395,9 @@ def _agent_display_conclusion(status, stored_conclusion, execution_trace):
     return stored or traced
 
 
-_AGENT_RICH_TRACE_KINDS = frozenset({'assistant', 'thinking', 'reasoning'})
+_AGENT_RICH_TRACE_KINDS = frozenset({
+    'assistant', 'thinking', 'reasoning', 'user',
+})
 _AGENT_CUMULATIVE_TRACE_HARNESSES = frozenset({'claude_code', 'pi'})
 _AGENT_TRACE_STABLE_MESSAGE_FIELDS = (
     'kind',
@@ -409,6 +412,8 @@ _AGENT_TRACE_STABLE_MESSAGE_FIELDS = (
     'meta',
     'format',
     'is_error',
+    'message_id',
+    'attachments',
 )
 
 
@@ -571,6 +576,7 @@ def _decorate_agent_turns(
     current_task_id='',
     current_state=None,
     include_trace=True,
+    steer_records=None,
 ):
     decorated = []
     previous_full_trace_by_harness = {}
@@ -582,18 +588,26 @@ def _decorate_agent_turns(
             and current_task_id
             and str(turn.get('task_id') or '').strip() == current_task_id
         )
-        hydrated = (
-            current_state
-            if reuse_current_state
-            else hydrate_agent_run_snapshot({
+        if reuse_current_state:
+            hydrated = current_state
+        else:
+            hydrate_state = {
                 'task_id': turn.get('task_id'),
+                'session_id': turn.get('session_id'),
                 'harness': turn.get('harness'),
                 'endpoint_id': turn.get('endpoint_id'),
                 'endpoint_model': turn.get('endpoint_model'),
                 'status': turn.get('status'),
                 'message': turn.get('conclusion') or '',
-            })
-        )
+            }
+            hydrated = (
+                hydrate_agent_run_snapshot(
+                    hydrate_state,
+                    steer_records=steer_records,
+                )
+                if steer_records is not None
+                else hydrate_agent_run_snapshot(hydrate_state)
+            )
         harness = _agent_trace_harness(hydrated, turn.get('harness'))
         full_messages = list(_agent_trace_messages(
             hydrated.get('execution_trace') if isinstance(hydrated, dict) else None
@@ -624,6 +638,21 @@ def _decorate_agent_turns(
                 trace,
             )
         turn['has_detail'] = bool(_agent_trace_messages(trace))
+        turn['_accepted_steer_messages'] = [
+            {
+                'message_id': str(message.get('message_id') or '').strip(),
+                'user_message': _agent_trace_text(message),
+                'user_message_html': render_rich_markdown(
+                    _agent_trace_text(message)
+                ),
+                'attachments': list(message.get('attachments') or ()),
+                'status': 'sent',
+                'target_task_id': str(turn.get('task_id') or '').strip(),
+            }
+            for message in _agent_trace_messages(trace)
+            if str(message.get('kind') or '').strip().lower() == 'user'
+            and str(message.get('message_id') or '').strip()
+        ]
         turn['execution_trace'] = trace if include_trace else {}
         turn['user_message_html'] = render_rich_markdown(turn.get('user_message'))
         turn['conclusion'] = conclusion
@@ -1984,6 +2013,7 @@ def agent_run_stream(task_id):
             last_message.get("source"),
             last_message.get("offset"),
             last_message.get("event_index"),
+            _agent_trace_message_signature(last_message),
             usage.get("request_count"),
             usage.get("input_total_tokens"),
             usage.get("input_cached_tokens"),
@@ -3366,12 +3396,6 @@ def agent_task_detail(session_id):
             agent_session=agent_session,
             decorate_markdown=False,
         )
-    turns = _decorate_agent_turns(
-        raw_turns,
-        current_task_id=current_task_id,
-        current_state=current_state,
-        include_trace=False,
-    )
     try:
         steer_records = list_agent_session_messages(
             session_id,
@@ -3384,17 +3408,33 @@ def agent_task_detail(session_id):
             extra={'session_id': session_id},
             exc_info=True,
         )
+    turns = _decorate_agent_turns(
+        raw_turns,
+        current_task_id=current_task_id,
+        current_state=current_state,
+        include_trace=False,
+        steer_records=steer_records,
+    )
     steers_by_task = {}
     for record in steer_records:
+        if str(record.get('status') or '').strip().lower() != 'sent':
+            continue
         target_task_id = str(record.get('target_task_id') or '')
         steers_by_task.setdefault(target_task_id, []).append(
             _decorate_agent_session_message(record)
         )
     for turn in turns:
-        turn['steer_messages'] = steers_by_task.get(
-            str(turn.get('task_id') or ''),
-            [],
-        )
+        task_id = str(turn.get('task_id') or '')
+        accepted = list(turn.pop('_accepted_steer_messages', ()) or ())
+        accepted_ids = {
+            str(message.get('message_id') or '').strip()
+            for message in accepted
+        }
+        turn['steer_messages'] = accepted + [
+            message
+            for message in steers_by_task.get(task_id, ())
+            if str(message.get('message_id') or '').strip() not in accepted_ids
+        ]
     # 持久 run 快照带有 endpoint_id，能为每个历史轮次按规范价格重建成本；
     # 不能直接拿用于展示的 turn 简版状态汇总，否则 priced 会话会被误判未定价。
     current_state = dict(current_state)
@@ -3498,8 +3538,9 @@ def agent_task_detail(session_id):
                 f'/agent/tasks/{quote(session_id, safe="")}'
                 '/messages/__MESSAGE_ID__/delete'
             ),
-            'reorder': (
-                f'/agent/tasks/{quote(session_id, safe="")}/queue/reorder'
+            'send_now': (
+                f'/agent/tasks/{quote(session_id, safe="")}'
+                '/messages/__MESSAGE_ID__/send-now'
             ),
             'resume': (
                 f'/agent/tasks/{quote(session_id, safe="")}/queue/resume'
@@ -3820,6 +3861,60 @@ def agent_task_message_delete(session_id, message_id):
     return jsonify(success=True, session_state=state)
 
 
+@problem_core_bp.post(
+    '/agent/tasks/<session_id>/messages/<message_id>/send-now'
+)
+def agent_task_message_send_now(session_id, message_id):
+    user = current_user()
+    if not user:
+        return jsonify(success=False, message='未登录'), 401
+    try:
+        agent_session = _agent_message_route_session(session_id, user)
+        _agent_quota_gate(
+            user,
+            endpoint_source=agent_session.get('endpoint_source'),
+        )
+        expected_task_id = str(
+            request.form.get('expected_task_id') or ''
+        ).strip()
+        if not expected_task_id:
+            raise AgentSessionMessageConflictError(
+                '立刻发送缺少当前任务标识，请刷新后重试'
+            )
+        steer_supported, steer_reason = read_agent_steer_capability(
+            session_id,
+            agent_session.get('harness'),
+        )
+        if not steer_supported:
+            raise AgentSessionMessageConflictError(
+                steer_reason or '当前 Harness 暂不支持中途插话'
+            )
+        updated = steer_queued_agent_session_message(
+            session_id,
+            message_id,
+            task_id=expected_task_id,
+        )
+        refreshed_session = get_agent_session(session_id) or agent_session
+        state = _agent_session_message_snapshot(refreshed_session)
+    except Exception as exc:
+        try:
+            return _agent_message_mutation_error(exc)
+        except Exception:
+            logger.exception(
+                '立刻发送 Agent 排队消息失败',
+                extra={
+                    'session_id': session_id,
+                    'message_id': message_id,
+                },
+            )
+            return jsonify(success=False, message='无法立刻发送排队消息'), 500
+    return jsonify(
+        success=True,
+        agent_message=_decorate_agent_session_message(updated),
+        session_state=state,
+    )
+
+
 @problem_core_bp.post('/agent/tasks/<session_id>/queue/reorder')
 def agent_task_queue_reorder(session_id):
     user = current_user()
@@ -3993,6 +4088,7 @@ admin_agent_task_message_state = agent_task_message_state
 admin_agent_task_message_stream = agent_task_message_stream
 admin_agent_task_message_update = agent_task_message_update
 admin_agent_task_message_delete = agent_task_message_delete
+admin_agent_task_message_send_now = agent_task_message_send_now
 admin_agent_task_queue_reorder = agent_task_queue_reorder
 admin_agent_task_queue_resume = agent_task_queue_resume
 admin_agent_workspace_tree = agent_workspace_tree
