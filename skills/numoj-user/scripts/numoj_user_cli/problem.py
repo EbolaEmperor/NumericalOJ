@@ -379,6 +379,7 @@ def problem_submit(args: argparse.Namespace) -> None:
                     separators=(",", ":"),
                 )
             },
+            headers={"Accept": "application/json"},
         )
     elif input_kind == "file":
         if not args.file:
@@ -387,7 +388,12 @@ def problem_submit(args: argparse.Namespace) -> None:
             raise common.CliError("This problem accepts a file submission, not code or prompt.")
         files = {"file": common.require_file(args.file)}
         try:
-            resp = client.request("POST", f"/submit/{args.problem_id}", files=files)
+            resp = client.request(
+                "POST",
+                f"/submit/{args.problem_id}",
+                files=files,
+                headers={"Accept": "application/json"},
+            )
         finally:
             common.close_files(files)
     elif input_kind == "prompt":
@@ -396,14 +402,24 @@ def problem_submit(args: argparse.Namespace) -> None:
         if workspace_directory or args.file or args.code or args.code_file:
             raise common.CliError("This Promptly problem accepts prompt text, not code or file.")
         prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8") if args.prompt_file else common.read_text_value(args.prompt)
-        resp = client.request("POST", f"/submit/{args.problem_id}", data={"prompt": prompt})
+        resp = client.request(
+            "POST",
+            f"/submit/{args.problem_id}",
+            data={"prompt": prompt},
+            headers={"Accept": "application/json"},
+        )
     else:
         if not (args.code or args.code_file):
             raise common.CliError("This programming problem requires --code or --code-file.")
         if workspace_directory or args.file or args.prompt or args.prompt_file:
             raise common.CliError("This programming problem accepts code, not prompt or file.")
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else common.read_text_value(args.code)
-        resp = client.request("POST", f"/submit/{args.problem_id}", data={"code": code})
+        resp = client.request(
+            "POST",
+            f"/submit/{args.problem_id}",
+            data={"code": code},
+            headers={"Accept": "application/json"},
+        )
     payload = common.redirect_response_payload(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
     if input_kind == "prompt" and payload.get("success") and payload.get("submission_id") and getattr(args, "wait_promptly", True):
         promptly_review = wait_promptly_review_result(

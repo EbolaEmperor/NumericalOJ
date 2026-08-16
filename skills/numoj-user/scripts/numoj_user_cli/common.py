@@ -135,6 +135,13 @@ def print_or_save_response(resp: requests.Response, *, output: Optional[str] = N
 
 
 def redirect_response_payload(resp: requests.Response, *, id_pattern: Optional[str] = None, id_name: str = "id") -> Dict[str, Any]:
+    if resp.status_code >= 400 and response_is_json(resp):
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            return payload
     ensure_ok(resp)
     location = resp.headers.get("Location", "")
     redirected = 300 <= resp.status_code < 400

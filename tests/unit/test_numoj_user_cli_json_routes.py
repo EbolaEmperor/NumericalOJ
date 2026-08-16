@@ -246,6 +246,8 @@ def _problem_detail_payload():
             }
         ],
         "can_submit": True,
+        "submit_block_code": "",
+        "submit_block_reason": "",
         "remaining_submissions": 4,
         "submit": {
             "accept": None,
@@ -291,6 +293,8 @@ def test_problem_detail_outputs_necessary_user_facing_fields(monkeypatch, capsys
             }
         ],
         "can_submit": True,
+        "submit_block_code": "",
+        "submit_block_reason": "",
         "remaining_submissions": 4,
         "submit": {
             "help_text": "请提交 prompt。",
@@ -518,13 +522,58 @@ def test_lean_workspace_submit_uses_generic_snapshot_and_form_redirect_contract(
     method, path, kwargs = client.requests[1]
     assert (method, path) == ("POST", "/submit/42")
     assert "json" not in kwargs
-    assert "headers" not in kwargs
+    assert kwargs["headers"] == {"Accept": "application/json"}
     assert cli.json.loads(kwargs["data"]["lean_workspace"]) == {
         "revision": "revision-1",
         "files": {
             "Submission.lean": "theorem answer : True := by trivial\n"
         },
     }
+
+
+def test_problem_submit_passes_api_error_without_client_side_block_message(
+    monkeypatch, capsys
+):
+    cli = _load_numoj_user_cli_module()
+    client = _SequenceClient([
+        _PayloadResponse({
+            "can_submit": False,
+            "submit_block_code": "homework_expired",
+            "submit_block_reason": "作业已过期，你已经无法提交",
+            "submit": {"input_kind": "code"},
+        }),
+        _StatusPayloadResponse(403, {
+            "success": False,
+            "code": "homework_expired",
+            "message": "作业已过期，你已经无法提交",
+        }),
+    ])
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
+
+    cli.problem_submit(Namespace(
+        problem_id=42,
+        workspace=None,
+        file=None,
+        code="print('hello')",
+        code_file=None,
+        prompt=None,
+        prompt_file=None,
+    ))
+
+    assert cli.json.loads(capsys.readouterr().out) == {
+        "success": False,
+        "code": "homework_expired",
+        "message": "作业已过期，你已经无法提交",
+    }
+    assert len(client.requests) == 2
+    assert client.requests[1] == (
+        "POST",
+        "/submit/42",
+        {
+            "data": {"code": "print('hello')"},
+            "headers": {"Accept": "application/json"},
+        },
+    )
 
 
 def test_lean_workspace_submit_accepts_legacy_manifest_fallback(
