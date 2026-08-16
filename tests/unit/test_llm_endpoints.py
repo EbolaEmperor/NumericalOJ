@@ -34,6 +34,8 @@ def endpoint(
     thinking_format="none",
     api_key="sk-super-secret",
     base_url=None,
+    context_window_tokens=384_000,
+    max_output_tokens=32_000,
 ):
     if base_url is None:
         base_url = (
@@ -50,6 +52,8 @@ def endpoint(
         model="model-id",
         thinking_enabled=thinking_enabled,
         thinking_format=thinking_format,
+        context_window_tokens=context_window_tokens,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -94,6 +98,8 @@ def test_endpoint_snapshot_is_immutable_normalized_and_secret_safe():
     assert snapshot.model == "model-a"
     assert snapshot.thinking_enabled is True
     assert snapshot.openai_thinking_format is adapter.OpenAIThinkingWireFormat.ENABLE_THINKING
+    assert snapshot.context_window_tokens == 384_000
+    assert snapshot.max_output_tokens == 32_000
     assert "secret-canary" not in repr(snapshot)
     assert "api_key" not in snapshot.to_public_dict()
     assert "name" not in snapshot.to_public_dict()
@@ -369,7 +375,7 @@ def test_anthropic_thinking_enabled_is_explicit_and_has_no_budget_or_effort(monk
 
     payload = calls[0][1]["json"]
     assert payload["thinking"] == {"type": "adaptive"}
-    assert payload["max_tokens"] == 4096
+    assert payload["max_tokens"] == 32000
     serialized = json.dumps(payload)
     assert "effort" not in serialized
     assert "budget" not in serialized
@@ -388,6 +394,46 @@ def test_anthropic_none_omits_thinking_and_rejects_enable_thinking(monkeypatch):
     assert "thinking" not in calls[0][1]["json"]
     with pytest.raises(adapter.LLMEndpointValidationError, match="enable_thinking"):
         endpoint(protocol="anthropic", thinking_format="enable_thinking")
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+def test_chat_requests_use_node_output_capacity_for_both_protocols(monkeypatch, protocol):
+    payload = (
+        {"choices": [{"message": {"content": "OK"}}]}
+        if protocol == "openai"
+        else {"content": [{"type": "text", "text": "OK"}]}
+    )
+    calls = install_post(monkeypatch, FakeResponse(payload))
+
+    adapter.call_text(
+        endpoint(
+            protocol=protocol,
+            context_window_tokens=12000,
+            max_output_tokens=7000,
+        ),
+        "hello",
+    )
+
+    assert calls[0][1]["json"]["max_tokens"] == 7000
+
+
+def test_explicit_output_request_cannot_exceed_node_capacity(monkeypatch):
+    calls = install_post(monkeypatch, FakeResponse({
+        "choices": [{"message": {"content": "OK"}}],
+    }))
+
+    adapter.call_text(
+        endpoint(max_output_tokens=2048),
+        "hello",
+        max_tokens=99999,
+    )
+
+    assert calls[0][1]["json"]["max_tokens"] == 2048
+
+
+def test_endpoint_rejects_output_capacity_above_context_capacity():
+    with pytest.raises(adapter.LLMEndpointValidationError, match="上下文窗口"):
+        endpoint(context_window_tokens=1024, max_output_tokens=2048)
 
 
 @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
