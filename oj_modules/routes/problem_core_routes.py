@@ -1541,6 +1541,17 @@ def agent_launch_options():
         return jsonify(success=False, message='未登录'), 401
     try:
         task_kind = normalize_agent_task_kind(request.args.get('task_kind'))
+        if task_kind == 'custom':
+            launch_options = _agent_launch_page_options(user['id'])
+            response = jsonify(
+                success=True,
+                task_kind=task_kind,
+                harnesses=launch_options['harnesses'],
+                endpoints_by_harness=launch_options['endpoints_by_harness'],
+                preference=launch_options['preference'],
+            )
+            response.headers['Cache-Control'] = 'private, no-store'
+            return response
         endpoints_by_harness = list_launch_endpoints_by_harness()
         preference = get_agent_launch_preference(user['id']) or {}
     except AgentLaunchValidationError as exc:

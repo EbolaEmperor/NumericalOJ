@@ -8,6 +8,7 @@
   var quotaCanStart = root.dataset.agentQuotaCanStart !== 'false';
   var quotaHasAccount = root.dataset.agentQuotaHasAccount !== 'false';
   var quotaRemaining = Number(root.dataset.agentQuotaRemaining);
+  var launchOptionsUrl = asText(root.dataset.agentLaunchOptionsUrl);
 
   var HARNESS_LABELS = {
     claude_code: 'Claude Code',
@@ -171,7 +172,9 @@
     var reasoningEffortsByHarness = {};
     var files = [];
     var submitting = false;
+    var refreshingEndpoints = false;
     var endpointController = null;
+    var endpointRefreshPromise = null;
     var reasoningEffortController = null;
     var activeReasoningHarness = '';
     var reasoningSelections = Object.create(null);
@@ -184,18 +187,24 @@
       endpointTriggerMain.appendChild(endpointPaidBadge);
     }
 
-    harnesses.forEach(function (harness) {
-      var canonical = canonicalHarness(harness.value);
-      var entries = rawEndpoints[harness.value]
-        || rawEndpoints[canonical]
-        || rawEndpoints[canonical.replace(/_/g, '-')]
-        || [];
-      endpointsByHarness[harness.value] = (Array.isArray(entries) ? entries : [])
-        .map(normalizeEndpoint).filter(Boolean)
-        .sort(function (left, right) {
-          return Number(right.isPersonal) - Number(left.isPersonal);
-        });
-    });
+    function endpointCatalog(raw) {
+      var catalog = {};
+      harnesses.forEach(function (harness) {
+        var canonical = canonicalHarness(harness.value);
+        var entries = (raw || {})[harness.value]
+          || (raw || {})[canonical]
+          || (raw || {})[canonical.replace(/_/g, '-')]
+          || [];
+        catalog[harness.value] = (Array.isArray(entries) ? entries : [])
+          .map(normalizeEndpoint).filter(Boolean)
+          .sort(function (left, right) {
+            return Number(right.isPersonal) - Number(left.isPersonal);
+          });
+      });
+      return catalog;
+    }
+
+    endpointsByHarness = endpointCatalog(rawEndpoints);
 
     ['pi', 'claude_code'].forEach(function (harness) {
       var entries = rawReasoningEfforts[harness]
@@ -299,7 +308,8 @@
         && !!selectedValue(harnessChoice)
         && !!selectedValue(endpointChoice)
         && (!effortRequired || !!selectedReasoningEffort())
-        && accessAllowed();
+        && accessAllowed()
+        && !refreshingEndpoints;
       submit.disabled = submitting || !ready;
       renderAccessNote();
     }
@@ -321,7 +331,7 @@
           };
         }),
         selected,
-        {disabled: submitting || endpoints.length === 0}
+        {disabled: submitting || (!isAdmin && !publicEnabled)}
       );
       decorateEndpointMenu(endpoints);
       renderEndpointPaidState();
@@ -401,6 +411,56 @@
     renderEndpoints(preferredHarness, preference.endpoint_id);
     renderReasoningEfforts(preferredHarness);
     global.ChoicePicker.init(root);
+
+    function refreshEndpointCatalog() {
+      if (!launchOptionsUrl || !global.fetch) return true;
+      if (endpointRefreshPromise) return endpointRefreshPromise;
+      refreshingEndpoints = true;
+      updateReadyState();
+      endpointRefreshPromise = global.fetch(launchOptionsUrl, {
+        method: 'GET',
+        headers: {'Accept': 'application/json'},
+        credentials: 'same-origin',
+        cache: 'no-store'
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (payload) {
+          if (!response.ok || !payload || payload.success !== true) {
+            throw new Error(asText(payload && payload.message) || '无法刷新模型节点');
+          }
+          return payload;
+        });
+      }).then(function (payload) {
+        var currentHarness = selectedValue(harnessChoice);
+        var currentEndpoint = selectedValue(endpointChoice);
+        endpointsByHarness = endpointCatalog(payload.endpoints_by_harness);
+        renderEndpoints(currentHarness, currentEndpoint);
+        return (endpointsByHarness[currentHarness] || []).length > 0;
+      }).catch(function () {
+        feedbackMessage('刷新模型节点失败，已保留当前列表。', true);
+        return (endpointsByHarness[selectedValue(harnessChoice)] || []).length > 0;
+      }).finally(function () {
+        endpointRefreshPromise = null;
+        refreshingEndpoints = false;
+        updateReadyState();
+      });
+      return endpointRefreshPromise;
+    }
+    if (endpointChoice) {
+      endpointChoice.addEventListener('choicepicker:openrequest', function () {
+        var requestedHarness = selectedValue(harnessChoice);
+        var hadEndpoints = (endpointsByHarness[requestedHarness] || []).length > 0;
+        Promise.resolve(refreshEndpointCatalog()).then(function (hasEndpoints) {
+          if (selectedValue(harnessChoice) !== requestedHarness) return;
+          if (hadEndpoints && !hasEndpoints) {
+            endpointController.setOpen(false);
+            return;
+          }
+          if (hadEndpoints || !hasEndpoints || document.activeElement !== endpointTrigger) return;
+          endpointController.setOpen(true);
+          endpointController.setValue(selectedValue(endpointChoice), false);
+        });
+      });
+    }
     var endpointInput = endpointChoice && endpointChoice.querySelector('.rk-choice-value');
     if (endpointInput) endpointInput.addEventListener('change', function () {
       renderEndpointPaidState();
@@ -475,8 +535,7 @@
         submitting || harnesses.length === 0 || (!isAdmin && !publicEnabled)
       );
       if (endpointController) endpointController.setDisabled(
-        submitting || !(endpointsByHarness[selectedValue(harnessChoice)] || []).length
-          || (!isAdmin && !publicEnabled)
+        submitting || (!isAdmin && !publicEnabled)
       );
       if (reasoningEffortController) reasoningEffortController.setDisabled(
         submitting || reasoningOptions(selectedValue(harnessChoice)).length === 0

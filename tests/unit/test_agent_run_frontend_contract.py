@@ -39,6 +39,7 @@ def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     assert "choice_picker(" in template
     assert "data-agent-harnesses-json" in template
     assert "data-agent-endpoints-json" in template
+    assert "data-agent-launch-options-url" in template
     assert "data-agent-reasoning-efforts-json" in template
     assert "data-agent-preference-json" in template
     assert "data-agent-task-list" in template
@@ -56,6 +57,9 @@ def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     assert "if (event.shiftKey) return;" in controller
     assert "if (submit.disabled) return;" in controller
     assert "form.requestSubmit(submit)" in controller
+    assert "refreshEndpointCatalog" in controller
+    assert "cache: 'no-store'" in controller
+    assert "endpointsByHarness = endpointCatalog(payload.endpoints_by_harness)" in controller
     assert ".numoj-content.container-fluid.agent-home-shell" in styles
     assert ".agent-composer" in styles
     assert ".agent-history-row" in styles
