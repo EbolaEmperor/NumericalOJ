@@ -195,7 +195,11 @@
     }
 
     function openWithIndex(index) {
-      if (disabled || enabledOptions().length === 0) return;
+      if (disabled) return;
+      if (!picker.classList.contains('open')) {
+        picker.dispatchEvent(new CustomEvent('choicepicker:openrequest', {bubbles: true}));
+      }
+      if (enabledOptions().length === 0) return;
       closeOthers(controller);
       controller.setOpen(true);
       setActive(index >= 0 ? index : adjacentIndex(1, selectedIndex()));
@@ -315,6 +319,7 @@
           choice.classList.toggle('active', active);
           choice.setAttribute('aria-selected', active ? 'true' : 'false');
         });
+        if (picker.classList.contains('open')) setActive(choices.indexOf(selected));
         var shouldNotify = notify == null ? config.notifyByDefault === true : notify === true;
         if (shouldNotify) {
           if (typeof config.onChange === 'function') config.onChange(input.value);

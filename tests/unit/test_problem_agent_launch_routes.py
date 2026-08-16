@@ -122,6 +122,47 @@ def test_launch_options_fall_back_when_remembered_endpoint_disappeared(monkeypat
     assert payload["preference"] == {"harness": "codex", "endpoint_id": 22}
 
 
+def test_custom_launch_options_include_current_users_personal_endpoints(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    calls = []
+
+    def launch_options(user_id):
+        calls.append(user_id)
+        return {
+            "harnesses": [{"value": "pi", "label": "Pi"}],
+            "endpoints_by_harness": {
+                "pi": [
+                    {
+                        "id": 3,
+                        "ref": "user:3",
+                        "source": "user",
+                        "model": "deepseek-v4-flash",
+                    }
+                ]
+            },
+            "reasoning_efforts_by_harness": {},
+            "preference": {"harness": "pi", "endpoint_id": "user:3"},
+        }
+
+    monkeypatch.setattr(routes, "_agent_launch_page_options", launch_options)
+
+    app = _app()
+    with app.test_request_context("/agent/launch-options?task_kind=custom"):
+        response = routes.agent_launch_options()
+
+    payload = response.get_json()
+    assert calls == [7]
+    assert payload["success"] is True
+    assert payload["task_kind"] == "custom"
+    assert payload["endpoints_by_harness"]["pi"][0]["ref"] == "user:3"
+    assert payload["preference"] == {"harness": "pi", "endpoint_id": "user:3"}
+    assert response.headers["Cache-Control"] == "private, no-store"
+
+
 def test_solve_launch_persists_outbox_and_wakes_dispatcher(
     monkeypatch,
     _queue_dispatcher,

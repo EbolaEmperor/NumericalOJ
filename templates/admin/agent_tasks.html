@@ -34,7 +34,8 @@
       data-agent-public-enabled="{{ 'true' if agent_public_open else 'false' }}"
       data-agent-quota-can-start="{{ 'true' if quota_summary.can_start|default(true) else 'false' }}"
       data-agent-quota-has-account="{{ 'true' if quota_summary.has_account|default(true) else 'false' }}"
-      data-agent-quota-remaining="{{ quota_summary.remaining_amount|default('', true) }}">
+      data-agent-quota-remaining="{{ quota_summary.remaining_amount|default('', true) }}"
+      data-agent-launch-options-url="{{ url_for('problem_core.agent_launch_options', task_kind='custom') }}">
   <section class="agent-home-hero" aria-labelledby="agentHomeTitle">
     <div class="agent-home-heading">
       <span class="agent-home-kicker">NUMERICAL OJ · AGENT</span>
