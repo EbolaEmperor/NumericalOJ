@@ -1065,6 +1065,13 @@
 .agent-resume-runtime .harness-logo,
 .agent-resume-runtime > span > i { width: 10px; min-width: 10px; height: 10px; font-size: 7px; }
 
+.agent-resume-runtime > .agent-resume-model { flex: 1 1 auto; }
+
+.agent-resume-runtime > .agent-resume-effort {
+  max-width: none;
+  flex: 0 0 auto;
+}
+
 .agent-context-meter {
   --agent-context-percent: 0;
   position: relative;
@@ -1969,8 +1976,21 @@
     margin: -4px -5px -4px 0;
   }
   .agent-steer-message { max-width: 92%; }
-  .agent-resume-runtime > span:nth-child(2),
-  .agent-context-meter { display: none; }
+  .agent-resume-footer {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .agent-resume-runtime {
+    flex: 1 1 170px;
+    gap: 3px;
+  }
+  .agent-resume-runtime > span { padding-inline: 3px; }
+  .agent-resume-harness,
+  .agent-resume-effort { flex-shrink: 0; }
+  .agent-resume-runtime > .agent-resume-model { max-width: 120px; }
+  .agent-context-meter { margin-left: -1px; }
+  .agent-resume-actions { margin-left: auto; }
+  .agent-resume-composer.is-running .agent-resume-runtime { flex-basis: 100%; }
   .agent-resume-composer textarea { font-size: 16px; }
   .agent-resume-attach,
   .agent-resume-send,

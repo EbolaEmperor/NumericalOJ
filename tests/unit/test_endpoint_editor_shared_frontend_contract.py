@@ -7,10 +7,8 @@ SHARED_SCRIPT = ROOT / "static/app/endpoint-editor.js"
 SHARED_STYLESHEET = ROOT / "static/app/endpoint-editor.css"
 SITE_TEMPLATE = ROOT / "templates/admin/site_config.html"
 AGENT_COMPONENT = ROOT / "templates/agents/components/access_control.html"
-AGENT_PAGES = (
-    ROOT / "templates/admin/agent_tasks.html",
-    ROOT / "templates/admin/agent_task_detail.html",
-)
+AGENT_HOME_PAGE = ROOT / "templates/admin/agent_tasks.html"
+AGENT_DETAIL_PAGE = ROOT / "templates/admin/agent_task_detail.html"
 
 
 def _read(path):
@@ -67,14 +65,20 @@ def test_endpoint_editor_assets_load_before_each_host_controller_and_stylesheet(
     _assert_asset_before(site, "app/endpoint-editor.css", "app/site-config.css")
     _assert_asset_before(site, "app/endpoint-editor.js", "app/site-config.js")
 
-    for page_path in AGENT_PAGES:
-        page = _read(page_path)
-        _assert_asset_before(
-            page, "app/endpoint-editor.css", "app/agents/access-control.css"
-        )
-        _assert_asset_before(
-            page, "app/endpoint-editor.js", "app/agents/access-control.js"
-        )
+    agent_home = _read(AGENT_HOME_PAGE)
+    _assert_asset_before(
+        agent_home, "app/endpoint-editor.css", "app/agents/access-control.css"
+    )
+    _assert_asset_before(
+        agent_home, "app/endpoint-editor.js", "app/agents/access-control.js"
+    )
+
+    agent_detail = _read(AGENT_DETAIL_PAGE)
+    assert "app/endpoint-editor.css" not in agent_detail
+    assert "app/agents/access-control.css" not in agent_detail
+    assert "app/endpoint-editor.js" not in agent_detail
+    assert "app/agents/access-control.js" not in agent_detail
+    assert "agents/components/access_control.html" not in agent_detail
 
 
 def test_shared_controller_owns_choices_thinking_validation_and_values():

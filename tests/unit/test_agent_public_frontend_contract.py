@@ -259,6 +259,11 @@ def test_agent_detail_is_quota_aware_and_can_be_renamed_without_a_new_page():
     assert "!usesPersonalEndpoint && !quotaCanContinue" in controller
     assert "额度已达到 -5 元" in controller
     assert "NumOJAgentAccess.update(summary)" in controller
+    assert "agents/components/access_control.html" not in template
+    assert "app/endpoint-editor.css" not in template
+    assert "app/agents/access-control.css" not in template
+    assert "app/endpoint-editor.js" not in template
+    assert "app/agents/access-control.js" not in template
 
 
 def test_site_config_has_public_agent_switch_and_adaptive_price_formatting():

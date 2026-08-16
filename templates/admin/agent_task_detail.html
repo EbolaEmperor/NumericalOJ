@@ -7,8 +7,6 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/agents/conversation.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='app/endpoint-editor.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='app/agents/access-control.css') }}">
 {% endblock %}
 
 {% block content_container_class %}container-fluid agent-session-shell{% endblock %}
@@ -30,6 +28,9 @@
 {% set access_role = agent_session.access_role|default('user', true) %}
 {% set harness_labels = {'claude_code': 'Claude Code', 'codex': 'Codex', 'opencode': 'OpenCode', 'pi': 'Pi'} %}
 {% set harness_name = agent_session.harness_label|default(harness_labels.get(agent_session.harness, agent_session.harness|default('Harness', true)), true) %}
+{% set reasoning_effort_labels = {'default': '默认', 'off': '关闭', 'minimal': '最少', 'low': '低', 'medium': '中', 'high': '高', 'xhigh': '极高', 'max': '最大'} %}
+{% set reasoning_effort = agent_session.reasoning_effort|default('default', true)|lower %}
+{% set reasoning_effort_label = reasoning_effort_labels.get(reasoning_effort, reasoning_effort) %}
 {% set message_urls = agent_message_urls|default({}, true) %}
 {% set steer_supported = message_state.steer_supported|default(agent_session.steer_supported|default(true)) %}
 {% set quota_summary = agent_quota_summary|default({}, true) %}
@@ -361,9 +362,13 @@
         <div class="agent-resume-attachments" data-agent-resume-attachments hidden></div>
         <div class="agent-resume-footer">
           <div class="agent-resume-runtime">
-            <span>{{ harness_logo(agent_session.harness) }}{{ harness_name }}</span>
+            <span class="agent-resume-harness">{{ harness_logo(agent_session.harness) }}{{ harness_name }}</span>
             {% set composer_model = agent_session.endpoint_model|default(agent_session.model|default('模型节点', true), true) %}
-            <span>{{ model_logo(composer_model) }}{{ composer_model }}</span>
+            <span class="agent-resume-model">{{ model_logo(composer_model) }}{{ composer_model }}</span>
+            <span class="agent-resume-effort" data-agent-reasoning-effort
+                  aria-label="推理等级：{{ '使用 Harness 原生默认' if reasoning_effort == 'default' else reasoning_effort_label }}">
+              <i class="fas fa-brain" aria-hidden="true"></i>{{ reasoning_effort_label }}
+            </span>
             <button class="agent-context-meter" type="button"
                     data-agent-context-meter
                     data-context-window-tokens="{{ agent_context_window_tokens }}"
@@ -497,7 +502,6 @@
     </form>
   </div>
 </div>
-{% include 'agents/components/access_control.html' %}
 
 {% include 'components/editor/monaco.html' %}
 {% endblock %}
@@ -506,7 +510,5 @@
 <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
 <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
-<script src="{{ url_for('static', filename='app/endpoint-editor.js') }}"></script>
-<script src="{{ url_for('static', filename='app/agents/access-control.js') }}"></script>
 <script src="{{ url_for('static', filename='app/agents/conversation.js') }}"></script>
 {% endblock %}

@@ -1378,6 +1378,17 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
         "build_agent_workspace_tree",
         lambda _sid: pytest.fail("Agent 详情首屏不应同步扫描 workspace"),
     )
+    quota_popup_calls = []
+    monkeypatch.setattr(
+        routes,
+        "list_user_agent_endpoints",
+        lambda _user_id: quota_popup_calls.append("personal") or [],
+    )
+    monkeypatch.setattr(
+        routes,
+        "list_pending_agent_quota_requests",
+        lambda _user_id: quota_popup_calls.append("pending") or [],
+    )
     rendered = []
     monkeypatch.setattr(
         routes,
@@ -1410,6 +1421,10 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     assert rendered[0][1]["can_retry"] is True
     assert rendered[0][1]["can_retry_now"] is True
     assert rendered[0][1]["workspace_tree"] == []
+    assert quota_popup_calls == []
+    assert "agent_personal_endpoints" not in rendered[0][1]
+    assert "agent_quota_pending_count" not in rendered[0][1]
+    assert "agent_quota_pending_requests" not in rendered[0][1]
     assert len(decorate_calls) == 1
     assert state_calls == [("turn-1", {"decorate_markdown": False})]
     assert decorate_calls[0][1] == {

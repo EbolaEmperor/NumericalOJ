@@ -179,7 +179,7 @@
     if (endpointTriggerMain) {
       endpointPaidBadge = document.createElement('span');
       endpointPaidBadge.className = 'agent-endpoint-paid-badge agent-endpoint-paid-badge--trigger';
-      endpointPaidBadge.textContent = '（自费）';
+      endpointPaidBadge.textContent = '自费';
       endpointPaidBadge.hidden = true;
       endpointTriggerMain.appendChild(endpointPaidBadge);
     }
@@ -240,7 +240,7 @@
         modelName.textContent = endpoint.model;
         var badge = document.createElement('span');
         badge.className = 'agent-endpoint-paid-badge';
-        badge.textContent = '（自费）';
+        badge.textContent = '自费';
         name.textContent = '';
         name.classList.add('agent-endpoint-option-name');
         name.appendChild(modelName);
@@ -256,7 +256,7 @@
       if (endpointTrigger) {
         endpointTrigger.setAttribute(
           'aria-label',
-          endpoint ? '模型节点：' + endpoint.model + (isPersonal ? '（自费）' : '') : '选择模型节点'
+          endpoint ? '模型节点：' + endpoint.model + (isPersonal ? '，自费' : '') : '选择模型节点'
         );
       }
     }
