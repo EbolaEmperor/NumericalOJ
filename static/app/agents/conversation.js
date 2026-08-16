@@ -1739,7 +1739,7 @@
         }
         clearResumeComposer();
         setResumePending(false);
-        setResumeFeedback(actualMode === 'queue' ? '消息已加入队列。' : '', false);
+        setResumeFeedback('', false);
         if (actualMode === 'steer') scrollToLatest('smooth');
         return;
       }
@@ -1960,6 +1960,7 @@
           }
           return {
             state: payload.state,
+            sessionState: payload.session_state,
             warning: response.ok && payload.success !== false ? '' : asText(payload.message)
           };
         });
@@ -1970,6 +1971,7 @@
         stopButton.title = '停止任务';
         stopButton.innerHTML = '<i class="fas fa-stop" aria-hidden="true"></i>';
         applyState(result.state, taskId, generation);
+        if (result.sessionState) applyMessageState(result.sessionState);
         updateSendState();
         if (result.warning) setResumeFeedback(result.warning, true);
       }).catch(function (error) {

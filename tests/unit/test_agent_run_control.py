@@ -115,7 +115,7 @@ def test_terminator_projects_canceled_only_after_cleanup_succeeds(monkeypatch):
             "state": {
                 "task_id": task_id,
                 "status": "Canceled",
-                "message": "任务已终止",
+                "message": "任务已被手动终止",
             },
         },
     )
@@ -138,7 +138,7 @@ def test_terminator_projects_canceled_only_after_cleanup_succeeds(monkeypatch):
     )("cleanup-ok")
 
     assert result["errors"] == []
-    assert projected == [(("cleanup-ok", "Canceled", "任务已终止"), {
+    assert projected == [(("cleanup-ok", "Canceled", "任务已被手动终止"), {
         "native_session_id": "",
     })]
 
@@ -214,7 +214,7 @@ def test_terminator_preserves_live_native_session_for_resume(monkeypatch):
 
     assert result["errors"] == []
     assert result["state"]["native_session_id"] == "native-live-123"
-    assert projected == [(("cancel-live", "Canceled", "任务已由管理员终止"), {
+    assert projected == [(("cancel-live", "Canceled", "任务已被手动终止"), {
         "native_session_id": "native-live-123",
     })]
 

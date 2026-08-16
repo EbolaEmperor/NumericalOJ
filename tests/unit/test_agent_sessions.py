@@ -855,6 +855,34 @@ def test_cleanup_failure_can_escalate_a_canceled_session(monkeypatch):
     assert connection.commits == 1
 
 
+def test_manual_cancel_without_fifo_messages_does_not_pause_queue(monkeypatch):
+    connection = _ScriptedConnection(
+        one_values=[{"status": "Pending"}, None],
+    )
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    changed = sessions.sync_agent_session_state({
+        "session_id": "session-empty-queue",
+        "task_id": "turn-current",
+        "status": "Canceled",
+        "message": "任务已被手动终止",
+    })
+
+    assert changed is True
+    calls = connection.cursor_instance.calls
+    assert "SELECT 1" in calls[1][0]
+    assert calls[1][1] == ("session-empty-queue",)
+    session_update_params = calls[2][1]
+    assert session_update_params[5:10] == (
+        0,
+        1,
+        0,
+        "任务已被手动终止",
+        1,
+    )
+    assert connection.commits == 1
+
+
 def test_title_generation_claim_is_atomic_and_persists_fallback(monkeypatch):
     connection = _ScriptedConnection()
     connection.cursor_instance.rowcount = 1

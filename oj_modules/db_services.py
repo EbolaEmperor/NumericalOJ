@@ -616,7 +616,7 @@ def upsert_agent_run_snapshot(state):
         conn.close()
 
 
-def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
+def cancel_agent_run_snapshot(task_id, message="任务已被手动终止"):
     """原子终止 Pending/Running 任务，并返回 ``(当前快照, 是否新终止)``。"""
 
     normalized_task_id = str(task_id or "").strip()
@@ -624,7 +624,7 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
         return None, False
 
     ensure_agent_runs_table()
-    cancel_message = str(message or "任务已由管理员终止")[:1000]
+    cancel_message = str(message or "任务已被手动终止")[:1000]
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -770,7 +770,7 @@ def cancel_agent_run_snapshot(task_id, message="任务已由管理员终止"):
                     "task_id": normalized_task_id,
                     "session_id": row.get("session_id"),
                     "status": "Canceled",
-                    "message": row.get("message") or "任务已由管理员终止",
+                    "message": row.get("message") or "任务已被手动终止",
                     "_preserve_conclusion": True,
                 })
         conn.commit()

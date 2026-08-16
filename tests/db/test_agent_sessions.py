@@ -560,6 +560,31 @@ def test_agent_session_failure_pauses_fifo_until_explicit_continue():
     assert failed["queue_pause_reason"] == "执行失败"
 
 
+def test_manual_stop_without_queued_messages_keeps_next_message_immediate():
+    session_id = "db-agent-empty-after-stop"
+    first_task_id = _create_completed_queue_session(session_id)
+
+    assert sync_agent_session_state({
+        "session_id": session_id,
+        "task_id": first_task_id,
+        "status": "Canceled",
+        "message": "任务已被手动终止",
+    }) is True
+    stopped = get_agent_session(session_id)
+    assert stopped["queue_paused"] is False
+    assert stopped["queue_pause_reason"] == ""
+
+    next_turn = begin_agent_session_turn(
+        session_id,
+        task_id=f"{session_id}-turn-2",
+        user_message="停止后立即发送",
+    )
+    assert next_turn["task_id"] == f"{session_id}-turn-2"
+    messages = list_agent_session_messages(session_id)
+    assert messages[-1]["delivery_mode"] == "turn"
+    assert messages[-1]["status"] == "dispatching"
+
+
 def test_explicit_continue_after_pre_native_stop_starts_only_the_queue_head_fresh():
     session_id = "db-agent-pre-native-stop"
     first_task_id = f"{session_id}-turn-1"

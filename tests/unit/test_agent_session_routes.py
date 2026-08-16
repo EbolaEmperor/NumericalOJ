@@ -1948,7 +1948,7 @@ def test_detail_refresh_keeps_cleanup_failed_session_blocked_over_sticky_cancel(
         lambda _task_id, **_kwargs: {
             "task_id": "turn-1",
             "status": "Canceled",
-            "message": "任务已由管理员终止",
+            "message": "任务已被手动终止",
             "execution_trace": {"trace_messages": []},
         },
     )
