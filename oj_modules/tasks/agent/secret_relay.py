@@ -22,10 +22,6 @@ import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
 
-from oj_modules.agents.endpoint_egress import (
-    AgentEndpointEgressError,
-    resolve_public_host,
-)
 from oj_modules.tasks.agent.identity_relay import (
     _BoundedIdentityRelayServer,
     _RequestRejected,
@@ -174,7 +170,7 @@ class _RelayConnectionMixin:
             self._create_connection = create_pinned_connection
         try:
             # HTTPSConnection 仍以 self.host 执行 SNI 与证书校验；只有底层
-            # socket 的拨号地址被替换为本轮已冻结的公网 IP。
+            # 如需固定解析结果，调用方可以提供 connect_host；默认按主机名连接。
             super().connect()
         finally:
             if original_create_connection is not None:
@@ -297,7 +293,6 @@ def _normalize_upstream_base_url(
     value,
     *,
     preserve_trailing_slash=False,
-    require_public_address=False,
 ):
     raw = str(value or "").strip()
     if (
@@ -336,13 +331,7 @@ def _normalize_upstream_base_url(
         raise AgentSecretRelayError("外部服务 Base URL 路径无效") from exc
     host = str(parts.hostname).lower().rstrip(".")
     use_port = int(port or (443 if parts.scheme.lower() == "https" else 80))
-    connect_host = ""
-    if require_public_address:
-        try:
-            connect_host = resolve_public_host(host, use_port)
-        except AgentEndpointEgressError as exc:
-            raise AgentSecretRelayError(str(exc)) from None
-    elif host == _CONTAINER_HOST:
+    if host == _CONTAINER_HOST:
         host = "127.0.0.1"
     rendered_host = f"[{host}]" if ":" in host else host
     netloc = rendered_host
@@ -353,7 +342,7 @@ def _normalize_upstream_base_url(
         scheme=parts.scheme.lower(),
         host=host,
         port=use_port,
-        connect_host=connect_host,
+        connect_host="",
         origin_url=origin_url,
         base_path=decoded_path,
         base_query=parts.query,
@@ -931,7 +920,6 @@ class _AgentSecretRelay:
         stop_event=None,
         require_usage_ack=False,
         usage_callback=None,
-        require_public_upstream=False,
     ):
         normalized_mode = str(mode or "").strip().lower()
         if normalized_mode not in {"openai", "anthropic", "mcp"}:
@@ -940,7 +928,6 @@ class _AgentSecretRelay:
         self.upstream = _normalize_upstream_base_url(
             upstream_base_url,
             preserve_trailing_slash=self.mode == "mcp",
-            require_public_address=bool(require_public_upstream),
         )
         self.real_credential = _validate_header_value(
             real_credential,
@@ -1603,11 +1590,6 @@ def run_agent_secret_relays(
     """启动一轮模型端点及可选 WebSearch MCP 密钥代理。"""
 
     endpoint_protocol = str(endpoint.get("protocol") or "").strip().lower()
-    endpoint_source = str(
-        endpoint.get("source")
-        or endpoint.get("endpoint_source")
-        or "global"
-    ).strip().lower()
     endpoint_relay = _AgentSecretRelay(
         upstream_base_url=endpoint.get("base_url"),
         mode=endpoint_protocol,
@@ -1615,7 +1597,6 @@ def run_agent_secret_relays(
         stop_event=endpoint_stop_event,
         require_usage_ack=require_endpoint_usage_ack,
         usage_callback=endpoint_usage_callback,
-        require_public_upstream=endpoint_source == "user",
     )
     web_search_relay = None
     if web_search_settings:

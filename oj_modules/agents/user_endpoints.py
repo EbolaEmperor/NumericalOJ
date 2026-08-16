@@ -7,14 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import requests
 import secrets
 from datetime import datetime, timedelta
 
-from oj_modules.agents.endpoint_egress import (
-    AgentEndpointEgressError,
-    pinned_requests_session,
-    resolve_public_endpoint_url,
-)
 from oj_modules.infrastructure.mysql import get_db_connection
 from oj_modules.site_config import services as config_service
 
@@ -92,12 +88,14 @@ def normalize_user_agent_endpoint_payload(payload, *, existing=None):
     }
 
 
-def test_user_agent_endpoint(candidate, *, egress_target, timeout_seconds=30):
-    """通过冻结公网 IP 的连接测试普通用户端点。"""
+def test_user_agent_endpoint(candidate, *, timeout_seconds=30):
+    """测试普通用户自有端点，不附加公网地址策略。"""
 
     from oj_modules.ai.endpoints import test_endpoint_candidate
 
-    with pinned_requests_session(egress_target) as session:
+    with requests.Session() as session:
+        # 不让环境变量中的代理改写自有端点的实际连接目标。
+        session.trust_env = False
         return test_endpoint_candidate(
             candidate,
             timeout=timeout_seconds,
@@ -123,12 +121,8 @@ def _owned_endpoint_row(endpoint_id, user_id):
 
 
 def _test_candidate(candidate, tester):
-    try:
-        egress_target = resolve_public_endpoint_url(candidate["base_url"])
-    except AgentEndpointEgressError as exc:
-        raise config_service.DynamicConfigValidationError(str(exc)) from None
     result = config_service.run_dynamic_config_tester(
-        lambda tested: tester(tested, egress_target=egress_target),
+        tester,
         candidate,
     )
     if not result["passed"]:
