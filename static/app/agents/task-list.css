@@ -225,6 +225,13 @@
 .agent-choice--effort .rk-choice-menu { width: 184px; }
 .agent-choice--role .rk-choice-menu { width: 280px; }
 
+.agent-choice--effort .agent-effort-logo {
+  background-image: url("reasoning-depth.svg");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
 .agent-choice--endpoint .agent-endpoint-option-name {
   display: flex;
   max-width: 100%;

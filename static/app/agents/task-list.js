@@ -363,7 +363,7 @@
           return {
             value: effort.value,
             label: effort.label,
-            icon: 'fa-brain',
+            icon: 'agent-effort-logo agent-effort-logo--choice',
             meta: effort.meta
           };
         }),
