@@ -3455,17 +3455,6 @@ def agent_task_detail(session_id):
             'final_response',
         ):
             page_current_state.pop(key, None)
-    try:
-        agent_personal_endpoints = list_user_agent_endpoints(user['id'])
-        pending_requests = (
-            list_pending_agent_quota_requests(user['id'])
-            if actor['is_admin']
-            else []
-        )
-    except Exception:
-        logger.exception('读取 Agent 会话额度弹窗数据失败')
-        agent_personal_endpoints = []
-        pending_requests = []
     response = current_app.make_response(render_template(
         'admin/agent_task_detail.html',
         user=user,
@@ -3499,9 +3488,6 @@ def agent_task_detail(session_id):
         can_retry=can_retry,
         can_retry_now=can_retry_now,
         agent_quota_summary=agent_quota_summary,
-        agent_personal_endpoints=agent_personal_endpoints,
-        agent_quota_pending_count=len(pending_requests),
-        agent_quota_pending_requests=pending_requests,
         agent_context_window_tokens=int(
             (current_state.get('context_usage') or {}).get('window_tokens')
             or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS

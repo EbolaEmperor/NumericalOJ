@@ -130,11 +130,12 @@ def test_agent_home_prioritizes_personal_endpoints_and_marks_them_as_self_paid()
     styles = _read("static/app/agents/task-list.css")
 
     assert "Number(right.isPersonal) - Number(left.isPersonal)" in controller
-    assert "endpointPaidBadge.textContent = '（自费）'" in controller
-    assert "badge.textContent = '（自费）'" in controller
+    assert "endpointPaidBadge.textContent = '自费'" in controller
+    assert "badge.textContent = '自费'" in controller
     assert "option.classList.add('is-personal-endpoint')" in controller
     assert "endpointChoice.classList.toggle('is-personal-endpoint', isPersonal)" in controller
-    assert "endpoint.model + (isPersonal ? '（自费）' : '')" in controller
+    assert "endpoint.model + (isPersonal ? '，自费' : '')" in controller
+    assert "（自费）" not in controller
     assert ".agent-endpoint-paid-badge" in styles
     assert ".agent-choice--endpoint .rk-choice-option.is-personal-endpoint" in styles
 
@@ -216,6 +217,11 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     composer = template[composer_start:composer_end]
     assert "harness_logo(agent_session.harness)" in composer
     assert "agent_session.endpoint_model" in composer
+    assert "agent_session.reasoning_effort" in template
+    assert "reasoning_effort_label" in composer
+    assert "data-agent-reasoning-effort" in composer
+    assert "agent-resume-effort" in composer
+    assert "fa-brain" in composer
     assert "data-agent-context-meter" in composer
     assert "data-agent-context-value" in composer
     assert 'role="tooltip"' in composer
@@ -223,6 +229,14 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     meter_start = composer.index('class="agent-context-meter"')
     meter_end = composer.index("</button>", meter_start)
     assert " title=" not in composer[meter_start:meter_end]
+    model_start = composer.index('class="agent-resume-model"')
+    effort_start = composer.index('class="agent-resume-effort"')
+    effort_end = composer.index("</span>", effort_start)
+    assert model_start < effort_start < meter_start
+    effort = composer[effort_start:effort_end]
+    assert "<button" not in effort
+    assert "<select" not in effort
+    assert "<input" not in effort
     assert "agent_context_window_tokens=int(" in routes
     assert "DEFAULT_LLM_CONTEXT_WINDOW_TOKENS" in routes
 
@@ -273,6 +287,21 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert ".agent-context-tooltip" in styles
     assert ".agent-context-meter:hover .agent-context-tooltip" in styles
     assert ".agent-context-meter:focus-visible .agent-context-tooltip" in styles
+    assert ".agent-resume-runtime > .agent-resume-effort" in styles
+    mobile = styles.split("@media (max-width: 575.98px)", 1)[1].split(
+        "@media (hover: none)", 1
+    )[0]
+    assert ".agent-context-meter { display: none; }" not in mobile
+    assert ".agent-resume-model { display: none; }" not in mobile
+    mobile_footer = _css_rule(mobile, ".agent-resume-footer {")
+    assert "flex-wrap: wrap;" in mobile_footer
+    mobile_runtime = _css_rule(mobile, ".agent-resume-runtime {")
+    assert "flex: 1 1 170px;" in mobile_runtime
+    assert ".agent-resume-actions { margin-left: auto; }" in mobile
+    assert (
+        ".agent-resume-composer.is-running .agent-resume-runtime { flex-basis: 100%; }"
+        in mobile
+    )
     desktop_preview = styles.split("@media (min-width: 992px)", 1)[1]
     assert ".agent-session.has-file .agent-session-header-side" in desktop_preview
     assert "display: none;" in desktop_preview
