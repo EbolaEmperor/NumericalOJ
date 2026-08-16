@@ -269,7 +269,7 @@
     const lockable = Boolean(meta.lockable || key === 'repository_embedding');
     const locked = lockable && Boolean(binding.is_locked);
     return `
-      <article class="site-config-feature-card${lockable ? ' is-embedding' : ''}" data-feature-key="${escapeHtml(key)}">
+      <article class="site-config-feature-card" data-feature-key="${escapeHtml(key)}">
         <span class="site-config-feature-icon"><i class="fas ${escapeHtml(featureIcons[key] || 'fa-cog')}" aria-hidden="true"></i></span>
         <div class="site-config-feature-copy">
           <div class="site-config-feature-head">
@@ -713,13 +713,9 @@
     state.agentPublicEnabled = Boolean(enabled);
     const button = $('[data-agent-public-access-switch]');
     const label = $('[data-agent-public-access-label]');
-    const description = $('[data-agent-public-access-description]');
     button.disabled = false;
     button.setAttribute('aria-checked', state.agentPublicEnabled ? 'true' : 'false');
     label.textContent = state.agentPublicEnabled ? '开启' : '关闭';
-    description.textContent = state.agentPublicEnabled
-      ? '普通用户可以创建任务、继续会话和申请额度'
-      : '普通用户只能查看已有会话，不能申请额度或发送消息';
   }
 
   async function loadAgentPublicAccess() {
@@ -778,7 +774,7 @@
       ? '请输入 1 至 100 的整数'
       : dirty
         ? `尚未保存 · 将调整为 ${value}`
-        : `当前最多同时运行 ${state.agentConcurrencyLimit} 个任务`;
+        : '';
   }
 
   function renderAgentConcurrency(value) {
