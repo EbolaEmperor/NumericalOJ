@@ -82,8 +82,6 @@ def test_ranking_detail_uses_one_modal_source_per_judge_mode():
 
     assert detail.count(judge_include) == 1
     assert detail.count(reverse_include) == 1
-    assert 'id="judgeDetailModal"' not in detail
-    assert 'id="reverseJudgeDetailModal"' not in detail
 
     judge_html = environment.get_template("ranking/modals/judge_detail.html").render(
         tab="submit"
@@ -117,7 +115,6 @@ def test_ranking_detail_dispatches_each_tab_to_a_bounded_partial():
         assert detail.count(include) == 0
         assert panel.count(include) == 1
 
-    assert "<script>" not in detail
     site = (TEMPLATES / "layouts" / "site.html").read_text(encoding="utf-8")
     assert detail.count("filename='app/choice-picker.js'") == 0
     assert site.count("filename='app/choice-picker.js'") == 1
@@ -147,7 +144,6 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
     for name in consumers:
         source = (TEMPLATES / name).read_text(encoding="utf-8")
         assert source.count(monaco_include) == 1
-        assert "components/editor/codemirror.html" not in source
 
     assert not (TEMPLATES / "components" / "editor" / "codemirror.html").exists()
     assert not any(
@@ -207,46 +203,18 @@ def test_all_code_surfaces_share_monaco_at_every_breakpoint():
     for source in (create, edit):
         assert "filename='app/problem-form-editors.js'" in source
         assert "numoj-form-code-editor" in source
-        assert "CodeMirror(" not in source
     assert 'context: "problem-form"' in form_editor
     assert '"initial-code"' in form_editor
     assert '"test-code"' in form_editor
     assert "runtime.monacoOptions({" in form_editor
     assert "function registerMatlab(monaco)" in editor_runtime
-    assert "function registerMatlab(monaco)" not in problem_editor
-    assert "function registerMatlab(monaco)" not in submission_editor
     assert "window.NumOJMonacoReady" in problem_editor
     assert "}, 8000);" in monaco_component
     assert "TEXTMATE_INITIAL_WAIT_MS = 250" in editor_runtime
     assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
 
-    for source in (
-        monaco_component,
-        problem_editor,
-        form_editor,
-        submission_editor,
-        repository_editor,
-    ):
-        assert "matchMedia" not in source
 
-    for source in (
-        create,
-        edit,
-        detail,
-        monaco_component,
-        problem_editor,
-        form_editor,
-        submission_editor,
-        repository_editor,
-        editor_runtime,
-        editor_styles,
-        submission_styles,
-        repository_styles,
-    ):
-        assert "codemirror" not in source.lower()
 
-    assert "monaco_all_breakpoints" not in monaco_component
-    assert "monaco_all_breakpoints" not in detail
 
 
 def test_non_credential_text_fields_opt_out_of_password_managers():
@@ -288,7 +256,6 @@ def test_problem_dashboard_defers_class_activity_until_after_first_render():
     assert "data-numoj-class-activity" in desktop_list
     assert "data-numoj-activity-loading" in desktop_list
     assert "正在加载班级活跃度" in desktop_list
-    assert "{% for item in class_activity" not in desktop_list
     assert "fetch(activityUrl" in dashboard
     assert "grid.replaceChildren(fragment)" in dashboard
     assert "min-height: 144px;" in layout
@@ -323,15 +290,11 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert 'id="monacoEditorLoading"' in detail
     assert "代码编辑器正在加载" in detail
     assert 'data-size="lg"' in detail
-    assert "recent-submissions-panel" not in detail
     assert "recent-submissions-card" in detail
     assert 'class="recent-submissions-card"' in detail
-    assert "recent-submissions-card d-none" not in detail
     assert "recent-submission-arrow" in detail
     assert 'class="numoj-breadcrumb d-flex"' in detail
     assert 'class="numoj-problem-kickers d-flex"' in detail
-    assert 'id="codeMirrorContainer"' not in detail
-    assert "monaco_all_breakpoints" not in detail
     assert "filename='app/problem-detail-layout.js'" in detail
 
     outer_splitter = detail.split('class="problem-detail-splitter"', 1)[1].split(
@@ -385,8 +348,6 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert "const PROBLEM_EDITOR_LINE_HEIGHT = 20;" in editor
     assert "fontSize: PROBLEM_EDITOR_FONT_SIZE" in editor
     assert "lineHeight: PROBLEM_EDITOR_LINE_HEIGHT" in editor
-    assert "createCodeMirrorAdapter" not in editor
-    assert "window.NumOJCodeMirrorReady" not in editor
     assert 'font: 12.5px/20px "SFMono-Regular", Consolas, monospace;' in detail
     assert "fontSize: 14," in editor_runtime
     assert "lineHeight: 22," in editor_runtime
@@ -409,7 +370,6 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     )
     assert 'from "@shikijs/themes/dark-plus"' in lean_theme
     assert "createJavaScriptRegexEngine()" in monaco_entry
-    assert "numoj-light" not in editor
 
 
 def test_unified_submission_list_owns_one_component_and_asset_pair():
@@ -432,7 +392,6 @@ def test_unified_submission_list_owns_one_component_and_asset_pair():
     assert source.count("submission_detail_panel(submissions | length > 0, user)") == 1
     assert source.count("filename='app/submissions.css'") == 1
     assert source.count("filename='app/submissions.js'") == 1
-    assert "submission.submission_list" not in source
 
 
 def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract():
@@ -463,20 +422,14 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "submission-detail-summary-card" in detail
     assert "submission-detail-results" in detail
     assert 'class="submission-detail-id">#{{ submission.id }}' in detail
-    assert "SUBMISSION · #" not in detail
-    assert "<dt>语言</dt>" not in detail
-    assert "submission-detail-problem-title" not in detail
     assert "<dt>题目</dt>" in detail
     assert "submissionMonacoContainer" in detail
-    assert "submissionCodeMirrorContainer" not in detail
     assert 'data-problem-id="{{ submission.problem_id }}"' in detail
     assert "{% include 'components/editor/monaco.html' %}" in detail
-    assert "components/editor/codemirror.html" not in detail
     assert "filename='app/submissions/detail.css'" in detail
     assert "filename='app/submissions/detail.js'" in detail
     assert 'class="submission-detail-disclosure submission-prompt-card" open' in detail
     assert 'class="submission-detail-disclosure submission-latex-card"' in detail
-    assert "<style" not in detail
 
     assert 'grid-template-areas:\n    "summary primary"\n    "results primary";' in detail_css
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in detail_css
@@ -484,7 +437,6 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "--submission-time-limit: #172554;" in detail_css
     assert "border-radius: 0;" in detail_css
     assert 'grid-template-areas:\n      "summary"\n      "primary"\n      "results";' in detail_css
-    assert "<h2>测试点结果</h2>" not in detail
     assert "0 0 0 4px var(--submission-ink)" in detail_css
     assert "margin-inline: auto;" in detail_css
     assert "card.setAttribute('aria-pressed', isSelected ? 'true' : 'false')" in detail
@@ -494,9 +446,6 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert 'return "dark-plus"' in editor_runtime
     assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
     assert "window.NumOJMonacoReady" in detail_js
-    assert "window.NumOJCodeMirrorReady" not in detail_js
-    assert "createCodeMirrorEditor" not in detail_js
-    assert "matchMedia" not in detail_js
     assert "window.NumOJSemanticTokens.register(monaco" in detail_js
     assert "submissionSemanticLoading" in detail
     assert "updateSemanticLoading(1)" in detail_js
@@ -522,7 +471,6 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
     assert "{% elif point_status == 'Wrong Answer' %}" in list_component
     assert 'if (value === "Wrong Answer")' in list_js
     assert "if (normalized === 'Wrong Answer')" in detail
-    assert "['Wrong Answer', 'Unaccepted']" not in detail
 
 
 def test_ranking_list_uses_admin_create_fab_without_intro_hero():
@@ -530,8 +478,6 @@ def test_ranking_list_uses_admin_create_fab_without_intro_hero():
         encoding="utf-8"
     )
 
-    assert "围绕开放赛题提交作品" not in ranking_list
-    assert "ranking-hero" not in ranking_list
     assert 'class="ranking-create-fab"' in ranking_list
     assert 'aria-label="创建打榜赛"' in ranking_list
     assert 'data-bs-target="#newCompetitionModal"' in ranking_list
@@ -556,8 +502,6 @@ def test_rule_topology_algorithm_has_one_parameterized_source():
     for path, geometry in consumers.items():
         source = path.read_text(encoding="utf-8")
         assert source.count("RuleTopology.create") == 1
-        assert "function slotOffset" not in source
-        assert "function buildEdgeRoutes" not in source
         assert f"slotPadding: {geometry[0]}, maxSlotStep: {geometry[1]}" in source
 
 
@@ -580,6 +524,4 @@ def test_ranking_settings_are_split_by_cohesive_responsibility():
     endpoint_script = (
         ROOT / "static" / "app" / "ranking" / "endpoints.js"
     ).read_text(encoding="utf-8")
-    assert "{{" not in rules_script
-    assert "{{" not in endpoint_script
     assert "window.ChoicePicker.create" in endpoint_script

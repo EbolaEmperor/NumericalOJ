@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <title>Reasoning depth</title>
+  <g fill="none" stroke="#000" stroke-linecap="round" stroke-width="1.45">
+    <path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71"/>
+    <path d="M10.75 8a2.75 2.75 0 1 1-.81-1.94"/>
+  </g>
+  <circle cx="8" cy="8" r=".8" fill="#000"/>
+</svg>

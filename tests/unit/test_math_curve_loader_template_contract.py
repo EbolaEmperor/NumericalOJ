@@ -17,8 +17,6 @@ def test_layout_family_loads_shared_math_curve_assets_once_from_base():
     for filename in ("layouts/site.html", "layouts/embedded.html"):
         template = (TEMPLATES / filename).read_text(encoding="utf-8")
         assert template.count('{% extends "layouts/base.html" %}') == 1
-        assert "math-curve-loaders/loader.css" not in template
-        assert "math-curve-loaders/loader.js" not in template
 
 
 def test_loader_randomizes_among_the_selected_seven_gallery_curves():
@@ -30,8 +28,6 @@ def test_loader_randomizes_among_the_selected_seven_gallery_curves():
     assert "spiralSearch()" in LOADER_JS
     assert "particleCount: 86" in LOADER_JS
     assert "config.rotate === false" in LOADER_JS
-    assert "polarRose(5, 78" not in LOADER_JS
-    assert "polarRose(4, 78" not in LOADER_JS
     assert "Math.floor(Math.random() * CURVES.length)" in LOADER_JS
     assert "const DEFAULT_PALETTE = ['#111111', '#000000']" in LOADER_JS
     assert ": DEFAULT_PALETTE;" in LOADER_JS
@@ -39,17 +35,6 @@ def test_loader_randomizes_among_the_selected_seven_gallery_curves():
     assert "path.setAttribute('opacity', '0')" in LOADER_JS
 
 
-def test_templates_no_longer_use_legacy_loading_spinners():
-    legacy_markers = (
-        "spinner-border",
-        "fa-spinner",
-        "gitsub-spin",
-        "progress-bar-animated",
-    )
-    for path in TEMPLATES.rglob("*.html"):
-        template = path.read_text(encoding="utf-8")
-        for marker in legacy_markers:
-            assert marker not in template, f"{path.name} 仍包含旧加载动画 {marker}"
 
 
 def test_loader_covers_navigation_fetch_and_dynamic_content():

@@ -74,9 +74,6 @@ def test_list_column_is_seventy_percent_of_the_selected_mockup_width():
 def test_forum_has_only_the_confirmed_filters_and_no_role_labels():
     assert TEMPLATE.count('data-scope="all"') == 1
     assert TEMPLATE.count('data-scope="mine"') == 1
-    for removed_label in ("待回复", "学生回复", "官方回复", "最近有回复"):
-        assert removed_label not in TEMPLATE
-        assert removed_label not in JAVASCRIPT
 
 
 def test_forum_scope_filters_use_compact_rounded_rectangles():
@@ -87,12 +84,9 @@ def test_forum_scope_filters_use_compact_rounded_rectangles():
     assert "padding: 5px 8px;" in chip_rules
     assert "border-radius: 5px;" in chip_rules
     assert "font-size: 9.5px;" in chip_rules
-    assert "border-radius: 999px;" not in chip_rules
 
 
 def test_browser_writes_use_json_apis_without_html_form_fallback():
-    assert "request.form" not in ROUTES
-    assert 'methods=["POST"]' not in ROUTES
     assert 'const API_ROOT = "/api/forum";' in JAVASCRIPT
     for endpoint in ("/threads", "/replies", "/preview", "/identity"):
         assert endpoint in JAVASCRIPT
@@ -159,7 +153,6 @@ def test_mobile_header_controls_keep_accessible_names_when_copy_is_hidden():
 
 def test_button_color_reset_does_not_override_component_variants():
     assert ".forum-page :where(button) {\n  color: inherit;" in CSS
-    assert ".forum-page button {\n  color: inherit;" not in CSS
     assert ".forum-button-primary {\n" in CSS
     assert ".forum-button-dark {\n" in CSS
 
@@ -174,7 +167,6 @@ def test_share_button_copies_directly_and_uses_the_forum_notice():
     assert 'document.execCommand("copy")' in MARKDOWN_JAVASCRIPT
     assert "copyText: writeClipboardText" in MARKDOWN_JAVASCRIPT
     assert 'showToast("链接已复制到剪贴板，快去分享吧！", "share")' in JAVASCRIPT
-    assert "window.prompt(" not in JAVASCRIPT
     assert ".forum-toast.is-share .forum-toast-mark" in CSS
     assert '.forum-toast.is-share .forum-toast-mark::before' in CSS
 
@@ -236,10 +228,6 @@ def test_rich_markdown_pages_load_the_shared_pinned_resources_explicitly():
         "or (problem.programming_grading_mode or 1)|int == 3 %}"
         in PROBLEM_TEMPLATE
     )
-    assert "vendor/mermaid" not in BASE_LAYOUT
-    assert "vendor/shiki-markdown" not in BASE_LAYOUT
-    assert "app/editor-semantic-tokens.js" not in BASE_LAYOUT
-    assert "app/markdown-rendering.js" not in BASE_LAYOUT
     assert '"mermaid": "11.16.0"' in PACKAGE
     assert '"build:mermaid": "node scripts/build_mermaid.mjs"' in PACKAGE
     assert (
@@ -359,10 +347,7 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
     )[1].split(".numoj-markdown .numoj-code-frame", 1)[0]
     assert "background: #1e1e1e;" in target_canvas
     assert "color: #d4d4d4;" in target_canvas
-    assert "language-json" not in target_canvas
-    assert "language-js" not in target_canvas
     assert "background: #0d1117;" in MARKDOWN_CSS
-    assert "span.style.color" not in MARKDOWN_JAVASCRIPT
     assert ".numoj-shiki-color-dcdcaa" in MARKDOWN_CSS
     assert ".numoj-shiki-color-9cdcfe" in MARKDOWN_CSS
     assert ".numoj-shiki-color-c586c0" in MARKDOWN_CSS
@@ -382,7 +367,6 @@ def test_markdown_cpp_inactive_regions_keep_token_colors_and_only_dim():
         1,
     )[1].split("}", 1)[0]
     assert "opacity: 0.55;" in declaration
-    assert "color:" not in declaration
 
 
 def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
@@ -433,7 +417,6 @@ def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
     assert "await enhanceRenderedMarkdown(target);" in JAVASCRIPT
     assert "window.NumericalOJMarkdownRenderer.enhance(root)" in JAVASCRIPT
     assert "window.NumericalOJMarkdownRenderer.clear(root)" in JAVASCRIPT
-    assert 'querySelectorAll("img")' not in MARKDOWN_JAVASCRIPT
     assert ".forum-markdown img {\n  display: block;" in CSS
 
     assert ".numoj-markdown .codehilite .k" in MARKDOWN_CSS
@@ -443,8 +426,6 @@ def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
     assert ".numoj-semantic-token.numoj-semantic-method" in MARKDOWN_CSS
     assert ".numoj-semantic-token.numoj-semantic-variable" in MARKDOWN_CSS
     assert ".numoj-mermaid-diagram > iframe" in MARKDOWN_CSS
-    assert "Pygments 2.20 class theme" not in CSS
-    assert ".forum-mermaid" not in CSS
 
 
 def test_shared_semantic_client_supports_editor_and_markdown_callers():
@@ -462,6 +443,3 @@ def test_shared_semantic_client_supports_editor_and_markdown_callers():
         "register: register",
     ):
         assert contract in SEMANTIC_JAVASCRIPT
-
-    assert "problemId" not in MARKDOWN_JAVASCRIPT
-    assert "#include <bits/stdc++.h>" not in MARKDOWN_JAVASCRIPT

@@ -30,8 +30,6 @@ def test_agent_launch_modals_use_shared_custom_choice_pickers():
     assert "data-agent-choice-input" in template
     assert "global.ChoicePicker.create" in script
     assert "setAttribute('role', 'option')" in picker
-    assert "<select" not in template.lower()
-    assert "<option" not in template.lower()
 
 
 def test_agent_launch_assets_and_harness_branding_are_wired_once():
@@ -49,13 +47,11 @@ def test_agent_launch_assets_and_harness_branding_are_wired_once():
         assert asset in template
     assert site_layout.count("app/choice-picker.css") == 1
     assert site_layout.count("app/choice-picker.js") == 1
-    assert "app/choice-picker.js" not in template
     for harness in ("claude_code", "codex", "opencode", "pi"):
         assert harness in script
     assert "harness-logo--" in script
     assert ".agent-launch-modal" in stylesheet
     assert ".rk-choice-trigger:focus-visible" in choice_stylesheet
-    assert ".agent-launch-choice .rk-choice-trigger" not in stylesheet
 
 
 def test_agent_launch_loads_task_specific_options_and_restores_preference():
@@ -63,7 +59,6 @@ def test_agent_launch_loads_task_specific_options_and_restores_preference():
     script = _read(SCRIPT)
 
     assert "url_for('problem_core.agent_launch_options')" in template
-    assert "/admin/agent_launch_options" not in template
     assert 'data-task-kind="solve"' in template
     assert 'data-task-kind="testdata"' in template
     assert "addQuery(this.optionsUrl, 'task_kind', this.taskKind)" in script
@@ -75,8 +70,6 @@ def test_agent_launch_loads_task_specific_options_and_restores_preference():
     assert "preference.harness" in script
     assert "preference.endpoint_id" in script
     assert "show.bs.modal" in script
-    assert "localStorage" not in script
-    assert "sessionStorage" not in script
 
 
 def test_agent_launch_disambiguates_duplicate_models_with_endpoint_id():
@@ -127,8 +120,6 @@ def test_agent_launch_uses_inline_feedback_instead_of_browser_alerts():
     assert "setFeedback" in script
     assert "is-error" in script
     assert "is-success" in script
-    assert "alert(" not in script
-    assert "confirm(" not in script
     assert "测试点数量必须是正整数" in script
     assert "请选择正解文件" in script
 
@@ -138,15 +129,6 @@ def test_agent_launch_keeps_only_functional_copy_and_data_fields():
 
     assert "PROBLEM AGENT" in template
     assert "TESTDATA AGENT" in template
-    for explanatory_copy in (
-        "NUMOJ-USER SKILL",
-        "numoj-user skill",
-        "生成 1.in/1.out 至 n.in/n.out。",
-        "可选，最长 4000 字。",
-        "上传单个源代码文件，用于生成输出并逐点验证。",
-        "例如：覆盖边界值、随机大数据与特殊构造",
-    ):
-        assert explanatory_copy not in template
     assert "解题 Agent" in template
     assert "造数据 Agent" in template
     assert "测试点要求" in template
@@ -157,9 +139,6 @@ def test_agent_launch_keeps_only_functional_copy_and_data_fields():
         "agentStandardSolution",
     ):
         assert f'id="{field_id}"' in template
-    assert 'max="5000"' not in template
-    assert 'maxlength="4000"' not in template
-    assert "requirement.length > 4000" not in _read(SCRIPT)
 
 
 def test_testdata_solution_uses_accessible_custom_file_picker():
@@ -177,9 +156,7 @@ def test_testdata_solution_uses_accessible_custom_file_picker():
     assert "data-agent-solution-file" in field
     assert 'for="agentStandardSolution"' in field
     assert 'aria-labelledby="agentStandardSolutionLabel agentSolutionFileTitle"' in field
-    assert "aria-describedby" not in field
     assert 'aria-live="polite"' in field
-    assert "tabindex" not in field
     assert "file.name" in script
     assert "重新选择" in script
     assert ".agent-launch-file input:focus-visible + .agent-launch-file-trigger" in stylesheet

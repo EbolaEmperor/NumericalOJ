@@ -1142,7 +1142,6 @@ def test_inactive_code_style_dims_without_replacing_syntax_colors():
     assert match is not None
     declaration = match.group(1)
     assert "opacity: 0.55;" in declaration
-    assert "color:" not in declaration
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")

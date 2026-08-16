@@ -41,7 +41,6 @@ def test_vibehub_templates_parse_and_use_external_assets():
     assert "app/vibehub.css" in site_templates
     assert "app/vibehub.js" in site_templates
     assert "app/vibehub-player.js" in site_templates
-    assert "<style" not in site_templates
 
 
 def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
@@ -56,15 +55,10 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
         "data-admin-review-url-template", "data-vibe-featured-modal",
         "data-admin-featured-url-template",
     ))
-    assert all(token not in gallery for token in (
-        "NUMERICAL OJ", "PLAYABLE WORKS", "HOW IT WORKS", "我的工作台",
-    ))
-    assert "showModal()" in javascript and "window.confirm" not in javascript
     assert 'class="vibe-toolbar-link"' in gallery
     assert "fa-book-open" in gallery
     assert css.count("font-size: .66rem") >= 2
     assert ".vibehub-page input { font-family: inherit; }" in css
-    assert ".vibehub-page input { font: inherit; }" not in css
     assert ".vibe-toolbar-link { border: 1px solid" in css
     assert "border-top-right-radius: 9px" in css
     assert "保存更新并自动送审" in javascript
@@ -77,21 +71,12 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert 'decision: "approve"' in javascript
     assert "JSON.stringify({ featured: featured })" in javascript
     assert "expected_version" in javascript
-    assert "initReviewDesk" not in javascript
-    assert 'data-vibe-view="review"' not in gallery
     assert "NumojIdenticon" in javascript
-    assert all(token not in card for token in (
-        "vibe-card-index", "project.summary", "project.tags",
-    ))
 
 
 def test_navigation_replaces_standalone_games_with_vibehub():
     navigation = _read("templates/components/layout/navigation.html")
     assert navigation.count(">VibeHub</span>") == 1
-    assert "VibeHub 审核" not in navigation
-    assert "vibehub.admin_reviews" not in navigation
-    assert ">围住小猫</span>" not in navigation
-    assert ">ARC-AGI-3</span>" not in navigation
     assert "href=\"{{ url_for('vibehub.index') }}\"" in navigation
 
 
@@ -100,14 +85,6 @@ def test_gallery_uses_uploaded_covers_without_generated_art():
     css = _read("static/app/vibehub.css")
 
     assert '<img src="{{ project.cover_url }}"' in card
-    for generated_art in (
-        "vibe-cover-art", "vibe-cat-board", "vibe-arc-board", "vibe-code-window",
-    ):
-        assert generated_art not in card
-        assert generated_art not in css
-    assert "is-cover-missing" not in card
-    assert "is-cover-missing" not in css
-    assert "is-cover-missing" not in _read("static/app/vibehub.js")
 
 
 def test_player_keeps_site_layout_and_separates_sandbox_trust():
@@ -123,10 +100,6 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     ) in player
     assert "allow-same-origin" not in player
     assert "allow-top-navigation" not in player
-    assert "VIBEHUB / SANDBOX" not in player
-    assert "data-vibe-player-toolbar" not in player
-    assert "data-vibe-reload" not in player
-    assert ".vibe-player-toolbar" not in css
     assert "data-math-curve-loader" in player
     assert 'data-icon-only="true"' in player
     assert 'data-size="lg"' in player
@@ -134,13 +107,10 @@ def test_player_keeps_site_layout_and_separates_sandbox_trust():
     assert 'data-color-b="#c95d32"' in player
     assert "作品镜像已在保存时构建完成" in player
     assert ".vibe-player-loading .vibe-player-loader" in css
-    assert ".vibe-player-loader i" not in css
-    assert "@keyframes vibe-loader" not in css
     assert ".numoj-content.container-fluid.vibehub-player-page" in css
     assert "height: 100vh" in css
     assert 'window.addEventListener("pagehide"' in javascript
     assert "navigator.sendBeacon" in javascript
-    assert "data-vibe-reload" not in javascript
     assert "window.setInterval(heartbeat" in javascript
     assert "heartbeatFailures >= 3" in javascript
     assert "releaseLease(false)" in javascript

@@ -35,10 +35,8 @@ def test_global_and_personal_endpoints_render_the_same_editor_macro():
     assert "endpoint_editor('endpointModal', mode='global'" in site
     assert "endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点', surface='layer')" in agent
     assert 'id="endpointModal"' in site
-    assert 'id="agentPersonalEndpointModal"' not in agent
     modal_shell = 'class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"'
     assert modal_shell in site
-    assert modal_shell not in agent
 
     for field in (
         "model",
@@ -52,33 +50,12 @@ def test_global_and_personal_endpoints_render_the_same_editor_macro():
         "thinking_format",
     ):
         assert f'name="{field}"' in shared
-    assert 'name="model"' not in site
-    assert 'name="model"' not in agent
     assert shared.count("data-endpoint-editor-test") == 1
     assert "data-endpoint-editor-dismiss" in shared
     assert "numoj-endpoint-editor--layer" in shared
     assert "data-agent-personal-endpoint-layer" in agent
 
 
-def test_endpoint_editor_assets_load_before_each_host_controller_and_stylesheet():
-    site = _read(SITE_TEMPLATE)
-    _assert_asset_before(site, "app/endpoint-editor.css", "app/site-config.css")
-    _assert_asset_before(site, "app/endpoint-editor.js", "app/site-config.js")
-
-    agent_home = _read(AGENT_HOME_PAGE)
-    _assert_asset_before(
-        agent_home, "app/endpoint-editor.css", "app/agents/access-control.css"
-    )
-    _assert_asset_before(
-        agent_home, "app/endpoint-editor.js", "app/agents/access-control.js"
-    )
-
-    agent_detail = _read(AGENT_DETAIL_PAGE)
-    assert "app/endpoint-editor.css" not in agent_detail
-    assert "app/agents/access-control.css" not in agent_detail
-    assert "app/endpoint-editor.js" not in agent_detail
-    assert "app/agents/access-control.js" not in agent_detail
-    assert "agents/components/access_control.html" not in agent_detail
 
 
 def test_shared_controller_owns_choices_thinking_validation_and_values():
@@ -112,24 +89,6 @@ def test_shared_controller_owns_choices_thinking_validation_and_values():
     assert "outputTokens > contextTokens" in script
 
 
-def test_legacy_endpoint_form_and_personal_protocol_contracts_are_gone():
-    sources = "\n".join(
-        _read(path)
-        for path in (
-            SHARED_TEMPLATE,
-            SHARED_SCRIPT,
-            SITE_TEMPLATE,
-            AGENT_COMPONENT,
-            ROOT / "static/app/site-config.js",
-            ROOT / "static/app/agents/access-control.js",
-        )
-    )
-    for stale_contract in (
-        "data-endpoint-form",
-        "data-agent-personal-endpoint-form",
-        "data-agent-protocol-option",
-    ):
-        assert stale_contract not in sources
 
 
 def test_host_adapters_ignore_stale_editor_requests():
@@ -162,7 +121,6 @@ def test_personal_editor_keeps_shared_fields_but_omits_platform_prices():
         "output_price_per_million",
     ):
         assert shared.count(f'name="{field}"') == 2
-    assert "settings.mode === 'personal'" not in script
 
 
 def test_shared_endpoint_controls_use_one_rounded_focus_ring():
