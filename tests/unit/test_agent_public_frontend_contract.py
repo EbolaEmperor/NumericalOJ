@@ -101,6 +101,8 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
         assert f'data-agent-user-panel="{tab_name}"' in template
     assert 'data-agent-admin-tab="personal"' in template
     assert 'data-agent-admin-panel="personal"' in template
+    assert 'grid-template-columns: repeat(3, minmax(0, 1fr));' in styles
+    assert '[data-agent-admin-panel="personal"]' in styles
     assert 'role="tablist"' in template
     assert "data-agent-personal-endpoint-layer" in template
     assert "agent-access-layer--endpoint" in template

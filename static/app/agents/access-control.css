@@ -353,7 +353,7 @@
 
 .agent-access-admin-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 3px;
   padding: 9px 24px;
   border-bottom: 1px solid var(--agent-access-line);
@@ -595,7 +595,8 @@
 }
 
 [data-agent-user-panel="prices"],
-[data-agent-user-panel="personal"] {
+[data-agent-user-panel="personal"],
+[data-agent-admin-panel="personal"] {
   min-height: min(54vh, 560px);
   padding: 24px;
 }
@@ -1057,7 +1058,8 @@
   .agent-access-user-tabs button { min-height: 42px; padding: 6px; }
   .agent-access-user-tabs button i { display: none; }
   [data-agent-user-panel="prices"],
-  [data-agent-user-panel="personal"] { padding: 18px 17px; }
+  [data-agent-user-panel="personal"],
+  [data-agent-admin-panel="personal"] { padding: 18px 17px; }
   .agent-access-panel-intro,
   .agent-personal-endpoints-heading { gap: 12px; }
   .agent-personal-endpoints-heading { align-items: center; }
