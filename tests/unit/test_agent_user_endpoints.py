@@ -127,11 +127,6 @@ def test_personal_endpoint_test_issues_scoped_one_time_grant(monkeypatch):
 
     monkeypatch.setattr(user_endpoints, "get_db_connection", Connection)
     monkeypatch.setattr(
-        user_endpoints,
-        "resolve_public_endpoint_url",
-        lambda _url: object(),
-    )
-    monkeypatch.setattr(
         user_endpoints.secrets,
         "token_urlsafe",
         lambda _length: "personal-test-token",
@@ -141,7 +136,7 @@ def test_personal_endpoint_test_issues_scoped_one_time_grant(monkeypatch):
         {
             "protocol": "openai",
             "category": "text",
-            "base_url": "https://example.test/v1",
+            "base_url": "http://127.0.0.1:9000/v1",
             "api_key": "secret",
             "model": "private-model",
             "thinking_enabled": False,
@@ -230,11 +225,6 @@ def test_personal_endpoint_create_persists_category_without_prices(monkeypatch):
             return None
 
     monkeypatch.setattr(user_endpoints, "get_db_connection", Connection)
-    monkeypatch.setattr(
-        user_endpoints,
-        "resolve_public_endpoint_url",
-        lambda _url: object(),
-    )
     monkeypatch.setattr(
         user_endpoints,
         "get_user_agent_endpoint",

@@ -112,37 +112,22 @@ def test_local_container_alias_is_only_rewritten_for_host_upstream():
     assert upstream.connect_host == ""
 
 
-def test_personal_upstream_rejects_private_target_but_global_keeps_compatibility():
-    global_upstream = relay._normalize_upstream_base_url(
+def test_personal_upstream_allows_private_target():
+    upstream = relay._normalize_upstream_base_url(
         "http://127.0.0.1:9000/v1"
     )
 
-    assert global_upstream.host == "127.0.0.1"
-    with pytest.raises(relay.AgentSecretRelayError, match="公网地址"):
-        relay._normalize_upstream_base_url(
-            "http://127.0.0.1:9000/v1",
-            require_public_address=True,
-        )
+    assert upstream.host == "127.0.0.1"
+    assert upstream.connect_host == ""
 
 
-def test_personal_upstream_freezes_resolved_ip_for_the_relay_lifetime(
-    monkeypatch,
-):
-    resolved = []
-
-    def resolve(host, port):
-        resolved.append((host, port))
-        return "93.184.216.34"
-
-    monkeypatch.setattr(relay, "resolve_public_host", resolve)
+def test_personal_upstream_keeps_hostname_for_runtime_resolution():
     upstream = relay._normalize_upstream_base_url(
         "https://API.Example.Test:8443/tenant/v1",
-        require_public_address=True,
     )
 
-    assert resolved == [("api.example.test", 8443)]
     assert upstream.host == "api.example.test"
-    assert upstream.connect_host == "93.184.216.34"
+    assert upstream.connect_host == ""
     assert upstream.origin_url == "https://api.example.test:8443"
 
 
@@ -177,17 +162,8 @@ def test_pinned_https_connection_dials_ip_but_keeps_hostname_for_sni():
     assert any(call[:2] == ("sni", "api.example.test") for call in calls)
 
 
-def test_personal_endpoint_source_enables_runtime_public_address_policy(
-    monkeypatch,
-):
-    resolved = []
+def test_personal_endpoint_source_allows_private_runtime_target(monkeypatch):
     started = []
-
-    monkeypatch.setattr(
-        relay,
-        "resolve_public_host",
-        lambda host, port: resolved.append((host, port)) or "93.184.216.34",
-    )
 
     def fake_start(instance):
         started.append(instance)
@@ -201,13 +177,13 @@ def test_personal_endpoint_source_enables_runtime_public_address_policy(
     with relay.run_agent_secret_relays({
         "source": "user",
         "protocol": "openai",
-        "base_url": "https://api.example.test/v1",
+        "base_url": "http://127.0.0.1:9000/v1",
         "api_key": "private-key",
     }):
         pass
 
-    assert resolved == [("api.example.test", 443)]
-    assert started[0].upstream.connect_host == "93.184.216.34"
+    assert started[0].upstream.host == "127.0.0.1"
+    assert started[0].upstream.connect_host == ""
 
 
 def test_each_relay_has_an_independent_high_entropy_temporary_credential():
