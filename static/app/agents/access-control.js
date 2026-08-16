@@ -668,7 +668,9 @@
 
     if (modalNode) modalNode.addEventListener('show.bs.modal', function () {
       if (isAdmin) {
-        loadReviews().catch(function (error) {
+        Promise.allSettled([loadReviews(), loadPersonalEndpoints()]).then(function (results) {
+          var error = results[0] && results[0].status === 'rejected' ? results[0].reason : null;
+          if (!error) return;
           var list = root.querySelector('[data-agent-review-list]');
           if (list) list.innerHTML = '<div class="agent-access-empty">' + escapeHtml(error.message) + '</div>';
         });
@@ -1092,7 +1094,9 @@
       summary: function () { return Object.assign({}, summary); },
       load: function () {
         if (loaded) return Promise.resolve();
-        return isAdmin ? loadReviews() : Promise.all([loadSummary(), loadPrices(), loadPersonalEndpoints()]);
+        return isAdmin
+          ? Promise.all([loadReviews(), loadPersonalEndpoints()])
+          : Promise.all([loadSummary(), loadPrices(), loadPersonalEndpoints()]);
       }
     };
   }

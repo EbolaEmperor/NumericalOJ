@@ -50,6 +50,8 @@
                     aria-controls="agentReviewPanel" data-agent-admin-tab="reviews" aria-selected="true">申请审核</button>
             <button id="agentGrantTab" type="button" role="tab" tabindex="-1"
                     aria-controls="agentGrantPanel" data-agent-admin-tab="grants" aria-selected="false">批量赠送</button>
+            <button id="agentPersonalTab" type="button" role="tab" tabindex="-1"
+                    aria-controls="agentPersonalPanel" data-agent-admin-tab="personal" aria-selected="false">自定义端点</button>
           </nav>
           <section id="agentReviewPanel" role="tabpanel" aria-labelledby="agentReviewTab" data-agent-admin-panel="reviews">
             <div class="agent-access-review-summary">
@@ -113,6 +115,17 @@
               <button type="submit" data-agent-class-grant-submit disabled>确认赠送</button>
             </form>
             <p class="agent-access-feedback" data-agent-class-grant-feedback role="status" aria-live="polite" hidden></p>
+          </section>
+          <section id="agentPersonalPanel" class="agent-personal-endpoints" role="tabpanel"
+                   aria-labelledby="agentPersonalTab" data-agent-admin-panel="personal" hidden>
+            <header class="agent-personal-endpoints-heading">
+              <div><span>BRING YOUR OWN KEY</span><h3>自定义端点</h3><p>自有端点使用你的 API 密钥，不消耗平台额度。</p></div>
+              <button class="agent-access-secondary is-strong" type="button" data-agent-personal-endpoint-create>
+                <i class="fas fa-plus" aria-hidden="true"></i>新建端点
+              </button>
+            </header>
+            <div class="agent-personal-endpoint-list" data-agent-personal-endpoint-list></div>
+            <p class="agent-access-feedback" data-agent-personal-endpoint-feedback role="status" aria-live="polite" hidden></p>
           </section>
         {% else %}
           <nav class="agent-access-user-tabs" role="tablist" aria-label="Agent 额度与端点" data-agent-user-tabs>
@@ -199,7 +212,6 @@
         {% endif %}
         </div>
 
-        {% if not access_is_admin %}
         <section class="agent-access-layer agent-access-layer--endpoint" data-agent-personal-endpoint-layer hidden
                  role="dialog" aria-modal="true" aria-labelledby="agentPersonalEndpoint-title">
           <button class="agent-access-layer-scrim" type="button" tabindex="-1"
@@ -224,7 +236,6 @@
             </footer>
           </div>
         </section>
-        {% endif %}
       </div>
     </div>
   </div>
