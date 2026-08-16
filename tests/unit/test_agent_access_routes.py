@@ -6,7 +6,7 @@ from oj_modules.routes import agent_access_routes as routes
 from oj_modules.security import auth
 
 
-def _app(monkeypatch, user):
+def _app(monkeypatch, user, *, concurrency_runtime_applier=None):
     app = Flask(__name__)
     app.secret_key = "test"
     app.register_blueprint(
@@ -15,7 +15,8 @@ def _app(monkeypatch, user):
                 "passed": True,
                 "message": "ok",
                 "latency_ms": 1,
-            }
+            },
+            concurrency_runtime_applier=concurrency_runtime_applier,
         )
     )
     monkeypatch.setattr(auth, "current_user", lambda: user)
@@ -180,3 +181,146 @@ def test_personal_endpoint_test_uses_same_user_scoped_payload(monkeypatch):
     assert response.get_json()["expires_in_seconds"] == 600
     assert seen[0][1:3] == (7, 12)
     assert seen[0][0]["category"] == "text"
+
+
+def test_admin_can_read_and_update_agent_concurrency_limit(monkeypatch):
+    saved = []
+    applied = []
+    monkeypatch.setattr(
+        routes.runtime_settings,
+        "get_agent_concurrency_limit",
+        lambda: 8,
+    )
+    monkeypatch.setattr(
+        routes.runtime_settings,
+        "set_agent_concurrency_limit",
+        lambda limit: saved.append(limit) or int(limit),
+    )
+    app = _app(
+        monkeypatch,
+        {"id": 1, "username": "admin", "is_admin": 1},
+        concurrency_runtime_applier=lambda limit: applied.append(limit) or True,
+    )
+    client = app.test_client()
+
+    read = client.get("/api/admin/dynamic-config/agent-concurrency")
+    updated = client.put(
+        "/api/admin/dynamic-config/agent-concurrency",
+        json={"limit": 24},
+    )
+
+    assert read.status_code == 200
+    assert read.get_json() == {"success": True, "limit": 8}
+    assert updated.status_code == 200
+    assert updated.get_json() == {
+        "success": True,
+        "limit": 24,
+        "applied": True,
+    }
+    assert saved == [24]
+    assert applied == [24]
+
+
+def test_agent_concurrency_runtime_apply_failure_does_not_undo_saved_limit(
+    monkeypatch,
+):
+    saved = []
+
+    def fail_to_apply(_limit):
+        raise RuntimeError("worker control unavailable")
+
+    monkeypatch.setattr(
+        routes.runtime_settings,
+        "set_agent_concurrency_limit",
+        lambda limit: saved.append(limit) or int(limit),
+    )
+    app = _app(
+        monkeypatch,
+        {"id": 1, "username": "admin", "is_admin": 1},
+        concurrency_runtime_applier=fail_to_apply,
+    )
+
+    response = app.test_client().put(
+        "/api/admin/dynamic-config/agent-concurrency",
+        json={"limit": 32},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "limit": 32,
+        "applied": False,
+    }
+    assert saved == [32]
+
+
+def test_agent_concurrency_runtime_apply_requires_explicit_success(monkeypatch):
+    applied = []
+    monkeypatch.setattr(
+        routes.runtime_settings,
+        "set_agent_concurrency_limit",
+        lambda limit: int(limit),
+    )
+    app = _app(
+        monkeypatch,
+        {"id": 1, "username": "admin", "is_admin": 1},
+        concurrency_runtime_applier=lambda limit: applied.append(limit),
+    )
+
+    response = app.test_client().put(
+        "/api/admin/dynamic-config/agent-concurrency",
+        json={"limit": 16},
+    )
+
+    assert response.get_json()["applied"] is False
+    assert applied == [16]
+
+
+def test_agent_concurrency_runtime_applier_can_be_configured_after_blueprint_creation(
+    monkeypatch,
+):
+    applied = []
+    monkeypatch.setattr(
+        routes.runtime_settings,
+        "set_agent_concurrency_limit",
+        lambda limit: int(limit),
+    )
+    routes.configure_agent_concurrency_runtime_applier(
+        lambda limit: applied.append(limit) or True
+    )
+    try:
+        app = _app(
+            monkeypatch,
+            {"id": 1, "username": "admin", "is_admin": 1},
+        )
+        response = app.test_client().put(
+            "/api/admin/dynamic-config/agent-concurrency",
+            json={"limit": 12},
+        )
+    finally:
+        routes.configure_agent_concurrency_runtime_applier(None)
+
+    assert response.get_json()["applied"] is True
+    assert applied == [12]
+
+
+def test_agent_concurrency_limit_validation_is_exposed_as_bad_request(monkeypatch):
+    app = _app(
+        monkeypatch,
+        {"id": 1, "username": "admin", "is_admin": 1},
+    )
+    monkeypatch.setattr(
+        routes.runtime_settings,
+        "get_db_connection",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("invalid value must not reach DB")
+        ),
+    )
+
+    response = app.test_client().put(
+        "/api/admin/dynamic-config/agent-concurrency",
+        json={"limit": 101},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "agent_runtime_settings_validation_error"

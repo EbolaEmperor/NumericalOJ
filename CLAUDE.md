@@ -19,7 +19,7 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modul
 系统由 Flask Web、Celery worker、MySQL、Redis 和 Docker 组成。Celery 队列职责固定为：
 
 - `celery`：普通判题、作业、检测和索引等常规任务；
-- `agent`：通用 Agent 等长任务，单 worker 串行消费；
+- `agent`：通用 Agent 等长任务，单 worker 按全站设置动态伸缩（默认 8，最高 100）；
 - `judge`：打榜赛 Agent-as-Judge 和反向评测。
 
 普通判题调用链为 `tasks/evaluate_tasks.py -> judging/core.py -> judging/sandbox.py -> Docker`。

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Agent 额度、自有端点与全站开放开关 JSON API。"""
+"""Agent 额度、自有端点与全站运行设置 JSON API。"""
 
 from __future__ import annotations
 
@@ -10,9 +10,22 @@ from functools import wraps
 from flask import Blueprint, current_app, jsonify, request
 
 from oj_modules.agents import quota
+from oj_modules.agents import runtime_settings
 from oj_modules.agents import user_endpoints
 from oj_modules.security.auth import admin_required, current_user, is_admin, login_required
 from oj_modules.site_config import services as config_service
+
+
+_agent_concurrency_runtime_applier = None
+
+
+def configure_agent_concurrency_runtime_applier(applier):
+    """配置保存并发上限后的即时应用回调。"""
+
+    if applier is not None and not callable(applier):
+        raise TypeError("Agent 并发运行时应用器必须可调用")
+    global _agent_concurrency_runtime_applier
+    _agent_concurrency_runtime_applier = applier
 
 
 def _json_body():
@@ -36,6 +49,12 @@ def _api_errors(view):
             if isinstance(exc, quota.AgentQuotaAccessDeniedError):
                 payload["decision"] = exc.decision
             return jsonify(payload), exc.status_code
+        except runtime_settings.AgentRuntimeSettingsError as exc:
+            return jsonify(
+                success=False,
+                message=str(exc),
+                code=exc.code,
+            ), exc.status_code
         except config_service.DynamicConfigTestFailedError as exc:
             payload = {"success": False, "message": str(exc)}
             if exc.result is not None:
@@ -75,9 +94,32 @@ def _priced_global_endpoints():
     return result
 
 
-def create_agent_access_blueprint(*, endpoint_tester=None):
+def create_agent_access_blueprint(
+    *,
+    endpoint_tester=None,
+    concurrency_runtime_applier=None,
+):
     blueprint = Blueprint("agent_access", __name__)
     tester = endpoint_tester or user_endpoints.test_user_agent_endpoint
+
+    if concurrency_runtime_applier is not None and not callable(
+        concurrency_runtime_applier
+    ):
+        raise TypeError("Agent 并发运行时应用器必须可调用")
+
+    def apply_concurrency_limit(limit):
+        applier = (
+            concurrency_runtime_applier
+            if concurrency_runtime_applier is not None
+            else _agent_concurrency_runtime_applier
+        )
+        if applier is None:
+            return False
+        try:
+            return bool(applier(limit))
+        except Exception:
+            current_app.logger.exception("Agent 并发上限已保存，但未能即时应用")
+            return False
 
     @blueprint.get("/api/agent/quota")
     @login_required
@@ -240,10 +282,32 @@ def create_agent_access_blueprint(*, endpoint_tester=None):
         enabled = quota.set_agent_public_enabled(payload.get("enabled"))
         return jsonify(success=True, enabled=enabled)
 
+    @blueprint.get("/api/admin/dynamic-config/agent-concurrency")
+    @admin_required
+    @_api_errors
+    def agent_concurrency_get():
+        return jsonify(
+            success=True,
+            limit=runtime_settings.get_agent_concurrency_limit(),
+        )
+
+    @blueprint.put("/api/admin/dynamic-config/agent-concurrency")
+    @admin_required
+    @_api_errors
+    def agent_concurrency_update():
+        payload = _json_body()
+        limit = runtime_settings.set_agent_concurrency_limit(payload.get("limit"))
+        applied = apply_concurrency_limit(limit)
+        return jsonify(success=True, limit=limit, applied=applied)
+
     return blueprint
 
 
 agent_access_bp = create_agent_access_blueprint()
 
 
-__all__ = ["agent_access_bp", "create_agent_access_blueprint"]
+__all__ = [
+    "agent_access_bp",
+    "configure_agent_concurrency_runtime_applier",
+    "create_agent_access_blueprint",
+]

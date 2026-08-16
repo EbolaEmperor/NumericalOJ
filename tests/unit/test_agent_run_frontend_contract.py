@@ -51,6 +51,11 @@ def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     assert "app/ranking/content-v2.css" not in template
     assert "new FormData(form)" in controller
     assert "payload.detail_url" in controller
+    assert 'aria-keyshortcuts="Enter Shift+Enter Control+Enter Meta+Enter"' in template
+    assert "event.key !== 'Enter' || event.isComposing || event.keyCode === 229" in controller
+    assert "if (event.shiftKey) return;" in controller
+    assert "if (submit.disabled) return;" in controller
+    assert "form.requestSubmit(submit)" in controller
     assert ".numoj-content.container-fluid.agent-home-shell" in styles
     assert ".agent-composer" in styles
     assert ".agent-history-row" in styles
@@ -288,6 +293,10 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert ".agent-context-meter:hover .agent-context-tooltip" in styles
     assert ".agent-context-meter:focus-visible .agent-context-tooltip" in styles
     assert ".agent-resume-runtime > .agent-resume-effort" in styles
+    runtime_icon = _css_rule(styles, ".agent-resume-runtime > span > i {")
+    assert "display: inline-flex;" in runtime_icon
+    assert "align-items: center;" in runtime_icon
+    assert "justify-content: center;" in runtime_icon
     mobile = styles.split("@media (max-width: 575.98px)", 1)[1].split(
         "@media (hover: none)", 1
     )[0]
@@ -397,7 +406,7 @@ def test_agent_detail_defers_folded_trace_until_first_expand():
     assert "details.dataset.agentLazyLoaded = 'true';" in controller
 
 
-def test_agent_detail_supports_durable_queue_and_soft_steering_controls():
+def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
     styles = _read("static/app/agents/conversation.css")
@@ -415,15 +424,20 @@ def test_agent_detail_supports_durable_queue_and_soft_steering_controls():
     assert "data-agent-queue-panel" in template
     assert "data-agent-queue-list" in template
     assert "data-agent-queue-resume" in template
-    assert 'name="delivery_mode" value="steer"' in template
-    assert "data-agent-resume-steer" in template
-    assert "中途插话：在当前动作结束后转向" in template
+    assert 'name="delivery_mode" value="steer"' not in template
+    assert "data-agent-resume-steer" not in template
+    assert "中途插话：在当前动作结束后转向" not in template
+    assert '{% if is_running %}hidden{% endif %}' in template
+    assert 'aria-label="停止任务" title="停止任务"' in template
     assert "{% if is_running or is_blocked %}disabled{% endif %}" not in template
 
-    assert "submitIntent = submitter === steerButton" in controller
-    assert "(running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn'" in controller
+    assert "var computedDeliveryMode = submitIntent === 'steer'" in controller
+    assert "((running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn')" in controller
     assert "body.set('delivery_mode', deliveryMode)" in controller
-    assert "body.set('expected_task_id', resumeExpectedTaskId)" in controller
+    assert "resumeSend.hidden = running && (!hasMessage || stopPending);" in controller
+    assert "stopButton.hidden = !running || (hasMessage && !stopPending);" in controller
+    assert "安排下一条消息…" in controller
+    assert "安排下一条消息，或使用插话…" not in controller
     assert "function renderMessageQueue(state)" in controller
     assert "function renderSteerMessages(state)" in controller
     assert "message.target_task_id || message.task_id" in controller
@@ -439,12 +453,18 @@ def test_agent_detail_supports_durable_queue_and_soft_steering_controls():
     assert "source.dataset.deliveryStatus !== 'queued'" in controller
     assert "new global.EventSource(endpoint)" in controller
     assert "transitionToTask(taskId, state)" in controller
-    assert "actualMode === 'steer'" in controller
-    assert "插话已接收，将在当前动作结束后生效。" in controller
+    assert 'aria-keyshortcuts="Enter Shift+Enter Control+Enter Meta+Enter"' in template
+    assert "event.key !== 'Enter' || event.isComposing || event.keyCode === 229" in controller
+    assert "if (event.shiftKey) return;" in controller
+    assert "var wantsSteer = running && (event.metaKey || event.ctrlKey);" in controller
+    assert "resumeSubmitIntent = wantsSteer ? 'steer' : 'send';" in controller
+    assert "var submitIntent = resumeSubmitIntent === 'steer' ? 'steer' : 'send';" in controller
+    assert "steerButton" not in controller
 
     assert ".agent-message-queue" in styles
     assert ".agent-queue-item" in styles
-    assert ".agent-resume-steer" in styles
+    assert ".agent-resume-steer" not in styles
+    assert ".agent-resume-send[hidden] { display: none; }" in styles
     assert ".agent-steer-message" in styles
     assert ".agent-queue-mobile-move { display: grid; }" in styles
 
@@ -534,11 +554,12 @@ def test_agent_detail_keeps_idempotency_and_task_transitions_bound_to_one_turn()
     assert "function newClientMessageId(prefix)" in controller
     assert "resumeDeliveryMode = computedDeliveryMode;" in controller
     assert "resumeExpectedTaskId = computedDeliveryMode === 'steer'" in controller
+    assert "body.set('expected_task_id', resumeExpectedTaskId)" in controller
     assert "var deliveryMode = resumeDeliveryMode || computedDeliveryMode;" in controller
     dispatch_start = controller.index("function dispatchAgentTurn(options)")
     optimistic_turn = controller.index("appendOptimisticUserMessage(", dispatch_start)
     turn_pending_reset = controller.index(
-        "setResumePending(false, requestedMode)", optimistic_turn
+        "setResumePending(false)", optimistic_turn
     )
     assert "clearResumeComposer();" in controller[optimistic_turn:turn_pending_reset]
     assert "function resetResumeAttempt()" in controller
