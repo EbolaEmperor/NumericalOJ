@@ -153,6 +153,9 @@ def test_agent_home_reasoning_effort_is_dynamic_and_part_of_submission_identity(
     assert "global.ChoicePicker.configure(" in controller
     assert "reasoningEffortController.setDisabled(" in controller
     assert "selectedReasoningEffort()," in controller
+    assert "agent-effort-logo agent-effort-logo--choice" in template
+    assert "agent-effort-logo agent-effort-logo--choice" in controller
+    assert "reasoning-depth.svg" in styles
     assert ".agent-composer-choice[hidden] { display: none; }" in styles
 
 
