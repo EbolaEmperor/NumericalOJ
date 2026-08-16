@@ -167,6 +167,7 @@ def _call_llm_text(
     timeout=300,
     system_prompt=None,
     on_delta=None,
+    on_reasoning_delta=None,
 ):
     result = call_text(
         endpoint,
@@ -174,6 +175,7 @@ def _call_llm_text(
         system_prompt=system_prompt,
         timeout=timeout,
         on_text_delta=_safe_delta_callback(on_delta),
+        on_reasoning_delta=_safe_delta_callback(on_reasoning_delta),
     )
     text = str(result.text or "").strip()
     if not text:
@@ -189,6 +191,7 @@ def _call_llm_vision(
     timeout=300,
     system_prompt=None,
     on_delta=None,
+    on_reasoning_delta=None,
 ):
     result = call_vision(
         endpoint,
@@ -197,6 +200,7 @@ def _call_llm_vision(
         system_prompt=system_prompt,
         timeout=timeout,
         on_text_delta=_safe_delta_callback(on_delta),
+        on_reasoning_delta=_safe_delta_callback(on_reasoning_delta),
     )
     text = str(result.text or "").strip()
     if not text:

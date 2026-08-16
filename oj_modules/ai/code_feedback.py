@@ -317,6 +317,8 @@ def generate_ai_code_marks_from_submission_context(
     endpoint_id=None,
     image_endpoint=None,
     image_endpoint_id=None,
+    on_text_delta=None,
+    on_reasoning_delta=None,
 ):
     problem_text = str(problem_content or "").strip()
     code_text = str(user_code or "").replace('\r\n', '\n').replace('\r', '\n')
@@ -428,6 +430,8 @@ def generate_ai_code_marks_from_submission_context(
         prompt,
         use_endpoint,
         timeout=timeout,
+        on_delta=on_text_delta,
+        on_reasoning_delta=on_reasoning_delta,
     )
     data_obj = _extract_first_json_object(response_text)
     if not isinstance(data_obj, dict):

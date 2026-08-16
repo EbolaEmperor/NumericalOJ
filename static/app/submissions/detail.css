@@ -748,6 +748,74 @@
   color: var(--submission-success);
 }
 
+.submission-ai-cot {
+  margin-top: 10px;
+  border: 1px solid var(--submission-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--submission-paper-soft) 76%, transparent);
+  color: var(--submission-ink-3);
+}
+
+.submission-ai-cot summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+  letter-spacing: .02em;
+}
+
+.submission-ai-cot summary::-webkit-details-marker {
+  display: none;
+}
+
+.submission-ai-cot summary::after {
+  flex: 0 0 auto;
+  color: var(--submission-ink-3);
+  content: "＋";
+  font-size: 14px;
+  line-height: 1;
+}
+
+.submission-ai-cot[open] summary::after {
+  content: "－";
+}
+
+.submission-ai-cot summary > span:first-child {
+  color: var(--submission-ink-2);
+}
+
+.submission-ai-cot summary i {
+  margin-right: 5px;
+  color: var(--submission-accent, #b7654c);
+}
+
+.submission-ai-cot-hint {
+  margin-left: auto;
+  color: var(--submission-ink-3);
+  font-size: 10px;
+}
+
+.submission-ai-cot-text {
+  max-height: 220px;
+  margin: 0;
+  padding: 0 11px 11px;
+  overflow: auto;
+  color: var(--submission-ink-3);
+  font-family: var(--submission-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.submission-ai-cot.is-streaming {
+  border-color: color-mix(in srgb, var(--submission-accent, #b7654c) 35%, var(--submission-line));
+}
+
 .submission-written-comment {
   min-height: 220px;
   padding: 14px;

@@ -490,12 +490,20 @@ def test_openai_stream_parsing_and_delta_callback(monkeypatch):
     )
     calls = install_post(monkeypatch, response)
     deltas = []
+    reasoning_deltas = []
 
-    result = adapter.call_text(endpoint(), "go", stream=True, on_text_delta=deltas.append)
+    result = adapter.call_text(
+        endpoint(),
+        "go",
+        stream=True,
+        on_text_delta=deltas.append,
+        on_reasoning_delta=reasoning_deltas.append,
+    )
 
     assert calls[0][1]["stream"] is True
     assert calls[0][1]["json"]["stream"] is True
     assert deltas == ["你", "好"]
+    assert reasoning_deltas == ["想", "完"]
     assert result.text == "你好"
     assert result.reasoning == "想完"
     assert result.tool_calls == (
@@ -544,15 +552,18 @@ def test_anthropic_stream_parsing_and_delta_callback(monkeypatch):
     response = FakeResponse(content_type="text/event-stream", lines=lines)
     install_post(monkeypatch, response)
     deltas = []
+    reasoning_deltas = []
 
     result = adapter.call_text(
         endpoint(protocol="anthropic"),
         "go",
         stream=True,
         on_text_delta=deltas.append,
+        on_reasoning_delta=reasoning_deltas.append,
     )
 
     assert deltas == ["你", "好"]
+    assert reasoning_deltas == ["先", "想"]
     assert result.text == "你好"
     assert result.reasoning == "先想"
     assert result.tool_calls == (
@@ -561,6 +572,23 @@ def test_anthropic_stream_parsing_and_delta_callback(monkeypatch):
     assert result.finish_reason == "tool_use"
     assert result.model == "a-model"
     assert result.usage == adapter.LLMUsage(6, 4, 10)
+
+
+def test_streaming_timeout_disables_read_deadline(monkeypatch):
+    response = FakeResponse(
+        content_type="text/event-stream",
+        lines=sse({"choices": [{"delta": {"content": "{}"}}]}),
+    )
+    calls = install_post(monkeypatch, response)
+
+    adapter.call_text(
+        endpoint(),
+        "go",
+        timeout=None,
+        on_text_delta=lambda _delta: None,
+    )
+
+    assert calls[0][1]["timeout"] == (30.0, None)
 
 
 def test_http_failure_and_probe_never_expose_api_key(monkeypatch):
