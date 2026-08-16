@@ -1080,9 +1080,10 @@
   flex: 0 0 auto;
 }
 
-.agent-resume-effort > i {
+.agent-resume-runtime > .agent-resume-effort > i {
   font-size: 10px;
   line-height: 1;
+  transform: translateY(1px);
 }
 
 .agent-context-meter {
