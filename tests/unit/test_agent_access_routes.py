@@ -140,6 +140,30 @@ def test_personal_endpoint_mutations_are_scoped_to_logged_in_user(monkeypatch):
     assert [item[3] for item in seen] == ["create-token", "update-token"]
 
 
+def test_admin_can_manage_own_personal_endpoints(monkeypatch):
+    app = _app(monkeypatch, {"id": 1, "username": "admin", "is_admin": 1})
+    seen = []
+
+    def save(payload, *, user_id, test_token, endpoint_id=None):
+        seen.append((payload, user_id, endpoint_id, test_token))
+        return {"id": endpoint_id or 12, "name": payload["name"]}
+
+    monkeypatch.setattr(routes.user_endpoints, "save_user_agent_endpoint", save)
+    client = app.test_client()
+    created = client.post(
+        "/api/agent/endpoints",
+        json={"name": "管理员自有节点", "test_token": "create-token"},
+    )
+    updated = client.put(
+        "/api/agent/endpoints/12",
+        json={"name": "管理员更新节点", "test_token": "update-token"},
+    )
+
+    assert created.status_code == 201
+    assert updated.status_code == 200
+    assert [(item[1], item[2]) for item in seen] == [(1, None), (1, 12)]
+
+
 def test_personal_endpoint_test_uses_same_user_scoped_payload(monkeypatch):
     app = _app(monkeypatch, {"id": 7, "username": "alice", "is_admin": 0})
     seen = []
