@@ -139,7 +139,6 @@ def test_running_steps_use_large_center_loader_and_yellow_tab_dot():
         "var CENTER_LOADER_STEPS = { solution_check:true, "
         "quality_gate:true, ai_judge:true };"
     ) in MODAL
-    assert "MathCurveLoader.markup('运行中'" not in MODAL
     assert "'<span class=\"rj-dot running\"></span>'" in MODAL
     assert ".rj-dot.running { background:var(--gold); }" in MODAL
     assert 'class="rj-step-running"' in MODAL

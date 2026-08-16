@@ -368,7 +368,7 @@
             <span class="agent-resume-model">{{ model_logo(composer_model) }}{{ composer_model }}</span>
             <span class="agent-resume-effort" data-agent-reasoning-effort
                   aria-label="推理等级：{{ '使用 Harness 原生默认' if reasoning_effort == 'default' else reasoning_effort_label }}">
-              <i class="fas fa-brain" aria-hidden="true"></i>{{ reasoning_effort_label }}
+              <span class="agent-effort-logo" aria-hidden="true"></span>{{ reasoning_effort_label }}
             </span>
             <button class="agent-context-meter" type="button"
                     data-agent-context-meter

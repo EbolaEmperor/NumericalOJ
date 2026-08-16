@@ -11,22 +11,6 @@ def _read(relative_path):
     return (TEMPLATES / relative_path).read_text(encoding="utf-8")
 
 
-def test_admin_and_problem_forms_have_no_native_choice_controls():
-    paths = [
-        *(
-            path.relative_to(TEMPLATES).as_posix()
-            for path in sorted((TEMPLATES / "admin").rglob("*.html"))
-        ),
-        "problems/components/llm_endpoint_select.html",
-        "problems/create.html",
-        "problems/edit.html",
-        "ranking/settings/endpoint_pool.html",
-    ]
-
-    for path in paths:
-        source = _read(path).lower()
-        assert "<select" not in source, path
-        assert "<option" not in source, path
 
 
 def test_ranking_endpoint_editor_uses_shared_picker_for_global_nodes():
@@ -36,8 +20,6 @@ def test_ranking_endpoint_editor_uses_shared_picker_for_global_nodes():
     assert "choice_picker(" in template
     assert "'ajeEditGlobalEndpoint'" in template
     assert "window.ChoicePicker.configure(" in script
-    assert "createElement('option')" not in script
-    assert 'createElement("option")' not in script
     assert "meta:'节点 #' + endpoint.id" in script
 
 

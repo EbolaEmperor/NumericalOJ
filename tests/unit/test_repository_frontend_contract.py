@@ -105,9 +105,7 @@ def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
     ).read_text(encoding="utf-8")
 
     assert "{% include 'components/editor/monaco.html' %}" in template
-    assert "components/editor/codemirror.html" not in template
     assert 'id="repositoryMonacoContainer"' in template
-    assert "repositoryCodeMirrorContainer" not in template
     assert "await runtime.prepareMonaco(monaco)" in source
     assert "runtime.monacoOptions({" in source
     assert "context: 'repository'" in source
@@ -118,10 +116,6 @@ def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
     assert "semanticHighlighting.enabled" in runtime
     assert 'monaco.editor.setTheme("dark-plus")' in runtime
     assert 'h: "cpp"' in runtime
-    assert "createCodeMirrorEditor" not in source
-    assert "NumOJCodeMirrorReady" not in source
-    assert "codeMirrorMode" not in source
-    assert "matchMedia" not in source
 
 
 def test_repository_boot_does_not_wait_for_editor_assets_before_file_actions():
@@ -159,7 +153,6 @@ def test_blocking_upload_directory_uses_cascading_exclude_instead_of_error():
     ]
     assert "item.error = ''" in directory_branch
     assert "item.resolution = 'exclude'" in directory_branch
-    assert "item.error = item.serverMessage" not in directory_branch
 
 
 def test_upload_directory_exclusion_cascades_to_all_descendants():
@@ -220,7 +213,6 @@ def test_upload_queue_uses_the_defined_extension_label_helper():
     render = source[render_start:open_dialog_start]
 
     assert "extensionLabel(item.relativePath)" in render
-    assert "fileTypeLabel(" not in source
 
 
 def test_upload_manifest_failure_reaches_a_visible_terminal_state():

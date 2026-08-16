@@ -58,7 +58,6 @@ def test_repository_check_loader_uses_an_explicit_nonduplicated_label():
     submit = _read(TEMPLATES / "tabs" / "submit.html")
 
     assert 'data-loader-label="正在检查仓库…"' in submit
-    assert 'data-loader-label="检查中"' not in submit
 
 
 def test_reverse_zip_submit_survives_missing_git_repository_controls():

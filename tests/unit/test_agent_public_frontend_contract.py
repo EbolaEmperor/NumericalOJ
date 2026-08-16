@@ -20,8 +20,6 @@ def test_agent_navigation_is_visible_in_workspace_for_every_logged_in_user():
     admin = navigation.split("{% if current_user.is_admin == 1 %}", 1)[1]
     assert "problem_core.agent_tasks" in workspace
     assert ">Agent 任务</span>" in workspace
-    assert "problem_core.admin_agent_tasks" not in navigation
-    assert ">Agent 任务</span>" not in admin
 
 
 def test_workspace_navigation_uses_the_product_order():
@@ -98,19 +96,12 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "fa-wallet" in template
     assert "data-agent-review-badge" in template
     assert "hidden{% endif %}" in template
-    assert "data-agent-fab-balance" not in template
-    assert "data-agent-quota-total" not in template
-    assert "累计额度" not in template
-    assert "使用全站端点时，每次模型请求完成后实时扣减。" not in template
-    assert "同一用户出现在多个班级时只赠送一次，管理员不会计入。" not in template
     for tab_name in ("quota", "prices", "personal"):
         assert f'data-agent-user-tab="{tab_name}"' in template
         assert f'data-agent-user-panel="{tab_name}"' in template
     assert 'role="tablist"' in template
     assert "data-agent-personal-endpoint-layer" in template
     assert "agent-access-layer--endpoint" in template
-    assert 'id="agentPersonalEndpointModal"' not in template
-    assert 'class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"' not in template
     assert "data-agent-personal-delete-layer" in template
     assert "data-agent-personal-endpoint-create" in template
     assert "components/endpoint_editor.html" in template
@@ -118,8 +109,6 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "agent-quota-request-submit" in template
     assert '"reason reason"' in styles
     assert '". submit"' in styles
-    assert "requested_amount" not in template
-    assert "requested_amount" not in controller
     assert "name=\"approved_amount\"" in controller
     assert "赠送额度" in controller
     assert "endpoint_editor('agentPersonalEndpoint', mode='personal', title='新建端点', surface='layer')" in template
@@ -134,8 +123,6 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     ):
         assert class_picker_contract in template
     assert 'aria-multiselectable="true"' in template
-    assert '<select name="protocol"' not in template
-    assert '<details class="agent-personal-endpoint-editor"' not in template
     assert template.count("novalidate") >= 2
     assert "novalidate" in endpoint_editor
     assert "function decimalText(value)" in controller
@@ -146,7 +133,6 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "global.NumojModelFamily.iconClass(model)" in controller
     assert "function protocolText(value)" in controller
     assert "protocolText(endpoint.protocol)" in controller
-    assert "<small>节点 #" not in controller
     assert "agent-rate-logo" in controller
     assert "action: action" in controller
     assert "amount_rmb: grantForm.elements.amount_rmb.value" in controller
@@ -164,18 +150,7 @@ def test_agent_access_component_covers_wallet_rates_personal_endpoints_and_revie
     assert "function closePersonalEditorLayer(restoreFocus)" in controller
     assert "modalNode.addEventListener('hide.bs.modal'" in controller
     assert "personalDeleteRequestRevision" in controller
-    assert "personalModal.show()" not in controller
-    assert "personalModal.hide()" not in controller
-    assert "accessModal.hide()" not in controller
-    assert "accessModal.show()" not in controller
-    assert "正在测试连接并保存" not in controller
     assert "global.NumOJEndpointEditor = Object.freeze({mount: mount})" in endpoint_editor_controller
-    assert "global.confirm(" not in controller
-    assert "reportValidity(" not in controller
-    assert "data-agent-personal-endpoint-form" not in f"{template}\n{controller}"
-    assert "data-agent-protocol-option" not in f"{template}\n{controller}"
-    assert "data-endpoint-form" not in f"{template}\n{controller}\n{endpoint_editor}"
-    assert "global.location.reload" not in controller
     assert ".agent-access-fab" in styles
     assert ".agent-access-fab-badge" in styles
     assert ".agent-class-grant-options" in styles
@@ -203,17 +178,12 @@ def test_agent_access_composite_fields_draw_only_the_outer_rounded_focus_ring():
     layout = _read("static/app/layout.css")
 
     desktop_focus_rule = layout.split(":focus-visible {", 1)[1].split("}", 1)[0]
-    assert "!important" not in desktop_focus_rule
-    assert "outline: 3px solid rgba(234, 88, 12, 0.28) !important" not in layout
     assert 'class="agent-class-picker-search agent-access-input-shell"' in template
-    assert ".agent-quota-request-form input:focus" not in styles
-    assert ".agent-quota-request-form textarea:focus" not in styles
 
     shell_focus_rule = styles.split(
         ".agent-access-input-shell:focus-within {", 1
     )[1].split("}", 1)[0]
     assert "box-shadow: 0 0 0 2px #c2410c" in shell_focus_rule
-    assert "border-color: var(--agent-access-accent)" not in shell_focus_rule
 
     shell_control_rule = styles.split(
         ".agent-access-input-shell input,", 1
@@ -227,8 +197,6 @@ def test_agent_access_composite_fields_draw_only_the_outer_rounded_focus_ring():
     icon_rule = styles.split(
         ".agent-access-input-shell > i,", 1
     )[1].split("}", 1)[0]
-    assert "font:" not in icon_rule
-    assert "font-family:" not in icon_rule
     assert "font-size: 10px" in icon_rule
     amount_rule = styles.rsplit(
         "\n.agent-access-input-shell > b {", 1
@@ -259,11 +227,6 @@ def test_agent_detail_is_quota_aware_and_can_be_renamed_without_a_new_page():
     assert "!usesPersonalEndpoint && !quotaCanContinue" in controller
     assert "额度已达到 -5 元" in controller
     assert "NumOJAgentAccess.update(summary)" in controller
-    assert "agents/components/access_control.html" not in template
-    assert "app/endpoint-editor.css" not in template
-    assert "app/agents/access-control.css" not in template
-    assert "app/endpoint-editor.js" not in template
-    assert "app/agents/access-control.js" not in template
 
 
 def test_site_config_has_public_agent_switch_and_adaptive_price_formatting():

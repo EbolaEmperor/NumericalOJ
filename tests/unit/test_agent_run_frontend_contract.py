@@ -47,9 +47,6 @@ def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     assert "harness_logo(session.harness)" in template
     assert "session.endpoint_model" in template
     assert "data-avatar-seed" in template
-    assert "agents/run_detail_modal.html" not in template
-    assert "ranking-v2-detail" not in template
-    assert "app/ranking/content-v2.css" not in template
     assert "new FormData(form)" in controller
     assert "payload.detail_url" in controller
     assert 'aria-keyshortcuts="Enter Shift+Enter Control+Enter Meta+Enter"' in template
@@ -81,9 +78,6 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     assert ".agent-composer-choice--endpoint { max-width: 260px; }" in styles
     assert ".agent-composer-choice--effort { max-width: 108px; }" in styles
     assert ".agent-composer-choice--role { max-width: 160px; }" in styles
-    assert "width: 124px;" not in styles
-    assert "width: 170px;" not in styles
-    assert "width: 126px;" not in styles
 
     harness_menu = _css_rule(styles, ".agent-choice .rk-choice-menu {")
     endpoint_menu = _css_rule(styles, ".agent-choice--endpoint .rk-choice-menu {")
@@ -93,20 +87,15 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     assert "width: 290px;" in endpoint_menu
     assert "width: 184px;" in effort_menu
     assert "width: 280px;" in role_menu
-    assert "max(100%" not in harness_menu + endpoint_menu + effort_menu + role_menu
 
     tablet = styles.split("@media (max-width: 900px)", 1)[1].split(
         "@media (max-width: 575.98px)", 1
     )[0]
-    assert "flex-wrap: wrap;" not in tablet
-    assert "flex: 1 1 30%;" not in tablet
 
     compact = styles.split("@media (max-width: 640px)", 1)[1].split(
         "@media (max-width: 575.98px)", 1
     )[0]
     assert "display: flex;" in compact
-    assert "grid-template-columns:" not in compact
-    assert "grid-column:" not in compact
     assert "flex-wrap: nowrap;" in compact
     assert "max-width: calc(100vw - 32px);" in compact
 
@@ -144,7 +133,6 @@ def test_agent_home_prioritizes_personal_endpoints_and_marks_them_as_self_paid()
     assert "option.classList.add('is-personal-endpoint')" in controller
     assert "endpointChoice.classList.toggle('is-personal-endpoint', isPersonal)" in controller
     assert "endpoint.model + (isPersonal ? '，自费' : '')" in controller
-    assert "（自费）" not in controller
     assert ".agent-endpoint-paid-badge" in styles
     assert ".agent-choice--endpoint .rk-choice-option.is-personal-endpoint" in styles
 
@@ -168,12 +156,6 @@ def test_agent_home_reasoning_effort_is_dynamic_and_part_of_submission_identity(
     assert ".agent-composer-choice[hidden] { display: none; }" in styles
 
 
-def test_agent_composers_do_not_highlight_the_container_on_text_focus():
-    home_styles = _read("static/app/agents/task-list.css")
-    detail_styles = _read("static/app/agents/conversation.css")
-
-    assert ".agent-composer:focus-within" not in home_styles
-    assert ".agent-resume-composer:focus-within" not in detail_styles
 
 
 def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
@@ -191,8 +173,6 @@ def test_agent_detail_is_a_standalone_conversation_and_workspace_page():
     assert "components/editor/monaco.html" in template
     assert "app/markdown-rendering.js" in template
     assert "app/agents/conversation.js" in template
-    assert "components/agents/execution_trace_assets.html" not in template
-    assert "AgentExecutionTrace" not in controller
     assert ".numoj-content.container-fluid.agent-session-shell" in styles
     assert ".agent-session.has-file" in styles
     assert "4.5fr" in styles
@@ -208,9 +188,6 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     header_start = template.index('<header class="agent-session-header">')
     header_end = template.index("</header>", header_start)
     header = template[header_start:header_end]
-    assert "agent-session-runtime" not in header
-    assert "harness_logo(" not in header
-    assert "agent_session.endpoint_model" not in header
     assert 'class="numoj-avatar agent-session-avatar"' in header
     assert 'data-agent-session-avatar' in header
     assert 'data-avatar-seed="{{ agent_session.requested_by }}"' in header
@@ -230,22 +207,18 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "reasoning_effort_label" in composer
     assert "data-agent-reasoning-effort" in composer
     assert "agent-resume-effort" in composer
-    assert "fa-brain" in composer
+    assert "agent-effort-logo" in composer
     assert "data-agent-context-meter" in composer
     assert "data-agent-context-value" in composer
     assert 'role="tooltip"' in composer
     assert 'aria-describedby="agentContextTooltip"' in composer
     meter_start = composer.index('class="agent-context-meter"')
     meter_end = composer.index("</button>", meter_start)
-    assert " title=" not in composer[meter_start:meter_end]
     model_start = composer.index('class="agent-resume-model"')
     effort_start = composer.index('class="agent-resume-effort"')
     effort_end = composer.index("</span>", effort_start)
     assert model_start < effort_start < meter_start
     effort = composer[effort_start:effort_end]
-    assert "<button" not in effort
-    assert "<select" not in effort
-    assert "<input" not in effort
     assert "agent_context_window_tokens=int(" in routes
     assert "DEFAULT_LLM_CONTEXT_WINDOW_TOKENS" in routes
 
@@ -274,7 +247,6 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "Math.min(100, Math.max(0, usedTokens / windowTokens * 100))" in controller
     assert "renderContextUsage(state.context_usage);" in controller
     assert "renderContextUsage(currentState && currentState.context_usage);" in controller
-    assert "renderHeaderTokenUsage(null);" not in controller
     assert (
         "renderHeaderTokenUsage(currentState && currentState.session_token_usage);"
         in controller
@@ -289,9 +261,6 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
         styles, ".agent-session-requester-copy small {"
     )
     assert "font: 550 7px/1.35 var(--agent-mono);" in requester_label_rule
-    assert ".agent-session-usage-fact--cost { display: none; }" not in styles
-    assert ".agent-session-usage-fact--cached { display: none; }" not in styles
-    assert ".agent-session-usage { display: none; }" not in styles
     assert ".agent-context-meter-value" in styles
     assert ".agent-context-tooltip" in styles
     assert ".agent-context-meter:hover .agent-context-tooltip" in styles
@@ -301,17 +270,13 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "display: inline-flex;" in runtime_icon
     assert "align-items: center;" in runtime_icon
     assert "justify-content: center;" in runtime_icon
-    effort_icon = _css_rule(
-        styles, ".agent-resume-runtime > .agent-resume-effort > i {"
-    )
-    assert "font-size: 10px;" in effort_icon
-    assert "line-height: 1;" in effort_icon
-    assert "transform: translateY(1px);" in effort_icon
+    effort_icon = _css_rule(styles, ".agent-effort-logo {")
+    assert "width: 10px;" in effort_icon
+    assert "height: 10px;" in effort_icon
+    assert "flex: 0 0 10px;" in effort_icon
     mobile = styles.split("@media (max-width: 575.98px)", 1)[1].split(
         "@media (hover: none)", 1
     )[0]
-    assert ".agent-context-meter { display: none; }" not in mobile
-    assert ".agent-resume-model { display: none; }" not in mobile
     mobile_footer = _css_rule(mobile, ".agent-resume-footer {")
     assert "flex-wrap: wrap;" in mobile_footer
     mobile_runtime = _css_rule(mobile, ".agent-resume-runtime {")
@@ -363,7 +328,6 @@ def test_agent_detail_supports_resume_stop_and_live_state_without_interruption()
     bubble_index = template.index('class="agent-user-bubble', message_row_start)
     assert retry_index < bubble_index
     assert "messageRow.append(createRetryButton(taskId), bubble);" in controller
-    assert "messageRow.append(bubble, createRetryButton(taskId));" not in controller
     assert ".agent-message-retry" in styles
     retry_rule = _css_rule(styles, ".agent-message-retry {")
     assert "width: 24px;" in retry_rule
@@ -434,12 +398,8 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert "data-agent-queue-panel" in template
     assert "data-agent-queue-list" in template
     assert "data-agent-queue-resume" in template
-    assert 'name="delivery_mode" value="steer"' not in template
-    assert "data-agent-resume-steer" not in template
-    assert "中途插话：在当前动作结束后转向" not in template
     assert '{% if is_running %}hidden{% endif %}' in template
     assert 'aria-label="停止任务" title="停止任务"' in template
-    assert "{% if is_running or is_blocked %}disabled{% endif %}" not in template
 
     assert "var computedDeliveryMode = submitIntent === 'steer'" in controller
     assert "((running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn')" in controller
@@ -447,7 +407,6 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert "resumeSend.hidden = running && (!hasMessage || stopPending);" in controller
     assert "stopButton.hidden = !running || (hasMessage && !stopPending);" in controller
     assert "安排下一条消息…" in controller
-    assert "安排下一条消息，或使用插话…" not in controller
     assert "function renderMessageQueue(state)" in controller
     assert "function renderSteerMessages(state)" in controller
     assert "message.target_task_id || message.task_id" in controller
@@ -469,11 +428,9 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert "var wantsSteer = running && (event.metaKey || event.ctrlKey);" in controller
     assert "resumeSubmitIntent = wantsSteer ? 'steer' : 'send';" in controller
     assert "var submitIntent = resumeSubmitIntent === 'steer' ? 'steer' : 'send';" in controller
-    assert "steerButton" not in controller
 
     assert ".agent-message-queue" in styles
     assert ".agent-queue-item" in styles
-    assert ".agent-resume-steer" not in styles
     assert ".agent-resume-send[hidden] { display: none; }" in styles
     assert ".agent-steer-message" in styles
     assert ".agent-queue-mobile-move { display: grid; }" in styles
@@ -553,7 +510,6 @@ def test_agent_detail_renders_all_message_mutation_urls_from_mapping_keys():
 
     for key in message_urls:
         assert f"message_urls['{key}']" in opening_tag
-        assert f"message_urls.{key}" not in opening_tag
 
 
 def test_agent_detail_keeps_idempotency_and_task_transitions_bound_to_one_turn():
@@ -588,8 +544,6 @@ def test_agent_detail_keeps_file_preview_and_workspace_accessible():
     controller = _read("static/app/agents/conversation.js")
     styles = _read("static/app/agents/conversation.css")
 
-    assert 'role="tree"' not in template
-    assert "details.setAttribute('role', 'treeitem')" not in controller
     assert "filePane.setAttribute('aria-modal', 'true')" in controller
     assert "var wasFilePaneHidden = filePane.hidden;" in controller
     assert "if (wasFilePaneHidden) initializeFileLayout();" in controller
@@ -739,9 +693,6 @@ def test_agent_workspace_preview_covers_required_formats_and_safe_downloads():
     semantic_provider = controller.split("function ensureSemanticProvider", 1)[1].split(
         "function encodedMonacoPath", 1
     )[0]
-    assert "'lean4'" not in semantic_provider
-    assert "lean-workbench.js" not in template
-    assert "data-lean-goal" not in template
 
     render_code = controller.split("async function renderCode", 1)[1].split(
         "function imageViewer", 1

@@ -1080,10 +1080,16 @@
   flex: 0 0 auto;
 }
 
-.agent-resume-runtime > .agent-resume-effort > i {
-  font-size: 10px;
-  line-height: 1;
-  transform: translateY(1px);
+.agent-effort-logo {
+  display: inline-block;
+  width: 10px;
+  min-width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  background-image: url("reasoning-depth.svg");
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
 }
 
 .agent-context-meter {
