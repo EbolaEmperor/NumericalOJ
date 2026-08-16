@@ -898,12 +898,16 @@ def _status_error(status_code):
 
 def _post(endpoint, payload, *, timeout, stream, request_post=None):
     post = request_post or requests.post
+    # 流式调用只限制建立连接的时间，不限制读取响应的时间。这样模型只要
+    # 仍在持续输出，应用就不会因为固定的 read timeout 截断请求；SSE 上层
+    # 另行发送心跳，避免反向代理把“首个 token 较慢”误判为僵死连接。
+    request_timeout = (30.0, None) if timeout is None else float(timeout)
     try:
         response = post(
             endpoint_request_url(endpoint, "chat"),
             headers=_request_headers(endpoint),
             json=payload,
-            timeout=float(timeout),
+            timeout=request_timeout,
             stream=bool(stream),
         )
     except Exception:
@@ -1071,7 +1075,7 @@ def _emit_delta(callback, text):
         callback(text)
 
 
-def _parse_openai_stream(response, on_text_delta):
+def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None):
     text_parts = []
     reasoning_parts = []
     finish_reason = None
@@ -1098,9 +1102,12 @@ def _parse_openai_stream(response, on_text_delta):
         if delta_text:
             text_parts.append(delta_text)
             _emit_delta(on_text_delta, delta_text)
-        delta_reasoning = _text_from_content(delta.get("reasoning_content"))
+        delta_reasoning = _text_from_content(
+            delta.get("reasoning_content", delta.get("reasoning"))
+        )
         if delta_reasoning:
             reasoning_parts.append(delta_reasoning)
+            _emit_delta(on_reasoning_delta, delta_reasoning)
         for fallback_index, raw_call in enumerate(delta.get("tool_calls") or []):
             if not isinstance(raw_call, Mapping):
                 continue
@@ -1134,7 +1141,7 @@ def _parse_openai_stream(response, on_text_delta):
     return LLMChatResult(text, reasoning, tuple(tool_calls), finish_reason, model, usage)
 
 
-def _parse_anthropic_stream(response, on_text_delta):
+def _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta=None):
     text_parts = []
     reasoning_parts = []
     finish_reason = None
@@ -1175,7 +1182,9 @@ def _parse_anthropic_stream(response, on_text_delta):
                 text_parts.append(delta_text)
                 _emit_delta(on_text_delta, delta_text)
             elif block_type == "thinking" and block.get("thinking"):
-                reasoning_parts.append(str(block["thinking"]))
+                delta_reasoning = str(block["thinking"])
+                reasoning_parts.append(delta_reasoning)
+                _emit_delta(on_reasoning_delta, delta_reasoning)
         elif event_type == "content_block_delta":
             try:
                 index = int(event.get("index", 0))
@@ -1191,7 +1200,9 @@ def _parse_anthropic_stream(response, on_text_delta):
                 text_parts.append(delta_text)
                 _emit_delta(on_text_delta, delta_text)
             elif delta_type == "thinking_delta" or delta.get("thinking") is not None:
-                reasoning_parts.append(str(delta.get("thinking") or ""))
+                delta_reasoning = str(delta.get("thinking") or "")
+                reasoning_parts.append(delta_reasoning)
+                _emit_delta(on_reasoning_delta, delta_reasoning)
             elif delta_type == "input_json_delta" or delta.get("partial_json") is not None:
                 state["json"].append(str(delta.get("partial_json") or ""))
         elif event_type == "message_delta":
@@ -1230,6 +1241,7 @@ def call_chat(
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
+    on_reasoning_delta: Callable[[str], None] | None = None,
     request_post=None,
 ):
     """调用文本/全模态端点，返回统一的消息、工具调用与 usage。"""
@@ -1237,8 +1249,12 @@ def call_chat(
     use_endpoint = _coerce_endpoint(endpoint)
     if use_endpoint.category not in _CHAT_CATEGORIES:
         raise LLMEndpointValidationError("该类别端点不能用于文本或 Agent 调用。")
-    timeout_value = _positive_float(timeout, "timeout")
-    use_stream = bool(stream or on_text_delta is not None)
+    timeout_value = None if timeout is None else _positive_float(timeout, "timeout")
+    use_stream = bool(
+        stream
+        or on_text_delta is not None
+        or on_reasoning_delta is not None
+    )
     payload = _build_chat_payload(
         use_endpoint,
         messages,
@@ -1258,8 +1274,8 @@ def call_chat(
     content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
     if use_stream and "text/event-stream" in content_type:
         if use_endpoint.protocol is LLMProtocol.OPENAI:
-            return _parse_openai_stream(response, on_text_delta)
-        return _parse_anthropic_stream(response, on_text_delta)
+            return _parse_openai_stream(response, on_text_delta, on_reasoning_delta)
+        return _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta)
     data = _response_json(response)
     if use_endpoint.protocol is LLMProtocol.OPENAI:
         result = _parse_openai_response(data)
@@ -1267,6 +1283,8 @@ def call_chat(
         result = _parse_anthropic_response(data)
     if callable(on_text_delta) and result.text:
         on_text_delta(result.text)
+    if callable(on_reasoning_delta) and result.reasoning:
+        on_reasoning_delta(result.reasoning)
     return result
 
 
@@ -1282,6 +1300,7 @@ def call_text(
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
+    on_reasoning_delta: Callable[[str], None] | None = None,
     request_post=None,
 ):
     messages = []
@@ -1298,6 +1317,7 @@ def call_text(
         timeout=timeout,
         stream=stream,
         on_text_delta=on_text_delta,
+        on_reasoning_delta=on_reasoning_delta,
         request_post=request_post,
     )
 
@@ -1313,6 +1333,7 @@ def call_vision(
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
+    on_reasoning_delta: Callable[[str], None] | None = None,
     request_post=None,
 ):
     """调用视觉/全模态端点；图片可为远程 URL、Data URL 或 :class:`LLMImage`。"""
@@ -1333,8 +1354,12 @@ def call_vision(
     content.append({"type": "text", "text": str(prompt or "")})
     messages.append({"role": "user", "content": content})
 
-    timeout_value = _positive_float(timeout, "timeout")
-    use_stream = bool(stream or on_text_delta is not None)
+    timeout_value = None if timeout is None else _positive_float(timeout, "timeout")
+    use_stream = bool(
+        stream
+        or on_text_delta is not None
+        or on_reasoning_delta is not None
+    )
     payload = _build_chat_payload(
         use_endpoint,
         messages,
@@ -1352,8 +1377,8 @@ def call_vision(
     content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
     if use_stream and "text/event-stream" in content_type:
         if use_endpoint.protocol is LLMProtocol.OPENAI:
-            return _parse_openai_stream(response, on_text_delta)
-        return _parse_anthropic_stream(response, on_text_delta)
+            return _parse_openai_stream(response, on_text_delta, on_reasoning_delta)
+        return _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta)
     data = _response_json(response)
     if use_endpoint.protocol is LLMProtocol.OPENAI:
         result = _parse_openai_response(data)
@@ -1361,6 +1386,8 @@ def call_vision(
         result = _parse_anthropic_response(data)
     if callable(on_text_delta) and result.text:
         on_text_delta(result.text)
+    if callable(on_reasoning_delta) and result.reasoning:
+        on_reasoning_delta(result.reasoning)
     return result
 
 

@@ -235,6 +235,13 @@
             <i class="fas fa-robot" aria-hidden="true"></i>
             询问 AI 助教
           </button>
+          <details id="aiCotDetails" class="submission-ai-cot d-none">
+            <summary>
+              <span><i class="fas fa-wave-square" aria-hidden="true"></i> AI 分析过程</span>
+              <span class="submission-ai-cot-hint">生成后可展开</span>
+            </summary>
+            <pre id="aiCotText" class="submission-ai-cot-text" aria-live="polite"></pre>
+          </details>
           <div id="aiInlineStatus" class="submission-ai-status d-none" role="status" aria-live="polite"></div>
         </section>
       {% endif %}
@@ -1270,6 +1277,8 @@
 <script>
   const askAiBtn = document.getElementById('askAiBtn');
   const aiInlineStatus = document.getElementById('aiInlineStatus');
+  const aiCotDetails = document.getElementById('aiCotDetails');
+  const aiCotText = document.getElementById('aiCotText');
   const cachedAiCodeMarks = {{ cached_ai_code_marks | tojson }};
   const hasCachedAiCodeMarks = !!(cachedAiCodeMarks && cachedAiCodeMarks.success);
 
@@ -1277,6 +1286,7 @@
   let aiIssueRequestToken = 0;
   let aiIssueTooltipEl = null;
   let aiIssueTooltipBound = false;
+  let aiCotHasContent = false;
   const askAiBtnDefaultHtml = askAiBtn ? askAiBtn.innerHTML : '';
 
   function setAiStatus(message, level) {
@@ -1301,6 +1311,33 @@
       return;
     }
     askAiBtn.innerHTML = askAiBtnDefaultHtml || '<i class="fas fa-robot me-2"></i> 询问 AI 助教';
+  }
+
+  function beginAiCotStream() {
+    if (!aiCotDetails || !aiCotText) return;
+    aiCotHasContent = false;
+    aiCotDetails.classList.remove('d-none');
+    aiCotDetails.classList.add('is-streaming');
+    aiCotDetails.open = true;
+    aiCotText.textContent = '正在等待模型输出分析过程…';
+  }
+
+  function appendAiCot(delta) {
+    if (!aiCotDetails || !aiCotText || !delta) return;
+    if (!aiCotHasContent) {
+      aiCotText.textContent = '';
+      aiCotHasContent = true;
+    }
+    aiCotText.textContent += String(delta);
+    aiCotText.scrollTop = aiCotText.scrollHeight;
+  }
+
+  function finishAiCotStream() {
+    if (!aiCotDetails) return;
+    aiCotDetails.classList.remove('is-streaming');
+    // 结果出来后默认收起，details 保留以便用户手动展开查看。
+    aiCotDetails.open = false;
+    if (!aiCotHasContent) aiCotDetails.classList.add('d-none');
   }
 
   function ensureAiIssueTooltip() {
@@ -1437,19 +1474,8 @@
     });
   }
 
-  function requestAiIssueMarks(requestToken) {
-    fetch('{{ url_for("ai.ask_ai_code_marks") }}', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      mathCurveLoader: false,
-      body: JSON.stringify({
-        submission_id: {{ submission.id }}
-      })
-    })
-    .then(r => r.json())
-    .then(data => {
-      if (requestToken !== aiIssueRequestToken) return;
-      setAskAiBtnLoading(false);
+  function applyAiIssueResult(data, requestToken) {
+    if (requestToken !== aiIssueRequestToken) return false;
       const fallbackCode = submissionCodeEditor ? (submissionCodeEditor.getValue() || '') : '';
       const displayCode = (data && typeof data.code_used === 'string') ? data.code_used : fallbackCode;
       const ok = !!(data && data.success);
@@ -1460,13 +1486,15 @@
 
       if (!ok) {
         clearAiIssueMarkers();
-        submissionCodeEditor.setValue(displayCode);
-        submissionCodeEditor.refresh();
+        if (submissionCodeEditor) {
+          submissionCodeEditor.setValue(displayCode);
+          submissionCodeEditor.refresh();
+        }
         setAiStatus(
           (data && data.message) ? String(data.message) : 'AI 未返回可用结果。',
           'danger'
         );
-        return;
+        return false;
       }
 
       if (typeof updateAiOmniImageAnalysis === 'function') {
@@ -1481,16 +1509,85 @@
       } else {
         setAiStatus('未定位到明确的问题代码位置。', 'success');
       }
-    })
-    .catch(err => {
+      return true;
+  }
+
+  async function requestAiIssueMarks(requestToken) {
+    try {
+      const response = await fetch('{{ url_for("ai.ask_ai_code_marks_stream") }}', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        mathCurveLoader: false,
+        body: JSON.stringify({ submission_id: {{ submission.id }} })
+      });
+      if (!response.ok) {
+        let errorPayload = null;
+        try { errorPayload = await response.json(); } catch (e) { /* 使用 HTTP 状态兜底 */ }
+        throw new Error(
+          (errorPayload && errorPayload.message) || `HTTP ${response.status}`
+        );
+      }
+      if (!response.body) throw new Error('浏览器不支持流式响应');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let gotResult = false;
+      let streamDone = false;
+
+      const handleFrame = (frame) => {
+        const lines = frame.split(/\r?\n/);
+        let eventName = 'message';
+        const dataLines = [];
+        lines.forEach(line => {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim();
+          if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+        });
+        if (!dataLines.length || requestToken !== aiIssueRequestToken) return;
+        let payload;
+        try { payload = JSON.parse(dataLines.join('\n')); }
+        catch (e) { return; }
+
+        if (eventName === 'reasoning') {
+          appendAiCot(payload.delta || '');
+          setAiStatus('AI 正在分析代码，请稍候…', 'info');
+        } else if (eventName === 'progress') {
+          setAiStatus(payload.message || 'AI 正在整理诊断结果…', 'info');
+        } else if (eventName === 'heartbeat') {
+          setAiStatus('AI 仍在分析代码，请稍候…', 'info');
+        } else if (eventName === 'result') {
+          gotResult = applyAiIssueResult(payload, requestToken);
+        } else if (eventName === 'error') {
+          throw new Error(payload.message || 'AI 分析失败');
+        } else if (eventName === 'done') {
+          streamDone = true;
+          setAskAiBtnLoading(false);
+          if (gotResult) finishAiCotStream();
+        }
+      };
+
+      while (!streamDone) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() || '';
+        frames.forEach(handleFrame);
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) handleFrame(buffer);
+      if (!streamDone && !gotResult) throw new Error('AI 流式响应意外结束');
+      if (!streamDone) {
+        setAskAiBtnLoading(false);
+        if (gotResult) finishAiCotStream();
+      }
+    } catch (err) {
       if (requestToken !== aiIssueRequestToken) return;
       setAskAiBtnLoading(false);
       clearAiIssueMarkers();
-      const currentCode = submissionCodeEditor ? (submissionCodeEditor.getValue() || '') : '';
-      submissionCodeEditor.setValue(currentCode);
-      submissionCodeEditor.refresh();
+      if (aiCotDetails) aiCotDetails.classList.remove('is-streaming');
       setAiStatus(`问题标注失败：${err}`, 'danger');
-    });
+    }
   }
 
   // 仅代码标注模式
@@ -1499,6 +1596,7 @@
     const requestToken = ++aiIssueRequestToken;
     clearAiIssueMarkers();
     setAskAiBtnLoading(true);
+    beginAiCotStream();
     setAiStatus('AI 正在定位问题代码，请稍候...', 'info');
 
     requestAiIssueMarks(requestToken);
