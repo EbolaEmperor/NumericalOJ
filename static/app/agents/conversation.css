@@ -1080,6 +1080,11 @@
   flex: 0 0 auto;
 }
 
+.agent-resume-effort > i {
+  font-size: 10px;
+  line-height: 1;
+}
+
 .agent-context-meter {
   --agent-context-percent: 0;
   position: relative;
