@@ -357,6 +357,7 @@
         <label class="visually-hidden" for="agentResumeMessage">继续会话</label>
         <textarea id="agentResumeMessage" name="message" rows="2"
                   maxlength="100000" placeholder="继续这项任务…"
+                  aria-keyshortcuts="Enter Shift+Enter Control+Enter Meta+Enter"
                   {% if is_blocked %}disabled{% endif %}
                   required data-agent-resume-message></textarea>
         <div class="agent-resume-attachments" data-agent-resume-attachments hidden></div>
@@ -393,19 +394,14 @@
               <i class="fas fa-plus" aria-hidden="true"></i>
             </label>
             <button class="agent-stop-button" type="button" data-agent-stop
+                    aria-label="停止任务" title="停止任务"
                     {% if not is_running %}hidden{% endif %}>
-              <i class="fas fa-stop" aria-hidden="true"></i><span>停止</span>
-            </button>
-            <button class="agent-resume-steer" type="submit" name="delivery_mode" value="steer"
-                    data-agent-resume-steer
-                    aria-label="中途插话" title="中途插话：在当前动作结束后转向"
-                    {% if not is_running %}hidden{% endif %}
-                    {% if is_blocked or not steer_supported %}disabled{% endif %}>
-              <i class="fas fa-comment-dots" aria-hidden="true"></i>
+              <i class="fas fa-stop" aria-hidden="true"></i>
             </button>
             <button class="agent-resume-send" type="submit" data-agent-resume-send
                     aria-label="{{ '加入队列' if is_running else '发送消息' }}"
                     title="{{ '加入队列' if is_running else '发送' }}"
+                    {% if is_running %}hidden{% endif %}
                     {% if is_blocked %}disabled{% endif %}>
               <i class="fas fa-arrow-up" aria-hidden="true"></i>
             </button>

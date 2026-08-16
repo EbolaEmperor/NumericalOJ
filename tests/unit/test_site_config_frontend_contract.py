@@ -48,6 +48,43 @@ def test_site_config_has_exactly_three_internal_pages():
     assert ".env" not in template
 
 
+def test_site_config_has_custom_agent_concurrency_control():
+    template = _read(TEMPLATE)
+    script = _read(SCRIPT)
+    stylesheet = _read(STYLESHEET)
+
+    for contract in (
+        'data-agent-concurrency-url="/api/admin/dynamic-config/agent-concurrency"',
+        "data-agent-concurrency",
+        "data-agent-concurrency-decrement",
+        "data-agent-concurrency-input",
+        "data-agent-concurrency-increment",
+        "data-agent-concurrency-save",
+        'role="spinbutton"',
+        'aria-valuemin="1"',
+        'aria-valuemax="100"',
+    ):
+        assert contract in template
+    assert "Agent 任务并发上限" in template
+    input_at = template.index("data-agent-concurrency-input")
+    input_markup = template[
+        template.rfind("<input", 0, input_at) : template.index(">", input_at)
+    ]
+    assert 'type="text"' in input_markup
+    assert 'type="number"' not in input_markup
+    assert 'inputmode="numeric"' in input_markup
+    assert "body: {limit}" in script
+    assert "loadAgentConcurrency()" in script
+    assert "settings.limit ?? 8" in script
+    assert "data.applied === false" in script
+    assert "配置已保存，Agent worker 重启后生效" in script
+    assert "Agent 任务并发上限已生效" in script
+    assert "event.key === 'ArrowDown'" in script
+    assert "event.key === 'ArrowUp'" in script
+    assert ".site-config-agent-stepper" in stylesheet
+    assert ".site-config-agent-stepper:focus-within" in stylesheet
+
+
 def test_site_config_keeps_decorative_labels_without_explanatory_copy():
     template = _read(TEMPLATE)
     endpoint_editor = _read(ENDPOINT_EDITOR_TEMPLATE)

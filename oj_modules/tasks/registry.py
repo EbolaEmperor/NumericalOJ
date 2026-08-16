@@ -11,10 +11,12 @@ from oj_modules.tasks.homework_admin_tasks import (
 from oj_modules.tasks.rejudge_tasks import register_rejudge_task
 from oj_modules.tasks.promptly_tasks import register_promptly_generate_submission_task
 from oj_modules.tasks.agent.registry import (
+    apply_agent_concurrency_limit,
     build_agent_run_terminator,
     get_agent_run_snapshot,
     init_agent_queue_dispatcher,
     init_agent_progress_cache,
+    install_agent_concurrency_control,
     register_agent_generate_testdata_task,
     register_agent_run_turn_task,
     register_agent_queue_tasks,
@@ -66,6 +68,7 @@ __all__ = [
     "register_homework_admin_tasks",
     "register_rejudge_task",
     "register_promptly_generate_submission_task",
+    "apply_agent_concurrency_limit",
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
     "register_agent_run_turn_task",
@@ -97,6 +100,7 @@ __all__ = [
     "save_bulk_rejudge_job",
     "init_agent_progress_cache",
     "init_agent_queue_dispatcher",
+    "install_agent_concurrency_control",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
     "build_agent_run_terminator",

@@ -8,6 +8,9 @@
   const agentPublicAccessPath = String(
     root.dataset.agentPublicAccessUrl || `${apiRoot}/agent-public-access`
   ).replace(apiRoot, '') || '/agent-public-access';
+  const agentConcurrencyPath = String(
+    root.dataset.agentConcurrencyUrl || `${apiRoot}/agent-concurrency`
+  ).replace(apiRoot, '') || '/agent-concurrency';
   const currentUserId = Number(root.dataset.currentUserId || 0);
   const REQUIRED_UNLOCK_PHRASE = '我已阅读上述内容，我清楚后果，我坚持要解锁';
   const mobileRailQuery = window.matchMedia('(max-width: 991.98px)');
@@ -66,6 +69,8 @@
     deleteTarget: null,
     featureControllers: new Map(),
     agentPublicEnabled: true,
+    agentConcurrencyLimit: 8,
+    agentConcurrencySaving: false,
     railReturnFocus: null,
   };
 
@@ -744,6 +749,90 @@
     }
   }
 
+  function parsedAgentConcurrency() {
+    const input = $('[data-agent-concurrency-input]');
+    const text = String(input.value || '').trim();
+    if (!/^\d{1,3}$/.test(text)) return null;
+    const value = Number(text);
+    return Number.isInteger(value) && value >= 1 && value <= 100 ? value : null;
+  }
+
+  function syncAgentConcurrencyControls() {
+    const input = $('[data-agent-concurrency-input]');
+    const decrement = $('[data-agent-concurrency-decrement]');
+    const increment = $('[data-agent-concurrency-increment]');
+    const save = $('[data-agent-concurrency-save]');
+    const description = $('[data-agent-concurrency-description]');
+    const value = parsedAgentConcurrency();
+    const valid = value !== null;
+    const dirty = valid && value !== state.agentConcurrencyLimit;
+
+    input.disabled = state.agentConcurrencySaving;
+    input.setAttribute('aria-invalid', valid ? 'false' : 'true');
+    if (valid) input.setAttribute('aria-valuenow', String(value));
+    else input.removeAttribute('aria-valuenow');
+    decrement.disabled = state.agentConcurrencySaving || !valid || value <= 1;
+    increment.disabled = state.agentConcurrencySaving || !valid || value >= 100;
+    save.disabled = state.agentConcurrencySaving || !dirty;
+    description.textContent = !valid
+      ? '请输入 1 至 100 的整数'
+      : dirty
+        ? `尚未保存 · 将调整为 ${value}`
+        : `当前最多同时运行 ${state.agentConcurrencyLimit} 个任务`;
+  }
+
+  function renderAgentConcurrency(value) {
+    const numeric = Number(value);
+    state.agentConcurrencyLimit = Number.isInteger(numeric) && numeric >= 1 && numeric <= 100
+      ? numeric
+      : 8;
+    $('[data-agent-concurrency-input]').value = String(state.agentConcurrencyLimit);
+    syncAgentConcurrencyControls();
+  }
+
+  async function loadAgentConcurrency() {
+    const data = await request(agentConcurrencyPath);
+    const settings = data.settings || data;
+    renderAgentConcurrency(settings.limit ?? 8);
+  }
+
+  function changeAgentConcurrency(delta) {
+    const input = $('[data-agent-concurrency-input]');
+    const current = parsedAgentConcurrency() ?? state.agentConcurrencyLimit;
+    input.value = String(Math.min(100, Math.max(1, current + delta)));
+    syncAgentConcurrencyControls();
+    input.focus();
+  }
+
+  async function saveAgentConcurrency(button) {
+    const limit = parsedAgentConcurrency();
+    if (limit === null) {
+      syncAgentConcurrencyControls();
+      toast('Agent 任务并发上限必须是 1 至 100 的整数', 'error');
+      return;
+    }
+    state.agentConcurrencySaving = true;
+    setBusy(button, true, '保存中…');
+    syncAgentConcurrencyControls();
+    try {
+      const data = await request(agentConcurrencyPath, {
+        method: 'PUT',
+        body: {limit},
+      });
+      const settings = data.settings || data;
+      renderAgentConcurrency(settings.limit ?? limit);
+      toast(data.applied === false
+        ? '配置已保存，Agent worker 重启后生效'
+        : 'Agent 任务并发上限已生效');
+    } catch (error) {
+      toast(error.message, 'error');
+    } finally {
+      state.agentConcurrencySaving = false;
+      setBusy(button, false);
+      syncAgentConcurrencyControls();
+    }
+  }
+
   function railIsOpen() {
     return $('[data-config-rail]').classList.contains('is-open');
   }
@@ -879,6 +968,44 @@
   $('[data-agent-public-access-switch]').addEventListener('click', (event) => {
     saveAgentPublicAccess(event.currentTarget);
   });
+  $('[data-agent-concurrency-decrement]').addEventListener('click', () => {
+    changeAgentConcurrency(-1);
+  });
+  $('[data-agent-concurrency-increment]').addEventListener('click', () => {
+    changeAgentConcurrency(1);
+  });
+  $('[data-agent-concurrency-input]').addEventListener('input', () => {
+    syncAgentConcurrencyControls();
+  });
+  $('[data-agent-concurrency-input]').addEventListener('blur', (event) => {
+    if (parsedAgentConcurrency() === null) {
+      event.currentTarget.value = String(state.agentConcurrencyLimit);
+    }
+    syncAgentConcurrencyControls();
+  });
+  $('[data-agent-concurrency-input]').addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      changeAgentConcurrency(-1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      changeAgentConcurrency(1);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      event.currentTarget.value = '1';
+      syncAgentConcurrencyControls();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      event.currentTarget.value = '100';
+      syncAgentConcurrencyControls();
+    } else if (event.key === 'Enter' && !$('[data-agent-concurrency-save]').disabled) {
+      event.preventDefault();
+      $('[data-agent-concurrency-save]').click();
+    }
+  });
+  $('[data-agent-concurrency-save]').addEventListener('click', (event) => {
+    saveAgentConcurrency(event.currentTarget);
+  });
   $('[data-endpoint-editor-test]', endpointForm).addEventListener('click', (event) => testEndpoint(event.currentTarget));
   endpointForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -931,6 +1058,7 @@
       await loadMeta();
       const results = await Promise.allSettled([
         loadEndpoints(), loadBindings(), loadMail(), loadSearch(), loadAgentPublicAccess(),
+        loadAgentConcurrency(),
       ]);
       const failed = results.filter((result) => result.status === 'rejected');
       if (failed.length) toast(failed[0].reason?.message || '部分配置读取失败', 'error');

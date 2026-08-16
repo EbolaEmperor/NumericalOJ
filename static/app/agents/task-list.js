@@ -287,8 +287,6 @@
         message = quotaHasAccount
           ? '余额低于 0 元，不能使用全站端点。你仍可从右下角申请额度，或选择自己的端点。'
           : '你还没有平台额度。请从右下角申请额度，或选择自己的端点。';
-      } else if (!isAdmin && endpoint && endpoint.isPersonal) {
-        message = '当前使用自有端点，不消耗平台额度。';
       }
       accessNote.textContent = message;
       accessNote.hidden = !message;
@@ -500,10 +498,11 @@
       if (asText(textarea.value)) feedbackMessage('', false);
     });
     textarea.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !submit.disabled) {
-        event.preventDefault();
-        if (typeof form.requestSubmit === 'function') form.requestSubmit(submit);
-      }
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      if (event.shiftKey) return;
+      event.preventDefault();
+      if (submit.disabled) return;
+      if (typeof form.requestSubmit === 'function') form.requestSubmit(submit);
     });
 
     ['dragenter', 'dragover'].forEach(function (name) {

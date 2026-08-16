@@ -1063,7 +1063,15 @@
 }
 
 .agent-resume-runtime .harness-logo,
-.agent-resume-runtime > span > i { width: 10px; min-width: 10px; height: 10px; font-size: 7px; }
+.agent-resume-runtime > span > i {
+  display: inline-flex;
+  width: 10px;
+  min-width: 10px;
+  height: 10px;
+  align-items: center;
+  justify-content: center;
+  font-size: 7px;
+}
 
 .agent-resume-runtime > .agent-resume-model { flex: 1 1 auto; }
 
@@ -1185,7 +1193,6 @@
 
 .agent-resume-attach,
 .agent-resume-send,
-.agent-resume-steer,
 .agent-stop-button {
   display: inline-grid;
   min-width: 30px;
@@ -1215,35 +1222,23 @@
   background: #625746;
 }
 
-.agent-resume-steer {
-  border: 1px solid #d8c7aa;
-  background: #fff9ef;
-  color: #835d29;
-}
-
-.agent-resume-steer:hover:not(:disabled) { border-color: #c7aa7c; background: #fff2de; }
-.agent-resume-steer[hidden] { display: none; }
-
 .agent-resume-send:hover:not(:disabled) { background: #090909; }
+.agent-resume-send[hidden] { display: none; }
 
 .agent-resume-send:disabled,
-.agent-resume-steer:disabled,
 .agent-resume-composer.is-blocked .agent-resume-attach {
   cursor: not-allowed;
   opacity: 0.34;
 }
 
 .agent-stop-button {
-  display: inline-flex;
-  gap: 6px;
-  padding: 0 9px;
-  border: 1px solid #e2b8b3;
-  background: #fff6f4;
-  color: var(--agent-danger);
+  border: 1px solid #252524;
+  background: #252524;
+  color: #fff;
 }
 
 .agent-stop-button[hidden] { display: none; }
-.agent-stop-button:hover:not(:disabled) { background: #ffebe8; }
+.agent-stop-button:hover:not(:disabled) { background: #090909; }
 
 .agent-resume-feedback {
   margin: 7px 4px 0;
@@ -1756,7 +1751,6 @@
 .agent-workspace-header button:focus-visible,
 .agent-resume-attach:focus-visible,
 .agent-resume-send:focus-visible,
-.agent-resume-steer:focus-visible,
 .agent-queue-action:focus-visible,
 .agent-queue-mobile-move:focus-visible,
 .agent-message-queue-header button:focus-visible,
@@ -1994,7 +1988,6 @@
   .agent-resume-composer textarea { font-size: 16px; }
   .agent-resume-attach,
   .agent-resume-send,
-  .agent-resume-steer,
   .agent-stop-button {
     min-width: 38px;
     height: 38px;

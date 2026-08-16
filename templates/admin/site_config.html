@@ -16,6 +16,7 @@
          data-site-config
          data-api-root="/api/admin/dynamic-config"
          data-agent-public-access-url="/api/admin/dynamic-config/agent-public-access"
+         data-agent-concurrency-url="/api/admin/dynamic-config/agent-concurrency"
          data-current-user-id="{{ user.id if user else '' }}">
   <header class="site-config-header">
     <div class="site-config-heading">
@@ -102,19 +103,49 @@
               自动保存
             </span>
           </header>
-          <article class="site-config-agent-access" data-agent-public-access>
-            <span class="site-config-agent-access-icon"><i class="fas fa-robot" aria-hidden="true"></i></span>
-            <div class="site-config-agent-access-copy">
-              <p>PUBLIC AGENT</p>
-              <h3>允许用户使用 Agent</h3>
-              <span data-agent-public-access-description>读取中…</span>
-            </div>
-            <button class="site-config-switch" type="button" role="switch"
-                    aria-checked="true" data-agent-public-access-switch disabled>
-              <i aria-hidden="true"></i>
-              <b data-agent-public-access-label>开启</b>
-            </button>
-          </article>
+          <div class="site-config-agent-settings">
+            <article class="site-config-agent-access" data-agent-public-access>
+              <span class="site-config-agent-access-icon"><i class="fas fa-robot" aria-hidden="true"></i></span>
+              <div class="site-config-agent-access-copy">
+                <p>PUBLIC AGENT</p>
+                <h3>允许用户使用 Agent</h3>
+                <span data-agent-public-access-description>读取中…</span>
+              </div>
+              <button class="site-config-switch" type="button" role="switch"
+                      aria-checked="true" data-agent-public-access-switch disabled>
+                <i aria-hidden="true"></i>
+                <b data-agent-public-access-label>开启</b>
+              </button>
+            </article>
+
+            <article class="site-config-agent-concurrency" data-agent-concurrency>
+              <span class="site-config-agent-access-icon"><i class="fas fa-layer-group" aria-hidden="true"></i></span>
+              <div class="site-config-agent-access-copy">
+                <p>WORKER CAPACITY</p>
+                <h3>Agent 任务并发上限</h3>
+                <span data-agent-concurrency-description aria-live="polite">读取中…</span>
+              </div>
+              <div class="site-config-agent-concurrency-control">
+                <div class="site-config-agent-stepper" role="group" aria-label="Agent 任务并发上限">
+                  <button type="button" data-agent-concurrency-decrement
+                          aria-label="减少 Agent 任务并发上限" disabled>
+                    <i class="fas fa-minus" aria-hidden="true"></i>
+                  </button>
+                  <input type="text" inputmode="numeric" pattern="[0-9]*"
+                         value="8" maxlength="3" role="spinbutton"
+                         aria-label="Agent 任务并发上限"
+                         aria-valuemin="1" aria-valuemax="100" aria-valuenow="8"
+                         data-agent-concurrency-input disabled>
+                  <button type="button" data-agent-concurrency-increment
+                          aria-label="增加 Agent 任务并发上限" disabled>
+                    <i class="fas fa-plus" aria-hidden="true"></i>
+                  </button>
+                </div>
+                <button class="site-config-primary site-config-agent-concurrency-save"
+                        type="button" data-agent-concurrency-save disabled>保存</button>
+              </div>
+            </article>
+          </div>
           <div class="site-config-feature-grid" data-feature-grid>
             <div class="site-config-loading" role="status" aria-live="polite">
               <span class="site-config-spinner" aria-hidden="true"></span>

@@ -65,7 +65,10 @@ from oj_modules.routes.vibehub_routes import vibehub_bp
 from oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from oj_modules.routes.health_routes import create_health_blueprint
 from oj_modules.routes.admin_dynamic_config_routes import admin_dynamic_config_bp
-from oj_modules.routes.agent_access_routes import agent_access_bp
+from oj_modules.routes.agent_access_routes import (
+    agent_access_bp,
+    configure_agent_concurrency_runtime_applier,
+)
 from oj_modules.security.login_guard import install_global_login_guard
 from oj_modules.security.origin_guard import install_same_origin_protection
 from oj_modules.site_config.services import get_mail_settings
@@ -76,10 +79,12 @@ from oj_modules.infrastructure.redis import (
 )
 from oj_modules.api.registry import API_BLUEPRINTS
 from oj_modules.tasks.registry import (
+    apply_agent_concurrency_limit,
     build_agent_run_terminator,
     get_agent_run_snapshot,
     init_agent_progress_cache,
     init_agent_queue_dispatcher,
+    install_agent_concurrency_control,
     build_homework_task_operations,
     register_agent_generate_testdata_task,
     register_agent_run_turn_task,
@@ -304,6 +309,10 @@ def index():
 celery = Celery('oj', 
                 broker=CELERY_BROKER_URL, 
                 backend=CELERY_RESULT_BACKEND)
+install_agent_concurrency_control()
+configure_agent_concurrency_runtime_applier(
+    lambda limit: apply_agent_concurrency_limit(celery, limit)
+)
 install_celery_observability(
     celery,
     level=getattr(_cfg, 'LOG_LEVEL', 'INFO'),
@@ -319,7 +328,8 @@ celery.conf.task_routes = {
     'oj.ranking_reverse_judge': {'queue': 'judge'},
 }
 # 任务执行完才 ack：worker 崩溃或被 SIGKILL 时，消息不会静默丢失。
-# 常规任务依靠各自的幂等边界；不限时的普通 Agent 队列固定单 worker、单预取，
+# 常规任务依靠各自的幂等边界；不限时的普通 Agent 队列固定单 worker 实例，
+# 每个进程只预取一条消息，worker 内进程数按全站设置动态伸缩，
 # 并在任务入口以 MySQL 终态短路 broker visibility 恢复出的重复消息。
 celery.conf.task_acks_late = True
 celery.conf.task_reject_on_worker_lost = True

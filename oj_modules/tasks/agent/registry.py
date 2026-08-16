@@ -11,6 +11,10 @@ from oj_modules.tasks.agent.shared import (
     subscribe_agent_run_events,
 )
 from oj_modules.tasks.agent.control import build_agent_run_terminator
+from oj_modules.tasks.agent.concurrency import (
+    apply_agent_concurrency_limit,
+    install_agent_concurrency_control,
+)
 from oj_modules.tasks.agent.solve import register_agent_solve_problem_task
 from oj_modules.tasks.agent.generate_testdata import register_agent_generate_testdata_task
 from oj_modules.tasks.agent.generic import register_agent_run_turn_task
@@ -27,12 +31,14 @@ __all__ = [
     "AGENT_RUN_TURN_TASK_NAME",
     "AGENT_QUEUE_DISPATCH_TASK_NAME",
     "AGENT_QUEUE_RECOVERY_TASK_NAME",
+    "apply_agent_concurrency_limit",
     "register_agent_solve_problem_task",
     "register_agent_generate_testdata_task",
     "register_agent_run_turn_task",
     "register_agent_queue_tasks",
     "init_agent_progress_cache",
     "init_agent_queue_dispatcher",
+    "install_agent_concurrency_control",
     "get_agent_run_snapshot",
     "subscribe_agent_run_events",
     "build_agent_run_terminator",

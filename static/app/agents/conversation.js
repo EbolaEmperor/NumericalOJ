@@ -63,7 +63,6 @@
   var resumeFile = root.querySelector('[data-agent-resume-file]');
   var resumeAttachments = root.querySelector('[data-agent-resume-attachments]');
   var resumeSend = root.querySelector('[data-agent-resume-send]');
-  var steerButton = root.querySelector('[data-agent-resume-steer]');
   var stopButton = root.querySelector('[data-agent-stop]');
   var resumeFeedback = root.querySelector('[data-agent-resume-feedback]');
   var queuePanel = root.querySelector('[data-agent-queue-panel]');
@@ -94,6 +93,7 @@
   var resumeMessageFingerprint = '';
   var resumeDeliveryMode = '';
   var resumeExpectedTaskId = '';
+  var resumeSubmitIntent = 'send';
   var retryMessageId = '';
   var retryExpectedTaskId = '';
   var stopPending = false;
@@ -931,20 +931,15 @@
     if (resumeForm) resumeForm.classList.toggle('is-blocked', blocked);
     resumeMessage.disabled = blocked || resumePending;
     if (resumeFile) resumeFile.disabled = blocked || resumePending;
-    resumeSend.disabled = blocked || resumePending || !hasMessage;
+    resumeSend.disabled = blocked || resumePending || stopPending || !hasMessage;
+    resumeSend.hidden = running && (!hasMessage || stopPending);
     resumeSend.classList.toggle('is-queue-mode', queueMode);
     resumeSend.title = queueMode ? '加入队列' : '发送';
     resumeSend.setAttribute('aria-label', queueMode ? '加入队列' : '发送消息');
     resumeMessage.placeholder = running
-      ? '安排下一条消息，或使用插话…'
+      ? '安排下一条消息…'
       : (queuePaused ? '队列已暂停，消息仍可排队…' : '继续这项任务…');
-    if (steerButton) {
-      steerButton.hidden = !running;
-      steerButton.disabled = !running || blocked || resumePending || !hasMessage || !steerSupported;
-      steerButton.title = steerSupported
-        ? '中途插话：在当前动作结束后转向'
-        : (steerUnavailableReason || '当前 Harness 暂不支持中途插话');
-    }
+    if (stopButton) stopButton.hidden = !running || (hasMessage && !stopPending);
     if (queueResumeButton) {
       queueResumeButton.disabled = hardBlocked || resumePending || queueMutationPending;
     }
@@ -984,7 +979,6 @@
     }
     root.dataset.running = running ? 'true' : 'false';
     if (resumeForm) resumeForm.classList.toggle('is-running', running);
-    if (stopButton) stopButton.hidden = !running;
     if (liveMark) liveMark.hidden = !running;
     if (stateStatus) setStatus(stateStatus);
     updateSendState();
@@ -1665,20 +1659,15 @@
     resumeMessage.style.height = Math.min(180, Math.max(48, resumeMessage.scrollHeight)) + 'px';
   }
 
-  function setResumePending(value, mode) {
+  function setResumePending(value) {
     resumePending = value === true;
     if (resumeForm) resumeForm.classList.toggle('is-submitting', resumePending);
     if (resumeMessage) resumeMessage.disabled = blocked || resumePending;
     if (resumeFile) resumeFile.disabled = blocked || resumePending;
     if (resumeSend) {
-      resumeSend.innerHTML = resumePending && mode !== 'steer'
+      resumeSend.innerHTML = resumePending
         ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
         : '<i class="fas fa-arrow-up" aria-hidden="true"></i>';
-    }
-    if (steerButton) {
-      steerButton.innerHTML = resumePending && mode === 'steer'
-        ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>'
-        : '<i class="fas fa-comment-dots" aria-hidden="true"></i>';
     }
     updateSendState();
     updateRetryState();
@@ -1696,7 +1685,7 @@
     var retrying = options.retrying === true;
     var requestedMode = asText(options.deliveryMode || 'turn').trim().toLowerCase();
     setResumeFeedback('', false);
-    setResumePending(true, requestedMode);
+    setResumePending(true);
     global.fetch(resumeForm.action, {
       method: 'POST',
       body: options.body,
@@ -1735,7 +1724,7 @@
           scheduleMessageStateRefresh(0);
         }
         clearResumeComposer();
-        setResumePending(false, actualMode);
+        setResumePending(false);
         setResumeFeedback(
           actualMode === 'steer'
             ? '插话已接收，将在当前动作结束后生效。'
@@ -1771,13 +1760,13 @@
       if (!retrying) {
         clearResumeComposer();
       }
-      setResumePending(false, requestedMode);
+      setResumePending(false);
       resetLiveResponse();
       startStream(taskId);
       if (payload.state) applyState(payload.state, taskId, liveGeneration);
       scrollToLatest('smooth');
     }).catch(function (error) {
-      setResumePending(false, requestedMode);
+      setResumePending(false);
       if (!retrying && error && error.definitive) resetResumeAttempt();
       if (error && error.detailUrl) {
         global.location.assign(error.detailUrl);
@@ -1795,6 +1784,7 @@
     resumeMessageFingerprint = '';
     resumeDeliveryMode = '';
     resumeExpectedTaskId = '';
+    resumeSubmitIntent = 'send';
   }
 
   function clearResumeComposer() {
@@ -1813,10 +1803,21 @@
       if (resumeMessage.value.trim()) setResumeFeedback('', false);
     });
     resumeMessage.addEventListener('keydown', function (event) {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !resumeSend.disabled) {
-        event.preventDefault();
-        resumeForm.requestSubmit(resumeSend);
+      if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+      if (event.shiftKey) return;
+      event.preventDefault();
+      if (resumeSend.disabled) return;
+      var wantsSteer = running && (event.metaKey || event.ctrlKey);
+      if (wantsSteer && !steerSupported) {
+        setResumeFeedback(steerUnavailableReason || '当前 Harness 暂不支持中途插话。', true);
+        return;
       }
+      if (wantsSteer && !currentTaskId) {
+        setResumeFeedback('当前任务状态尚未同步，请稍后再试。', true);
+        return;
+      }
+      resumeSubmitIntent = wantsSteer ? 'steer' : 'send';
+      resumeForm.requestSubmit(resumeSend);
     });
     resumeFile.addEventListener('change', function () {
       addResumeFiles(resumeFile.files);
@@ -1843,12 +1844,16 @@
 
     resumeForm.addEventListener('submit', function (event) {
       event.preventDefault();
+      var submitIntent = resumeSubmitIntent === 'steer' ? 'steer' : 'send';
+      resumeSubmitIntent = 'send';
       if (blocked || resumePending || !resumeMessage.value.trim()) return;
-      var submitter = event.submitter;
-      var submitIntent = submitter === steerButton || (submitter && submitter.value === 'steer')
-        ? 'steer' : 'send';
       var computedDeliveryMode = submitIntent === 'steer'
-        ? 'steer' : ((running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn');
+        ? 'steer'
+        : ((running || queuePaused || queuedMessages(messageState).length) ? 'queue' : 'turn');
+      if (computedDeliveryMode === 'steer' && (!running || !currentTaskId)) {
+        setResumeFeedback('当前任务已经结束，无法插话。', true);
+        return;
+      }
       if (computedDeliveryMode === 'steer' && !steerSupported) {
         setResumeFeedback(steerUnavailableReason || '当前 Harness 暂不支持中途插话。', true);
         return;
@@ -1929,7 +1934,9 @@
       if (!currentTaskId || !running || stopPending) return;
       stopPending = true;
       stopButton.disabled = true;
-      stopButton.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span><span>停止中</span>';
+      stopButton.setAttribute('aria-label', '正在停止任务');
+      stopButton.title = '正在停止任务';
+      stopButton.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>';
       var taskId = currentTaskId;
       var generation = liveGeneration;
       global.fetch(taskUrl(root.dataset.cancelUrlTemplate, taskId), {
@@ -1950,13 +1957,19 @@
       }).then(function (result) {
         stopPending = false;
         stopButton.disabled = false;
-        stopButton.innerHTML = '<i class="fas fa-stop" aria-hidden="true"></i><span>停止</span>';
+        stopButton.setAttribute('aria-label', '停止任务');
+        stopButton.title = '停止任务';
+        stopButton.innerHTML = '<i class="fas fa-stop" aria-hidden="true"></i>';
         applyState(result.state, taskId, generation);
+        updateSendState();
         if (result.warning) setResumeFeedback(result.warning, true);
       }).catch(function (error) {
         stopPending = false;
         stopButton.disabled = false;
-        stopButton.innerHTML = '<i class="fas fa-stop" aria-hidden="true"></i><span>停止</span>';
+        stopButton.setAttribute('aria-label', '停止任务');
+        stopButton.title = '停止任务';
+        stopButton.innerHTML = '<i class="fas fa-stop" aria-hidden="true"></i>';
+        updateSendState();
         setResumeFeedback(error && error.message ? error.message : '停止任务失败。', true);
       });
     });

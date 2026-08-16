@@ -717,13 +717,20 @@
 }
 
 /* Feature bindings */
+.site-config-agent-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 .site-config-agent-access {
   display: grid;
   min-width: 0;
   grid-template-columns: 38px minmax(0, 1fr) 112px;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
   padding: 14px;
   border: 1px solid var(--cfg-line);
   border-top: 2px solid var(--cfg-orange);
@@ -774,6 +781,96 @@
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.site-config-agent-concurrency {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--cfg-line);
+  border-top: 2px solid var(--cfg-ink-2);
+  border-radius: 5px;
+  background:
+    linear-gradient(90deg, rgba(250, 250, 248, 0.82), transparent 48%),
+    #fff;
+}
+
+.site-config-agent-concurrency-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.site-config-agent-stepper {
+  display: grid;
+  height: 33px;
+  grid-template-columns: 29px 43px 29px;
+  overflow: hidden;
+  border: 1px solid var(--cfg-line);
+  border-radius: 5px;
+  background: #fff;
+}
+
+.site-config-agent-stepper button,
+.site-config-agent-stepper input {
+  width: 100%;
+  min-width: 0;
+  height: 31px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--cfg-ink-2);
+}
+
+.site-config-agent-stepper button {
+  display: grid;
+  place-items: center;
+  font-size: 8px;
+}
+
+.site-config-agent-stepper button:first-child {
+  border-right: 1px solid var(--cfg-line-soft);
+}
+
+.site-config-agent-stepper button:last-child {
+  border-left: 1px solid var(--cfg-line-soft);
+}
+
+.site-config-agent-stepper button:hover:not(:disabled) {
+  background: var(--cfg-orange-soft);
+  color: var(--cfg-orange-ink);
+}
+
+.site-config-agent-stepper input {
+  outline: 0;
+  color: var(--cfg-ink);
+  font: 700 11px/31px var(--cfg-mono);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.site-config-agent-stepper input:focus-visible {
+  box-shadow: none;
+}
+
+.site-config-agent-stepper:focus-within {
+  border-color: #c2410c;
+  box-shadow: 0 0 0 1px #c2410c;
+}
+
+.site-config-agent-stepper input[aria-invalid="true"] {
+  background: var(--cfg-red-soft);
+  color: var(--cfg-red);
+}
+
+.site-config-agent-concurrency-save {
+  min-width: 52px;
 }
 
 .site-config-feature-grid {
@@ -1366,13 +1463,23 @@
     grid-template-columns: 1fr;
   }
 
-  .site-config-agent-access {
+  .site-config-agent-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .site-config-agent-access,
+  .site-config-agent-concurrency {
     grid-template-columns: 38px minmax(0, 1fr);
   }
 
-  .site-config-agent-access > .site-config-switch {
+  .site-config-agent-access > .site-config-switch,
+  .site-config-agent-concurrency-control {
     width: 100%;
     grid-column: 1 / -1;
+  }
+
+  .site-config-agent-concurrency-control {
+    justify-content: flex-end;
   }
 
   .site-config-form-grid label.wide {
@@ -1476,6 +1583,7 @@
   .site-config-endpoint-card,
   .site-config-feature-card,
   .site-config-service-card,
+  .site-config-agent-concurrency,
   .site-config-v2 .rk-choice-trigger,
   .site-config-v2 .rk-choice-menu {
     border-color: CanvasText;

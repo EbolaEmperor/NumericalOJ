@@ -262,7 +262,7 @@ def test_local_development_supervisor_also_uses_project_local_logs():
     assert '/tmp/' not in '\n'.join(logfile_lines)
 
 
-def test_agent_workers_use_one_slot_and_one_prefetched_message():
+def test_agent_workers_start_with_safe_autoscale_and_one_prefetched_message():
     for filename in ('celery.conf', 'local-dev.conf'):
         parser = configparser.RawConfigParser()
         parser.read(
@@ -270,7 +270,16 @@ def test_agent_workers_use_one_slot_and_one_prefetched_message():
             encoding='utf-8',
         )
         command = parser.get('program:celery_agent', 'command')
-        assert '-Q agent -c 1 --prefetch-multiplier=1' in command
+        assert '-Q agent --autoscale=1,1 --prefetch-multiplier=1' in command
+        assert ' -c 1 ' not in command
+
+
+def test_agent_worker_dynamic_concurrency_is_installed_at_composition_root():
+    install = _top_level_call('install_agent_concurrency_control')
+    configure = _top_level_call('configure_agent_concurrency_runtime_applier')
+
+    assert install.lineno < configure.lineno
+    assert 'apply_agent_concurrency_limit(celery, limit)' in ast.unparse(configure)
 
 
 def test_business_processes_preserve_container_readable_file_modes():
