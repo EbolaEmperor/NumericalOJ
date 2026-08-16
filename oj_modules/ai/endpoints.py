@@ -55,7 +55,8 @@ _VISION_CATEGORIES = {
     LLMEndpointCategory.VISION,
 }
 _ANTHROPIC_VERSION = "2023-06-01"
-_DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
+_DEFAULT_CONTEXT_WINDOW_TOKENS = 384_000
+_DEFAULT_MAX_OUTPUT_TOKENS = 32_000
 _PROBE_MAX_TOKENS = 64
 
 _MODEL_CONTEXT_LIMIT_FIELDS = frozenset({
@@ -119,6 +120,21 @@ def _strict_bool(value, field_name):
     raise LLMEndpointValidationError(f"{field_name} 必须是布尔值。")
 
 
+def _endpoint_token_limit(value, field_name, default):
+    """读取端点容量；缺失旧配置时使用与动态配置一致的默认值。"""
+
+    raw = default if value in (None, "") else value
+    if isinstance(raw, bool):
+        raise LLMEndpointValidationError(f"{field_name} 必须是正整数。")
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise LLMEndpointValidationError(f"{field_name} 必须是正整数。") from None
+    if parsed <= 0:
+        raise LLMEndpointValidationError(f"{field_name} 必须是正整数。")
+    return parsed
+
+
 def _normalize_base_url(value):
     raw = str(value or "").strip()
     if not raw:
@@ -151,6 +167,8 @@ class LLMEndpointSnapshot:
     model: str
     thinking_enabled: bool = False
     thinking_format: OpenAIThinkingWireFormat | str = OpenAIThinkingWireFormat.NONE
+    context_window_tokens: int = _DEFAULT_CONTEXT_WINDOW_TOKENS
+    max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS
 
     def __post_init__(self):
         if self.id is not None:
@@ -177,6 +195,18 @@ class LLMEndpointSnapshot:
             self.thinking_format,
             "思考参数格式",
         )
+        context_window_tokens = _endpoint_token_limit(
+            self.context_window_tokens,
+            "上下文窗口",
+            _DEFAULT_CONTEXT_WINDOW_TOKENS,
+        )
+        max_output_tokens = _endpoint_token_limit(
+            self.max_output_tokens,
+            "单次最大输出",
+            _DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+        if max_output_tokens > context_window_tokens:
+            raise LLMEndpointValidationError("单次最大输出不能超过上下文窗口。")
 
         if category is LLMEndpointCategory.EMBEDDING:
             if protocol is not LLMProtocol.OPENAI:
@@ -200,6 +230,8 @@ class LLMEndpointSnapshot:
         object.__setattr__(self, "base_url", _normalize_base_url(self.base_url))
         object.__setattr__(self, "thinking_enabled", thinking_enabled)
         object.__setattr__(self, "thinking_format", thinking_format)
+        object.__setattr__(self, "context_window_tokens", context_window_tokens)
+        object.__setattr__(self, "max_output_tokens", max_output_tokens)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]):
@@ -219,6 +251,14 @@ class LLMEndpointSnapshot:
             model=value.get("model", ""),
             thinking_enabled=value.get("thinking_enabled", False),
             thinking_format=thinking_format,
+            context_window_tokens=value.get(
+                "context_window_tokens",
+                _DEFAULT_CONTEXT_WINDOW_TOKENS,
+            ),
+            max_output_tokens=value.get(
+                "max_output_tokens",
+                _DEFAULT_MAX_OUTPUT_TOKENS,
+            ),
         )
 
     @property
@@ -240,6 +280,8 @@ class LLMEndpointSnapshot:
             "model": self.model,
             "thinking_enabled": self.thinking_enabled,
             "thinking_format": self.thinking_format.value,
+            "context_window_tokens": self.context_window_tokens,
+            "max_output_tokens": self.max_output_tokens,
             "has_api_key": self.has_api_key,
         }
 
@@ -838,7 +880,14 @@ def _build_chat_payload(
     max_tokens=None,
     stream=False,
 ):
-    max_tokens = _positive_int(max_tokens, "max_tokens")
+    requested_max_tokens = _positive_int(max_tokens, "max_tokens")
+    # 所有协议统一遵守节点容量。显式调用方只能进一步缩小本次输出，不能
+    # 绕过节点管理员配置的 max_output_tokens；上下文窗口同时作为安全上限。
+    max_tokens = min(
+        requested_max_tokens or endpoint.max_output_tokens,
+        endpoint.max_output_tokens,
+        endpoint.context_window_tokens,
+    )
     if endpoint.protocol is LLMProtocol.OPENAI:
         payload = {
             "model": endpoint.model,
@@ -856,7 +905,7 @@ def _build_chat_payload(
         payload = {
             "model": endpoint.model,
             "messages": anthropic_messages,
-            "max_tokens": max_tokens or _DEFAULT_ANTHROPIC_MAX_TOKENS,
+            "max_tokens": max_tokens,
             "stream": bool(stream),
         }
         if system:
