@@ -8,6 +8,7 @@ import pytest
 from oj_modules.agents import workspace as agent_workspace
 from oj_modules.agents import runtime_checkpoints
 from oj_modules.problems import agent_runs
+from oj_modules.ranking.reverse_judge import traces as reverse_traces
 from oj_modules.ranking.reverse_judge.traces import (
     collect_agent_token_usage,
     collect_agent_trace_messages,
@@ -1629,7 +1630,7 @@ def test_canonical_journal_keeps_early_usage_after_large_stdout_and_redacts(
             json.dumps({
                 "type": "numoj_control",
                 "version": 1,
-                "id": "not-in-trace",
+                "id": "steer-boundary",
                 "status": "accepted",
             })
             + "\n"
@@ -1658,10 +1659,138 @@ def test_canonical_journal_keeps_early_usage_after_large_stdout_and_redacts(
     rendered = (
         trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME
     ).read_text(encoding="utf-8")
-    assert "not-in-trace" not in rendered
+    assert '"type":"numoj_steer"' in rendered
+    assert '"message_id":"steer-boundary"' in rendered
+    assert "numoj_control" not in rendered
     assert secret not in rendered
     assert "[REDACTED]" in rendered
     assert collect_agent_token_usage(trace_dir)["input_total_tokens"] == 13
+
+
+def test_canonical_steer_markers_require_opt_in_and_survive_trace_cap(tmp_path):
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    records = [{
+        "type": "numoj_steer",
+        "version": 1,
+        "message_id": "steer-kept",
+    }]
+    records.extend({
+        "type": "numoj_trace",
+        "version": 1,
+        "event": {
+            "id": f"thinking-{index}",
+            "kind": "thinking",
+            "text": f"步骤 {index}",
+        },
+    } for index in range(245))
+    (trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME).write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
+        encoding="utf-8",
+    )
+
+    judge_messages = collect_agent_trace_messages(trace_dir)
+    agent_messages = collect_agent_trace_messages(
+        trace_dir,
+        include_steer_markers=True,
+    )
+
+    assert len(judge_messages) == 240
+    assert all(item["kind"] != "steer" for item in judge_messages)
+    assert len(agent_messages) == 240
+    assert [
+        item.get("message_id")
+        for item in agent_messages
+        if item["kind"] == "steer"
+    ] == ["steer-kept"]
+    assert sum(item["kind"] == "thinking" for item in agent_messages) == 239
+
+
+def test_canonical_journal_capacity_pins_steer_boundary(tmp_path):
+    source = tmp_path / "canonical.tmp"
+    observer = runtime._CanonicalJournalObserver(source, max_bytes=4096)
+    observer.feed((json.dumps({
+        "type": "numoj_control",
+        "version": 1,
+        "id": "steer-pinned",
+        "status": "accepted",
+    }) + "\n").encode("utf-8"))
+    for index in range(12):
+        observer.feed((json.dumps({
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {
+                "id": f"tool-{index}:result",
+                "kind": "tool_result",
+                "text": "x" * 700,
+            },
+        }) + "\n").encode("utf-8"))
+    observer.feed((json.dumps({
+        "type": "numoj_trace",
+        "version": 1,
+        "event": {
+            "id": "assistant-final",
+            "kind": "assistant",
+            "text": "最终交付",
+        },
+    }, ensure_ascii=False) + "\n").encode("utf-8"))
+    observer.close()
+
+    records = [
+        json.loads(line)
+        for line in source.read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(
+        item.get("type") == "numoj_steer"
+        and item.get("message_id") == "steer-pinned"
+        for item in records
+    )
+    assert any(
+        item.get("type") == "numoj_trace"
+        and item.get("event", {}).get("id") == "assistant-final"
+        for item in records
+    )
+    assert source.stat().st_size <= 4096
+
+
+def test_canonical_steer_stays_live_and_is_found_before_tail_window(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "canonical.tmp"
+    observer = runtime._CanonicalJournalObserver(source)
+    observer.feed((json.dumps({
+        "type": "numoj_control",
+        "version": 1,
+        "id": "steer-in-prefix",
+        "status": "accepted",
+    }) + "\n").encode("utf-8"))
+    observer.feed((json.dumps({
+        "type": "numoj_trace",
+        "version": 1,
+        "event": {"kind": "thinking", "text": "仍在实时输出"},
+    }, ensure_ascii=False) + "\n").encode("utf-8"))
+
+    # steer 不能让 observer 提前进入只在 close 时刷新的滚动尾模式。
+    assert "仍在实时输出" in source.read_text(encoding="utf-8")
+    observer.close()
+
+    trace_dir = tmp_path / "trace"
+    trace_dir.mkdir()
+    rendered = source.read_bytes() + (b"x" * 512 + b"\n")
+    (trace_dir / agent_traces.CANONICAL_AGENT_TRACE_FILENAME).write_bytes(rendered)
+    monkeypatch.setattr(reverse_traces, "_CANONICAL_JSONL_TAIL_MAX_BYTES", 128)
+
+    messages = collect_agent_trace_messages(
+        trace_dir,
+        include_steer_markers=True,
+    )
+
+    assert [
+        message.get("message_id")
+        for message in messages
+        if message.get("kind") == "steer"
+    ] == ["steer-in-prefix"]
 
 
 def test_canonical_journal_keeps_adapter_usage_as_trace_only(tmp_path):

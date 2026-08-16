@@ -2686,7 +2686,9 @@ def _run_opencode_interactive(
                 result.append((info, parts))
             return result
 
-        def send_prompt(command_id, message, *, deterministic_id=False):
+        def send_prompt(
+                command_id, message, *, deterministic_id=False,
+                require_confirmation=False):
             nonlocal completion_must_follow_seq, failed
             nonlocal latest_prompt_accepted_at
             nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
@@ -2695,6 +2697,8 @@ def _run_opencode_interactive(
             try:
                 before = message_snapshot()
             except Exception:
+                if require_confirmation:
+                    raise
                 before = []
             proposed_baseline_ids = {
                 str(info.get("id") or "")
@@ -2735,7 +2739,10 @@ def _run_opencode_interactive(
                 nonlocal saw_assistant_after_latest_prompt, session_error_seen
                 latest_prompt_baseline_ids = proposed_baseline_ids
                 latest_prompt_user_id = proposed_user_id
-                completion_must_follow_seq = received_event_seq["value"]
+                # 这里只记录已经由主循环投影完成的 SSE 边界。HTTP 请求
+                # 返回期间可能已经收到新 prompt 产生的 assistant/tool 事件，
+                # 不能把它们误当成插话前的 backlog。
+                completion_must_follow_seq = processed_event_seq
                 saw_assistant_after_latest_prompt = False
                 session_error_seen = False
                 latest_prompt_accepted_at = time.monotonic()
@@ -2761,6 +2768,7 @@ def _run_opencode_interactive(
                 raise
             commit_tracking()
             previous_prompt_tracking = None
+            return proposed_baseline_ids
 
         threading.Thread(target=read_sse, daemon=True).start()
         if not event_connected.wait(10):
@@ -2772,6 +2780,7 @@ def _run_opencode_interactive(
         session_error_seen = False
         assistant_ids = set()
         projected_part_states = set()
+        processed_event_seq = 0
         settled = False
         send_prompt("__start__", prompt, deterministic_id=is_new_session)
         _emit_control("__start__", "accepted")
@@ -3071,13 +3080,175 @@ def _run_opencode_interactive(
                 settled = True
                 stop_sse.set()
 
+        def consume_v1_event(event, *, reconcile=True):
+            nonlocal processed_event_seq
+            if event is None:
+                if not settled:
+                    raise RuntimeError("OpenCode 事件流意外关闭")
+                return
+            if not isinstance(event, dict):
+                return
+            if event.get("_numoj_sse_error"):
+                raise RuntimeError(str(event.get("_numoj_sse_error")))
+            if event.get("_numoj_sse_connected"):
+                if reconcile:
+                    try:
+                        reconcile_durable_snapshot()
+                    except Exception:
+                        pass
+                return
+            project_v1_event(event)
+            try:
+                event_seq = int(event.get("_numoj_received_seq") or 0)
+            except (TypeError, ValueError):
+                event_seq = 0
+            processed_event_seq = max(processed_event_seq, event_seq)
+
+        def replayed_user_id(event, baseline_ids):
+            if not isinstance(event, dict) or event.get("type") != "message.updated":
+                return ""
+            props = (
+                event.get("properties")
+                if isinstance(event.get("properties"), dict) else {}
+            )
+            if str(props.get("sessionID") or "") != session_id:
+                return ""
+            info = props.get("info") if isinstance(props.get("info"), dict) else {}
+            message_id = str(info.get("id") or "")
+            if info.get("role") != "user" or not message_id:
+                return ""
+            return "" if message_id in baseline_ids else message_id
+
+        def new_assistant_parent_id(event, baseline_ids):
+            if not isinstance(event, dict) or event.get("type") != "message.updated":
+                return ""
+            props = (
+                event.get("properties")
+                if isinstance(event.get("properties"), dict) else {}
+            )
+            if str(props.get("sessionID") or "") != session_id:
+                return ""
+            info = props.get("info") if isinstance(props.get("info"), dict) else {}
+            parent_id = str(info.get("parentID") or info.get("parentId") or "")
+            if info.get("role") != "assistant" or not parent_id:
+                return ""
+            return "" if parent_id in baseline_ids else parent_id
+
+        def durable_prompt_user_id(baseline_ids):
+            try:
+                snapshot = message_snapshot()
+            except Exception:
+                return ""
+            candidates = [
+                str(info.get("id") or "")
+                for info, _parts in snapshot
+                if str(info.get("role") or "") == "user"
+                and str(info.get("id") or "")
+                and str(info.get("id") or "") not in baseline_ids
+            ]
+            return candidates[-1] if candidates else ""
+
+        def wait_for_prompt_acceptance(baseline_ids):
+            """等 OpenCode 持久化新 user，再允许宿主写 accepted 锚点。"""
+
+            nonlocal latest_prompt_user_id, completion_must_follow_seq
+            deadline = time.monotonic() + OPENCODE_PROMPT_PERSISTENCE_SECONDS
+            held_events = []
+            while time.monotonic() < deadline:
+                try:
+                    event = events.get(timeout=0.1)
+                except queue.Empty:
+                    user_id = durable_prompt_user_id(baseline_ids)
+                    if user_id:
+                        latest_prompt_user_id = user_id
+                        completion_must_follow_seq = processed_event_seq
+                        return held_events
+                    if settled:
+                        raise RuntimeError("OpenCode 当前轮次已结束，未接收插话")
+                    if server.poll() is not None:
+                        raise RuntimeError("OpenCode serve 意外退出")
+                    continue
+
+                if (
+                    event is None
+                    or not isinstance(event, dict)
+                    or event.get("_numoj_sse_error")
+                    or event.get("_numoj_sse_connected")
+                ):
+                    consume_v1_event(event, reconcile=False)
+                    continue
+
+                user_id = replayed_user_id(event, baseline_ids)
+                if user_id:
+                    latest_prompt_user_id = user_id
+                    if held_events:
+                        held_events.append(event)
+                    else:
+                        consume_v1_event(event, reconcile=False)
+                    completion_must_follow_seq = processed_event_seq
+                    return held_events
+
+                if held_events:
+                    held_events.append(event)
+                    continue
+
+                # 某些版本会漏掉 user replay，却先推送以该 user 为 parent
+                # 的 assistant。此时先用 durable API 证实 user 已落盘，
+                # 把当前 assistant 留到 accepted 锚点之后再投影。
+                parent_id = new_assistant_parent_id(event, baseline_ids)
+                if parent_id:
+                    durable_id = durable_prompt_user_id(baseline_ids)
+                    if durable_id:
+                        latest_prompt_user_id = durable_id
+                        completion_must_follow_seq = processed_event_seq
+                        return [event]
+                    held_events.append(event)
+                    continue
+
+                consume_v1_event(event, reconcile=False)
+                if settled:
+                    user_id = durable_prompt_user_id(baseline_ids)
+                    if user_id:
+                        latest_prompt_user_id = user_id
+                        completion_must_follow_seq = processed_event_seq
+                        return held_events
+                    raise RuntimeError("OpenCode 当前轮次已结束，未接收插话")
+            raise RuntimeError("OpenCode 未确认插话消息已经持久化")
+
         last_reconcile_at = 0.0
         while not settled:
+            # prompt_async 与 SSE 是两条连接。先投影已经到达宿主的
+            # SSE 事件，避免旧工具/回复因队列积压被画到新插话之后。
+            while True:
+                try:
+                    consume_v1_event(events.get_nowait())
+                except queue.Empty:
+                    break
+            if settled:
+                for command in commands.drain():
+                    _emit_control(
+                        str(command.get("id") or ""),
+                        "rejected",
+                        "OpenCode 当前轮次已经结束",
+                    )
+                break
             for command in commands.drain():
                 command_id = str(command.get("id") or "")
                 try:
+                    if settled:
+                        _emit_control(
+                            command_id,
+                            "rejected",
+                            "OpenCode 当前轮次已经结束",
+                        )
+                        continue
                     if command.get("type") == "steer":
-                        send_prompt(command_id, command.get("message"))
+                        baseline_ids = send_prompt(
+                            command_id,
+                            command.get("message"),
+                            require_confirmation=True,
+                        )
+                        deferred_events = wait_for_prompt_acceptance(baseline_ids)
                     else:
                         _http_request(
                             base_url,
@@ -3085,12 +3256,17 @@ def _run_opencode_interactive(
                             method="POST",
                         )
                         interrupted = True
+                        deferred_events = ()
                     _emit_control(command_id, "accepted")
+                    for deferred_event in deferred_events:
+                        consume_v1_event(deferred_event, reconcile=False)
                 except urllib.error.HTTPError as exc:
                     detail = exc.read().decode("utf-8", "replace")
                     _emit_control(command_id, "rejected", detail or str(exc))
                 except Exception as exc:
                     _emit_control(command_id, "unknown", str(exc))
+            if settled:
+                break
             now = time.monotonic()
             if (
                 now - last_reconcile_at
@@ -3111,19 +3287,7 @@ def _run_opencode_interactive(
                 if server.poll() is not None:
                     raise RuntimeError("OpenCode serve 意外退出")
                 continue
-            if event is None:
-                if not settled:
-                    raise RuntimeError("OpenCode 事件流意外关闭")
-                break
-            if event.get("_numoj_sse_error"):
-                raise RuntimeError(str(event.get("_numoj_sse_error")))
-            if event.get("_numoj_sse_connected"):
-                try:
-                    reconcile_durable_snapshot()
-                except Exception:
-                    pass
-                continue
-            project_v1_event(event)
+            consume_v1_event(event)
         returncode = 130 if interrupted else (2 if failed else 0)
     except Exception as exc:
         if not locals().get("start_accepted", False):

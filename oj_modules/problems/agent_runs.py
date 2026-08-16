@@ -7,6 +7,10 @@ import hashlib
 from pathlib import Path
 import re
 
+from oj_modules.agents.messages import (
+    get_agent_session_message,
+    list_agent_session_messages,
+)
 from oj_modules.config import AGENT_WORKSPACE_ROOT
 from oj_modules.problems.agent_launch import token_pricing_from_endpoint
 from oj_modules.ranking.reverse_judge.traces import (
@@ -29,6 +33,76 @@ _SESSION_USAGE_COUNTER_FIELDS = (
     "reasoning_output_tokens",
 )
 _CUMULATIVE_RESUME_USAGE_SOURCES = frozenset({"claude_code", "pi"})
+
+
+def _hydrate_agent_steer_trace_messages(state, messages, *, records=None):
+    """把 canonical journal 中不含 Prompt 的已接收锚点投影为用户消息。
+
+    marker 本身来自 Harness 的 accepted 回执，是投递事实；数据库状态只
+    保存页面/队列进度，不能因一次回执写库失败而覆盖这个更强的事实源。
+    """
+
+    marker_ids = tuple(dict.fromkeys(
+        str(item.get("message_id") or "").strip()
+        for item in messages or ()
+        if isinstance(item, dict)
+        and str(item.get("kind") or "").strip().lower() == "steer"
+        and str(item.get("message_id") or "").strip()
+    ))
+    if not marker_ids:
+        return list(messages or ())
+
+    session_id = str((state or {}).get("session_id") or "").strip()
+    if records is None:
+        try:
+            if session_id:
+                records = list_agent_session_messages(
+                    session_id,
+                    delivery_modes="steer",
+                )
+            else:
+                records = [
+                    get_agent_session_message(message_id)
+                    for message_id in marker_ids
+                ]
+        except Exception:
+            # 轨迹仍可以继续显示；数据库瞬时不可用时宁可暂不
+            # 显示插话，也不能把只有 control id 的锚点泄露给页面。
+            records = []
+    else:
+        records = list(records or ())
+    task_id = str((state or {}).get("task_id") or "").strip()
+    records_by_id = {
+        str(record.get("message_id") or "").strip(): record
+        for record in records
+        if isinstance(record, dict)
+        and str(record.get("delivery_mode") or "").strip().lower() == "steer"
+        and (
+            not task_id
+            or str(record.get("target_task_id") or "").strip() == task_id
+        )
+    }
+    hydrated = []
+    for item in messages or ():
+        if not isinstance(item, dict) or str(
+            item.get("kind") or ""
+        ).strip().lower() != "steer":
+            hydrated.append(item)
+            continue
+        message_id = str(item.get("message_id") or "").strip()
+        record = records_by_id.get(message_id)
+        if not record:
+            continue
+        hydrated.append({
+            "kind": "user",
+            "title": "用户插话",
+            "text": str(record.get("user_message") or ""),
+            "message_id": message_id,
+            "attachments": list(record.get("attachments") or ()),
+            "delivered_at": record.get("delivered_at"),
+            "line": item.get("line"),
+        })
+    return hydrated
 
 
 def normalize_agent_task_id(task_id):
@@ -93,7 +167,7 @@ def _current_token_pricing(state):
     return token_pricing_from_endpoint(endpoint)
 
 
-def build_agent_execution_trace(state):
+def build_agent_execution_trace(state, *, steer_records=None):
     """按 Reverse Judge 的公共 JSONL 解析契约构造执行轨迹。"""
 
     state = state if isinstance(state, dict) else {}
@@ -116,6 +190,14 @@ def build_agent_execution_trace(state):
         )
         if cost_rmb is not None:
             token_usage["cost_rmb"] = cost_rmb
+    trace_messages = _hydrate_agent_steer_trace_messages(
+        state,
+        collect_agent_trace_messages(
+            trace_dir,
+            include_steer_markers=True,
+        ),
+        records=steer_records,
+    )
     trace = {
         "trace_id": (
             hashlib.sha256(task_id.encode("utf-8", "replace")).hexdigest()[:16]
@@ -129,7 +211,7 @@ def build_agent_execution_trace(state):
         "stdout": "",
         "stderr": "",
         "trace_files": collect_agent_trace_files(trace_dir),
-        "trace_messages": collect_agent_trace_messages(trace_dir),
+        "trace_messages": trace_messages,
         "token_usage": token_usage,
     }
     if canonical_journal:
@@ -260,7 +342,7 @@ def aggregate_agent_session_token_usage(task_usages):
     return totals
 
 
-def hydrate_agent_run_snapshot(state):
+def hydrate_agent_run_snapshot(state, *, steer_records=None):
     """从磁盘规范 JSONL 重建轨迹；不读取或兼容旧 events。"""
 
     if not isinstance(state, dict):
@@ -268,7 +350,10 @@ def hydrate_agent_run_snapshot(state):
     snapshot = dict(state)
     snapshot.pop("events", None)
     snapshot.pop("token_pricing", None)
-    snapshot["execution_trace"] = build_agent_execution_trace(snapshot)
+    snapshot["execution_trace"] = build_agent_execution_trace(
+        snapshot,
+        steer_records=steer_records,
+    )
     return snapshot
 
 

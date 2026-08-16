@@ -76,6 +76,92 @@ def test_canonical_journal_marks_trace_incremental_before_usage_arrives(
     assert trace["token_usage"] is None
 
 
+def test_canonical_steer_boundary_is_delivery_fact_if_status_write_was_lost(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
+    trace_dir = agent_runs.agent_run_trace_dir("task-steer")
+    trace_dir.mkdir(parents=True)
+    records = [
+        {
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {"kind": "thinking", "text": "插话前"},
+        },
+        {
+            "type": "numoj_steer",
+            "version": 1,
+            "message_id": "steer-1",
+        },
+        {
+            "type": "numoj_trace",
+            "version": 1,
+            "event": {"kind": "assistant", "text": "插话后"},
+        },
+    ]
+    (trace_dir / "numoj_trace_v1.jsonl").write_text(
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_session_messages",
+        lambda *_args, **_kwargs: [{
+            "message_id": "steer-1",
+            "delivery_mode": "steer",
+            "status": "unknown",
+            "target_task_id": "task-steer",
+            "user_message": "改为检查边界",
+            "attachments": [{"name": "note.txt", "path": "note.txt"}],
+            "delivered_at": "2026-08-17 10:00:00",
+        }],
+    )
+
+    trace = agent_runs.build_agent_execution_trace({
+        "task_id": "task-steer",
+        "session_id": "session-1",
+        "status": "Running",
+    })
+
+    assert [item["kind"] for item in trace["trace_messages"]] == [
+        "thinking", "user", "assistant",
+    ]
+    assert trace["trace_messages"][1]["text"] == "改为检查边界"
+    assert trace["trace_messages"][1]["message_id"] == "steer-1"
+    assert trace["trace_messages"][1]["attachments"][0]["name"] == "note.txt"
+
+
+def test_canonical_steer_boundary_does_not_render_unconfirmed_message(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
+    trace_dir = agent_runs.agent_run_trace_dir("task-steer-pending")
+    trace_dir.mkdir(parents=True)
+    (trace_dir / "numoj_trace_v1.jsonl").write_text(
+        json.dumps({
+            "type": "numoj_steer",
+            "version": 1,
+            "message_id": "steer-pending",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_session_messages",
+        lambda *_args, **_kwargs: [],
+    )
+
+    trace = agent_runs.build_agent_execution_trace({
+        "task_id": "task-steer-pending",
+        "session_id": "session-1",
+        "status": "Running",
+    })
+
+    assert trace["trace_messages"] == []
+
+
 @pytest.mark.parametrize(
     ("task_status", "trace_status"),
     [

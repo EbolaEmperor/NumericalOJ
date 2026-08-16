@@ -110,6 +110,55 @@ def test_steer_rejects_a_stale_client_task_without_falling_back_to_queue(
     assert connection.rollbacks == 1
 
 
+def test_queued_message_can_be_atomically_promoted_to_current_steer(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        _session_row(status="Running"),
+        _message_row(),
+    ])
+    monkeypatch.setattr(messages, "get_db_connection", lambda: connection)
+
+    result = messages.steer_queued_agent_session_message(
+        "session-1",
+        "message-1",
+        task_id="turn-current",
+    )
+
+    assert result["message_id"] == "message-1"
+    assert result["delivery_mode"] == "steer"
+    assert result["status"] == "queued"
+    assert result["target_task_id"] == "turn-current"
+    queries = [query for query, _params in connection.cursor_instance.calls]
+    assert "FROM agent_sessions" in queries[0] and "FOR UPDATE" in queries[0]
+    assert "FROM agent_session_messages" in queries[1] and "FOR UPDATE" in queries[1]
+    assert "SET delivery_mode='steer'" in queries[2]
+    assert connection.commits == 1
+
+
+def test_send_now_replay_returns_the_same_promoted_message(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        _session_row(status="Running"),
+        _message_row(
+            delivery_mode="steer",
+            status="sent",
+            target_task_id="turn-current",
+        ),
+    ])
+    monkeypatch.setattr(messages, "get_db_connection", lambda: connection)
+
+    result = messages.steer_queued_agent_session_message(
+        "session-1",
+        "message-1",
+        task_id="turn-current",
+    )
+
+    assert result["delivery_mode"] == "steer"
+    assert result["status"] == "sent"
+    assert not any(
+        "UPDATE agent_session_messages" in query
+        for query, _params in connection.cursor_instance.calls
+    )
+
+
 def test_claim_queue_message_creates_turn_and_updates_session_atomically(monkeypatch):
     connection = _ScriptedConnection(
         one_values=[

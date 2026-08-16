@@ -378,8 +378,10 @@ def test_agent_detail_defers_folded_trace_until_first_expand():
     assert "turn.has_detail|default(false)" in template
     assert "function requestTaskState(taskId)" in controller
     assert "function loadHistoricalTrace(details)" in controller
-    assert "function bindLazyHistoricalTraces()" in controller
-    assert "if (details.open) loadHistoricalTrace(details);" in controller
+    assert "function bindTurnDetails(scope)" in controller
+    assert "syncTurnDetailState(details)" in controller
+    assert "details.open && details.hasAttribute('data-agent-lazy-trace')" in controller
+    assert "loadHistoricalTrace(details);" in controller
     assert "details.dataset.agentLazyLoaded = 'true';" in controller
 
 
@@ -393,7 +395,7 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
         "data-session-stream-url",
         "data-queue-update-url-template",
         "data-queue-delete-url-template",
-        "data-queue-reorder-url",
+        "data-queue-send-now-url-template",
         "data-queue-resume-url",
         "data-agent-message-state-json",
     ):
@@ -412,17 +414,24 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert "安排下一条消息…" in controller
     assert "function renderMessageQueue(state)" in controller
     assert "function renderSteerMessages(state)" in controller
-    assert "message.target_task_id || message.task_id" in controller
+    assert "message.target_task_id || message.final_task_id || message.task_id" in controller
     assert "=== currentTaskId" in controller
     assert (
         "turn.steer_messages and not (is_running and turn.task_id == current_task_id)"
         in template
     )
-    assert "function persistQueueOrder(messageIds)" in controller
+    assert "function sendQueueMessageNow(item, message)" in controller
+    assert "body.append('expected_task_id', currentTaskId)" in controller
+    assert "data-agent-queue-send-now" in controller
+    assert "'fas fa-paper-plane', '立刻发送'" in controller
     assert "function queueEditor(item, message)" in controller
     assert "body.append('remove_attachment', path)" in controller
-    assert '[data-delivery-status="queued"]' in controller
-    assert "source.dataset.deliveryStatus !== 'queued'" in controller
+    assert "function persistQueueOrder(messageIds)" not in controller
+    assert "function moveQueueMessage(messageId, direction)" not in controller
+    assert "function sentSteerMessages(state, taskId)" in controller
+    assert "function userTimelineMessage(message, extraClass)" in controller
+    assert "messageKind(message) === 'user'" in controller
+    assert "agent-trace-event--before-steer" in controller
     assert "new global.EventSource(endpoint)" in controller
     assert "transitionToTask(taskId, state)" in controller
     assert 'aria-keyshortcuts="Enter Shift+Enter Control+Enter Meta+Enter"' in template
@@ -435,8 +444,9 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert ".agent-message-queue" in styles
     assert ".agent-queue-item" in styles
     assert ".agent-resume-send[hidden] { display: none; }" in styles
-    assert ".agent-steer-message" in styles
-    assert ".agent-queue-mobile-move { display: grid; }" in styles
+    assert ".agent-timeline-steer" in styles
+    assert ".agent-turn.is-detail-expanded" in styles
+    assert "grid-template-columns: repeat(3, 34px);" in styles
 
 
 def test_paused_queue_without_native_session_keeps_queue_controls_available():
@@ -451,8 +461,7 @@ def test_paused_queue_without_native_session_keeps_queue_controls_available():
         in controller
     )
     assert (
-        "queueResumeButton.disabled = hardBlocked || resumePending "
-        "|| queueMutationPending;"
+        "queueResumeButton.disabled = hardBlocked || resumePending;"
         in controller
     )
     queue_renderer = controller.split(
@@ -460,7 +469,7 @@ def test_paused_queue_without_native_session_keeps_queue_controls_available():
     )[1].split("];", 1)[0]
     assert "hardBlocked," in queue_renderer
     assert "queuePaused," in queue_renderer
-    assert "if (hardBlocked || !movable)" in controller
+    assert "edit.disabled = remove.disabled = hardBlocked || !queued;" in controller
     assert "not queue_paused and not has_queued_messages" in template
     assert "is_hard_blocked or (not is_running and not has_resume_point" in template
 
@@ -480,7 +489,9 @@ def test_agent_detail_renders_all_message_mutation_urls_from_mapping_keys():
         "delete": (
             "/admin/agent_tasks/session-1/messages/__MESSAGE_ID__/delete"
         ),
-        "reorder": "/admin/agent_tasks/session-1/queue/reorder",
+        "send_now": (
+            "/admin/agent_tasks/session-1/messages/__MESSAGE_ID__/send-now"
+        ),
         "resume": "/admin/agent_tasks/session-1/queue/resume",
     }
 
@@ -505,7 +516,7 @@ def test_agent_detail_renders_all_message_mutation_urls_from_mapping_keys():
         "data-session-stream-url": message_urls["stream"],
         "data-queue-update-url-template": message_urls["update"],
         "data-queue-delete-url-template": message_urls["delete"],
-        "data-queue-reorder-url": message_urls["reorder"],
+        "data-queue-send-now-url-template": message_urls["send_now"],
         "data-queue-resume-url": message_urls["resume"],
     }
     for attribute, expected in expected_attributes.items():

@@ -2573,8 +2573,9 @@ def test_adapter_terminal_statuses_and_pi_settles_only_at_safe_boundary():
     }) == "failed"
 
 
+@pytest.mark.parametrize("confirmation_source", ("sse", "durable"))
 def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
-        monkeypatch):
+        monkeypatch, confirmation_source):
     module = _load_run_harness()
     servers = []
     prompt_payloads = []
@@ -2648,7 +2649,7 @@ def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
                 time.sleep(0.01)
             assert len(prompt_payloads) == 2
             assert "messageID" not in prompt_payloads[1]
-            # steer 已接受后，原轮 assistant 仍可能迟到上报 error；其
+            # steer 请求发出后，原轮 assistant 仍可能迟到上报 error；其
             # parent 已在 steer baseline 中，不能污染新 prompt 的终态。
             yield frame({
                 "type": "message.updated",
@@ -2665,6 +2666,17 @@ def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
             for index, text in enumerate(("第一段", "调整后完成"), start=1):
                 assistant_id = f"msg_019abcdef00{index}assistant"
                 if index == 2:
+                    if confirmation_source == "sse":
+                        yield frame({
+                            "type": "message.updated",
+                            "properties": {
+                                "sessionID": "ses_numoj_current",
+                                "info": {
+                                    "id": "msg_server_generated_steer",
+                                    "role": "user",
+                                },
+                            },
+                        })
                     yield frame({
                         "type": "message.updated",
                         "properties": {
@@ -2726,7 +2738,7 @@ def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
             if not prompt_payloads:
                 return []
             first_user = prompt_payloads[0]["messageID"]
-            return [
+            records = [
                 {"info": {"id": first_user, "role": "user"}, "parts": []},
                 {
                     "info": {
@@ -2737,6 +2749,15 @@ def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
                     "parts": [],
                 },
             ]
+            if len(prompt_payloads) >= 2:
+                records.append({
+                    "info": {
+                        "id": "msg_server_generated_steer",
+                        "role": "user",
+                    },
+                    "parts": [],
+                })
+            return records
         if path == "/session/ses_numoj_current/prompt_async" and method == "POST":
             prompt_payloads.append(dict(payload))
             return None
@@ -2782,12 +2803,23 @@ def test_opencode_v1_uses_prompt_async_streams_trace_and_accepts_steer(
         and item["event"].get("kind") == "assistant"
     ] == ["第一段", "调整后完成"]
     assert len([item for item in emitted if item.get("type") == "numoj_usage"]) == 2
-    assert any(
-        item.get("type") == "numoj_control"
+    first_trace_index = next(
+        index for index, item in enumerate(emitted)
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("text") == "第一段"
+    )
+    accepted_index = next(
+        index for index, item in enumerate(emitted)
+        if item.get("type") == "numoj_control"
         and item.get("id") == "steer-1"
         and item.get("status") == "accepted"
-        for item in emitted
     )
+    adjusted_trace_index = next(
+        index for index, item in enumerate(emitted)
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("text") == "调整后完成"
+    )
+    assert first_trace_index < accepted_index < adjusted_trace_index
 
 
 def test_opencode_v1_resume_uses_server_generated_ordered_message_id(
@@ -3624,6 +3656,7 @@ def test_opencode_rejected_steer_keeps_queued_terminal_events(monkeypatch):
     )
 
     assert completed.returncode == 0
+    assert len(prompt_payloads) == 1
     assert any(
         item.get("type") == "numoj_control"
         and item.get("id") == "late-steer"

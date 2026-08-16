@@ -709,6 +709,96 @@ def update_queued_agent_session_message(
         conn.close()
 
 
+def steer_queued_agent_session_message(session_id, message_id, *, task_id):
+    """将尚未投递的 FIFO 消息原子转换为当前任务的软插话。"""
+
+    session_id = _normalize_session_id(session_id)
+    message_id = normalize_agent_message_id(message_id)
+    task_id = _normalize_task_id(task_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT current_task_id, status
+                FROM agent_sessions
+                WHERE session_id=%s
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id,),
+            )
+            session = cursor.fetchone()
+            if not session:
+                raise AgentSessionMessageNotFoundError("Agent 会话不存在")
+            cursor.execute(
+                """
+                SELECT message_id, session_id, created_by, user_message,
+                       attachments_json, delivery_mode, status,
+                       target_task_id, final_task_id, queue_position,
+                       error_message, delivered_at, created_at, updated_at
+                FROM agent_session_messages
+                WHERE session_id=%s AND message_id=%s
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (session_id, message_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise AgentSessionMessageNotFoundError("Agent 排队消息不存在")
+            if (
+                row.get("delivery_mode") == "steer"
+                and str(row.get("target_task_id") or "") == task_id
+                and str(row.get("status") or "").lower()
+                in {"queued", "dispatching", "sent"}
+            ):
+                # 转换已经提交、但 HTTP 响应丢失时，同一按钮重试仍应
+                # 返回原记录，不能把真正已投递的插话误报为冲突。
+                result = _message_from_row(row)
+                conn.commit()
+                return result
+            if str(session.get("current_task_id") or "") != task_id:
+                raise AgentSessionMessageConflictError("Agent 当前任务已变化")
+            if str(session.get("status") or "").strip().lower() in (
+                _TERMINAL_SESSION_STATUSES
+            ):
+                raise AgentSessionMessageConflictError("Agent 当前任务已经结束")
+            if row.get("delivery_mode") != "queue" or row.get("status") != "queued":
+                raise AgentSessionMessageConflictError(
+                    "Agent 消息已开始投递，无法立刻发送"
+                )
+            cursor.execute(
+                """
+                UPDATE agent_session_messages
+                SET delivery_mode='steer', target_task_id=%s,
+                    final_task_id=NULL, dispatch_payload_json=NULL,
+                    dispatch_attempt_id=NULL, dispatch_attempted_at=NULL,
+                    broker_enqueued_at=NULL, error_message=NULL
+                WHERE session_id=%s AND message_id=%s
+                  AND delivery_mode='queue' AND status='queued'
+                """,
+                (task_id, session_id, message_id),
+            )
+            if cursor.rowcount <= 0:
+                raise AgentSessionMessageConflictError(
+                    "Agent 排队消息已变化，请刷新后重试"
+                )
+            row = dict(row)
+            row["delivery_mode"] = "steer"
+            row["target_task_id"] = task_id
+            row["final_task_id"] = None
+            row["error_message"] = None
+            result = _message_from_row(row)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def cancel_queued_agent_session_message(
     session_id,
     message_id,
@@ -1431,5 +1521,6 @@ __all__ = [
     "release_agent_session_message_dispatch_attempt",
     "set_agent_session_queue_paused",
     "sync_agent_message_state_in_transaction",
+    "steer_queued_agent_session_message",
     "update_queued_agent_session_message",
 ]

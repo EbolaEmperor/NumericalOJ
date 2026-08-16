@@ -27,6 +27,7 @@ from oj_modules.agents.messages import (
     reorder_queued_agent_session_messages,
     release_agent_session_message_dispatch_attempt,
     set_agent_session_queue_paused,
+    steer_queued_agent_session_message,
     sync_agent_message_state_in_transaction,
     update_queued_agent_session_message,
 )
@@ -1370,6 +1371,7 @@ __all__ = [
     "release_agent_session_message_dispatch_attempt",
     "set_agent_turn_attachments",
     "set_agent_session_queue_paused",
+    "steer_queued_agent_session_message",
     "sync_agent_session_state",
     "sync_agent_session_state_in_transaction",
     "update_agent_session_title",
