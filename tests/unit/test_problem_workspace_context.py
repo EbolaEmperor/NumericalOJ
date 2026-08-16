@@ -376,6 +376,36 @@ def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
     assert context["homework"]["ddl"] == "selected-class"
 
 
+def test_student_problem_detail_reports_expired_homework_submission_block(monkeypatch):
+    problem = {
+        "id": 7,
+        "content": "# 题面",
+        "initial_code": "",
+        "submission_limit": 10,
+    }
+    user = {"id": 8, "username": "student", "is_admin": 0}
+    monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
+    monkeypatch.setattr(
+        problem_context,
+        "get_homeworks",
+        lambda _user: [{"problem_id": 7, "ddl": datetime(2026, 1, 1)}],
+    )
+    monkeypatch.setattr(
+        problem_context,
+        "get_submission_summaries_by_user_and_problem",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(problem_context, "get_remaining_submissions", lambda *_args: 10)
+    monkeypatch.setattr(problem_context, "can_submit", lambda *_args: True)
+
+    context, error = problem_context.build_problem_detail_context(user, 7)
+
+    assert error is None
+    assert context["can_submit"] is False
+    assert context["submit_block_code"] == "homework_expired"
+    assert context["submit_block_reason"] == "作业已过期，你已经无法提交"
+
+
 def test_problem_routes_forward_class_query_and_protect_total_library(monkeypatch):
     app = Flask(__name__)
     app.secret_key = "test"

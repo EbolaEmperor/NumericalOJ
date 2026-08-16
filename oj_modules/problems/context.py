@@ -31,10 +31,20 @@ from oj_modules.problems.lean_workspace import get_current_lean_workspace
 from oj_modules.shared.markdown import render_rich_markdown
 
 
+HOMEWORK_EXPIRED_CODE = "homework_expired"
+HOMEWORK_EXPIRED_MESSAGE = "作业已过期，你已经无法提交"
+SUBMISSION_LIMIT_CODE = "submission_limit_reached"
+SUBMISSION_LIMIT_MESSAGE = "提交次数已达到上限，你已经无法提交"
+
+
 __all__ = (
     "build_problem_detail_context",
     "build_problem_library_context",
     "build_problem_list_context",
+    "HOMEWORK_EXPIRED_CODE",
+    "HOMEWORK_EXPIRED_MESSAGE",
+    "SUBMISSION_LIMIT_CODE",
+    "SUBMISSION_LIMIT_MESSAGE",
 )
 
 
@@ -49,6 +59,18 @@ def _base_problem_list_context():
         "daily_counts": daily_counts,
         "now": datetime.now(),
     }
+
+
+def _deadline_is_expired(deadline):
+    if isinstance(deadline, str):
+        try:
+            deadline = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    if not isinstance(deadline, datetime):
+        return False
+    now = datetime.now(deadline.tzinfo) if deadline.tzinfo else datetime.now()
+    return deadline < now
 
 
 def _selected_class_context(context, classes, requested_class_en):
@@ -293,11 +315,22 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
         if user['is_admin'] != 1
         else None
     )
-    can_submit_flag = (
+    can_submit_by_quota = (
         can_submit(user['username'], problem_id, submission_limit)
         if user['is_admin'] != 1
         else True
     )
+    submit_block_code = ""
+    submit_block_reason = ""
+    if user['is_admin'] != 1:
+        deadline = homework.get("ddl") if homework else None
+        if _deadline_is_expired(deadline):
+            submit_block_code = HOMEWORK_EXPIRED_CODE
+            submit_block_reason = HOMEWORK_EXPIRED_MESSAGE
+        elif not can_submit_by_quota:
+            submit_block_code = SUBMISSION_LIMIT_CODE
+            submit_block_reason = SUBMISSION_LIMIT_MESSAGE
+    can_submit_flag = not submit_block_code
 
     return {
         "problem": problem,
@@ -308,5 +341,7 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
         "lean_workspace": lean_workspace,
         "remaining_submissions": remaining_submissions,
         "can_submit": can_submit_flag,
+        "submit_block_code": submit_block_code,
+        "submit_block_reason": submit_block_reason,
         "homework": homework,
     }, None

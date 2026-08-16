@@ -1,3 +1,4 @@
+from datetime import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -512,6 +513,54 @@ def test_submit_route_handles_limit_exception_without_queueing(monkeypatch):
 
     assert response.status_code == 302
     assert queued == []
+
+
+def test_submit_route_returns_expired_homework_error_to_json_client(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "get_homeworks",
+        lambda _user: [{"problem_id": 7, "ddl": datetime(2026, 1, 1)}],
+    )
+
+    with _route_app().test_request_context(
+        "/submit/7",
+        method="POST",
+        data={"code": "print(1)"},
+        headers={"Accept": "application/json"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    response, status = response
+    assert status == 403
+    assert response.get_json() == {
+        "success": False,
+        "code": "homework_expired",
+        "message": "作业已过期，你已经无法提交",
+    }
+
+
+def test_submit_route_returns_submission_id_to_json_client(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 41)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "archive_submission_by_id",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(problem_core_routes, "_evaluate_submission_task", None)
+
+    with _route_app().test_request_context(
+        "/submit/7",
+        method="POST",
+        data={"code": "print(1)"},
+        headers={"Accept": "application/json"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    response, status = response
+    assert status == 201
+    assert response.get_json() == {"success": True, "submission_id": 41}
 
 
 def test_archive_failure_releases_counted_submission_quota(monkeypatch):

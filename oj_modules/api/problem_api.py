@@ -154,6 +154,8 @@ def problem_detail(problem_id):
         lean_workspace=context.get("lean_workspace"),
         remaining_submissions=context["remaining_submissions"],
         can_submit=context["can_submit"],
+        submit_block_code=context["submit_block_code"],
+        submit_block_reason=context["submit_block_reason"],
         submit={
             "action": f"/submit/{problem_id}",
             "method": "POST",

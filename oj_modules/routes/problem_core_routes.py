@@ -120,6 +120,8 @@ from oj_modules.problems.agent_preferences import (
 )
 from oj_modules.problems.catalog import get_homeworks, get_user_classes_cached
 from oj_modules.problems.context import (
+    HOMEWORK_EXPIRED_CODE,
+    HOMEWORK_EXPIRED_MESSAGE,
     build_problem_detail_context,
     build_problem_library_context,
     build_problem_list_context,
@@ -1392,6 +1394,10 @@ def _submission_limit_redirect(problem_id, submission_limit):
     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
 
+def _request_wants_json():
+    return request.is_json or 'application/json' in request.headers.get('Accept', '')
+
+
 def _record_archive_failure(submission_id, counted_submission_limit):
     try:
         mark_submission_archive_failed(
@@ -2274,7 +2280,13 @@ def submit_solution(problem_id):
         if ddls:
             latest_ddl = max(ddls)
             if latest_ddl < datetime.now():
-                flash('无法提交已过期的作业', 'danger')
+                if _request_wants_json():
+                    return jsonify(
+                        success=False,
+                        code=HOMEWORK_EXPIRED_CODE,
+                        message=HOMEWORK_EXPIRED_MESSAGE,
+                    ), 403
+                flash(HOMEWORK_EXPIRED_MESSAGE, 'danger')
                 return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
     submission_limit = problem.get('submission_limit', 10)
@@ -2426,6 +2438,8 @@ def submit_solution(problem_id):
             else:
                 _evaluate_submission_task.delay(submission_id)
 
+            if _request_wants_json():
+                return jsonify(success=True, submission_id=submission_id), 201
             return redirect(url_for('submission.submission_detail', submission_id=submission_id))
 
         if problem['type'] == 2:
