@@ -243,6 +243,9 @@
             <pre id="aiCotText" class="submission-ai-cot-text" aria-live="polite"></pre>
           </details>
           <div id="aiInlineStatus" class="submission-ai-status d-none" role="status" aria-live="polite"></div>
+          <div id="aiIssueHint" class="submission-ai-hint d-none">
+            鼠标移动到红色波浪线上可查看更详细的错误。
+          </div>
         </section>
       {% endif %}
     {% else %}
@@ -1277,6 +1280,7 @@
 <script>
   const askAiBtn = document.getElementById('askAiBtn');
   const aiInlineStatus = document.getElementById('aiInlineStatus');
+  const aiIssueHint = document.getElementById('aiIssueHint');
   const aiCotDetails = document.getElementById('aiCotDetails');
   const aiCotText = document.getElementById('aiCotText');
   const cachedAiCodeMarks = {{ cached_ai_code_marks | tojson }};
@@ -1287,7 +1291,15 @@
   let aiIssueTooltipEl = null;
   let aiIssueTooltipBound = false;
   let aiCotHasContent = false;
+  let aiCotPendingText = [];
+  let aiCotFlushFrame = 0;
+  let aiCotStatusShown = false;
   const askAiBtnDefaultHtml = askAiBtn ? askAiBtn.innerHTML : '';
+
+  function setAiIssueHint(visible) {
+    if (!aiIssueHint) return;
+    aiIssueHint.classList.toggle('d-none', !visible);
+  }
 
   function setAiStatus(message, level) {
     if (!aiInlineStatus) return;
@@ -1316,24 +1328,45 @@
   function beginAiCotStream() {
     if (!aiCotDetails || !aiCotText) return;
     aiCotHasContent = false;
+    aiCotPendingText = [];
+    aiCotStatusShown = false;
+    if (aiCotFlushFrame) {
+      cancelAnimationFrame(aiCotFlushFrame);
+      aiCotFlushFrame = 0;
+    }
     aiCotDetails.classList.remove('d-none');
     aiCotDetails.classList.add('is-streaming');
     aiCotDetails.open = true;
     aiCotText.textContent = '正在等待模型输出分析过程…';
   }
 
-  function appendAiCot(delta) {
-    if (!aiCotDetails || !aiCotText || !delta) return;
+  function flushAiCot() {
+    aiCotFlushFrame = 0;
+    if (!aiCotText || !aiCotPendingText.length) return;
     if (!aiCotHasContent) {
       aiCotText.textContent = '';
       aiCotHasContent = true;
     }
-    aiCotText.textContent += String(delta);
-    aiCotText.scrollTop = aiCotText.scrollHeight;
+    aiCotText.appendChild(document.createTextNode(aiCotPendingText.join('')));
+    aiCotPendingText = [];
+    if (aiCotDetails && aiCotDetails.open) {
+      aiCotText.scrollTop = aiCotText.scrollHeight;
+    }
+  }
+
+  function appendAiCot(delta) {
+    if (!aiCotDetails || !aiCotText || !delta) return;
+    aiCotPendingText.push(String(delta));
+    if (!aiCotFlushFrame) aiCotFlushFrame = requestAnimationFrame(flushAiCot);
   }
 
   function finishAiCotStream() {
     if (!aiCotDetails) return;
+    if (aiCotFlushFrame) {
+      cancelAnimationFrame(aiCotFlushFrame);
+      aiCotFlushFrame = 0;
+    }
+    flushAiCot();
     aiCotDetails.classList.remove('is-streaming');
     // 结果出来后默认收起，details 保留以便用户手动展开查看。
     aiCotDetails.open = false;
@@ -1485,6 +1518,7 @@
       const omniTestIndex = ok ? data.image_analysis_test_index : null;
 
       if (!ok) {
+        setAiIssueHint(false);
         clearAiIssueMarkers();
         if (submissionCodeEditor) {
           submissionCodeEditor.setValue(displayCode);
@@ -1501,6 +1535,7 @@
         updateAiOmniImageAnalysis(omniAnalysis, omniTestIndex);
       }
       renderAiIssueMarks(displayCode, issues);
+      setAiIssueHint(issues.length > 0);
 
       if (summary) {
         setAiStatus(`${summary}`, issues.length > 0 ? 'warning' : 'success');
@@ -1550,7 +1585,10 @@
 
         if (eventName === 'reasoning') {
           appendAiCot(payload.delta || '');
-          setAiStatus('AI 正在分析代码，请稍候…', 'info');
+          if (!aiCotStatusShown) {
+            aiCotStatusShown = true;
+            setAiStatus('AI 正在分析代码，请稍候…', 'info');
+          }
         } else if (eventName === 'progress') {
           setAiStatus(payload.message || 'AI 正在整理诊断结果…', 'info');
         } else if (eventName === 'heartbeat') {
@@ -1595,6 +1633,7 @@
     if (!submissionCodeEditor) return;
     const requestToken = ++aiIssueRequestToken;
     clearAiIssueMarkers();
+    setAiIssueHint(false);
     setAskAiBtnLoading(true);
     beginAiCotStream();
     setAiStatus('AI 正在定位问题代码，请稍候...', 'info');
@@ -1628,6 +1667,7 @@
     }
 
     renderAiIssueMarks(displayCode, issues);
+    setAiIssueHint(issues.length > 0);
     if (cachedAiCodeMarks.summary) {
       setAiStatus(`${cachedAiCodeMarks.summary}`, issues.length > 0 ? 'warning' : 'success');
     } else if (issues.length > 0) {
