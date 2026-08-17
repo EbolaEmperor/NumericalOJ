@@ -194,6 +194,18 @@ def test_dynamic_site_config_schema_is_fully_declared():
         "output_price_per_million",
     ):
         assert endpoints.columns[price_field].lower() == "decimal(20,8) not null"
+    assert endpoints.columns["peak_pricing_enabled"].lower() == (
+        "tinyint(1) not null default '0'"
+    )
+    assert endpoints.columns["peak_time_ranges"].lower() == (
+        "varchar(1024) not null default ''"
+    )
+    for price_field in (
+        "peak_input_price_per_million",
+        "peak_cached_input_price_per_million",
+        "peak_output_price_per_million",
+    ):
+        assert endpoints.columns[price_field].lower() == "decimal(20,8) default null"
     assert "name" not in endpoints.columns
     assert endpoints.columns["model"].lower() == "varchar(255) not null"
     assert endpoints.columns["context_window_tokens"].lower() == (

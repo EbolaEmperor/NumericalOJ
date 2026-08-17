@@ -112,7 +112,6 @@ from oj_modules.problems.agent_launch import (
     normalize_launch_harness,
     reasoning_effort_options_by_harness,
     resolve_launch_endpoint,
-    validate_launch_endpoint_revision,
 )
 from oj_modules.site_config.services import DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
 from oj_modules.problems.agent_preferences import (
@@ -3194,15 +3193,11 @@ def agent_task_detail(session_id):
                 if endpoint_source == 'user'
                 else agent_session.get('endpoint_id')
             )
-            frozen_endpoint = _resolve_agent_endpoint_for_user(
+            _resolve_agent_endpoint_for_user(
                 agent_session.get('harness'),
                 endpoint_ref,
                 user['id'],
                 include_secret=False,
-            )
-            validate_launch_endpoint_revision(
-                frozen_endpoint,
-                agent_session.get('endpoint_revision'),
             )
         except AgentLaunchValidationError as exc:
             return jsonify(success=False, message=str(exc)), 409

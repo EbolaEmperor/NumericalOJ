@@ -53,6 +53,11 @@ def _llm_args(**overrides):
         "input_price_per_million": "1",
         "cached_input_price_per_million": "0.1",
         "output_price_per_million": "4",
+        "peak_pricing_enabled": None,
+        "peak_time_ranges": None,
+        "peak_input_price_per_million": None,
+        "peak_cached_input_price_per_million": None,
+        "peak_output_price_per_million": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -155,6 +160,33 @@ def test_llm_update_sends_optional_token_prices_through_test_and_save(monkeypatc
     }
     assert client.requests[0][2]["json"] == {"endpoint_id": 7, **expected}
     assert client.requests[1][2]["json"] == {"test_token": "token", **expected}
+    capsys.readouterr()
+
+
+def test_llm_create_can_enable_peak_pricing_and_sends_all_peak_fields(monkeypatch, capsys):
+    cli = _load_cli()
+    client = _Client(
+        _Response({"success": True, "test": {"passed": True}, "test_token": "token"}),
+        _Response({"success": True, "endpoint": {"id": 7}}),
+    )
+    monkeypatch.setattr(cli.site_config.common, "client_from_args", lambda _args: client)
+
+    cli.site_config.llm_create(_llm_args(
+        peak_pricing_enabled=True,
+        peak_time_ranges="9:00-12:00, 14:00-18:00",
+        peak_input_price_per_million="2",
+        peak_cached_input_price_per_million="0.2",
+        peak_output_price_per_million="8",
+    ))
+
+    expected = {
+        "peak_pricing_enabled": True,
+        "peak_time_ranges": "9:00-12:00, 14:00-18:00",
+        "peak_input_price_per_million": "2",
+        "peak_cached_input_price_per_million": "0.2",
+        "peak_output_price_per_million": "8",
+    }
+    assert all(expected.items() <= request[2]["json"].items() for request in client.requests)
     capsys.readouterr()
 
 

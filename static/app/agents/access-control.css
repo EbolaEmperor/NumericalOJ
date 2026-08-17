@@ -310,6 +310,9 @@
 .agent-rate-card-name { display: grid; min-width: 0; gap: 3px; }
 .agent-rate-card-name strong { overflow: hidden; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .agent-rate-card-name small { color: #999185; font: 550 7.5px/1.2 var(--agent-access-mono); }
+.agent-rate-pricing-period { display: inline-flex; align-items: center; gap: 4px; color: inherit; font-size: 8px; font-weight: 650; line-height: 1.2; }
+.agent-rate-pricing-period > i { width: 6px; height: 6px; border-radius: 50%; background: #3b9d64; }
+.agent-rate-pricing-period[data-pricing-period="peak"] > i { background: #c94b46; }
 .agent-rate-values {
   display: grid;
   min-width: 168px;

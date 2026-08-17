@@ -16,7 +16,6 @@ from oj_modules.problems.agent_launch import (
     AGENT_ACCESS_ROLE_USER,
     AGENT_TASK_TESTDATA,
     resolve_launch_endpoint,
-    validate_launch_endpoint_revision,
 )
 from oj_modules.problems.testdata import (
     get_problem_testdata_state,
@@ -329,8 +328,6 @@ def register_agent_generate_testdata_task(celery_app):
                 endpoint_id,
                 include_secret=True,
             )
-            if endpoint_revision is not None:
-                validate_launch_endpoint_revision(endpoint, endpoint_revision)
         except Exception as exc:
             message = str(exc) or "所选 LLM 节点不可用"
             _update_agent_state(state, message, status="Failed", stage="finished")

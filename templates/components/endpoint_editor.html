@@ -52,6 +52,21 @@
         <label><span>缓存命中单价（RMB / 1M Token）</span><input name="cached_input_price_per_million" type="number" min="0" step="any" inputmode="decimal" required></label>
         <label><span>输出单价（RMB / 1M Token）</span><input name="output_price_per_million" type="number" min="0" step="any" inputmode="decimal" required></label>
       </div>
+      <section class="numoj-endpoint-editor__peak-pricing wide" data-endpoint-editor-peak-pricing>
+        <div class="numoj-endpoint-editor__peak-head">
+          <div><span>峰谷计费</span><small>关闭时始终使用上方单价；高峰时间按 UTC+8 计算。</small></div>
+          <button class="numoj-endpoint-editor__peak-toggle" type="button" role="switch" aria-checked="false" data-endpoint-editor-peak-toggle>
+            <i aria-hidden="true"></i><b>关闭</b>
+          </button>
+        </div>
+        <input name="peak_pricing_enabled" type="hidden" value="false">
+        <div class="numoj-endpoint-editor__peak-fields" data-endpoint-editor-peak-fields hidden>
+          <label class="wide"><span>高峰时间（UTC+8）</span><input name="peak_time_ranges" maxlength="1024" autocomplete="off" placeholder="9:00-12:00, 14:00-18:00"><small>使用 - 表示区间，多个区间用英文逗号隔开；忽略空格。</small></label>
+          <label><span>高峰期 INPUT（RMB / 1M Token）</span><input name="peak_input_price_per_million" type="number" min="0" step="any" inputmode="decimal"></label>
+          <label><span>高峰期 CACHED（RMB / 1M Token）</span><input name="peak_cached_input_price_per_million" type="number" min="0" step="any" inputmode="decimal"></label>
+          <label><span>高峰期 OUTPUT（RMB / 1M Token）</span><input name="peak_output_price_per_million" type="number" min="0" step="any" inputmode="decimal"></label>
+        </div>
+      </section>
     {% else %}
       <input type="hidden" name="input_price_per_million" value="">
       <input type="hidden" name="cached_input_price_per_million" value="">

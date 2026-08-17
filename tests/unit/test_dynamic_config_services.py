@@ -2,6 +2,7 @@
 
 import pytest
 from decimal import Decimal
+from datetime import datetime, timezone
 
 from oj_modules.site_config import services
 
@@ -156,6 +157,72 @@ def test_llm_prices_are_required_atomic_and_decimal_safe():
         "output_price_per_million": Decimal("8.12500000"),
     })
     assert public["input_price_per_million"] == "2.5"
+
+
+def test_peak_pricing_is_disabled_by_default_and_normalizes_utc_plus_eight_ranges():
+    disabled = services.normalize_llm_endpoint_payload(llm_payload())
+
+    assert disabled["peak_pricing_enabled"] is False
+    assert disabled["peak_time_ranges"] == ""
+    assert disabled["peak_input_price_per_million"] is None
+
+    enabled = services.normalize_llm_endpoint_payload(llm_payload(
+        peak_pricing_enabled=True,
+        peak_time_ranges=" 9:00 - 12:00, 14:00-18:00 ",
+        peak_input_price_per_million="3",
+        peak_cached_input_price_per_million="0.3",
+        peak_output_price_per_million="6",
+    ))
+    assert enabled["peak_pricing_enabled"] is True
+    assert enabled["peak_time_ranges"] == "09:00-12:00,14:00-18:00"
+    assert enabled["peak_output_price_per_million"] == "6"
+
+    with pytest.raises(services.DynamicConfigValidationError, match="高峰时间格式"):
+        services.normalize_llm_endpoint_payload(llm_payload(
+            peak_pricing_enabled=True,
+            peak_time_ranges="9-12",
+            peak_input_price_per_million="3",
+            peak_cached_input_price_per_million="0.3",
+            peak_output_price_per_million="6",
+        ))
+    with pytest.raises(services.DynamicConfigValidationError, match="高峰期 Token 单价"):
+        services.normalize_llm_endpoint_payload(llm_payload(
+            peak_pricing_enabled=True,
+            peak_time_ranges="9:00-12:00",
+            peak_input_price_per_million="3",
+            peak_cached_input_price_per_million="",
+            peak_output_price_per_million="6",
+        ))
+
+
+def test_peak_pricing_snapshot_uses_utc_plus_eight_and_supports_overnight_ranges():
+    endpoint = {
+        **llm_payload(),
+        "peak_pricing_enabled": True,
+        "peak_time_ranges": "09:00-12:00,22:00-02:00",
+        "peak_input_price_per_million": "3",
+        "peak_cached_input_price_per_million": "0.3",
+        "peak_output_price_per_million": "6",
+    }
+
+    peak = services.llm_endpoint_pricing_snapshot(
+        endpoint,
+        now=datetime(2026, 8, 18, 2, 30, tzinfo=timezone.utc),
+    )
+    offpeak = services.llm_endpoint_pricing_snapshot(
+        endpoint,
+        now=datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc),
+    )
+    overnight = services.llm_endpoint_pricing_snapshot(
+        endpoint,
+        now=datetime(2026, 8, 18, 17, 30, tzinfo=timezone.utc),
+    )
+
+    assert peak["pricing_period"] == "peak"
+    assert peak["input_price_per_million"] == "3"
+    assert offpeak["pricing_period"] == "offpeak"
+    assert offpeak["input_price_per_million"] == "2.5"
+    assert overnight["pricing_period"] == "peak"
 
 
 @pytest.mark.parametrize(

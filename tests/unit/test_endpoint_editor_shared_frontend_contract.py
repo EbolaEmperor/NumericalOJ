@@ -70,11 +70,15 @@ def test_shared_controller_owns_choices_thinking_validation_and_values():
         "data-endpoint-editor-key-note",
         "data-endpoint-editor-result",
         "data-endpoint-editor-save",
+        "data-endpoint-editor-peak-pricing",
+        "data-endpoint-editor-peak-toggle",
+        "高峰时间（UTC+8）",
     ):
         assert contract in shared
     for contract in (
         "global.ChoicePicker.configure",
         "function setThinking(enabled)",
+        "function setPeakPricing(enabled)",
         "function values()",
         "function validate()",
         "function applyTestedLimits(value)",
@@ -84,6 +88,7 @@ def test_shared_controller_owns_choices_thinking_validation_and_values():
     assert ".numoj-endpoint-editor" in stylesheet
     assert ".numoj-endpoint-editor__thinking" in stylesheet
     assert ".numoj-endpoint-editor__prices" in stylesheet
+    assert ".numoj-endpoint-editor__peak-pricing" in stylesheet
     assert "DEFAULT_CONTEXT_WINDOW_TOKENS = 384000" in script
     assert "DEFAULT_MAX_OUTPUT_TOKENS = 32000" in script
     assert "outputTokens > contextTokens" in script

@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timezone
 
 from oj_modules.problems import agent_launch
 
@@ -213,20 +214,29 @@ def test_endpoint_token_pricing_requires_all_three_prices():
     }
 
 
-def test_agent_session_freezes_llm_endpoint_revision():
-    endpoint = {"id": 8, "revision": 12}
+def test_launch_endpoint_exposes_current_peak_or_offpeak_prices():
+    endpoint = _endpoint(4, protocol="openai")
+    endpoint.update({
+        "peak_pricing_enabled": True,
+        "peak_time_ranges": "09:00-12:00",
+        "peak_input_price_per_million": "2.00",
+        "peak_cached_input_price_per_million": "0.20",
+        "peak_output_price_per_million": "8.00",
+    })
 
-    assert agent_launch.validate_launch_endpoint_revision(endpoint, 12) is endpoint
-    with pytest.raises(
-        agent_launch.AgentLaunchValidationError,
-        match="配置已变化",
-    ):
-        agent_launch.validate_launch_endpoint_revision(endpoint, 11)
-    with pytest.raises(
-        agent_launch.AgentLaunchValidationError,
-        match="版本无效",
-    ):
-        agent_launch.validate_launch_endpoint_revision(endpoint, None)
+    peak = agent_launch.token_pricing_snapshot_from_endpoint(
+        endpoint,
+        now=datetime(2026, 8, 18, 2, 0, tzinfo=timezone.utc),
+    )
+    offpeak = agent_launch.token_pricing_snapshot_from_endpoint(
+        endpoint,
+        now=datetime(2026, 8, 18, 5, 0, tzinfo=timezone.utc),
+    )
+
+    assert peak["pricing_period"] == "peak"
+    assert peak["input_price_per_million"] == "2.00"
+    assert offpeak["pricing_period"] == "offpeak"
+    assert offpeak["input_price_per_million"] == "1"
 
 
 def test_button_tasks_pin_their_skill_while_custom_sessions_follow_role():

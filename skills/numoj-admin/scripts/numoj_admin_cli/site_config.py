@@ -134,6 +134,41 @@ def _add_thinking_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_peak_pricing_args(parser: argparse.ArgumentParser, *, required: bool) -> None:
+    group = parser.add_mutually_exclusive_group()
+    parser.set_defaults(peak_pricing_enabled=False if required else None)
+    group.add_argument(
+        "--peak-pricing",
+        dest="peak_pricing_enabled",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable UTC+8 peak/off-peak token pricing.",
+    )
+    group.add_argument(
+        "--no-peak-pricing",
+        dest="peak_pricing_enabled",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help="Disable peak/off-peak token pricing.",
+    )
+    parser.add_argument(
+        "--peak-time-ranges",
+        help="UTC+8 peak periods, e.g. 9:00-12:00,14:00-18:00.",
+    )
+    parser.add_argument(
+        "--peak-input-price-per-million",
+        help="RMB price per 1M uncached input tokens during peak periods.",
+    )
+    parser.add_argument(
+        "--peak-cached-input-price-per-million",
+        help="RMB price per 1M cached input tokens during peak periods.",
+    )
+    parser.add_argument(
+        "--peak-output-price-per-million",
+        help="RMB price per 1M output tokens during peak periods.",
+    )
+
+
 def _add_llm_candidate_args(parser: argparse.ArgumentParser, *, required: bool) -> None:
     parser.add_argument(
         "--protocol",
@@ -178,6 +213,7 @@ def _add_llm_candidate_args(parser: argparse.ArgumentParser, *, required: bool) 
         help="RMB price per 1M output tokens.",
     )
     _add_thinking_args(parser)
+    _add_peak_pricing_args(parser, required=required)
 
 
 def _find_endpoint(client: common.NumOJClient, endpoint_id: int) -> Dict[str, Any]:
@@ -204,6 +240,10 @@ def _llm_payload(
         ("input_price_per_million", "input_price_per_million"),
         ("cached_input_price_per_million", "cached_input_price_per_million"),
         ("output_price_per_million", "output_price_per_million"),
+        ("peak_time_ranges", "peak_time_ranges"),
+        ("peak_input_price_per_million", "peak_input_price_per_million"),
+        ("peak_cached_input_price_per_million", "peak_cached_input_price_per_million"),
+        ("peak_output_price_per_million", "peak_output_price_per_million"),
     ):
         value = getattr(args, arg_name, None)
         if value is not None:
@@ -235,6 +275,25 @@ def _llm_payload(
     )
     if api_key is not None:
         payload["api_key"] = api_key
+
+    peak_pricing_enabled = getattr(args, "peak_pricing_enabled", None)
+    if peak_pricing_enabled is not None:
+        payload["peak_pricing_enabled"] = bool(peak_pricing_enabled)
+    if required and peak_pricing_enabled:
+        missing_peak_fields = [
+            field_name
+            for field_name in (
+                "peak_time_ranges",
+                "peak_input_price_per_million",
+                "peak_cached_input_price_per_million",
+                "peak_output_price_per_million",
+            )
+            if not str(payload.get(field_name) or "").strip()
+        ]
+        if missing_peak_fields:
+            raise common.CliError(
+                "Peak pricing requires: " + ", ".join(missing_peak_fields) + "."
+            )
 
     thinking_enabled = getattr(args, "thinking_enabled", None)
     existing_endpoint: Optional[Dict[str, Any]] = None

@@ -8,6 +8,7 @@ from functools import wraps
 import time
 
 from oj_modules.agents.sessions import (
+    AGENT_EMPTY_CONCLUSION_MESSAGE,
     get_agent_session,
     normalize_agent_session_id,
 )
@@ -26,11 +27,11 @@ from oj_modules.problems.agent_launch import (
     normalize_launch_harness,
     resolve_launch_endpoint,
     token_pricing_from_endpoint,
-    validate_launch_endpoint_revision,
 )
 from oj_modules.site_config.services import (
     DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
     DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    get_llm_endpoint,
 )
 from oj_modules.tasks.agent.conversation import extract_agent_conclusion
 from oj_modules.tasks.agent.harness_runtime import (
@@ -451,10 +452,6 @@ def register_agent_run_turn_task(celery_app):
                 endpoint_ref,
                 **resolve_kwargs,
             )
-            validate_launch_endpoint_revision(
-                endpoint,
-                session.get("endpoint_revision"),
-            )
         except Exception as exc:
             return _generic_failure(
                 state,
@@ -523,7 +520,7 @@ def register_agent_run_turn_task(celery_app):
             ).get("allowed", False),
         )
         usage_callback = None
-        if not requester_is_admin and not uses_personal_endpoint:
+        if not uses_personal_endpoint:
             pricing = token_pricing_from_endpoint(endpoint)
             if pricing is None:
                 return _generic_failure(state, "所选全站节点尚未配置完整价格")
@@ -537,17 +534,28 @@ def register_agent_run_turn_task(celery_app):
                 pass
 
             def charge_usage(event):
+                # 每个上游请求都重新读取节点价格：峰谷切换和管理员调整价格无需
+                # 中断已有会话，账本会保留当次实际采用的配置版本和价格快照。
+                current_endpoint = get_llm_endpoint(
+                    endpoint["id"], include_secret=False,
+                )
+                current_pricing = token_pricing_from_endpoint(current_endpoint)
+                if current_pricing is None:
+                    raise RuntimeError("所选全站节点尚未配置完整价格")
                 result = charge_agent_usage(
                     user_id=user["id"],
                     session_id=normalized_session_id,
                     task_id=task_id,
                     source=event.get("source"),
                     usage_event_id=event.get("id"),
-                    endpoint_id=endpoint["id"],
-                    endpoint_revision=session.get("endpoint_revision"),
-                    endpoint_model=endpoint.get("model"),
+                    endpoint_id=current_endpoint["id"],
+                    # 会话不再冻结节点配置：本轮使用当前端点，并把其版本和
+                    # 价格快照写入逐请求账本，保留审计能力。
+                    endpoint_revision=current_endpoint.get("revision"),
+                    endpoint_model=current_endpoint.get("model"),
                     usage=event.get("usage"),
-                    pricing=pricing,
+                    pricing=current_pricing,
+                    is_admin=requester_is_admin,
                 )
                 try:
                     state["session_charged_amount_rmb"] = (
@@ -659,7 +667,7 @@ def register_agent_run_turn_task(celery_app):
         if not conclusion:
             return _generic_failure(
                 state,
-                "Agent 已结束，但没有返回可展示的结论",
+                AGENT_EMPTY_CONCLUSION_MESSAGE,
             )
 
         message = "Agent 已完成本轮任务"
