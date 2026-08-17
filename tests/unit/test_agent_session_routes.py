@@ -749,20 +749,29 @@ def test_same_client_resume_conflict_keeps_winner_checkpoint(monkeypatch):
     )]
 
 
-def test_resume_rejects_changed_frozen_endpoint_before_claiming_turn(monkeypatch):
+def test_resume_accepts_changed_endpoint_before_claiming_turn(monkeypatch):
     _patch_admin(monkeypatch)
     endpoint_calls = _patch_frozen_endpoint(monkeypatch, revision=4)
     monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: _session())
-    monkeypatch.setattr(
-        routes,
-        "uuid4",
-        lambda: pytest.fail("节点版本校验失败时不得生成新轮次 ID"),
-    )
+    monkeypatch.setattr(routes, "uuid4", lambda: SimpleNamespace(hex="turn-2"))
+    monkeypatch.setattr(routes, "save_agent_attachments", lambda *_args: [])
+    monkeypatch.setattr(routes, "upsert_agent_run_snapshot", lambda _state: None)
+    begin_calls = []
     monkeypatch.setattr(
         routes,
         "begin_agent_session_turn",
-        lambda *_args, **_kwargs: pytest.fail("节点版本校验失败时不得 claim 轮次"),
+        lambda session_id, **kwargs: (
+            begin_calls.append((session_id, kwargs))
+            or {
+                "turn_index": 2,
+                "task_kind": "custom",
+                "access_role": "admin",
+                "harness": "codex",
+                "endpoint_id": 12,
+                "native_session_id": "native-session-1",
+            }
+        ),
     )
 
     app = _app()
@@ -772,15 +781,13 @@ def test_resume_rejects_changed_frozen_endpoint_before_claiming_turn(monkeypatch
         data={"message": "继续"},
         content_type="multipart/form-data",
     ):
-        response, status = routes.admin_agent_task_detail("session-1")
+        response = routes.admin_agent_task_detail("session-1")
 
     payload = response.get_json()
-    assert status == 409
-    assert payload == {
-        "success": False,
-        "message": "该 Agent 会话使用的 LLM 节点配置已变化，请新建会话",
-    }
+    assert payload["success"] is True
+    assert payload["task_id"] == "turn-2"
     assert endpoint_calls == [("codex", 12, False)]
+    assert begin_calls[0][0] == "session-1"
 
 
 def test_resume_attachment_failure_does_not_publish_turn_outbox(monkeypatch):

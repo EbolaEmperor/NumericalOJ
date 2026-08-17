@@ -38,6 +38,9 @@ from oj_modules.problems.agent_launch import (
 )
 
 
+AGENT_EMPTY_CONCLUSION_MESSAGE = "Agent 已结束，但没有返回可展示的结论"
+
+
 _ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled", "cancelled"})
 _ACCESS_ROLES = frozenset({"user", "admin"})
@@ -947,9 +950,12 @@ def sync_agent_session_state_in_transaction(cursor, state):
         )
     ):
         return False
+    should_check_queue = incoming_status in {"canceled", "cancelled"} or (
+        incoming_status == "failed" and message == AGENT_EMPTY_CONCLUSION_MESSAGE
+    )
     has_queued_messages = False
-    if incoming_status in {"canceled", "cancelled"}:
-        # 手动终止时只有仍有待发送的 FIFO 消息才需要把队列留在暂停态。
+    if should_check_queue:
+        # 手动终止和“无可展示结论”都只有在仍有待发送的 FIFO 消息时才暂停。
         # enqueue 同样先锁会话行，因此这里在会话行锁内读取，避免把“空队列”
         # 误判成需要暂停，导致下一条即时消息被降级为 queue。
         cursor.execute(
@@ -963,18 +969,11 @@ def sync_agent_session_state_in_transaction(cursor, state):
         )
         has_queued_messages = bool(cursor.fetchone())
 
-    pause_queue = incoming_status in {
-        "failed",
-        "cleanupfailed",
-        "cleanup_failed",
-    } or (
-        incoming_status in {"canceled", "cancelled"}
-        and has_queued_messages
-    )
-    clear_queue_pause = (
-        incoming_status in {"canceled", "cancelled"}
-        and not has_queued_messages
-    )
+    pause_queue = incoming_status in {"cleanupfailed", "cleanup_failed"} or (
+        incoming_status == "failed"
+        and message != AGENT_EMPTY_CONCLUSION_MESSAGE
+    ) or (should_check_queue and has_queued_messages)
+    clear_queue_pause = should_check_queue and not has_queued_messages
     queue_pause_reason = message or "上一轮任务未正常完成"
     cursor.execute(
         """

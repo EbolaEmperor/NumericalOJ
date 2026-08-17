@@ -35,6 +35,9 @@
     var thinkingField = form.querySelector('[data-endpoint-editor-thinking-field]');
     var result = form.querySelector('[data-endpoint-editor-result]');
     var keyNote = form.querySelector('[data-endpoint-editor-key-note]');
+    var peakPricing = form.querySelector('[data-endpoint-editor-peak-pricing]');
+    var peakToggle = form.querySelector('[data-endpoint-editor-peak-toggle]');
+    var peakFields = form.querySelector('[data-endpoint-editor-peak-fields]');
     var protocolController;
     var categoryController;
     var editing = false;
@@ -62,6 +65,18 @@
         choiceValue('protocol', 'openai');
       }
       setThinking(preserve && form.elements.thinking_enabled.value === 'true');
+    }
+
+    function setPeakPricing(enabled) {
+      if (!peakPricing || !peakToggle || !peakFields) return;
+      var active = Boolean(enabled);
+      form.elements.peak_pricing_enabled.value = active ? 'true' : 'false';
+      peakToggle.setAttribute('aria-checked', active ? 'true' : 'false');
+      peakToggle.querySelector('b').textContent = active ? '开启' : '关闭';
+      peakFields.hidden = !active;
+      ['peak_time_ranges', 'peak_input_price_per_million', 'peak_cached_input_price_per_million', 'peak_output_price_per_million'].forEach(function (name) {
+        if (form.elements[name]) form.elements[name].required = active;
+      });
     }
 
     function clearFieldErrors() {
@@ -119,6 +134,10 @@
       ['input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
         form.elements[name].value = initial[name] != null ? initial[name] : '';
       });
+      ['peak_time_ranges', 'peak_input_price_per_million', 'peak_cached_input_price_per_million', 'peak_output_price_per_million'].forEach(function (name) {
+        if (form.elements[name]) form.elements[name].value = initial[name] != null ? initial[name] : '';
+      });
+      setPeakPricing(initial.peak_pricing_enabled === true || initial.peak_pricing_enabled === 'true');
       updateKeyState(); setThinking(Boolean(initial.thinking_enabled));
       return controller;
     }
@@ -127,7 +146,7 @@
       value = value || {}; reset(); editing = Boolean(value.endpoint_id || value.id);
       form.elements.endpoint_id.value = value.endpoint_id || value.id || '';
       choiceValue('protocol', value.protocol || 'openai'); choiceValue('category', value.category || 'text');
-      ['name', 'model', 'base_url', 'context_window_tokens', 'max_output_tokens', 'input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million'].forEach(function (name) {
+      ['name', 'model', 'base_url', 'context_window_tokens', 'max_output_tokens', 'input_price_per_million', 'cached_input_price_per_million', 'output_price_per_million', 'peak_time_ranges', 'peak_input_price_per_million', 'peak_cached_input_price_per_million', 'peak_output_price_per_million'].forEach(function (name) {
         if (form.elements[name] && !form.elements[name].disabled && value[name] != null) form.elements[name].value = value[name];
       });
       if (value.context_window_tokens == null) {
@@ -136,13 +155,14 @@
       if (value.max_output_tokens == null) {
         form.elements.max_output_tokens.value = DEFAULT_MAX_OUTPUT_TOKENS;
       }
-      form.elements.api_key.value = ''; updateKeyState(); setThinking(Boolean(value.thinking_enabled)); clearResult();
+      form.elements.api_key.value = ''; updateKeyState(); setThinking(Boolean(value.thinking_enabled));
+      setPeakPricing(value.peak_pricing_enabled === true || value.peak_pricing_enabled === 'true'); clearResult();
       return controller;
     }
 
     function values() {
       var id = form.elements.endpoint_id.value;
-      return {
+      var result = {
         endpoint_id: id ? Number(id) : undefined,
         name: form.elements.name && !form.elements.name.disabled ? form.elements.name.value.trim() : '',
         model: form.elements.model.value.trim(), protocol: form.elements.protocol.value,
@@ -156,6 +176,14 @@
         cached_input_price_per_million: form.elements.cached_input_price_per_million.value.trim(),
         output_price_per_million: form.elements.output_price_per_million.value.trim()
       };
+      if (peakPricing) {
+        result.peak_pricing_enabled = form.elements.peak_pricing_enabled.value === 'true';
+        result.peak_time_ranges = form.elements.peak_time_ranges.value.trim();
+        result.peak_input_price_per_million = form.elements.peak_input_price_per_million.value.trim();
+        result.peak_cached_input_price_per_million = form.elements.peak_cached_input_price_per_million.value.trim();
+        result.peak_output_price_per_million = form.elements.peak_output_price_per_million.value.trim();
+      }
+      return result;
     }
 
     function validate() {
@@ -202,6 +230,10 @@
     thinking.addEventListener('click', function () {
       setThinking(form.elements.thinking_enabled.value !== 'true');
       form.elements.thinking_enabled.dispatchEvent(new Event('change', {bubbles: true}));
+    });
+    if (peakToggle) peakToggle.addEventListener('click', function () {
+      setPeakPricing(form.elements.peak_pricing_enabled.value !== 'true');
+      form.elements.peak_pricing_enabled.dispatchEvent(new Event('change', {bubbles: true}));
     });
     form.addEventListener('change', function (event) {
       if (event.target.name === 'protocol' || event.target.name === 'category') deriveThinking(true);

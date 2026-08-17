@@ -95,8 +95,21 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     compact = styles.split("@media (max-width: 640px)", 1)[1].split(
         "@media (max-width: 575.98px)", 1
     )[0]
-    assert "display: flex;" in compact
-    assert "flex-wrap: nowrap;" in compact
+    footer_mobile = _css_rule(compact, ".agent-composer-footer {")
+    controls_mobile = _css_rule(compact, ".agent-composer-controls {")
+    choice_mobile = _css_rule(compact, ".agent-composer-choice {")
+    actions_mobile = _css_rule(compact, ".agent-composer-actions {")
+    assert "display: flex;" in footer_mobile
+    assert "justify-content: flex-start;" in footer_mobile
+    assert "flex-wrap: nowrap;" in footer_mobile
+    assert "flex: 1 1 0;" in controls_mobile
+    assert "flex-wrap: nowrap;" in controls_mobile
+    assert "gap: 5px;" in controls_mobile
+    assert "flex: 0 1 auto;" in choice_mobile
+    assert "width: auto;" in choice_mobile
+    assert "margin-left: auto;" in actions_mobile
+    assert "flex-wrap: nowrap;" in actions_mobile
+    assert "white-space: nowrap;" in actions_mobile
     assert "max-width: calc(100vw - 32px);" in compact
 
     endpoint_mobile_menu = _css_rule(
@@ -135,6 +148,18 @@ def test_agent_home_prioritizes_personal_endpoints_and_marks_them_as_self_paid()
     assert "endpoint.model + (isPersonal ? '，自费' : '')" in controller
     assert ".agent-endpoint-paid-badge" in styles
     assert ".agent-choice--endpoint .rk-choice-option.is-personal-endpoint" in styles
+
+
+def test_agent_home_marks_current_peak_or_offpeak_prices_with_a_colored_dot():
+    controller = _read("static/app/agents/task-list.js")
+    styles = _read("static/app/agents/task-list.css")
+
+    assert "peakPricingEnabled: item.peak_pricing_enabled === true" in controller
+    assert "pricingPeriod: asText(item.pricing_period)" in controller
+    assert "agent-endpoint-pricing-period" in controller
+    assert "高峰期" in controller and "低谷期" in controller
+    assert ".agent-endpoint-pricing-period > i" in styles
+    assert '[data-pricing-period="peak"] > i' in styles
 
 
 def test_agent_home_reasoning_effort_is_dynamic_and_part_of_submission_identity():

@@ -268,6 +268,56 @@ def test_usage_debit_is_atomic_idempotent_and_reports_hard_stop(monkeypatch):
     assert all(connection.rollbacks == 0 for connection in connections)
 
 
+def test_admin_usage_is_recorded_without_debiting_a_quota_account(monkeypatch):
+    store = _ChargeStore()
+    store.account = None
+
+    class AdminCursor(_ChargeCursor):
+        def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("SELECT id, is_admin FROM users"):
+                self.result = {"id": 7, "is_admin": 1}
+                return
+            super().execute(sql, params)
+
+    class AdminConnection(_ChargeConnection):
+        def cursor(self):
+            return AdminCursor(self)
+
+    monkeypatch.setattr(quota, "get_db_connection", lambda: AdminConnection(store))
+
+    result = quota.charge_agent_usage(
+        user_id=7,
+        session_id="admin-session",
+        task_id="admin-task",
+        source="relay_openai",
+        usage_event_id="admin-request-1",
+        endpoint_id=3,
+        endpoint_revision=5,
+        endpoint_model="model-a",
+        usage={
+            "input_uncached_tokens": 10,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+        },
+        pricing={
+            "input_price_per_million": "1",
+            "cached_input_price_per_million": "0.1",
+            "output_price_per_million": "2",
+        },
+        is_admin=True,
+    )
+
+    assert result["applied"] is True
+    assert result["remaining_amount"] is None
+    assert result["hard_stop"] is False
+    assert store.ledger["charged_amount"] == Decimal("0.00002000000000")
+    assert store.ledger["remaining_after"] == Decimal("0")
+    assert store.account_updates == 0
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [

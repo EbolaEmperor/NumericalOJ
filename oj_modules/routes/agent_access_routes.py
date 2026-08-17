@@ -83,14 +83,21 @@ def _priced_global_endpoints():
             "cached_input_price_per_million",
             "output_price_per_million",
         )
-        if any(str(endpoint.get(field) or "").strip() == "" for field in fields):
+        pricing = config_service.llm_endpoint_pricing_snapshot(endpoint)
+        if any(str(pricing.get(field) or "").strip() == "" for field in fields):
             continue
-        result.append({
+        public_endpoint = {
             "id": int(endpoint["id"]),
             "model": str(endpoint.get("model") or ""),
             "protocol": str(endpoint.get("protocol") or "openai").strip().lower(),
-            **{field: str(endpoint[field]) for field in fields},
-        })
+            **{field: str(pricing[field]) for field in fields},
+        }
+        if pricing.get("peak_pricing_enabled"):
+            public_endpoint.update({
+                "peak_pricing_enabled": True,
+                "pricing_period": pricing.get("pricing_period"),
+            })
+        result.append(public_endpoint)
     return result
 
 

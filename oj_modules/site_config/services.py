@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
@@ -35,6 +36,17 @@ LLM_PRICE_FIELDS = (
     "input_price_per_million",
     "cached_input_price_per_million",
     "output_price_per_million",
+)
+LLM_PEAK_PRICE_FIELDS = (
+    "peak_input_price_per_million",
+    "peak_cached_input_price_per_million",
+    "peak_output_price_per_million",
+)
+LLM_PEAK_TIME_RANGES_FIELD = "peak_time_ranges"
+_UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
+_PEAK_TIME_RANGE_RE = re.compile(
+    r"^(?P<start_hour>[01]?\d|2[0-3]):(?P<start_minute>[0-5]\d)"
+    r"-(?P<end_hour>[01]?\d|2[0-3]):(?P<end_minute>[0-5]\d)$"
 )
 DEFAULT_LLM_CONTEXT_WINDOW_TOKENS = 384_000
 DEFAULT_LLM_MAX_OUTPUT_TOKENS = 32_000
@@ -195,9 +207,9 @@ def _secret_is_omitted(value):
     return value is None or not str(value).strip() or str(value).strip() == MASKED_SECRET
 
 
-def _normalize_llm_prices(payload, existing):
+def _normalize_llm_prices(payload, existing, *, fields=LLM_PRICE_FIELDS, label="Token 单价"):
     values = []
-    for field in LLM_PRICE_FIELDS:
+    for field in fields:
         raw = payload.get(field, existing.get(field))
         text = "" if raw is None else str(raw).strip()
         if not text:
@@ -206,16 +218,127 @@ def _normalize_llm_prices(payload, existing):
         try:
             price = Decimal(text)
         except (InvalidOperation, ValueError):
-            raise DynamicConfigValidationError("Token 单价必须是非负数字") from None
+            raise DynamicConfigValidationError(f"{label}必须是非负数字") from None
         if not price.is_finite() or price < 0:
-            raise DynamicConfigValidationError("Token 单价必须是非负数字")
+            raise DynamicConfigValidationError(f"{label}必须是非负数字")
         if price >= Decimal("1000000000000"):
-            raise DynamicConfigValidationError("Token 单价超出数据库可存储范围")
+            raise DynamicConfigValidationError(f"{label}超出数据库可存储范围")
         values.append(format(price, "f"))
 
     if any(value is None for value in values):
-        raise DynamicConfigValidationError("三个 Token 单价均为必填项")
-    return dict(zip(LLM_PRICE_FIELDS, values))
+        raise DynamicConfigValidationError(f"三个{label}均为必填项")
+    return dict(zip(fields, values))
+
+
+def normalize_llm_peak_time_ranges(value):
+    """规范化 UTC+8 高峰区间，区间右端为开区间。"""
+
+    cleaned = "".join(str(value or "").split())
+    if not cleaned:
+        raise DynamicConfigValidationError("高峰时间不能为空")
+    ranges = []
+    for item in cleaned.split(","):
+        match = _PEAK_TIME_RANGE_RE.fullmatch(item)
+        if not match:
+            raise DynamicConfigValidationError(
+                "高峰时间格式应为 9:00-12:00，多个区间用英文逗号隔开"
+            )
+        start = int(match["start_hour"]) * 60 + int(match["start_minute"])
+        end = int(match["end_hour"]) * 60 + int(match["end_minute"])
+        if start == end:
+            raise DynamicConfigValidationError("高峰时间区间的起止时间不能相同")
+        ranges.append(
+            "{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}".format(
+                **{
+                    key: int(value)
+                    for key, value in match.groupdict().items()
+                }
+            )
+        )
+    if len(set(ranges)) != len(ranges):
+        raise DynamicConfigValidationError("高峰时间不能包含重复区间")
+    return ",".join(ranges)
+
+
+def _normalized_peak_pricing(payload, existing):
+    enabled = _parse_bool(
+        payload.get("peak_pricing_enabled"),
+        "peak_pricing_enabled",
+        default=existing.get("peak_pricing_enabled", False),
+    )
+    if not enabled:
+        return {
+            "peak_pricing_enabled": False,
+            LLM_PEAK_TIME_RANGES_FIELD: "",
+            **{field: None for field in LLM_PEAK_PRICE_FIELDS},
+        }
+    time_ranges = normalize_llm_peak_time_ranges(
+        payload.get(LLM_PEAK_TIME_RANGES_FIELD, existing.get(LLM_PEAK_TIME_RANGES_FIELD))
+    )
+    prices = _normalize_llm_prices(
+        payload,
+        existing,
+        fields=LLM_PEAK_PRICE_FIELDS,
+        label="高峰期 Token 单价",
+    )
+    return {
+        "peak_pricing_enabled": True,
+        LLM_PEAK_TIME_RANGES_FIELD: time_ranges,
+        **prices,
+    }
+
+
+def _utc_plus_eight_now(now=None):
+    if now is None:
+        return datetime.now(_UTC_PLUS_8)
+    if not isinstance(now, datetime):
+        raise TypeError("now 必须是 datetime")
+    if now.tzinfo is None:
+        return now.replace(tzinfo=_UTC_PLUS_8)
+    return now.astimezone(_UTC_PLUS_8)
+
+
+def is_llm_peak_pricing_time(time_ranges, *, now=None):
+    """判断给定 UTC+8 时刻是否处于配置的高峰区间。"""
+
+    normalized = normalize_llm_peak_time_ranges(time_ranges)
+    current = _utc_plus_eight_now(now)
+    minute = current.hour * 60 + current.minute
+    for item in normalized.split(","):
+        start_text, end_text = item.split("-", 1)
+        start_hour, start_minute = (int(part) for part in start_text.split(":", 1))
+        end_hour, end_minute = (int(part) for part in end_text.split(":", 1))
+        start = start_hour * 60 + start_minute
+        end = end_hour * 60 + end_minute
+        if (start < end and start <= minute < end) or (
+            start > end and (minute >= start or minute < end)
+        ):
+            return True
+    return False
+
+
+def llm_endpoint_pricing_snapshot(endpoint, *, now=None):
+    """返回当前时刻生效的 Token 单价及峰谷状态。"""
+
+    endpoint = endpoint or {}
+    enabled = _parse_bool(
+        endpoint.get("peak_pricing_enabled"),
+        "peak_pricing_enabled",
+        default=False,
+    )
+    is_peak = enabled and is_llm_peak_pricing_time(
+        endpoint.get(LLM_PEAK_TIME_RANGES_FIELD), now=now
+    )
+    fields = LLM_PEAK_PRICE_FIELDS if is_peak else LLM_PRICE_FIELDS
+    prices = {
+        price_field: endpoint.get(source_field)
+        for price_field, source_field in zip(LLM_PRICE_FIELDS, fields)
+    }
+    return {
+        **prices,
+        "peak_pricing_enabled": enabled,
+        "pricing_period": "peak" if is_peak else "offpeak" if enabled else None,
+    }
 
 
 def _parse_llm_token_count(value, field, default):
@@ -334,6 +457,7 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
         requested_format = "thinking_type"
 
     prices = _normalize_llm_prices(payload, existing)
+    peak_pricing = _normalized_peak_pricing(payload, existing)
     capacities = _normalize_llm_capacities(payload, existing)
 
     return {
@@ -353,6 +477,7 @@ def normalize_llm_endpoint_payload(payload, *, existing=None):
         "thinking_enabled": thinking_enabled,
         "thinking_format": requested_format,
         **prices,
+        **peak_pricing,
     }
 
 
@@ -374,8 +499,10 @@ def _endpoint_candidate_from_row(row):
         "thinking_format": row.get("thinking_format") or "none",
         **{
             field: _json_value(row.get(field))
-            for field in LLM_PRICE_FIELDS
+            for field in (*LLM_PRICE_FIELDS, *LLM_PEAK_PRICE_FIELDS)
         },
+        "peak_pricing_enabled": bool(row.get("peak_pricing_enabled")),
+        LLM_PEAK_TIME_RANGES_FIELD: row.get(LLM_PEAK_TIME_RANGES_FIELD) or "",
     }
 
 
@@ -387,6 +514,10 @@ def _public_endpoint(row, *, include_secret=False, actor_user_id=None):
     result["api_key_configured"] = bool(secret)
     result["api_key"] = secret if include_secret else ""
     result["thinking_enabled"] = bool(result.get("thinking_enabled"))
+    result["peak_pricing_enabled"] = bool(result.get("peak_pricing_enabled"))
+    result[LLM_PEAK_TIME_RANGES_FIELD] = str(
+        result.get(LLM_PEAK_TIME_RANGES_FIELD) or ""
+    )
     result["context_window_tokens"] = int(
         result.get("context_window_tokens")
         or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
@@ -400,8 +531,8 @@ def _public_endpoint(row, *, include_secret=False, actor_user_id=None):
         and actor_user_id is not None
         and int(result.get("locked_by_user_id") or 0) == int(actor_user_id)
     )
-    for field in LLM_PRICE_FIELDS:
-        result[field] = _decimal_display_text(result.get(field))
+    for field in (*LLM_PRICE_FIELDS, *LLM_PEAK_PRICE_FIELDS):
+        result[field] = _decimal_display_text(result.get(field)) or ""
     return result
 
 
@@ -662,6 +793,11 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                 candidate["input_price_per_million"],
                 candidate["cached_input_price_per_million"],
                 candidate["output_price_per_million"],
+                int(candidate["peak_pricing_enabled"]),
+                candidate[LLM_PEAK_TIME_RANGES_FIELD],
+                candidate["peak_input_price_per_million"],
+                candidate["peak_cached_input_price_per_million"],
+                candidate["peak_output_price_per_million"],
                 grant.get("test_message"), grant.get("test_latency_ms"), tested_at, user_id,
             )
             if endpoint_id is None:
@@ -672,11 +808,15 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                          context_window_tokens, max_output_tokens,
                          thinking_enabled, thinking_format,
                          input_price_per_million, cached_input_price_per_million,
-                         output_price_per_million, test_status, test_message,
+                         output_price_per_million, peak_pricing_enabled,
+                         peak_time_ranges, peak_input_price_per_million,
+                         peak_cached_input_price_per_million,
+                         peak_output_price_per_million, test_status, test_message,
                          test_latency_ms, tested_at, tested_by_user_id,
                          created_by_user_id, updated_by_user_id)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, 'passed', %s, %s, %s, %s, %s, %s)
+                            %s, %s, %s, %s, %s, %s, %s, 'passed', %s,
+                            %s, %s, %s, %s, %s)
                     """,
                     values + (user_id, user_id),
                 )
@@ -692,6 +832,11 @@ def save_llm_endpoint(payload, *, user_id, test_token, endpoint_id=None):
                         input_price_per_million=%s,
                         cached_input_price_per_million=%s,
                         output_price_per_million=%s,
+                        peak_pricing_enabled=%s,
+                        peak_time_ranges=%s,
+                        peak_input_price_per_million=%s,
+                        peak_cached_input_price_per_million=%s,
+                        peak_output_price_per_million=%s,
                         test_status='passed', test_message=%s, test_latency_ms=%s,
                         tested_at=%s, tested_by_user_id=%s,
                         revision=revision+1, updated_by_user_id=%s

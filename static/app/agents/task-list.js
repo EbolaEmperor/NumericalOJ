@@ -89,7 +89,9 @@
       isPersonal: personal || id.indexOf('user:') === 0,
       inputPrice: item.input_price_per_million,
       cachedInputPrice: item.cached_input_price_per_million,
-      outputPrice: item.output_price_per_million
+      outputPrice: item.output_price_per_million,
+      peakPricingEnabled: item.peak_pricing_enabled === true,
+      pricingPeriod: asText(item.pricing_period)
     };
   }
 
@@ -155,6 +157,7 @@
     var endpointTrigger = endpointChoice && endpointChoice.querySelector('.rk-choice-trigger');
     var endpointTriggerMain = endpointChoice && endpointChoice.querySelector('.rk-choice-trigger-main');
     var endpointPaidBadge = null;
+    var endpointPricingPeriod = null;
     var reasoningEffortWrapper = root.querySelector('[data-agent-reasoning-effort-choice]');
     var reasoningEffortChoice = reasoningEffortWrapper && reasoningEffortWrapper.querySelector('[data-rk-choice]');
     var accessInput = root.querySelector('input[name="access_role"]');
@@ -185,6 +188,10 @@
       endpointPaidBadge.textContent = '自费';
       endpointPaidBadge.hidden = true;
       endpointTriggerMain.appendChild(endpointPaidBadge);
+      endpointPricingPeriod = document.createElement('span');
+      endpointPricingPeriod.className = 'agent-endpoint-pricing-period agent-endpoint-pricing-period--trigger';
+      endpointPricingPeriod.hidden = true;
+      endpointTriggerMain.appendChild(endpointPricingPeriod);
     }
 
     function endpointCatalog(raw) {
@@ -240,20 +247,43 @@
       endpoints.forEach(function (endpoint) { byId[endpoint.id] = endpoint; });
       endpointChoice.querySelectorAll('.rk-choice-option').forEach(function (option) {
         var endpoint = byId[asText(option.getAttribute('data-choice-value'))];
-        if (!endpoint || !endpoint.isPersonal) return;
-        option.classList.add('is-personal-endpoint');
+        if (!endpoint) return;
         var name = option.querySelector('.rk-choice-option-name');
-        if (!name || name.querySelector('.agent-endpoint-paid-badge')) return;
+        if (!name) return;
+        if (endpoint.isPersonal) option.classList.add('is-personal-endpoint');
+        if (name.querySelector('.agent-endpoint-paid-badge, .agent-endpoint-pricing-period')) return;
         var modelName = document.createElement('span');
         modelName.className = 'agent-endpoint-model-name';
         modelName.textContent = endpoint.model;
-        var badge = document.createElement('span');
-        badge.className = 'agent-endpoint-paid-badge';
-        badge.textContent = '自费';
         name.textContent = '';
         name.classList.add('agent-endpoint-option-name');
         name.appendChild(modelName);
-        name.appendChild(badge);
+        if (endpoint.isPersonal) {
+          var badge = document.createElement('span');
+          badge.className = 'agent-endpoint-paid-badge';
+          badge.textContent = '自费';
+          name.appendChild(badge);
+        }
+        if (endpoint.peakPricingEnabled) {
+          var period = document.createElement('span');
+          period.className = 'agent-endpoint-pricing-period';
+          period.dataset.pricingPeriod = endpoint.pricingPeriod === 'peak' ? 'peak' : 'offpeak';
+          period.innerHTML = '<i aria-hidden="true"></i><span></span>';
+          period.querySelector('span').textContent = endpoint.pricingPeriod === 'peak' ? '高峰期' : '低谷期';
+          name.appendChild(period);
+          var meta = option.querySelector('.rk-choice-option-meta');
+          var metaText = meta && meta.textContent || '';
+          var priceStart = metaText.indexOf('输入 ');
+          if (meta && priceStart >= 0) {
+            var prefix = document.createElement('span');
+            prefix.textContent = metaText.slice(0, priceStart);
+            var price = document.createElement('span');
+            price.textContent = metaText.slice(priceStart);
+            meta.textContent = '';
+            meta.classList.add('agent-endpoint-option-meta');
+            meta.append(prefix, period.cloneNode(true), document.createTextNode(' · '), price);
+          }
+        }
       });
     }
 
@@ -261,6 +291,13 @@
       var endpoint = selectedEndpoint();
       var isPersonal = !!(endpoint && endpoint.isPersonal);
       if (endpointPaidBadge) endpointPaidBadge.hidden = !isPersonal;
+      if (endpointPricingPeriod) {
+        var showPeriod = !!(endpoint && endpoint.peakPricingEnabled);
+        endpointPricingPeriod.hidden = !showPeriod;
+        endpointPricingPeriod.dataset.pricingPeriod = endpoint && endpoint.pricingPeriod === 'peak' ? 'peak' : 'offpeak';
+        endpointPricingPeriod.innerHTML = '<i aria-hidden="true"></i><span></span>';
+        endpointPricingPeriod.querySelector('span').textContent = endpoint && endpoint.pricingPeriod === 'peak' ? '高峰期' : '低谷期';
+      }
       if (endpointChoice) endpointChoice.classList.toggle('is-personal-endpoint', isPersonal);
       if (endpointTrigger) {
         endpointTrigger.setAttribute(

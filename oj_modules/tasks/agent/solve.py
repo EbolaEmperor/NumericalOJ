@@ -17,7 +17,6 @@ from oj_modules.problems.agent_launch import (
     AGENT_TASK_SOLVE,
     build_solution_agent_prompt,
     resolve_launch_endpoint,
-    validate_launch_endpoint_revision,
 )
 from oj_modules.tasks.agent.conversation import extract_agent_conclusion
 from oj_modules.tasks.agent.harness_runtime import (
@@ -225,8 +224,6 @@ def register_agent_solve_problem_task(celery_app):
                 endpoint_id,
                 include_secret=True,
             )
-            if endpoint_revision is not None:
-                validate_launch_endpoint_revision(endpoint, endpoint_revision)
         except Exception as exc:
             message = str(exc) or "所选 LLM 节点不可用"
             _update_agent_state(state, message, status="Failed", stage="finished")

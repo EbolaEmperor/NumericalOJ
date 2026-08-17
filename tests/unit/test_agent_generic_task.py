@@ -36,6 +36,9 @@ def _endpoint():
         "model": "model-a",
         "thinking_enabled": False,
         "thinking_format": "none",
+        "input_price_per_million": "1",
+        "cached_input_price_per_million": "0.1",
+        "output_price_per_million": "2",
     }
 
 
@@ -620,7 +623,7 @@ def test_generic_explicit_continue_can_start_fresh_without_native_session(
         "access_role": "admin",
         "harness": "codex",
         "endpoint_id": 8,
-        "endpoint_revision": 4,
+        "endpoint_revision": 3,
         "native_session_id": "",
         "turn_count": 2,
         "is_legacy": False,
@@ -724,7 +727,7 @@ def test_generic_cleanup_failure_stays_nonterminal(monkeypatch):
     assert snapshots[-1]["harness_status"] == "cleanup_failed"
 
 
-def test_generic_rejects_changed_endpoint_revision_before_harness(monkeypatch):
+def test_generic_uses_current_endpoint_after_session_revision_changes(monkeypatch):
     task_id = "revision-changed"
     session = {
         "session_id": "revision-session",
@@ -746,10 +749,17 @@ def test_generic_rejects_changed_endpoint_revision_before_harness(monkeypatch):
         "resolve_launch_endpoint",
         lambda *_args, **_kwargs: _endpoint(),
     )
+    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _task_id: "已完成")
     monkeypatch.setattr(
         generic,
         "run_agent_harness",
-        lambda **_kwargs: pytest.fail("节点 revision 不同不得启动 harness"),
+        lambda **_kwargs: HarnessRunResult(
+            0,
+            False,
+            "",
+            "",
+            native_session_id="11111111-1111-1111-1111-111111111111",
+        ),
     )
 
     task = generic.register_agent_run_turn_task(_FakeCelery())
@@ -764,9 +774,8 @@ def test_generic_rejects_changed_endpoint_revision_before_harness(monkeypatch):
         "执行任务",
     )
 
-    assert result["success"] is False
-    assert "配置已变化" in result["message"]
-    assert snapshots[-1]["status"] == "Failed"
+    assert result["success"] is True
+    assert snapshots[-1]["status"] == "Completed"
 
 
 def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypatch):
@@ -791,9 +800,10 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
     snapshots = _patch_generic(monkeypatch, session)
     endpoint = {
         **_endpoint(),
-        "input_price_per_million": "1",
-        "cached_input_price_per_million": "0.1",
-        "output_price_per_million": "2",
+        "revision": 5,
+        "input_price_per_million": "3",
+        "cached_input_price_per_million": "0.3",
+        "output_price_per_million": "6",
     }
     monkeypatch.setattr(
         generic,
@@ -809,6 +819,18 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
         generic,
         "resolve_launch_endpoint",
         lambda *_args, **_kwargs: endpoint,
+    )
+    current_endpoint = {
+        **endpoint,
+        "revision": 6,
+        "input_price_per_million": "9",
+        "cached_input_price_per_million": "0.9",
+        "output_price_per_million": "18",
+    }
+    monkeypatch.setattr(
+        generic,
+        "get_llm_endpoint",
+        lambda *_args, **_kwargs: current_endpoint,
     )
     monkeypatch.setattr(
         generic,
@@ -883,5 +905,107 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
     assert result["success"] is True
     assert len(charged) == 1
     assert charged[0]["usage_event_id"] == "request-1"
+    assert charged[0]["endpoint_revision"] == current_endpoint["revision"]
+    assert charged[0]["pricing"] == {
+        "input_price_per_million": "9",
+        "cached_input_price_per_million": "0.9",
+        "output_price_per_million": "18",
+    }
     assert snapshots[-1]["reasoning_effort"] == "high"
     assert snapshots[-1]["session_charged_amount_rmb"] == "1.5"
+
+
+def test_admin_usage_is_recorded_and_published_in_realtime(monkeypatch):
+    task_id = "admin-realtime-cost"
+    session = {
+        "session_id": "admin-cost-session",
+        "current_task_id": task_id,
+        "title": "管理员实时成本",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "pi",
+        "reasoning_effort": "default",
+        "endpoint_id": 8,
+        "endpoint_source": "global",
+        "endpoint_revision": 3,
+        "native_session_id": "",
+        "turn_count": 1,
+        "is_legacy": False,
+    }
+    snapshots = _patch_generic(monkeypatch, session)
+    endpoint = {**_endpoint(), "revision": 5}
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: endpoint,
+    )
+    monkeypatch.setattr(
+        generic,
+        "get_llm_endpoint",
+        lambda *_args, **_kwargs: endpoint,
+    )
+    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _task_id: "已完成")
+    monkeypatch.setattr(
+        generic,
+        "require_agent_start_eligibility",
+        lambda *_args, **_kwargs: {"allowed": True},
+    )
+    charged = []
+    monkeypatch.setattr(
+        generic,
+        "charge_agent_usage",
+        lambda **kwargs: charged.append(kwargs) or {
+            "applied": True,
+            "charged_amount": "0.125",
+            "remaining_amount": None,
+            "hard_stop": False,
+        },
+    )
+    costs = iter((None, "0.125"))
+    monkeypatch.setattr(
+        generic,
+        "get_agent_session_usage_cost",
+        lambda _session_id: next(costs),
+    )
+
+    def run_harness(**kwargs):
+        assert callable(kwargs["usage_callback"])
+        kwargs["usage_callback"]({
+            "source": "relay_openai",
+            "id": "admin-request-1",
+            "usage": {
+                "input_uncached_tokens": 10,
+                "input_cached_tokens": 0,
+                "input_cache_write_tokens": 0,
+                "output_tokens": 2,
+                "reasoning_output_tokens": 0,
+            },
+        })
+        return HarnessRunResult(
+            0,
+            False,
+            "",
+            "",
+            native_session_id="11111111-1111-1111-1111-111111111111",
+        )
+
+    monkeypatch.setattr(generic, "run_agent_harness", run_harness)
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "admin-cost-session",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is True
+    assert charged[0]["is_admin"] is True
+    assert charged[0]["endpoint_revision"] == 5
+    assert snapshots[-1]["session_charged_amount_rmb"] == "0.125"

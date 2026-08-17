@@ -1130,13 +1130,18 @@ def charge_agent_usage(
     is_admin=False,
     uses_personal_endpoint=False,
 ):
-    """幂等、原子地记录一条 LLM usage，并立即扣减用户额度。"""
+    """幂等、原子地记录一条全站 LLM usage。
+
+    普通用户的记录会同步扣减站内额度；管理员也需要保留逐请求、价格冻结
+    的成本记录，但不占用额度账户。自有端点的费用由用户自行承担，不进入
+    平台账本。
+    """
 
     user_id = _positive_int(user_id, "用户 ID")
-    if is_admin or uses_personal_endpoint:
+    if uses_personal_endpoint:
         return {
             "applied": False,
-            "skipped_reason": "admin" if is_admin else "personal_endpoint",
+            "skipped_reason": "personal_endpoint",
             "charged_amount": "0",
             "remaining_amount": None,
             "hard_stop": False,
@@ -1163,20 +1168,26 @@ def charge_agent_usage(
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT * FROM agent_quota_accounts WHERE user_id=%s FOR UPDATE",
-                (user_id,),
-            )
-            account = cursor.fetchone()
-            if not account:
-                raise AgentQuotaAccessDeniedError(
-                    "请先申请 Agent 额度",
-                    decision={
-                        "allowed": False,
-                        "reason_code": "quota_account_required",
-                        "message": "请先申请 Agent 额度",
-                    },
+            account = None
+            if is_admin:
+                # 管理员没有额度账户。仍锁定用户行，保证同一个 usage 事件
+                # 并发重放时可以可靠地走账本幂等分支。
+                _require_user(cursor, user_id, admin=True, for_update=True)
+            else:
+                cursor.execute(
+                    "SELECT * FROM agent_quota_accounts WHERE user_id=%s FOR UPDATE",
+                    (user_id,),
                 )
+                account = cursor.fetchone()
+                if not account:
+                    raise AgentQuotaAccessDeniedError(
+                        "请先申请 Agent 额度",
+                        decision={
+                            "allowed": False,
+                            "reason_code": "quota_account_required",
+                            "message": "请先申请 Agent 额度",
+                        },
+                    )
             cursor.execute(
                 """
                 SELECT * FROM agent_usage_ledger
@@ -1202,10 +1213,16 @@ def charge_agent_usage(
                     )
                 result = _ledger_from_row(existing, applied=False)
             else:
-                granted = _decimal_from_row(account.get("granted_amount"))
-                used = _decimal_from_row(account.get("used_amount"))
-                next_used = used + charge
-                remaining = granted - next_used
+                if is_admin:
+                    # remaining_after 仍为 NOT NULL，管理员账本以 0 作为
+                    # 不适用的稳定占位；对外结果会恢复为 None。
+                    remaining = Decimal("0")
+                    next_used = None
+                else:
+                    granted = _decimal_from_row(account.get("granted_amount"))
+                    used = _decimal_from_row(account.get("used_amount"))
+                    next_used = used + charge
+                    remaining = granted - next_used
                 cursor.execute(
                     """
                     INSERT INTO agent_usage_ledger
@@ -1243,13 +1260,14 @@ def charge_agent_usage(
                     ),
                 )
                 ledger_id = cursor.lastrowid
-                cursor.execute(
-                    """
-                    UPDATE agent_quota_accounts
-                    SET used_amount=%s WHERE user_id=%s
-                    """,
-                    (next_used, user_id),
-                )
+                if next_used is not None:
+                    cursor.execute(
+                        """
+                        UPDATE agent_quota_accounts
+                        SET used_amount=%s WHERE user_id=%s
+                        """,
+                        (next_used, user_id),
+                    )
                 cursor.execute(
                     "SELECT * FROM agent_usage_ledger WHERE id=%s",
                     (ledger_id,),
@@ -1261,6 +1279,13 @@ def charge_agent_usage(
         raise
     finally:
         conn.close()
+    if is_admin:
+        # 管理员账本用于成本展示而非配额治理，保持调用方原有的余额语义。
+        return {
+            **result,
+            "remaining_amount": None,
+            "hard_stop": False,
+        }
     return result
 
 

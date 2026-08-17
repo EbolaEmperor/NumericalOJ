@@ -883,6 +883,42 @@ def test_manual_cancel_without_fifo_messages_does_not_pause_queue(monkeypatch):
     assert connection.commits == 1
 
 
+@pytest.mark.parametrize(
+    ("queue_row", "expected_pause"),
+    [(None, False), ({"message_id": "queued-next"}, True)],
+)
+def test_empty_agent_conclusion_only_pauses_a_nonempty_queue(
+    monkeypatch,
+    queue_row,
+    expected_pause,
+):
+    connection = _ScriptedConnection(
+        one_values=[{"status": "Running"}, queue_row],
+    )
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    changed = sessions.sync_agent_session_state({
+        "session_id": "session-empty-conclusion",
+        "task_id": "turn-current",
+        "status": "Failed",
+        "message": sessions.AGENT_EMPTY_CONCLUSION_MESSAGE,
+    })
+
+    assert changed is True
+    calls = connection.cursor_instance.calls
+    assert "SELECT 1" in calls[1][0]
+    assert calls[1][1] == ("session-empty-conclusion",)
+    session_update_params = calls[2][1]
+    assert session_update_params[5:10] == (
+        int(expected_pause),
+        int(not expected_pause),
+        int(expected_pause),
+        sessions.AGENT_EMPTY_CONCLUSION_MESSAGE,
+        int(not expected_pause),
+    )
+    assert connection.commits == 1
+
+
 def test_title_generation_claim_is_atomic_and_persists_fallback(monkeypatch):
     connection = _ScriptedConnection()
     connection.cursor_instance.rowcount = 1

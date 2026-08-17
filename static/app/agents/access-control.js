@@ -267,9 +267,12 @@
         var logoClass = global.NumojModelFamily
           ? global.NumojModelFamily.iconClass(model)
           : 'fas fa-microchip';
+        var period = endpoint.peak_pricing_enabled
+          ? '<span class="agent-rate-pricing-period" data-pricing-period="' + (endpoint.pricing_period === 'peak' ? 'peak' : 'offpeak') + '"><i aria-hidden="true"></i><span>' + (endpoint.pricing_period === 'peak' ? '高峰期' : '低谷期') + '</span></span>'
+          : '';
         return '<article class="agent-rate-card">'
           + '<header class="agent-rate-card-header"><span class="agent-rate-logo"><i class="' + escapeHtml(logoClass) + '" data-model-family-logo data-model-name="' + escapeHtml(model) + '" aria-hidden="true"></i></span>'
-          + '<div class="agent-rate-card-name"><strong title="' + escapeHtml(model) + '">' + escapeHtml(model) + '</strong><small>' + escapeHtml(protocol) + '</small></div></header>'
+          + '<div class="agent-rate-card-name"><strong title="' + escapeHtml(model) + '">' + escapeHtml(model) + '</strong><small>' + escapeHtml(protocol) + '</small>' + period + '</div></header>'
           + '<dl class="agent-rate-values" aria-label="节点价格，人民币每百万 Token">'
           + '<div class="agent-rate-value"><dt>INPUT</dt><dd>' + escapeHtml(decimalText(endpoint.input_price_per_million) || '—') + '</dd></div>'
           + '<div class="agent-rate-value"><dt>CACHED</dt><dd>' + escapeHtml(decimalText(endpoint.cached_input_price_per_million) || '—') + '</dd></div>'

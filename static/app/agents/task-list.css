@@ -176,6 +176,8 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 14px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .agent-composer-controls {
@@ -265,6 +267,35 @@
 }
 
 .agent-endpoint-paid-badge[hidden] { display: none; }
+
+.agent-endpoint-pricing-period {
+  display: inline-flex;
+  min-width: max-content;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.agent-endpoint-pricing-period > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3b9d64;
+}
+
+.agent-endpoint-pricing-period[data-pricing-period="peak"] > i { background: #c94b46; }
+.agent-endpoint-pricing-period[hidden] { display: none; }
+
+.agent-choice--endpoint .agent-endpoint-option-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
 
 .agent-choice--endpoint .agent-endpoint-paid-badge--trigger {
   min-width: max-content;
@@ -655,14 +686,34 @@
   .agent-composer-footer {
     display: flex;
     align-items: center;
-    gap: 4px;
+    justify-content: flex-start;
+    gap: 5px;
+    flex-wrap: nowrap;
+    min-width: 0;
   }
 
   .agent-composer-controls {
     display: flex;
     min-width: 0;
-    flex: 1 1 auto;
-    gap: 4px;
+    flex: 1 1 0;
+    flex-wrap: nowrap;
+    gap: 5px;
+  }
+
+  /*
+   * 显式使用内容宽度，避免 endpoint 的可用宽度被当作自身宽度，导致
+   * 与前后选择器看起来不是同一个间距。极窄屏时各项在这一行内收缩，
+   * 标签以省略号显示，不会挤走右侧操作按钮。
+   */
+  .agent-composer-choice {
+    min-width: 0;
+    flex: 0 1 auto;
+    width: auto;
+  }
+
+  .agent-composer-choice > .agent-choice,
+  .agent-choice .rk-choice-trigger {
+    width: auto;
   }
 
   .agent-choice .rk-choice-menu {
@@ -691,8 +742,15 @@
   }
 
   .agent-composer-actions {
+    margin-left: auto;
     flex: 0 0 auto;
     flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+
+  .agent-icon-button,
+  .agent-send-button {
+    flex: 0 0 34px;
   }
 }
 

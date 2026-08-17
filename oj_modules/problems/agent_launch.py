@@ -15,6 +15,7 @@ from oj_modules.site_config.services import (
     DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
     DEFAULT_LLM_MAX_OUTPUT_TOKENS,
     get_llm_endpoint,
+    llm_endpoint_pricing_snapshot,
     list_llm_endpoints,
 )
 from oj_modules.agents.user_endpoints import (
@@ -301,22 +302,40 @@ def _public_launch_endpoint(endpoint, *, source="global"):
         "metered": source == "global",
     }
     if source == "global":
-        pricing = token_pricing_from_endpoint(endpoint)
+        pricing = token_pricing_snapshot_from_endpoint(endpoint)
         if pricing:
-            result.update(pricing)
+            result.update({field: pricing[field] for field in _TOKEN_PRICE_FIELDS})
+            if pricing["peak_pricing_enabled"]:
+                result.update({
+                    "peak_pricing_enabled": True,
+                    "pricing_period": pricing["pricing_period"],
+                })
     return result
 
 
-def token_pricing_from_endpoint(endpoint):
-    """读取节点完整的人民币 Token 单价。"""
+def token_pricing_snapshot_from_endpoint(endpoint, *, now=None):
+    """读取当前时刻生效的人民币 Token 单价及峰谷状态。"""
 
-    values = {}
+    snapshot = llm_endpoint_pricing_snapshot(endpoint, now=now)
+    values = {
+        "peak_pricing_enabled": bool(snapshot.get("peak_pricing_enabled")),
+        "pricing_period": snapshot.get("pricing_period"),
+    }
     for field in _TOKEN_PRICE_FIELDS:
-        raw = (endpoint or {}).get(field)
+        raw = snapshot.get(field)
         values[field] = "" if raw is None else str(raw).strip()
-    if not all(values.values()):
+    if not all(values[field] for field in _TOKEN_PRICE_FIELDS):
         return None
     return values
+
+
+def token_pricing_from_endpoint(endpoint, *, now=None):
+    """读取当前时刻生效的人民币 Token 单价。"""
+
+    snapshot = token_pricing_snapshot_from_endpoint(endpoint, now=now)
+    if snapshot is None:
+        return None
+    return {field: snapshot[field] for field in _TOKEN_PRICE_FIELDS}
 
 
 def list_launch_endpoints_by_harness(*, user_id=None):
@@ -340,7 +359,7 @@ def list_launch_endpoints_by_harness(*, user_id=None):
                 _public_launch_endpoint(endpoint)
                 for endpoint in endpoints
                 if bool(endpoint.get("api_key_configured"))
-                and token_pricing_from_endpoint(endpoint) is not None
+                and token_pricing_snapshot_from_endpoint(endpoint) is not None
                 and endpoint_supports_harness(endpoint, harness)
             ]
         )
@@ -391,24 +410,6 @@ def resolve_launch_endpoint(
     return endpoint
 
 
-def validate_launch_endpoint_revision(endpoint, expected_revision):
-    """确保排队及后续轮次使用创建会话时选定的节点版本。"""
-
-    current_value = (endpoint or {}).get("revision")
-    if isinstance(current_value, bool) or isinstance(expected_revision, bool):
-        raise AgentLaunchValidationError("Agent 会话的 LLM 节点版本无效")
-    try:
-        current = int(current_value)
-        expected = int(expected_revision)
-    except (TypeError, ValueError):
-        raise AgentLaunchValidationError("Agent 会话的 LLM 节点版本无效") from None
-    if current <= 0 or expected <= 0 or current != expected:
-        raise AgentLaunchValidationError(
-            "该 Agent 会话使用的 LLM 节点配置已变化，请新建会话"
-        )
-    return endpoint
-
-
 __all__ = [
     "AGENT_ACCESS_ROLE_ADMIN",
     "AGENT_ACCESS_ROLE_USER",
@@ -435,6 +436,6 @@ __all__ = [
     "resolve_launch_endpoint",
     "reasoning_effort_options_by_harness",
     "skill_for_agent_task",
+    "token_pricing_snapshot_from_endpoint",
     "token_pricing_from_endpoint",
-    "validate_launch_endpoint_revision",
 ]

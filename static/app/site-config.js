@@ -356,6 +356,9 @@
         input_price_per_million: decimalText(endpoint.input_price_per_million),
         cached_input_price_per_million: decimalText(endpoint.cached_input_price_per_million),
         output_price_per_million: decimalText(endpoint.output_price_per_million),
+        peak_input_price_per_million: decimalText(endpoint.peak_input_price_per_million),
+        peak_cached_input_price_per_million: decimalText(endpoint.peak_cached_input_price_per_million),
+        peak_output_price_per_million: decimalText(endpoint.peak_output_price_per_million),
       });
     } else {
       endpointEditor.reset({
@@ -443,6 +446,11 @@
         input_price_per_million: decimalText(endpoint.input_price_per_million),
         cached_input_price_per_million: decimalText(endpoint.cached_input_price_per_million),
         output_price_per_million: decimalText(endpoint.output_price_per_million),
+        peak_pricing_enabled: Boolean(endpoint.peak_pricing_enabled),
+        peak_time_ranges: endpoint.peak_time_ranges || '',
+        peak_input_price_per_million: decimalText(endpoint.peak_input_price_per_million),
+        peak_cached_input_price_per_million: decimalText(endpoint.peak_cached_input_price_per_million),
+        peak_output_price_per_million: decimalText(endpoint.peak_output_price_per_million),
       };
       const tested = await request('/llm-endpoints/test', {
         method: 'POST',
