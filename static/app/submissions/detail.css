@@ -748,6 +748,14 @@
   color: var(--submission-success);
 }
 
+.submission-ai-hint {
+  margin-top: 7px;
+  padding: 0 2px;
+  color: var(--submission-ink-3);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .submission-ai-cot {
   margin-top: 10px;
   border: 1px solid var(--submission-line);
