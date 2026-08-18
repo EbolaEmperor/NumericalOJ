@@ -106,6 +106,25 @@
     </section>
   </dialog>
 
+  <dialog class="vibe-modal" data-vibe-delete-confirm-modal aria-labelledby="vibeDeleteConfirmTitle" aria-describedby="vibeDeleteConfirmDescription vibeDeleteConfirmPhrase">
+    <section class="vibe-modal-panel vibe-modal-panel--confirm">
+      <h2 id="vibeDeleteConfirmTitle">确认删除作品</h2>
+      <p id="vibeDeleteConfirmDescription">此操作不可恢复。请输入以下文字后才能删除：</p>
+      <p class="vibe-delete-confirm-phrase" id="vibeDeleteConfirmPhrase" data-vibe-delete-confirm-phrase></p>
+      <form data-vibe-delete-confirm-form>
+        <label class="vibe-form-field vibe-delete-confirm-field">
+          <span>确认文字</span>
+          <input type="text" data-vibe-delete-confirmation autocomplete="off" autocapitalize="off" spellcheck="false" required>
+        </label>
+        <p class="vibe-form-status" data-vibe-delete-confirm-status aria-live="polite"></p>
+        <footer>
+          <button class="vibe-modal-secondary" type="button" data-vibe-cancel-delete>返回编辑</button>
+          <button class="vibe-modal-danger vibe-modal-danger--confirm" type="submit" data-vibe-confirm-delete disabled>删除作品</button>
+        </footer>
+      </form>
+    </section>
+  </dialog>
+
   {% if user.is_admin == 1 %}
   <dialog class="vibe-modal" data-vibe-approve-modal aria-labelledby="vibeApproveTitle" aria-describedby="vibeApproveDescription">
     <section class="vibe-modal-panel vibe-modal-panel--confirm">

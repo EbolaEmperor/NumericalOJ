@@ -208,6 +208,8 @@ body.vibe-modal-open { overflow: hidden; }
 
 .vibe-modal-danger { margin-right: auto; border: 1px solid #fecdd3; background: #fff1f2; color: #be123c; }
 
+.vibe-modal-danger--confirm { margin-right: 0; }
+
 .vibe-modal-secondary:hover { background: #f4f4f5; }
 
 .vibe-modal-primary:hover { background: #27272a; }
@@ -223,11 +225,17 @@ body.vibe-modal-open { overflow: hidden; }
 
 .vibe-modal-panel--confirm { width: min(100%, 410px); padding: 25px; text-align: center; }
 
+.vibe-modal-panel--confirm > form { padding: 0; gap: 14px; }
+
 .vibe-confirm-icon { display: grid; width: 42px; height: 42px; margin: 0 auto 14px; place-items: center; border-radius: 9px; background: #ecfdf5; color: #16845b; }
 
 .vibe-confirm-icon--featured { background: #f5f3ff; color: #7c3aed; }
 
 .vibe-modal-panel--confirm > p:not(.vibe-form-status) { margin: 9px 0 18px; color: #71717a; font-size: .72rem; line-height: 1.65; }
+
+.vibe-delete-confirm-phrase { overflow-wrap: anywhere; padding: 9px 11px; border: 1px solid #fecdd3; border-radius: 8px; background: #fff1f2; color: #9f1239 !important; font-size: .72rem !important; font-weight: 650; }
+
+.vibe-delete-confirm-field { text-align: left; }
 
 .vibe-modal-panel--confirm footer { margin-top: 18px; }
 
