@@ -327,6 +327,14 @@ celery.conf.task_routes = {
     'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
     'oj.ranking_reverse_judge': {'queue': 'judge'},
 }
+# Redis broker 默认只会保留 late-ack 消息一小时。Agent 长任务超过该窗口时，
+# 同一 task_id 会被第二个 worker 重投并与原容器并发。该设置作用于共享 Redis
+# unacked 队列，三个 worker 必须使用相同值；六小时覆盖正常长任务，同时避免
+# worker 故障后的恢复被无限期延后。
+_CELERY_REDIS_VISIBILITY_TIMEOUT_SECONDS = 6 * 60 * 60
+celery.conf.broker_transport_options = {
+    'visibility_timeout': _CELERY_REDIS_VISIBILITY_TIMEOUT_SECONDS,
+}
 # 任务执行完才 ack：worker 崩溃或被 SIGKILL 时，消息不会静默丢失。
 # 常规任务依靠各自的幂等边界；不限时的普通 Agent 队列固定单 worker 实例，
 # 每个进程只预取一条消息，worker 内进程数按全站设置动态伸缩，

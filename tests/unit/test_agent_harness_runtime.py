@@ -2052,3 +2052,38 @@ def test_container_cleanup_failure_is_not_silently_ignored(monkeypatch):
 
     with pytest.raises(RuntimeError, match="无法确认 Agent 容器"):
         runtime._remove_agent_container("numoj-agent-task-1")
+
+
+def test_container_cleanup_confirms_another_removal_has_finished(monkeypatch):
+    calls = []
+    responses = iter((
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Error response from daemon: removal of container "
+                "numoj-agent-task-1 is already in progress"
+            ),
+        ),
+        SimpleNamespace(returncode=0, stdout='{"Id":"abc"}', stderr=""),
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Error: No such object: numoj-agent-task-1",
+        ),
+    ))
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return next(responses)
+
+    monkeypatch.setattr(runtime.subprocess, "run", run)
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+
+    runtime._remove_agent_container("numoj-agent-task-1")
+
+    assert calls == [
+        ["docker", "rm", "-f", "numoj-agent-task-1"],
+        ["docker", "container", "inspect", "numoj-agent-task-1"],
+        ["docker", "container", "inspect", "numoj-agent-task-1"],
+    ]

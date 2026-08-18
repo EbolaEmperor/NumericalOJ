@@ -59,25 +59,17 @@ def _read_native_session_id_for_task(task_id):
 
 
 def _force_remove_agent_container(task_id):
+    from oj_modules.tasks.agent.harness_runtime import (
+        AgentHarnessCleanupError,
+        _remove_agent_container,
+    )
+
     container_name = agent_run_container_name(task_id)
-    last_error = ""
-    for _attempt in range(2):
-        try:
-            completed = subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-        except Exception as exc:
-            last_error = str(exc)
-            continue
-        detail = f"{completed.stdout or ''}\n{completed.stderr or ''}".strip()
-        if completed.returncode == 0 or "no such container" in detail.lower():
-            return None
-        last_error = detail or f"docker rm exited {completed.returncode}"
-    return f"强制清理 Agent 容器失败：{last_error[:500]}"
+    try:
+        _remove_agent_container(container_name)
+    except AgentHarnessCleanupError as exc:
+        return f"强制清理 Agent 容器失败：{str(exc)[:500]}"
+    return None
 
 
 def _agent_container_running(task_id):
