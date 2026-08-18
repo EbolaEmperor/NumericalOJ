@@ -829,9 +829,6 @@ assert_sudo_keepalive '数据库备份'
   --manifest "$backup_manifest"
 database_backup="$backup_manifest"
 
-phase='迁移输出图片文件名列'
-"$CANDIDATE_PYTHON" -B scripts/migrate_output_image_filename.py
-
 phase='切换 VibeHub 受信基础镜像'
 vibehub_runtime_previous_id="$(
   docker image inspect --format '{{.Id}}' \
