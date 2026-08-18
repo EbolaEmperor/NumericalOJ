@@ -118,7 +118,7 @@
       </div>
       <div class="col-md-6 d-none" id="programmingOutputFilenameField">
         <label for="programmingOutputFilenameInput" class="form-label">
-          <i class="fas fa-image me-2"></i> 输出文件名
+          <i class="fas fa-image me-2"></i> 输出图片文件名
         </label>
         <input
           type="text"
@@ -126,7 +126,9 @@
           id="programmingOutputFilenameInput"
           name="programming_output_filename"
           value="output.png"
-          placeholder="例如：output.png">
+          placeholder="例如：output.png"
+          aria-describedby="programmingOutputFilenameHelp">
+        <div id="programmingOutputFilenameHelp" class="form-text">仅支持 png、jpg、jpeg、bmp、gif 或 webp 图片。</div>
       </div>
       <div class="col-md-6 d-none" id="programmingOutputImageEndpointField">
         {{ endpoint_select(

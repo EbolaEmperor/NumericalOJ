@@ -473,12 +473,24 @@ def _write_text_file_exclusive(directory: str, filename: str, content) -> None:
 
 
 def sanitize_output_image_filename(filename: str) -> str:
+    """返回可由沙箱导出的图片文件名；遗留非法配置安全回退。
+
+    管理端会拒绝新的非法值。这里仍必须容错：旧题目配置可能在修复前
+    留有 ``output.txt`` 一类名称，若原样传给 case runner 会在用户程序启动前
+    抛出异常，把正常判题错误地记为 System Error。
+    """
+
     raw = str(filename or "").strip().replace("\\", "/")
     if "/" in raw:
         raw = raw.rsplit("/", 1)[-1].strip()
     if not raw:
         raw = "output.png"
-    return raw[:255] or "output.png"
+    stem, extension = os.path.splitext(raw)
+    if "\x00" in raw or extension.lower() not in IMAGE_FILE_EXTENSIONS:
+        return "output.png"
+    if len(raw) > 255:
+        return stem[:255 - len(extension)] + extension
+    return raw
 
 
 def _wait_for_output_file(path: str, attempts: int = 20, delay_seconds: float = 0.05) -> bool:

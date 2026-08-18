@@ -6,6 +6,7 @@
 """
 
 from oj_modules import db_services as db
+import pytest
 
 
 def test_legacy_model_normalizers_are_removed():
@@ -44,7 +45,8 @@ def test_output_filename_truncated_to_255():
     long_name = "x" * 300 + ".png"
     out = db.normalize_programming_output_filename(long_name)
     assert len(out) == 255
-    assert out == long_name[:255]
+    assert out.endswith(".png")
+    assert out == "x" * 251 + ".png"
 
 
 def test_output_filename_custom_default_on_empty():
@@ -53,3 +55,12 @@ def test_output_filename_custom_default_on_empty():
         db.normalize_programming_output_filename("  ", default="  fallback.bmp  ")
         == "fallback.bmp"
     )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["output.txt", "result.csv", "image.svg", "no-extension", "output\x00.png"],
+)
+def test_output_filename_rejects_unsupported_image_extensions(filename):
+    with pytest.raises(ValueError, match="输出图片文件名"):
+        db.normalize_programming_output_filename(filename)

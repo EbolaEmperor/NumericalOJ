@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import time
 
 from flask import session
@@ -42,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 
 _UNSET = object()
+
+
+_PROGRAMMING_OUTPUT_IMAGE_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
+})
 
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
@@ -113,10 +119,19 @@ def normalize_programming_output_filename(value, default="output.png"):
     if "/" in text:
         text = text.rsplit("/", 1)[-1].strip()
     if not text:
-        text = str(default or "output.png").strip()
+        text = str(default or "output.png").strip().replace("\\", "/")
+        if "/" in text:
+            text = text.rsplit("/", 1)[-1].strip()
+    if "\x00" in text:
+        raise ValueError("输出图片文件名不能包含空字符")
+    stem, extension = os.path.splitext(text)
+    if extension.lower() not in _PROGRAMMING_OUTPUT_IMAGE_EXTENSIONS:
+        raise ValueError(
+            "输出图片文件名必须使用 png、jpg、jpeg、bmp、gif 或 webp 扩展名"
+        )
     if len(text) > 255:
-        text = text[:255]
-    return text or "output.png"
+        text = stem[:255 - len(extension)] + extension
+    return text
 
 
 def ensure_problem_programming_grading_mode_column():
