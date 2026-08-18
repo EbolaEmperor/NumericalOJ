@@ -121,6 +121,25 @@ def parse_programming_output_filename_from_form(form, default="output.png"):
     return normalize_programming_output_filename(raw, default=default)
 
 
+def _programming_output_filename_error_response(error, *, template_name, user, problem=None):
+    """返回输出图片文件名的统一校验错误，避免无效配置入库。"""
+
+    if _wants_json_response():
+        return jsonify(success=False, message=str(error)), 400
+    context = {
+        'user': user,
+        'error_message': str(error),
+        **_problem_llm_form_context(
+            (problem or {}).get('llm_endpoint_bindings') if problem else None
+        ),
+    }
+    if template_name == 'problems/create.html':
+        context['default_written_grading_prompt'] = _DEFAULT_WRITTEN_GRADING_PROMPT
+    else:
+        context['problem'] = problem
+    return render_template(template_name, **context), 400
+
+
 def _form_has_promptly_review_fields(form):
     return any(
         key in form
@@ -202,7 +221,17 @@ def add_problem():
         forbidden_func = request.form.get('forbidden_func', '').strip()
         problem_type = request.form.get('type')
         programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=1)
-        programming_output_filename = parse_programming_output_filename_from_form(request.form, default="output.png")
+        try:
+            programming_output_filename = parse_programming_output_filename_from_form(
+                request.form,
+                default="output.png",
+            )
+        except ValueError as exc:
+            return _programming_output_filename_error_response(
+                exc,
+                template_name='problems/create.html',
+                user=user,
+            )
         programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
         written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
@@ -301,7 +330,18 @@ def edit_problem(problem_id):
         default_programming_mode = problem.get('programming_grading_mode', 1)
         new_programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=default_programming_mode)
         default_output_filename = problem.get('programming_output_filename', 'output.png')
-        new_programming_output_filename = parse_programming_output_filename_from_form(request.form, default=default_output_filename)
+        try:
+            new_programming_output_filename = parse_programming_output_filename_from_form(
+                request.form,
+                default=default_output_filename,
+            )
+        except ValueError as exc:
+            return _programming_output_filename_error_response(
+                exc,
+                template_name='problems/edit.html',
+                user=user,
+                problem=problem,
+            )
         new_programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         default_mode = problem.get('written_grading_mode', 1)
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)

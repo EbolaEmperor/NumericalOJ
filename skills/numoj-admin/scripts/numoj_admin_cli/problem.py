@@ -1094,7 +1094,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=1,
         help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
     )
-    pa.add_argument("--programming-output-filename", help="Expected output image filename in programming image-grading mode.")
+    pa.add_argument(
+        "--programming-output-filename",
+        help=(
+            "Expected output image filename in programming image-grading mode. "
+            "Use png, jpg, jpeg, bmp, gif, or webp (for example, output.png)."
+        ),
+    )
     pa.add_argument(
         "--programming-grading-prompt",
         help=(
@@ -1138,7 +1144,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
     )
-    pa.add_argument("--programming-output-filename", help="Expected output image filename in programming image-grading mode.")
+    pa.add_argument(
+        "--programming-output-filename",
+        help=(
+            "Expected output image filename in programming image-grading mode. "
+            "Use png, jpg, jpeg, bmp, gif, or webp (for example, output.png)."
+        ),
+    )
     pa.add_argument(
         "--programming-grading-prompt",
         help=(

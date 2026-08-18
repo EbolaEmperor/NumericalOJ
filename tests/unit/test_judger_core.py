@@ -247,6 +247,18 @@ def test_exclusive_text_write_refuses_existing_symlink(tmp_path, monkeypatch):
 
 
 # ============== capture_output_image_file ==============
+def test_sanitize_output_image_filename_falls_back_for_legacy_non_image_name():
+    assert judger_core.sanitize_output_image_filename("output.txt") == "output.png"
+    assert judger_core.sanitize_output_image_filename("output\x00.png") == "output.png"
+
+
+def test_sanitize_output_image_filename_preserves_supported_extension_when_truncated():
+    filename = "x" * 300 + ".jpeg"
+    normalized = judger_core.sanitize_output_image_filename(filename)
+    assert len(normalized) == 255
+    assert normalized.endswith(".jpeg")
+
+
 def test_capture_output_image_valid_ext_png(tmp_path):
     run_dir = str(tmp_path)
     src = os.path.join(run_dir, "output.png")
