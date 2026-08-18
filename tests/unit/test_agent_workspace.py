@@ -47,6 +47,34 @@ def test_ensure_agent_workspace_uses_private_fixed_layout(workspace_root):
     assert _mode(actual) == 0o700
 
 
+@pytest.mark.parametrize(
+    ("harness", "access_role", "filename", "skill_name"),
+    [
+        ("claude_code", "user", "CLAUDE.md", "numoj-user"),
+        ("codex", "user", "AGENTS.md", "numoj-user"),
+        ("pi", "admin", "AGENTS.md", "numoj-admin"),
+    ],
+)
+def test_initialize_agent_task_workspace_writes_harness_memory_file(
+    workspace_root,
+    harness,
+    access_role,
+    filename,
+    skill_name,
+):
+    actual = workspace.initialize_agent_task_workspace(
+        "session-01",
+        harness=harness,
+        access_role=access_role,
+    )
+
+    assert actual == workspace_root / "sessions" / "session-01" / "workspace"
+    assert (actual / filename).read_text(encoding="utf-8") == (
+        "If you are confused by the user's request, please try reading "
+        f"the {skill_name} skill.\n"
+    )
+
+
 @pytest.mark.parametrize("session_id", ["", ".", "..", "../escape", "a/b", "a\\b", "空"])
 def test_ensure_agent_workspace_rejects_unsafe_session_ids(
     workspace_root, session_id

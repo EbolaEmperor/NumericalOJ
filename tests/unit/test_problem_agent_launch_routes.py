@@ -27,7 +27,11 @@ def _patch_agent_runtime_checkpoint_io(monkeypatch):
     """启动路由单测不触碰真实会话 workspace/checkpoint。"""
 
     monkeypatch.setattr(routes, "_agent_run_turn_task", _Task())
-    monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _sid: None)
+    monkeypatch.setattr(
+        routes,
+        "initialize_agent_task_workspace",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         routes,
         "create_empty_agent_runtime_checkpoint",

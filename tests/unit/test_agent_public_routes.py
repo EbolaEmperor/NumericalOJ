@@ -95,7 +95,11 @@ def test_ordinary_user_creation_forces_user_access_role(monkeypatch):
         lambda *_args, **_kwargs: {"id": 12, "revision": 3, "model": "m"},
     )
     monkeypatch.setattr(routes, "save_agent_launch_preference", lambda *_args: None)
-    monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _sid: None)
+    monkeypatch.setattr(
+        routes,
+        "initialize_agent_task_workspace",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(routes, "create_empty_agent_runtime_checkpoint", lambda *_args: None)
     monkeypatch.setattr(routes, "save_agent_attachments", lambda *_args: [])
     monkeypatch.setattr(routes, "upsert_agent_run_snapshot", lambda _state: None)

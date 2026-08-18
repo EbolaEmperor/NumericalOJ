@@ -78,7 +78,7 @@ from oj_modules.agents.runtime_checkpoints import (
 from oj_modules.agents.workspace import (
     build_agent_workspace_tree,
     clear_agent_session_state_file,
-    ensure_agent_workspace,
+    initialize_agent_task_workspace,
     inspect_agent_workspace_file,
     open_agent_workspace_file,
     remove_agent_attachments,
@@ -1680,7 +1680,11 @@ def agent_solve_problem(problem_id):
     )
     runtime_checkpoint_id = ''
     try:
-        ensure_agent_workspace(task_id)
+        initialize_agent_task_workspace(
+            task_id,
+            harness=harness,
+            access_role="user",
+        )
         runtime_checkpoint_id = task_id
         create_empty_agent_runtime_checkpoint(task_id, runtime_checkpoint_id)
         agent_session = create_agent_session(
@@ -1809,7 +1813,11 @@ def agent_generate_testdata(problem_id):
     attachments = []
     runtime_checkpoint_id = ''
     try:
-        ensure_agent_workspace(task_id)
+        initialize_agent_task_workspace(
+            task_id,
+            harness=harness,
+            access_role="admin",
+        )
         runtime_checkpoint_id = task_id
         create_empty_agent_runtime_checkpoint(task_id, runtime_checkpoint_id)
         attachment_upload = FileStorage(
@@ -2714,7 +2722,11 @@ def agent_tasks():
                 harness,
                 endpoint.get('ref') or endpoint_id,
             )
-            ensure_agent_workspace(session_id)
+            initialize_agent_task_workspace(
+                session_id,
+                harness=harness,
+                access_role=access_role,
+            )
             runtime_checkpoint_id = _agent_runtime_checkpoint_generation_id(
                 session_id
             )
