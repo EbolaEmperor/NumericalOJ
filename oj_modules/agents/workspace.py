@@ -782,6 +782,38 @@ def ensure_agent_workspace(session_id) -> Path:
         return _workspace_root() / "sessions" / safe_session_id / "workspace"
 
 
+def initialize_agent_task_workspace(
+    session_id,
+    *,
+    harness,
+    access_role,
+) -> Path:
+    """初始化新建 Agent 会话的 workspace 与 harness 长期记忆文件。
+
+    调用方只应在首轮创建时调用，续聊必须保留 Agent 后续在 workspace 中的
+    修改。Claude Code 识别 ``CLAUDE.md``，其余已支持 harness 共用
+    ``AGENTS.md``。
+    """
+
+    workspace = ensure_agent_workspace(session_id)
+    normalized_harness = str(harness or "").strip().lower().replace("-", "_")
+    filename = "CLAUDE.md" if normalized_harness == "claude_code" else "AGENTS.md"
+    skill_name = (
+        "numoj-admin"
+        if str(access_role or "").strip().lower() == "admin"
+        else "numoj-user"
+    )
+    write_agent_workspace_file(
+        session_id,
+        filename,
+        (
+            "If you are confused by the user's request, please try reading "
+            f"the {skill_name} skill.\n"
+        ),
+    )
+    return workspace
+
+
 def _harden_redaction_history_file(fd: int, *, label: str) -> None:
     """验证宿主侧凭据历史文件，不跟随链接并始终收紧为 0600。"""
 
@@ -1941,6 +1973,7 @@ __all__ = [
     "AgentWorkspaceUsage",
     "AgentAttachmentError",
     "ensure_agent_workspace",
+    "initialize_agent_task_workspace",
     "merge_agent_temporary_redaction_candidates",
     "check_agent_workspace_quota",
     "get_agent_workspace_usage",

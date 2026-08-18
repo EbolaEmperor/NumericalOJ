@@ -116,7 +116,11 @@ def test_agent_launch_page_options_exposes_harness_native_reasoning_efforts(
 def _patch_runtime_checkpoints(monkeypatch):
     """路由单测只验证编排；checkpoint 文件语义由独立单测覆盖。"""
 
-    monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _sid: None)
+    monkeypatch.setattr(
+        routes,
+        "initialize_agent_task_workspace",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         routes,
         "create_agent_runtime_checkpoint",
@@ -228,8 +232,8 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
     )
     monkeypatch.setattr(
         routes,
-        "ensure_agent_workspace",
-        lambda session_id: workspace_calls.append(session_id),
+        "initialize_agent_task_workspace",
+        lambda session_id, **kwargs: workspace_calls.append((session_id, kwargs)),
     )
     attachments = [{
         "name": "notes.txt",
@@ -288,7 +292,10 @@ def test_custom_session_creation_binds_role_endpoint_workspace_and_title_turn(
     assert payload["session_id"] == "session-new"
     assert payload["detail_url"] == "/admin/agent_tasks/session-new"
     assert preference_calls == [(7, "pi", 12)]
-    assert workspace_calls == ["session-new"]
+    assert workspace_calls == [(
+        "session-new",
+        {"harness": "pi", "access_role": "admin"},
+    )]
     assert create_calls[0]["task_kind"] == "custom"
     assert create_calls[0]["access_role"] == "admin"
     assert create_calls[0]["reasoning_effort"] == "minimal"
@@ -384,7 +391,11 @@ def test_custom_creation_removes_published_attachments_when_db_create_fails(
         },
     )
     monkeypatch.setattr(routes, "save_agent_launch_preference", lambda *_args: None)
-    monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _session_id: None)
+    monkeypatch.setattr(
+        routes,
+        "initialize_agent_task_workspace",
+        lambda *_args, **_kwargs: None,
+    )
     attachments = [{"name": "input.dat", "path": "attachments/a/input.dat"}]
     monkeypatch.setattr(
         routes,
@@ -464,7 +475,11 @@ def test_same_client_message_creation_conflict_keeps_winner_checkpoint(
         },
     )
     monkeypatch.setattr(routes, "save_agent_launch_preference", lambda *_args: None)
-    monkeypatch.setattr(routes, "ensure_agent_workspace", lambda _session_id: None)
+    monkeypatch.setattr(
+        routes,
+        "initialize_agent_task_workspace",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(routes, "save_agent_attachments", lambda *_args: [])
     # 模拟两个请求都在胜者提交前完成了幂等预读。
     monkeypatch.setattr(routes, "get_agent_session_message", lambda _mid: None)
