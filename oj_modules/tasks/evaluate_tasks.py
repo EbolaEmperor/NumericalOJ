@@ -338,7 +338,7 @@ def register_evaluate_submission_task(celery_app):
                     "output_image_grading_endpoint_id",
                 )
             required_output_image_filename = (
-                str(problem.get('programming_output_filename') or 'output.png').strip()
+                str(problem.get('output_image_filename') or 'output.png').strip()
                 or 'output.png'
             )
             lang = (problem.get('lang') or 'matlab').strip().lower()

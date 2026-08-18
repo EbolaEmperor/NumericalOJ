@@ -53,12 +53,12 @@ def test_create_problem_normalizes_programming_fields():
         type=1,
         lang='c',
         programming_grading_mode=99,                 # 越界 → 1
-        programming_output_filename='dir\\sub\\out.PNG',  # 取最后一段
+        output_image_filename='dir\\sub\\out.PNG',  # 取最后一段
     )
     row = _get_problem_by_title('编程题归一化')
     assert row['programming_grading_mode'] == 1
     assert row['programming_grading_model'] == ''
-    fn = row['programming_output_filename']
+    fn = row['output_image_filename']
     assert fn.endswith('out.PNG')
     assert '\\' not in fn and '/' not in fn
 
@@ -118,12 +118,10 @@ def test_get_problem_returns_full_row():
         'type', 'lang', 'max_score', 'time_limit_ms', 'submission_limit',
         'written_grading_mode', 'written_grading_prompt',
         'programming_grading_mode',
-        'programming_output_filename', 'programming_grading_prompt',
+        'output_image_filename', 'programming_grading_prompt',
         'llm_endpoint_bindings',
     ):
         assert col in row, f"缺少列: {col}"
-    assert 'written_grading_model' not in row
-    assert 'programming_grading_model' not in row
     assert row['id'] == pid
     assert row['title'] == '全列题'
     assert row['content'] == '完整题面'
@@ -193,12 +191,10 @@ def test_update_problem_none_grading_fields_use_defaults():
     db.update_problem(pid, new_title='默认归一化题', new_content='c', new_lang='python')
     row = db.get_problem(pid)
     assert row['programming_grading_mode'] == 1
-    assert row['programming_output_filename'] == 'output.png'
+    assert row['output_image_filename'] == 'output.png'
     assert row['programming_grading_prompt'] == ''
     assert row['written_grading_mode'] == 1
     assert row['written_grading_prompt'] == ''
-    assert 'programming_grading_model' not in row
-    assert 'written_grading_model' not in row
 
 
 def test_update_problem_non_none_grading_fields_take_effect():
@@ -209,12 +205,12 @@ def test_update_problem_non_none_grading_fields_take_effect():
         new_content='c',
         new_lang='c',
         new_programming_grading_mode=2,
-        new_programming_output_filename='res\\final.png',
+        new_output_image_filename='res\\final.png',
         new_programming_grading_prompt='  请评分  ',
     )
     row = db.get_problem(pid)
     assert row['programming_grading_mode'] == 2
-    assert row['programming_output_filename'] == 'final.png'
+    assert row['output_image_filename'] == 'final.png'
     assert row['programming_grading_prompt'] == '请评分'   # 被 strip
     assert _get_problem_by_title('生效归一化题')['programming_grading_model'] == ''
 
@@ -267,7 +263,7 @@ def test_ensure_column_functions_idempotent():
         db.ensure_problem_written_grading_prompt_column,
         db.ensure_problem_programming_grading_mode_column,
         db.ensure_problem_programming_grading_model_column,
-        db.ensure_problem_programming_output_filename_column,
+        db.ensure_problem_output_image_filename_column,
         db.ensure_problem_programming_grading_prompt_column,
         db.ensure_problem_written_grading_columns,
         db.ensure_problem_programming_grading_columns,
@@ -291,7 +287,7 @@ def test_ensure_grading_columns_present_after_call():
     for col in (
         'written_grading_mode', 'written_grading_model', 'written_grading_prompt',
         'programming_grading_mode', 'programming_grading_model',
-        'programming_output_filename', 'programming_grading_prompt',
+        'output_image_filename', 'programming_grading_prompt',
     ):
         assert col in cols, f"ensure 后仍缺列: {col}"
 

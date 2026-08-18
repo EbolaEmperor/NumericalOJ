@@ -17,42 +17,42 @@ def test_legacy_model_normalizers_are_removed():
 
 
 def test_output_filename_keeps_plain_legal_name():
-    assert db.normalize_programming_output_filename("result.png") == "result.png"
-    assert db.normalize_programming_output_filename("Result.PNG") == "Result.PNG"
+    assert db.normalize_output_image_filename("result.png") == "result.png"
+    assert db.normalize_output_image_filename("Result.PNG") == "Result.PNG"
 
 
 def test_output_filename_empty_defaults_to_output_png():
-    assert db.normalize_programming_output_filename("") == "output.png"
-    assert db.normalize_programming_output_filename(None) == "output.png"
-    assert db.normalize_programming_output_filename("   ") == "output.png"
+    assert db.normalize_output_image_filename("") == "output.png"
+    assert db.normalize_output_image_filename(None) == "output.png"
+    assert db.normalize_output_image_filename("   ") == "output.png"
 
 
 def test_output_filename_takes_last_path_component():
-    assert db.normalize_programming_output_filename("dir\\sub\\img.png") == "img.png"
-    assert db.normalize_programming_output_filename("a/b/c/photo.jpg") == "photo.jpg"
+    assert db.normalize_output_image_filename("dir\\sub\\img.png") == "img.png"
+    assert db.normalize_output_image_filename("a/b/c/photo.jpg") == "photo.jpg"
 
 
 def test_output_filename_preserves_case_of_last_component():
-    assert db.normalize_programming_output_filename("dir\\sub\\img.PNG") == "img.PNG"
+    assert db.normalize_output_image_filename("dir\\sub\\img.PNG") == "img.PNG"
 
 
 def test_output_filename_trailing_separator_yields_default():
-    assert db.normalize_programming_output_filename("dir/sub/") == "output.png"
-    assert db.normalize_programming_output_filename("dir\\sub\\") == "output.png"
+    assert db.normalize_output_image_filename("dir/sub/") == "output.png"
+    assert db.normalize_output_image_filename("dir\\sub\\") == "output.png"
 
 
 def test_output_filename_truncated_to_255():
     long_name = "x" * 300 + ".png"
-    out = db.normalize_programming_output_filename(long_name)
+    out = db.normalize_output_image_filename(long_name)
     assert len(out) == 255
     assert out.endswith(".png")
     assert out == "x" * 251 + ".png"
 
 
 def test_output_filename_custom_default_on_empty():
-    assert db.normalize_programming_output_filename("", default="custom.png") == "custom.png"
+    assert db.normalize_output_image_filename("", default="custom.png") == "custom.png"
     assert (
-        db.normalize_programming_output_filename("  ", default="  fallback.bmp  ")
+        db.normalize_output_image_filename("  ", default="  fallback.bmp  ")
         == "fallback.bmp"
     )
 
@@ -63,4 +63,4 @@ def test_output_filename_custom_default_on_empty():
 )
 def test_output_filename_rejects_unsupported_image_extensions(filename):
     with pytest.raises(ValueError, match="输出图片文件名"):
-        db.normalize_programming_output_filename(filename)
+        db.normalize_output_image_filename(filename)

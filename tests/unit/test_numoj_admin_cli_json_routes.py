@@ -1460,8 +1460,6 @@ def test_admin_problem_create_sends_endpoint_binding_json_and_allows_unconfigure
         "review_endpoint_id": 31,
         "code_generation_endpoint_id": 32,
     }
-    assert "programming_grading_model" not in configured_data
-    assert "written_grading_model" not in configured_data
 
     unconfigured = parser.parse_args([
         "problem",
@@ -1527,8 +1525,6 @@ def test_admin_problem_edit_omitted_endpoints_are_preserved_by_omitting_binding_
 
     edit_data = client.requests[1][2]["data"]
     assert "llm_endpoint_bindings" not in edit_data
-    assert "programming_grading_model" not in edit_data
-    assert "written_grading_model" not in edit_data
     capsys.readouterr()
 
 

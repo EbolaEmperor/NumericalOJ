@@ -93,6 +93,21 @@ def _add_problem_llm_endpoint_args(parser: argparse.ArgumentParser, *, editing: 
         )
 
 
+def _add_output_image_filename_arg(parser: argparse.ArgumentParser, *, editing: bool) -> None:
+    suffix = " Omit to keep the current filename." if editing else " Omit for ordinary text-output problems."
+    parser.add_argument(
+        "--output-image-filename",
+        dest="output_image_filename",
+        metavar="FILENAME",
+        help=(
+            "Filename of an image produced by the submission to retain for result-page display "
+            "or to grade in programming image-grading mode. This is not the stdout filename; "
+            "use png, jpg, jpeg, bmp, gif, or webp (for example, output.png)."
+            + suffix
+        ),
+    )
+
+
 def _allowed_problem_llm_endpoint_keys(problem_type: Any, programming_grading_mode: Any) -> frozenset[str]:
     try:
         normalized_type = int(problem_type)
@@ -670,7 +685,7 @@ def problem_create(args: argparse.Namespace) -> None:
             ("time_limit", args.time_limit),
             ("submission_limit", args.submission_limit),
             ("programming_grading_mode", args.programming_grading_mode),
-            ("programming_output_filename", args.programming_output_filename),
+            ("output_image_filename", args.output_image_filename),
             ("programming_grading_prompt", programming_grading_prompt),
             ("written_grading_mode", args.written_grading_mode),
             ("written_grading_prompt", read_text_value(args.written_grading_prompt)),
@@ -744,7 +759,10 @@ def problem_edit(args: argparse.Namespace) -> None:
             ("time_limit", current_or_arg(current, "time_limit", args.time_limit)),
             ("submission_limit", current_or_arg(current, "submission_limit", args.submission_limit)),
             ("programming_grading_mode", current_or_arg(current, "programming_grading_mode", args.programming_grading_mode)),
-            ("programming_output_filename", current_or_arg(current, "programming_output_filename", args.programming_output_filename)),
+            # The server preserves this optional value when absent. In particular, do
+            # not resend an output.png setting while editing an ordinary text problem:
+            # it is only relevant when a submission emits an image.
+            ("output_image_filename", args.output_image_filename),
             ("programming_grading_prompt", programming_grading_prompt if programming_grading_prompt is not None else current.get("programming_grading_prompt", "")),
             ("written_grading_mode", current_or_arg(current, "written_grading_mode", args.written_grading_mode)),
             ("written_grading_prompt", current_or_arg(current, "written_grading_prompt", args.written_grading_prompt)),
@@ -1094,13 +1112,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=1,
         help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
     )
-    pa.add_argument(
-        "--programming-output-filename",
-        help=(
-            "Expected output image filename in programming image-grading mode. "
-            "Use png, jpg, jpeg, bmp, gif, or webp (for example, output.png)."
-        ),
-    )
+    _add_output_image_filename_arg(pa, editing=False)
     pa.add_argument(
         "--programming-grading-prompt",
         help=(
@@ -1144,13 +1156,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         help="Programming grading mode: 1=standard code judging, 2=program-output image grading, 3=Promptly prompt judging.",
     )
-    pa.add_argument(
-        "--programming-output-filename",
-        help=(
-            "Expected output image filename in programming image-grading mode. "
-            "Use png, jpg, jpeg, bmp, gif, or webp (for example, output.png)."
-        ),
-    )
+    _add_output_image_filename_arg(pa, editing=True)
     pa.add_argument(
         "--programming-grading-prompt",
         help=(
