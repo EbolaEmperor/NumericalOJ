@@ -143,6 +143,12 @@
     var projectStatus = one("[data-vibe-form-status]", projectDialog);
     var projectSubmit = one("[data-vibe-submit-project]", projectDialog);
     var projectDelete = one("[data-vibe-delete-project]", projectDialog);
+    var deleteDialog = one("[data-vibe-delete-confirm-modal]", root);
+    var deleteForm = one("[data-vibe-delete-confirm-form]", deleteDialog);
+    var deletePhrase = one("[data-vibe-delete-confirm-phrase]", deleteDialog);
+    var deleteInput = one("[data-vibe-delete-confirmation]", deleteDialog);
+    var deleteStatus = one("[data-vibe-delete-confirm-status]", deleteDialog);
+    var deleteSubmit = one("[data-vibe-confirm-delete]", deleteDialog);
     var loadGeneration = 0;
     var loadController = null;
 
@@ -166,10 +172,11 @@
       projectForm.reset();
       projectForm.dataset.mode = mode;
       projectForm.dataset.slug = project.slug || "";
+      projectForm.dataset.originalTitle = editing ? (project.title || "") : "";
       projectForm.elements.package.required = !editing;
       if (projectDelete) {
         projectDelete.hidden = !editing;
-        projectDelete.disabled = !editing;
+        projectDelete.disabled = !editing || !projectForm.dataset.originalTitle;
       }
       one("[data-vibe-modal-title]", projectDialog).textContent = editing ? "编辑作品" : "创建作品";
       one("[data-vibe-modal-description]", projectDialog).textContent = editing
@@ -254,25 +261,55 @@
       }
     });
 
-    if (projectDelete) {
-      projectDelete.addEventListener("click", async function () {
-        var slug = projectForm.dataset.slug;
-        var title = projectForm.elements.title.value.trim() || slug;
-        if (!slug || !window.confirm("确定删除“" + title + "”？此操作不可恢复。")) return;
-        showMessage(projectStatus, "正在删除作品…");
-        setBusy(projectDelete, true, "删除中…");
-        projectSubmit.disabled = true;
+    if (deleteDialog && deleteForm && deletePhrase && deleteInput && deleteSubmit) {
+      setupDialog(deleteDialog, "[data-vibe-cancel-delete]");
+      deleteDialog.addEventListener("close", function () {
+        if (deleteDialog.dataset.returnToEditor !== "true") return;
+        deleteDialog.dataset.returnToEditor = "";
+        openDialog(projectDialog, projectDelete);
+      });
+
+      deleteInput.addEventListener("input", function () {
+        deleteSubmit.disabled = deleteInput.value !== deleteDialog.dataset.phrase;
+      });
+
+      deleteForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        if (deleteInput.value !== deleteDialog.dataset.phrase) {
+          deleteInput.focus();
+          return;
+        }
+        showMessage(deleteStatus, "正在删除作品…");
+        setBusy(deleteSubmit, true, "删除中…");
         try {
-          await apiRequest(projectUrl(root.dataset.deleteUrlTemplate, slug), {
+          await apiRequest(projectUrl(root.dataset.deleteUrlTemplate, deleteDialog.dataset.slug), {
             method: "DELETE"
           });
-          showMessage(projectStatus, "作品已删除，正在返回我的作品…");
+          deleteDialog.dataset.returnToEditor = "";
+          showMessage(deleteStatus, "作品已删除，正在返回我的作品…");
           setTimeout(function () { window.location.assign("/vibehub/?view=mine"); }, 250);
         } catch (error) {
-          showMessage(projectStatus, error.message, true);
-          setBusy(projectDelete, false);
-          projectSubmit.disabled = false;
+          showMessage(deleteStatus, error.message, true);
+          setBusy(deleteSubmit, false);
         }
+      });
+    }
+
+    if (projectDelete && deleteDialog && deleteForm && deletePhrase && deleteInput && deleteSubmit) {
+      projectDelete.addEventListener("click", function () {
+        var slug = projectForm.dataset.slug;
+        var title = projectForm.dataset.originalTitle;
+        if (!slug || !title) return;
+        var phrase = "我确认要删除 " + title + " 这个作品";
+        deleteDialog.dataset.slug = slug;
+        deleteDialog.dataset.phrase = phrase;
+        deleteDialog.dataset.returnToEditor = "true";
+        deletePhrase.textContent = phrase;
+        deleteInput.value = "";
+        deleteSubmit.disabled = true;
+        showMessage(deleteStatus, "");
+        closeDialog(projectDialog);
+        openDialog(deleteDialog, deleteInput);
       });
     }
 
