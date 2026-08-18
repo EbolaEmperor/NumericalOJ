@@ -592,7 +592,7 @@ def test_manual_stop_without_queued_messages_keeps_next_message_immediate():
         task_id=f"{session_id}-turn-2",
         user_message="停止后立即发送",
     )
-    assert next_turn["task_id"] == f"{session_id}-turn-2"
+    assert next_turn["agent_message"]["final_task_id"] == f"{session_id}-turn-2"
     messages = list_agent_session_messages(session_id)
     assert messages[-1]["delivery_mode"] == "turn"
     assert messages[-1]["status"] == "dispatching"

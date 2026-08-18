@@ -498,7 +498,7 @@ def _endpoint_candidate_from_row(row):
         "thinking_enabled": bool(row.get("thinking_enabled")),
         "thinking_format": row.get("thinking_format") or "none",
         **{
-            field: _json_value(row.get(field))
+            field: _decimal_display_text(row.get(field))
             for field in (*LLM_PRICE_FIELDS, *LLM_PEAK_PRICE_FIELDS)
         },
         "peak_pricing_enabled": bool(row.get("peak_pricing_enabled")),
