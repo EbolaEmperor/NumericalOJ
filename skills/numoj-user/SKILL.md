@@ -64,7 +64,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge four-step progress), submit/check appeals, and download own visible ranking submission files.
-- `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, and edit versioned metadata. Featured status is assigned only by administrators and cannot be requested by users.
+- `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, edit versioned metadata, and permanently delete owned works. Featured status is assigned only by administrators and cannot be requested by users.
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
 
@@ -146,6 +146,7 @@ must contain `Dockerfile` and `vibehub.json`:
 python3 "$NUMOJ_USER_CLI" vibehub guide -o ./vibehub-developer-guide.md
 python3 "$NUMOJ_USER_CLI" vibehub create ./my-vibe.zip --title "My Vibe"
 python3 "$NUMOJ_USER_CLI" vibehub mine
+python3 "$NUMOJ_USER_CLI" vibehub delete <slug> --yes
 ```
 
 Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:

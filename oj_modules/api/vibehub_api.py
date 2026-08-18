@@ -184,6 +184,18 @@ def edit_project(slug):
     return json_success(project=project)
 
 
+@vibehub_api_bp.route("/projects/<slug>", methods=["DELETE"])
+def delete_project(slug):
+    user = _require_user()
+    with _storage_mutation_request_slot():
+        result = services.delete_project(
+            user,
+            slug,
+            upload_root=_upload_root(),
+        )
+    return json_success(**result)
+
+
 @vibehub_api_bp.route("/projects/<slug>/versions", methods=["POST"])
 def upload_version(slug):
     user = _require_user()

@@ -1321,6 +1321,43 @@ def edit_project(actor, slug: str, metadata, *, upload_root=None) -> dict:
     )
 
 
+def delete_project(actor, slug: str, *, upload_root=None) -> dict:
+    """删除作品元数据；级联删除其不可变版本记录。"""
+
+    _actor_id(actor)
+    normalized_slug = str(slug or "").strip().lower()
+    if not SLUG_RE.fullmatch(normalized_slug):
+        raise VibeHubNotFoundError()
+    root = _storage_root(upload_root)
+    conn = get_db_connection()
+    try:
+        with quotas.storage_mutation_lock(root):
+            with conn.cursor() as cursor:
+                project = _fetch_core_for_update(cursor, normalized_slug)
+                if not (_owns(project, actor) or _is_admin(actor)):
+                    raise VibeHubPermissionError()
+                cursor.execute(
+                    "DELETE FROM vibehub_projects WHERE id = %s",
+                    (int(project["id"]),),
+                )
+                if cursor.rowcount != 1:
+                    raise VibeHubError(
+                        "作品删除时状态已变化，请刷新后重试",
+                        status_code=409,
+                        code="delete_stale",
+                    )
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    # 不能在提交前直接删除快照，否则事务回滚会使仍存在的作品丢失包。
+    # 提交后目录不再有 DB live-set 引用，现有安全孤儿回收会审计并回收它。
+    return {"deleted": True, "slug": normalized_slug}
+
+
 def list_pending_reviews(actor) -> list[dict]:
     _require_admin(actor)
     conn = get_db_connection()
@@ -1609,6 +1646,7 @@ __all__ = [
     "VibeHubNotFoundError",
     "VibeHubPermissionError",
     "create_project",
+    "delete_project",
     "edit_project",
     "get_project",
     "list_pending_reviews",

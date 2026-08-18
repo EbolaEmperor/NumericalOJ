@@ -337,6 +337,20 @@ def test_latest_serializer_exposes_explicit_pending_version_and_rejection_note()
     assert edited_after_rejection["last_review_note"] == "v2 使用了未授权素材"
 
 
+def test_delete_project_removes_owned_metadata_in_one_transaction(tmp_path, monkeypatch):
+    connection = _Connection([_project_row()])
+    monkeypatch.setattr(services, "get_db_connection", lambda: connection)
+
+    result = services.delete_project(USER, "demo-vibe", upload_root=tmp_path)
+
+    assert result == {"deleted": True, "slug": "demo-vibe"}
+    assert connection.committed is True
+    assert connection.closed is True
+    delete_sql, delete_params = connection.fake_cursor.calls[-1]
+    assert delete_sql == "DELETE FROM vibehub_projects WHERE id = %s"
+    assert delete_params == (3,)
+
+
 def test_public_serializer_omits_private_workflow_instead_of_masking_values():
     row = _project_row(
         latest_review_status="rejected",
@@ -1187,6 +1201,7 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
         vibehub_api.create_project,
         vibehub_api.upload_version,
         vibehub_api.edit_project,
+        vibehub_api.delete_project,
         vibehub_api.review_project,
     )
     for function in route_functions:
@@ -1250,6 +1265,7 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
     monkeypatch.setattr(services, "create_project", assert_service)
     monkeypatch.setattr(services, "upload_new_version", assert_service)
     monkeypatch.setattr(services, "edit_project", assert_service)
+    monkeypatch.setattr(services, "delete_project", assert_service)
     monkeypatch.setattr(services, "review_submission", assert_service)
 
     with app.test_request_context("/api/vibehub/projects", method="POST"):
@@ -1264,6 +1280,11 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
         method="PATCH",
     ):
         vibehub_api.edit_project("demo-vibe")
+    with app.test_request_context(
+        "/api/vibehub/projects/demo-vibe",
+        method="DELETE",
+    ):
+        vibehub_api.delete_project("demo-vibe")
     current_actor[0] = ADMIN
     with app.test_request_context(
         "/api/vibehub/admin/reviews/demo-vibe",
@@ -1271,9 +1292,9 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
     ):
         vibehub_api.review_project("demo-vibe")
 
-    assert gate_entries == [True] * 4
+    assert gate_entries == [True] * 5
     assert db_checks.count("preflight") == 3
-    assert db_checks.count("service-open-db") == 4
+    assert db_checks.count("service-open-db") == 5
     assert active[0] is False
 
 

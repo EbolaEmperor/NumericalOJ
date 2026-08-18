@@ -58,6 +58,16 @@ def necessary_project_payload(payload: Any) -> Any:
     return {"success": bool(payload.get("success", True)), "project": necessary_project(payload.get("project"))}
 
 
+def necessary_delete_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    return {
+        key: payload[key]
+        for key in ("success", "deleted", "slug", "message")
+        if key in payload
+    }
+
+
 def _output(resp, projector) -> None:
     common.ensure_ok(resp, allow_redirect=False)
     if common.response_is_json(resp):
@@ -138,6 +148,16 @@ def project_edit(args: argparse.Namespace) -> None:
     _output(resp, necessary_project_payload)
 
 
+def project_delete(args: argparse.Namespace) -> None:
+    if not args.yes:
+        raise common.CliError("Deleting a VibeHub project requires --yes.")
+    resp = client_from_args(args).request(
+        "DELETE",
+        f"/api/vibehub/projects/{args.slug}",
+    )
+    _output(resp, necessary_delete_payload)
+
+
 def developer_guide(args: argparse.Namespace) -> None:
     resp = client_from_args(args).request("GET", "/api/vibehub/developer-guide")
     common.print_or_save_response(
@@ -196,6 +216,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("slug", help="Owned project slug.")
     _add_metadata_args(parser)
     parser.set_defaults(func=project_edit)
+
+    parser = common.add_cli_parser(commands, "delete", "Permanently delete an owned VibeHub project.")
+    parser.add_argument("slug", help="Owned project slug.")
+    parser.add_argument("--yes", action="store_true", help="Confirm permanent deletion.")
+    parser.set_defaults(func=project_delete)
 
 __all__ = [
     "necessary_list_payload",
