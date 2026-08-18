@@ -311,7 +311,7 @@ def test_problem_image_output_plagiarism_flow(cli, unique_suffix):
         extra=[
             "--programming-grading-mode",
             "2",
-            "--programming-output-filename",
+            "--output-image-filename",
             "output.png",
         ],
     )

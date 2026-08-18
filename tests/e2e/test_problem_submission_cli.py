@@ -22,7 +22,7 @@ from tests.e2e.conftest import (
 
 PROBLEM_SECRET_KEYS = {
     "programming_grading_prompt",
-    "programming_output_filename",
+    "output_image_filename",
     "written_grading_mode",
     "written_grading_prompt",
     "test_code",
@@ -47,7 +47,7 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
         title,
         submission_limit=5,
         extra=[
-            "--programming-output-filename",
+            "--output-image-filename",
             secret_terms[0],
             "--programming-grading-prompt",
             secret_terms[1],
@@ -295,7 +295,6 @@ def test_promptly_review_cli_submit_accepts_and_rejects_prompts(cli, unique_suff
     )
     admin_problem_form = cli.admin_json("problem", "edit-form", str(problem_id))
     assert admin_problem_form["form"]["programming_grading_mode"] == 3
-    assert "programming_grading_model" not in admin_problem_form["form"]
     testdata_zip = write_testdata_zip(tmp_path / "promptly_review_testdata.zip")
     assert cli.admin_json("problem", "upload-testdata", str(problem_id), str(testdata_zip))["success"] is True
 

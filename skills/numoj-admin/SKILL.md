@@ -170,6 +170,18 @@ python3 scripts/numoj_admin.py problem create \
   --submission-limit 5
 ```
 
+For a programming problem whose submission generates an image that should be
+shown on the submission-result page, or a problem using image grading, specify
+the image artifact name explicitly. Do not use this option for ordinary text
+output and do not set it to a stdout file such as `output.txt`:
+
+```bash
+python3 scripts/numoj_admin.py problem create \
+  --title "绘图题" \
+  --content @problem.md \
+  --output-image-filename output.png
+```
+
 Edit a problem without clearing omitted fields:
 
 ```bash

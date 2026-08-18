@@ -14,7 +14,7 @@ from oj_modules.db_services import (
     get_db_connection,
     get_problem,
     get_user_by_username,
-    normalize_programming_output_filename,
+    normalize_output_image_filename,
     safe_table_name,
     update_problem,
 )
@@ -116,12 +116,12 @@ def parse_programming_grading_mode_from_form(form, default=1):
     return mode if mode in (1, 2, 3) else int(default)
 
 
-def parse_programming_output_filename_from_form(form, default="output.png"):
-    raw = str(form.get('programming_output_filename') or default).strip()
-    return normalize_programming_output_filename(raw, default=default)
+def parse_output_image_filename_from_form(form, default="output.png"):
+    raw = str(form.get('output_image_filename') or default).strip()
+    return normalize_output_image_filename(raw, default=default)
 
 
-def _programming_output_filename_error_response(error, *, template_name, user, problem=None):
+def _output_image_filename_error_response(error, *, template_name, user, problem=None):
     """返回输出图片文件名的统一校验错误，避免无效配置入库。"""
 
     if _wants_json_response():
@@ -222,12 +222,12 @@ def add_problem():
         problem_type = request.form.get('type')
         programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=1)
         try:
-            programming_output_filename = parse_programming_output_filename_from_form(
+            output_image_filename = parse_output_image_filename_from_form(
                 request.form,
                 default="output.png",
             )
         except ValueError as exc:
-            return _programming_output_filename_error_response(
+            return _output_image_filename_error_response(
                 exc,
                 template_name='problems/create.html',
                 user=user,
@@ -281,7 +281,7 @@ def add_problem():
             time_limit_ms,
             submission_limit,
             programming_grading_mode,
-            programming_output_filename=programming_output_filename,
+            output_image_filename=output_image_filename,
             programming_grading_prompt=programming_grading_prompt,
             written_grading_mode=written_grading_mode,
             written_grading_prompt=written_grading_prompt,
@@ -329,14 +329,14 @@ def edit_problem(problem_id):
         new_submission_limit = int(request.form.get('submission_limit', problem.get('submission_limit', 10)))
         default_programming_mode = problem.get('programming_grading_mode', 1)
         new_programming_grading_mode = parse_programming_grading_mode_from_form(request.form, default=default_programming_mode)
-        default_output_filename = problem.get('programming_output_filename', 'output.png')
+        default_output_filename = problem.get('output_image_filename', 'output.png')
         try:
-            new_programming_output_filename = parse_programming_output_filename_from_form(
+            new_output_image_filename = parse_output_image_filename_from_form(
                 request.form,
                 default=default_output_filename,
             )
         except ValueError as exc:
-            return _programming_output_filename_error_response(
+            return _output_image_filename_error_response(
                 exc,
                 template_name='problems/edit.html',
                 user=user,
@@ -386,7 +386,7 @@ def edit_problem(problem_id):
             new_time_limit_ms,
             new_submission_limit,
             new_programming_grading_mode,
-            new_programming_output_filename=new_programming_output_filename,
+            new_output_image_filename=new_output_image_filename,
             new_programming_grading_prompt=new_programming_grading_prompt,
             new_written_grading_mode=new_written_grading_mode,
             new_written_grading_prompt=new_written_grading_prompt,

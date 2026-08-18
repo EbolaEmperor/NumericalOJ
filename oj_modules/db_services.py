@@ -114,7 +114,7 @@ def ensure_problem_written_grading_columns():
     ensure_problem_written_grading_prompt_column()
 
 
-def normalize_programming_output_filename(value, default="output.png"):
+def normalize_output_image_filename(value, default="output.png"):
     text = str(value or "").strip().replace("\\", "/")
     if "/" in text:
         text = text.rsplit("/", 1)[-1].strip()
@@ -142,7 +142,7 @@ def ensure_problem_programming_grading_model_column():
     return _schema_is_managed_at_startup()
 
 
-def ensure_problem_programming_output_filename_column():
+def ensure_problem_output_image_filename_column():
     return _schema_is_managed_at_startup()
 
 
@@ -153,7 +153,7 @@ def ensure_problem_programming_grading_prompt_column():
 def ensure_problem_programming_grading_columns():
     ensure_problem_programming_grading_mode_column()
     ensure_problem_programming_grading_model_column()
-    ensure_problem_programming_output_filename_column()
+    ensure_problem_output_image_filename_column()
     ensure_problem_programming_grading_prompt_column()
 
 
@@ -1320,7 +1320,7 @@ def get_all_problems():
             sql = (
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,"
                 "written_grading_mode,written_grading_prompt,"
-                "programming_grading_mode,programming_output_filename,programming_grading_prompt,"
+                "programming_grading_mode,output_image_filename,programming_grading_prompt,"
                 "llm_endpoint_bindings "
                 "FROM problems ORDER BY id ASC"
             )
@@ -1342,7 +1342,7 @@ def get_problem(problem_id):
             sql = (
                 "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,"
                 "time_limit_ms,submission_limit,written_grading_mode,written_grading_prompt,"
-                "programming_grading_mode,programming_output_filename,programming_grading_prompt,"
+                "programming_grading_mode,output_image_filename,programming_grading_prompt,"
                 "llm_endpoint_bindings "
                 "FROM problems WHERE id=%s"
             )
@@ -1364,7 +1364,7 @@ def get_problem_title(problem_id):
             sql = (
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,"
                 "written_grading_mode,written_grading_prompt,"
-                "programming_grading_mode,programming_output_filename,programming_grading_prompt,"
+                "programming_grading_mode,output_image_filename,programming_grading_prompt,"
                 "llm_endpoint_bindings "
                 "FROM problems WHERE id=%s"
             )
@@ -1390,7 +1390,7 @@ def create_problem(
     time_limit_ms=2000,
     submission_limit=10,
     programming_grading_mode=1,
-    programming_output_filename='output.png',
+    output_image_filename='output.png',
     programming_grading_prompt='',
     written_grading_mode=1,
     written_grading_prompt='',
@@ -1404,7 +1404,7 @@ def create_problem(
             else (0 if int(type) == 1 else 5)
         )
         use_programming_mode = 1
-        use_programming_output_filename = "output.png"
+        use_output_image_filename = "output.png"
         use_programming_prompt = ""
         use_written_mode = 1
         use_written_prompt = ""
@@ -1415,7 +1415,7 @@ def create_problem(
                 use_programming_mode = 1
             if use_programming_mode not in (1, 2, 3):
                 use_programming_mode = 1
-            use_programming_output_filename = normalize_programming_output_filename(programming_output_filename)
+            use_output_image_filename = normalize_output_image_filename(output_image_filename)
             use_programming_prompt = str(programming_grading_prompt or "").strip()
         elif int(type) == 2:
             try:
@@ -1433,7 +1433,7 @@ def create_problem(
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
                      (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit,
-                      programming_grading_mode, programming_output_filename, programming_grading_prompt,
+                      programming_grading_mode, output_image_filename, programming_grading_prompt,
                       written_grading_mode, written_grading_prompt, llm_endpoint_bindings)
                      VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
@@ -1450,7 +1450,7 @@ def create_problem(
                     time_limit_ms,
                     submission_limit,
                     use_programming_mode,
-                    use_programming_output_filename,
+                    use_output_image_filename,
                     use_programming_prompt,
                     use_written_mode,
                     use_written_prompt,
@@ -1541,7 +1541,7 @@ def update_problem(
     new_time_limit_ms=None,
     new_submission_limit=None,
     new_programming_grading_mode=None,
-    new_programming_output_filename=None,
+    new_output_image_filename=None,
     new_programming_grading_prompt=None,
     new_written_grading_mode=None,
     new_written_grading_prompt=None,
@@ -1557,9 +1557,9 @@ def update_problem(
                 programming_mode_val = 1
             if programming_mode_val not in (1, 2, 3):
                 programming_mode_val = 1
-        programming_output_filename_val = None
-        if new_programming_output_filename is not None:
-            programming_output_filename_val = normalize_programming_output_filename(new_programming_output_filename)
+        output_image_filename_val = None
+        if new_output_image_filename is not None:
+            output_image_filename_val = normalize_output_image_filename(new_output_image_filename)
         programming_prompt_val = None
         if new_programming_grading_prompt is not None:
             programming_prompt_val = str(new_programming_grading_prompt or "").strip()
@@ -1601,7 +1601,7 @@ def update_problem(
                 "time_limit_ms=%s",
                 "submission_limit=%s",
                 "programming_grading_mode=%s",
-                "programming_output_filename=%s",
+                "output_image_filename=%s",
                 "programming_grading_prompt=%s",
                 "written_grading_mode=%s",
                 "written_grading_prompt=%s",
@@ -1617,7 +1617,7 @@ def update_problem(
                 new_time_limit_ms,
                 new_submission_limit,
                 programming_mode_val if programming_mode_val is not None else 1,
-                programming_output_filename_val if programming_output_filename_val is not None else "output.png",
+                output_image_filename_val if output_image_filename_val is not None else "output.png",
                 programming_prompt_val if programming_prompt_val is not None else "",
                 mode_val if mode_val is not None else 1,
                 prompt_val if prompt_val is not None else "",

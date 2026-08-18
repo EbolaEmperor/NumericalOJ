@@ -353,7 +353,7 @@ CREATE TABLE `problems` (
   `submission_limit` int DEFAULT '10',
   `programming_grading_mode` tinyint NOT NULL DEFAULT '1',
   `programming_grading_model` varchar(32) NOT NULL DEFAULT '',
-  `programming_output_filename` varchar(255) NOT NULL DEFAULT 'output.png',
+  `output_image_filename` varchar(255) NOT NULL DEFAULT 'output.png',
   `programming_grading_prompt` text,
   `written_grading_mode` tinyint NOT NULL DEFAULT '1',
   `written_grading_model` varchar(32) NOT NULL DEFAULT '',
@@ -917,7 +917,7 @@ INSERT INTO `problems` (`id`,`title`,`content`,`initial_code`,`testdata`,`cnt`,`
 ```
 Hello, World!
 ```','% 请在这里编写你的 MATLAB 代码\ndisp(''Hello, World!'');','{\"input\":\"\",\"output\":\"Hello, World!\"}',0,'',1,'matlab',1,'%%user_code_here',2000);
-INSERT INTO `problems` (`id`,`title`,`content`,`initial_code`,`testdata`,`cnt`,`forbidden_func`,`type`,`lang`,`max_score`,`test_code`,`time_limit_ms`,`submission_limit`,`programming_grading_mode`,`programming_grading_model`,`programming_output_filename`,`programming_grading_prompt`,`written_grading_mode`,`written_grading_model`,`written_grading_prompt`) VALUES (2,'滑动窗口极差','给定一个长度为 `n` 的整数序列 `a_1, a_2, ..., a_n` 和窗口长度 `k`。对每一个连续子数组
+INSERT INTO `problems` (`id`,`title`,`content`,`initial_code`,`testdata`,`cnt`,`forbidden_func`,`type`,`lang`,`max_score`,`test_code`,`time_limit_ms`,`submission_limit`,`programming_grading_mode`,`programming_grading_model`,`output_image_filename`,`programming_grading_prompt`,`written_grading_mode`,`written_grading_model`,`written_grading_prompt`) VALUES (2,'滑动窗口极差','给定一个长度为 `n` 的整数序列 `a_1, a_2, ..., a_n` 和窗口长度 `k`。对每一个连续子数组
 
 `a_i, a_{i+1}, ..., a_{i+k-1}`，其中 `1 <= i <= n-k+1`，
 
