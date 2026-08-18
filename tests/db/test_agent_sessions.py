@@ -94,6 +94,8 @@ def test_agent_session_round_trip_resume_and_atomic_state_projection():
         "requested_by": "admin",
         "access_role": "admin",
         "harness": "codex",
+        "reasoning_effort": "default",
+        "endpoint_source": "global",
         "endpoint_id": 17,
         "endpoint_revision": 4,
         "endpoint_model": "db-test-model",
@@ -562,7 +564,18 @@ def test_agent_session_failure_pauses_fifo_until_explicit_continue():
 
 def test_manual_stop_without_queued_messages_keeps_next_message_immediate():
     session_id = "db-agent-empty-after-stop"
-    first_task_id = _create_completed_queue_session(session_id)
+    first_task_id = f"{session_id}-turn-1"
+    create_agent_session(
+        session_id=session_id,
+        task_id=first_task_id,
+        requested_by="admin",
+        harness="codex",
+        endpoint_id=31,
+        endpoint_revision=7,
+        endpoint_model="queue-model",
+        user_message="等待手动终止的首轮",
+        access_role="admin",
+    )
 
     assert sync_agent_session_state({
         "session_id": session_id,
