@@ -16,6 +16,9 @@ def endpoint_payload(**overrides):
         "model": "model-a",
         "thinking_enabled": False,
         "thinking_format": "enable_thinking",
+        "input_price_per_million": "0",
+        "cached_input_price_per_million": "0",
+        "output_price_per_million": "0",
     }
     payload.update(overrides)
     return payload
@@ -131,7 +134,7 @@ def test_llm_endpoints_allow_the_same_model_on_distinct_connections():
     assert rebound["endpoint_id"] == second["id"]
 
 
-def test_llm_endpoint_token_prices_round_trip_as_optional_decimals():
+def test_llm_endpoint_token_prices_round_trip_as_normalized_decimals():
     admin = get_user_by_username("admin")
     endpoint = create_endpoint(
         admin["id"],
@@ -141,9 +144,9 @@ def test_llm_endpoint_token_prices_round_trip_as_optional_decimals():
         output_price_per_million="8.125",
     )
 
-    assert endpoint["input_price_per_million"] == "2.50000000"
-    assert endpoint["cached_input_price_per_million"] == "0.25000000"
-    assert endpoint["output_price_per_million"] == "8.12500000"
+    assert endpoint["input_price_per_million"] == "2.5"
+    assert endpoint["cached_input_price_per_million"] == "0.25"
+    assert endpoint["output_price_per_million"] == "8.125"
 
 
 def test_endpoint_lock_blocks_testing_and_only_locker_can_unlock():
