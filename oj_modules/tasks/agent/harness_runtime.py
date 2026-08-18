@@ -75,6 +75,8 @@ _SESSION_STATE_MAX_BYTES = 64 * 1024
 _SKILL_WORKSPACE_RESERVATION_BYTES = 10 * 1024 * 1024
 _SKILL_WORKSPACE_RESERVATION_FILES = 513
 _SKILL_WORKSPACE_RESERVATION_DIRECTORIES = 512
+_CONTAINER_REMOVAL_CONFIRM_TIMEOUT_SECONDS = 20.0
+_CONTAINER_REMOVAL_CONFIRM_POLL_SECONDS = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -1362,8 +1364,16 @@ def _sanitize_output(result, *, secrets):
     )
 
 
+def _agent_container_not_found(detail):
+    normalized_detail = str(detail or "").lower()
+    return (
+        "no such container" in normalized_detail
+        or "no such object" in normalized_detail
+    )
+
+
 def _remove_agent_container(container_name):
-    """确认同名容器已不存在；daemon 故障不能伪装成清理成功。"""
+    """确认同名容器已不存在；并发清理必须等到 daemon 给出最终状态。"""
 
     last_detail = ""
     for _attempt in range(2):
@@ -1379,9 +1389,49 @@ def _remove_agent_container(container_name):
             last_detail = str(exc)
             continue
         detail = f"{completed.stdout or ''}\n{completed.stderr or ''}".strip()
-        if completed.returncode == 0 or "no such container" in detail.lower():
+        if completed.returncode == 0 or _agent_container_not_found(detail):
             return
         last_detail = detail or f"docker rm exited {completed.returncode}"
+        normalized_detail = detail.lower()
+        if (
+            "removal of container" not in normalized_detail
+            or "already in progress" not in normalized_detail
+        ):
+            continue
+
+        # 手动终止、broker 重投和 harness finally 都可能发起同名清理。Docker
+        # 已经开始移除时会拒绝第二个 rm；这不是失败，只有 inspect 在限定时间内
+        # 仍能证明容器存在时才算失败。daemon 状态未知仍保持 fail-closed。
+        deadline = time.monotonic() + _CONTAINER_REMOVAL_CONFIRM_TIMEOUT_SECONDS
+        while True:
+            try:
+                inspected = subprocess.run(
+                    ["docker", "container", "inspect", container_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except Exception as exc:
+                last_detail = f"{last_detail}; docker inspect 失败：{exc}"
+                break
+            inspect_detail = (
+                f"{inspected.stdout or ''}\n{inspected.stderr or ''}"
+            ).strip()
+            if (
+                inspected.returncode != 0
+                and _agent_container_not_found(inspect_detail)
+            ):
+                return
+            if inspected.returncode != 0:
+                last_detail = (
+                    f"{last_detail}; docker inspect exited "
+                    f"{inspected.returncode}: {inspect_detail}"
+                )
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_CONTAINER_REMOVAL_CONFIRM_POLL_SECONDS)
     raise AgentHarnessCleanupError(
         f"无法确认 Agent 容器 {container_name} 已清理：{last_detail[:500]}"
     )

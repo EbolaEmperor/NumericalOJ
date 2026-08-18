@@ -12,7 +12,6 @@ from oj_modules.config import SECRET_KEY
 AGENT_IDENTITY_HEADER = "X-NumOJ-Agent-Identity"
 _SERIALIZER_SALT = "numericaloj-agent-identity-v1"
 _TASK_SERIALIZER_SALT = "numericaloj-agent-identity-v2"
-_TASK_CAPABILITY_MAX_AGE_SECONDS = 48 * 60 * 60
 _ALLOWED_ROLES = frozenset({"user", "admin"})
 
 
@@ -56,19 +55,19 @@ def resolve_agent_identity_capability(
     value,
     *,
     session_username="",
-    max_age_seconds=_TASK_CAPABILITY_MAX_AGE_SECONDS,
 ):
-    """验签并解析 Agent 身份能力；任务能力仍需调用方核对数据库绑定。"""
+    """验签并解析 Agent 身份能力；v2 的有效性由当前数据库任务绑定决定。"""
 
     raw = str(value or "").strip()
     if not raw:
         return None
     payload = None
     try:
-        payload = _task_serializer().loads(
-            raw,
-            max_age=max(1, int(max_age_seconds)),
-        )
+        # 任务能力以前按签发时间在 48 小时后失效，长时间运行的 Agent 会在
+        # 容器内突然丧失 numoj-user 身份。v2 每次请求都会在 current_user()
+        # 中核对 session、task_id、申请用户、角色和非终态状态，任务结束即失效；
+        # 因此不再另加时间上限，同时保留签名校验和即时撤销。
+        payload = _task_serializer().loads(raw)
     except (BadData, SignatureExpired, TypeError, ValueError):
         try:
             payload = _serializer().loads(raw)

@@ -282,6 +282,13 @@ def test_agent_worker_dynamic_concurrency_is_installed_at_composition_root():
     assert 'apply_agent_concurrency_limit(celery, limit)' in ast.unparse(configure)
 
 
+def test_late_ack_uses_a_visibility_window_suitable_for_agent_tasks():
+    source = OJ_PATH.read_text(encoding='utf-8')
+
+    assert '_CELERY_REDIS_VISIBILITY_TIMEOUT_SECONDS = 6 * 60 * 60' in source
+    assert "'visibility_timeout': _CELERY_REDIS_VISIBILITY_TIMEOUT_SECONDS" in source
+
+
 def test_business_processes_preserve_container_readable_file_modes():
     expected_programs = {
         'web.conf': ('program:web',),

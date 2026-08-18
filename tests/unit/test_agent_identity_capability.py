@@ -1,6 +1,7 @@
 from flask import Flask, session
 
 from oj_modules.security import auth
+from oj_modules.security import agent_identity
 from oj_modules.security.agent_identity import (
     AGENT_IDENTITY_HEADER,
     create_agent_identity_capability,
@@ -133,6 +134,33 @@ def test_task_capability_authenticates_only_its_active_database_binding(monkeypa
         headers={AGENT_IDENTITY_HEADER: token},
     ):
         assert auth.current_user() is None
+
+
+def test_task_capability_does_not_apply_a_time_based_expiry(monkeypatch):
+    load_kwargs = []
+
+    class TaskSerializer:
+        def loads(self, _token, **kwargs):
+            load_kwargs.append(kwargs)
+            return {
+                "v": 2,
+                "username": "admin",
+                "access_role": "user",
+                "nonce": "n" * 18,
+                "session_id": "session-1",
+                "task_id": "task-2",
+            }
+
+    monkeypatch.setattr(agent_identity, "_task_serializer", TaskSerializer)
+
+    assert resolve_agent_identity_capability("signed-task-capability") == {
+        "version": 2,
+        "username": "admin",
+        "access_role": "user",
+        "session_id": "session-1",
+        "task_id": "task-2",
+    }
+    assert load_kwargs == [{}]
 
 
 def test_user_task_capability_exposes_only_its_scoped_problem(monkeypatch):
