@@ -199,21 +199,27 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-modal-panel footer { display: flex; justify-content: flex-end; gap: 8px; }
 
 .vibe-modal-secondary,
-.vibe-modal-primary { min-height: 39px; padding: 0 14px; border-radius: 8px; font-size: .66rem; font-weight: 650; }
+.vibe-modal-primary,
+.vibe-modal-danger { min-height: 39px; padding: 0 14px; border-radius: 8px; font-size: .66rem; font-weight: 650; }
 
 .vibe-modal-secondary { border: 1px solid #d4d4d8; background: #fff; color: #3f3f46; }
 
 .vibe-modal-primary { border: 1px solid #18181b; background: #18181b; color: #fff; }
 
+.vibe-modal-danger { margin-right: auto; border: 1px solid #fecdd3; background: #fff1f2; color: #be123c; }
+
 .vibe-modal-secondary:hover { background: #f4f4f5; }
 
 .vibe-modal-primary:hover { background: #27272a; }
+
+.vibe-modal-danger:hover { background: #ffe4e6; }
 
 .vibe-modal[data-vibe-approve-modal] button:focus-visible,
 .vibe-modal[data-vibe-featured-modal] button:focus-visible { outline: 0 !important; }
 
 .vibe-modal-secondary:disabled,
-.vibe-modal-primary:disabled { cursor: wait; opacity: .6; }
+.vibe-modal-primary:disabled,
+.vibe-modal-danger:disabled { cursor: wait; opacity: .6; }
 
 .vibe-modal-panel--confirm { width: min(100%, 410px); padding: 25px; text-align: center; }
 

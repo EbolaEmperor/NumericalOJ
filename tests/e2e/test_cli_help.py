@@ -89,6 +89,7 @@ USER_COMMAND_PATHS = [
     ["vibehub", "create"],
     ["vibehub", "update"],
     ["vibehub", "edit"],
+    ["vibehub", "delete"],
 ]
 
 

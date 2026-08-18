@@ -40,6 +40,16 @@ def necessary_project_payload(payload: Any) -> Any:
     return {"success": bool(payload.get("success", True)), "project": necessary_project(payload.get("project"))}
 
 
+def necessary_delete_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    return {
+        key: payload[key]
+        for key in ("success", "deleted", "slug", "message")
+        if key in payload
+    }
+
+
 def _output(resp, projector) -> None:
     common.ensure_ok(resp, allow_redirect=False)
     if common.response_is_json(resp):
@@ -111,6 +121,16 @@ def project_edit(args):
         "PATCH", f"/api/vibehub/projects/{args.slug}", json=_metadata(args),
     )
     _output(resp, necessary_project_payload)
+
+
+def project_delete(args):
+    if not args.yes:
+        raise common.CliError("Deleting a VibeHub project requires --yes.")
+    resp = client_from_args(args).request(
+        "DELETE",
+        f"/api/vibehub/projects/{args.slug}",
+    )
+    _output(resp, necessary_delete_payload)
 
 
 def developer_guide(args):
@@ -185,6 +205,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("slug")
     _add_metadata_args(parser)
     parser.set_defaults(func=project_edit)
+    parser = common.add_cli_parser(commands, "delete", "Permanently delete a VibeHub project.")
+    parser.add_argument("slug")
+    parser.add_argument("--yes", action="store_true", help="Confirm permanent deletion.")
+    parser.set_defaults(func=project_delete)
     parser = common.add_cli_parser(commands, "pending", "List versions awaiting publication review.")
     parser.set_defaults(func=review_queue)
     parser = common.add_cli_parser(commands, "review", "Approve or reject one submitted publication version.")

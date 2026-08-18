@@ -14,6 +14,7 @@
   data-create-url="{{ url_for('vibehub_api.create_project') }}"
   data-project-url-template="{{ url_for('vibehub_api.project_detail', slug='__SLUG__') }}"
   data-edit-url-template="{{ url_for('vibehub_api.edit_project', slug='__SLUG__') }}"
+  data-delete-url-template="{{ url_for('vibehub_api.delete_project', slug='__SLUG__') }}"
   data-version-url-template="{{ url_for('vibehub_api.upload_version', slug='__SLUG__') }}"
   data-admin-review-url-template="{{ url_for('vibehub_api.review_project', slug='__SLUG__') }}"
   {% if user and user.is_admin == 1 %}data-admin-featured-url-template="{{ url_for('vibehub_api.set_project_featured', slug='__SLUG__') }}"{% endif %}
@@ -98,7 +99,7 @@
 
         <p class="vibe-form-status" data-vibe-form-status aria-live="polite"></p>
         <footer>
-          <button class="vibe-modal-secondary" type="button" data-vibe-close-modal>取消</button>
+          <button class="vibe-modal-danger" type="button" data-vibe-delete-project hidden><i class="fas fa-trash-can" aria-hidden="true"></i>删除作品</button>
           <button class="vibe-modal-primary" type="submit" data-vibe-submit-project>创建并自动送审</button>
         </footer>
       </form>

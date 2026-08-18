@@ -142,6 +142,7 @@
     if (!projectDialog || !projectForm) return;
     var projectStatus = one("[data-vibe-form-status]", projectDialog);
     var projectSubmit = one("[data-vibe-submit-project]", projectDialog);
+    var projectDelete = one("[data-vibe-delete-project]", projectDialog);
     var loadGeneration = 0;
     var loadController = null;
 
@@ -166,6 +167,10 @@
       projectForm.dataset.mode = mode;
       projectForm.dataset.slug = project.slug || "";
       projectForm.elements.package.required = !editing;
+      if (projectDelete) {
+        projectDelete.hidden = !editing;
+        projectDelete.disabled = !editing;
+      }
       one("[data-vibe-modal-title]", projectDialog).textContent = editing ? "编辑作品" : "创建作品";
       one("[data-vibe-modal-description]", projectDialog).textContent = editing
         ? "保存修改时构建镜像并自动送审；可选上传新程序包。"
@@ -182,6 +187,7 @@
       var slug = button.dataset.projectSlug;
       loadController = new AbortController();
       configureForm("edit", { slug: slug });
+      if (projectDelete) projectDelete.disabled = true;
       showMessage(projectStatus, "正在读取作品信息…");
       openDialog(projectDialog, one("[data-vibe-close-modal]", projectDialog));
       button.disabled = true;
@@ -247,6 +253,28 @@
         setBusy(projectSubmit, false);
       }
     });
+
+    if (projectDelete) {
+      projectDelete.addEventListener("click", async function () {
+        var slug = projectForm.dataset.slug;
+        var title = projectForm.elements.title.value.trim() || slug;
+        if (!slug || !window.confirm("确定删除“" + title + "”？此操作不可恢复。")) return;
+        showMessage(projectStatus, "正在删除作品…");
+        setBusy(projectDelete, true, "删除中…");
+        projectSubmit.disabled = true;
+        try {
+          await apiRequest(projectUrl(root.dataset.deleteUrlTemplate, slug), {
+            method: "DELETE"
+          });
+          showMessage(projectStatus, "作品已删除，正在返回我的作品…");
+          setTimeout(function () { window.location.assign("/vibehub/?view=mine"); }, 250);
+        } catch (error) {
+          showMessage(projectStatus, error.message, true);
+          setBusy(projectDelete, false);
+          projectSubmit.disabled = false;
+        }
+      });
+    }
 
     var approveDialog = one("[data-vibe-approve-modal]", root);
     var approveSubmit = one("[data-vibe-confirm-approve]", approveDialog);
