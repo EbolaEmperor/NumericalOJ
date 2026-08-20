@@ -43,12 +43,20 @@ def test_production_deploy_builds_lean_before_the_agent_image():
     assert "lean4/Dockerfile" in deploy
 
 
-def test_ci_exports_lean_rootfs_before_building_the_lite_agent_image():
+def test_ci_passes_lean_image_through_a_local_registry():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
     lean_build = workflow.index("Build the pinned Lean4 and Mathlib runtime")
     agent_build = workflow.index("Build the Agent Judge lite image")
     assert lean_build < agent_build
     assert "context: docker/lean4" in workflow
-    assert "numericaloj-lean4-rootfs=${{ runner.temp }}" in workflow
-    assert "LEAN4_IMAGE=numericaloj-lean4-rootfs" in workflow
+    assert "image: registry:3" in workflow
+    assert "driver-opts: network=host" in workflow
+    assert "tags: localhost:5000/numericaloj-lean4:ci" in workflow
+    assert "push: true" in workflow
+    assert (
+        "numericaloj-lean4-runtime="
+        "docker-image://localhost:5000/numericaloj-lean4:ci"
+    ) in workflow
+    assert "LEAN4_IMAGE=numericaloj-lean4-runtime" in workflow
+    assert "outputs: type=local" not in workflow
