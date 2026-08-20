@@ -5,14 +5,20 @@ description: A skill to administer NumericalOJ/NumOJ. Use when the user asks you
 
 # NumOJ Admin
 
-Use the bundled script `scripts/numoj_admin.py` for NumOJ administrator workflows.
+Set the skill root once before running any command:
+
+```bash
+export NUMOJ_ADMIN_SKILL_ROOT="$(git rev-parse --show-toplevel)/skills/numoj-admin"
+```
+
+Use `$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py` for NumOJ administrator workflows.
 
 ## First-Time Setup
 
 Require the administrator to run initialization before any operation:
 
 ```bash
-python3 /path/to/numoj-admin/scripts/numoj_admin.py init
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" init
 ```
 
 The command prompts for:
@@ -26,17 +32,17 @@ It logs in through NumOJ's existing `/login` route and writes a local JSON confi
 Verify access:
 
 ```bash
-python3 /path/to/numoj-admin/scripts/numoj_admin.py auth status
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" auth status
 ```
 
 Proceed only if the result reports `authenticated: true` and `admin: true`.
 
 ## Agent Workflow
 
-1. Resolve the CLI path relative to this `SKILL.md`: `scripts/numoj_admin.py`.
+1. Use the absolute CLI path `$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py`.
 2. If config is missing, `auth status` fails, or the account is not an administrator, stop and tell the user to run `init` with an administrator account; do not ask them to reveal the password in chat.
-3. Before using a command area for the first time in the current task, run `python3 scripts/numoj_admin.py <command_area> --help` to fetch the real subcommand list and descriptions. Do not guess subcommands from memory or from the high-level Command Areas summary.
-4. Run `python3 scripts/numoj_admin.py <command_area> <subcommand> --help` before using unfamiliar subcommands. Every command supports `--help`.
+3. Before using a command area for the first time in the current task, run `python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" <command_area> --help` to fetch the real subcommand list and descriptions. Do not guess subcommands from memory or from the high-level Command Areas summary.
+4. Run `python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" <command_area> <subcommand> --help` before using unfamiliar subcommands. Every command supports `--help`.
 5. Execute the narrowest administrator command matching the user's request.
 6. Summarize created IDs, changed settings, current statuses, exported files, or visible scores.
 
@@ -64,12 +70,17 @@ Do not use commands that launch external model/API work, large judging workloads
 - `repository`: inspect and manage the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
-- `ranking`: list/view/create/edit/delete ranking competitions, submit by upload or Git, inspect personal/all submissions, view leaderboards, inspect matches/match details/judge streams, upload/download attachments/reference answers/scoring scripts, manage Agent-as-Judge / reverse-judge config/endpoints and the independent reverse-judge quality gate, reset limits, submit/check/review/handle appeals, and run batch/admin actions.
+- `ranking`: 打榜赛管理。配置、题型差异与 CLI 工作流见 [ranking-contests.md]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests.md)。
 - `vibehub`: fetch the current developer guide, create or update versions with automatic review submission, delete works, decide pending publication reviews, and directly set or unset featured status.
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
-For Lean 4 problem-package configuration, publication, workspace, and administrator submission workflows, read [references/lean4-problems.md](references/lean4-problems.md) before acting.
+For Lean 4 problem-package configuration, publication, workspace, and administrator submission workflows, read [lean4-problems.md]($NUMOJ_ADMIN_SKILL_ROOT/references/lean4-problems.md) before acting.
+
+For any ranking-competition work, read
+[ranking-contests.md]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests.md) before choosing or
+running a `ranking` command. It describes the four scoring modes, shared CLI
+workflow, required readiness conditions, and links to the per-mode references.
 
 For publication review work, use `vibehub pending` with `vibehub review`.
 Featured status has no application queue: use `vibehub featured <slug> on|off`
@@ -85,17 +96,17 @@ cannot modify another author's package or versioned content.
 Check administrator login:
 
 ```bash
-python3 scripts/numoj_admin.py auth status
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" auth status
 ```
 
 Inspect dynamic-config metadata and current global settings:
 
 ```bash
-python3 scripts/numoj_admin.py site-config meta
-python3 scripts/numoj_admin.py site-config llm list
-python3 scripts/numoj_admin.py site-config binding list
-python3 scripts/numoj_admin.py site-config mail get
-python3 scripts/numoj_admin.py site-config web-search get
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config meta
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config llm list
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config binding list
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config mail get
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config web-search get
 ```
 
 Create an OpenAI-compatible text endpoint. `create` and `update` perform the
@@ -103,7 +114,7 @@ required connection test and save in one command; the API key and one-time test
 token are never printed:
 
 ```bash
-python3 scripts/numoj_admin.py site-config llm create \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config llm create \
   --protocol openai \
   --category text \
   --endpoint-base-url https://llm.example.com/v1 \
@@ -112,7 +123,7 @@ python3 scripts/numoj_admin.py site-config llm create \
   --model example-model \
   --thinking
 
-python3 scripts/numoj_admin.py site-config llm update <endpoint_id> \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config llm update <endpoint_id> \
   --model example-model-v2 \
   --api-key @llm-api-key.txt \
   --input-price-per-million 1 \
@@ -125,11 +136,11 @@ exact confirmation phrase from `site-config meta`; omit `--password` to use the
 non-echoing interactive password prompt:
 
 ```bash
-python3 scripts/numoj_admin.py site-config binding set ai_code_annotation \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config binding set ai_code_annotation \
   --endpoint-id <endpoint_id>
-python3 scripts/numoj_admin.py site-config binding lock-embedding \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config binding lock-embedding \
   --reason "Index configuration is verified"
-python3 scripts/numoj_admin.py site-config binding unlock-embedding \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config binding unlock-embedding \
   --confirmation "我已阅读上述内容，我清楚后果，我坚持要解锁"
 ```
 
@@ -137,32 +148,32 @@ Save and test SMTP or WebSearch settings. Secret values accept direct text,
 `@file`, or an environment-variable name with an optional dotenv file:
 
 ```bash
-python3 scripts/numoj_admin.py site-config mail set \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config mail set \
   --smtp-server smtp.example.com \
   --smtp-port 465 \
   --smtp-username noreply@example.com \
   --smtp-password-env NUMOJ_SMTP_PASSWORD \
   --env-file site-config-secrets.env
-python3 scripts/numoj_admin.py site-config mail test
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config mail test
 
-python3 scripts/numoj_admin.py site-config web-search set \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config web-search set \
   --search-base-url https://search.example.com/mcp \
   --authorization-env NUMOJ_WEB_SEARCH_AUTHORIZATION \
   --env-file site-config-secrets.env
-python3 scripts/numoj_admin.py site-config web-search test
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" site-config web-search test
 ```
 
 List users and inspect the current administrator account:
 
 ```bash
-python3 scripts/numoj_admin.py user list --username admin
-python3 scripts/numoj_admin.py me classes
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" user list --username admin
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" me classes
 ```
 
 Create a programming problem:
 
 ```bash
-python3 scripts/numoj_admin.py problem create \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem create \
   --title "矩阵范数计算" \
   --content @problem.md \
   --type 1 \
@@ -177,7 +188,7 @@ the image artifact name explicitly. Do not use this option for ordinary text
 output and do not set it to a stdout file such as `output.txt`:
 
 ```bash
-python3 scripts/numoj_admin.py problem create \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem create \
   --title "绘图题" \
   --content @problem.md \
   --output-image-filename output.png
@@ -186,7 +197,7 @@ python3 scripts/numoj_admin.py problem create \
 Edit a problem without clearing omitted fields:
 
 ```bash
-python3 scripts/numoj_admin.py problem edit <problem_id> \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem edit <problem_id> \
   --title "矩阵范数计算（修订）" \
   --time-limit-ms 3000
 ```
@@ -194,134 +205,57 @@ python3 scripts/numoj_admin.py problem edit <problem_id> \
 Read problem details and inspect recent submissions:
 
 ```bash
-python3 scripts/numoj_admin.py problem detail <problem_id>
-python3 scripts/numoj_admin.py submission problem <problem_id> --limit 5
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem detail <problem_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission problem <problem_id> --limit 5
 ```
 
 Submit code and inspect submission results:
 
 ```bash
-python3 scripts/numoj_admin.py problem submit <problem_id> --code-file solution.m
-python3 scripts/numoj_admin.py submission list --limit 10
-python3 scripts/numoj_admin.py submission problem <problem_id> --limit 10
-python3 scripts/numoj_admin.py submission detail <submission_id>
-python3 scripts/numoj_admin.py submission status <submission_id>
-python3 scripts/numoj_admin.py submission stream <submission_id> --max-lines 10
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem submit <problem_id> --code-file solution.m
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission list --limit 10
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission problem <problem_id> --limit 10
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission detail <submission_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission status <submission_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission stream <submission_id> --max-lines 10
 ```
 
 Fetch your last submission for some problem and save the code to some file:
 
 ```bash
-python3 scripts/numoj_admin.py submission last-code <problem_id>
-python3 scripts/numoj_admin.py submission last-code <problem_id> --output <filename>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission last-code <problem_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission last-code <problem_id> --output <filename>
 ```
 
 Upload test data and rejudge a problem:
 
 ```bash
-python3 scripts/numoj_admin.py problem upload-testdata <problem_id> testdata.zip
-python3 scripts/numoj_admin.py problem rejudge <problem_id>
-python3 scripts/numoj_admin.py problem rejudge-status <problem_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem upload-testdata <problem_id> testdata.zip
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem rejudge <problem_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem rejudge-status <problem_id>
 ```
 
 Assign homework and export scores:
 
 ```bash
-python3 scripts/numoj_admin.py homework add --class-en C2026A --problem-id <problem_id> --ddl 2026-12-31T23:59
-python3 scripts/numoj_admin.py homework export-scores --class-en C2026A -o scores.csv
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" homework add --class-en C2026A --problem-id <problem_id> --ddl 2026-12-31T23:59
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" homework export-scores --class-en C2026A -o scores.csv
 ```
 
 Manage a user's classes, privileges, and grades:
 
 ```bash
-python3 scripts/numoj_admin.py user add-to-class <user_id> C2026A
-python3 scripts/numoj_admin.py user grant-admin <user_id>
-python3 scripts/numoj_admin.py user grades <user_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" user add-to-class <user_id> C2026A
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" user grant-admin <user_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" user grades <user_id>
 ```
 
 `user grant-admin` is a one-way privilege grant. It is idempotent for users who
 are already administrators and does not change any class memberships.
 
-Create and configure a ranking competition:
-
-```bash
-python3 scripts/numoj_admin.py ranking create --title "第 1 周打榜赛" --max-score 100
-python3 scripts/numoj_admin.py ranking save-rules <competition_id> @rules.json
-python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
-  --harness codex \
-  --protocol openai \
-  --agent-base-url https://llm.example.com/v1 \
-  --api-key-env LLM_API_KEY \
-  --model example-model
-```
-
-Create or edit a reverse-judge ranking competition and configure the AI answering endpoint:
-
-```bash
-python3 scripts/numoj_admin.py ranking edit <competition_id> \
-  --scoring-mode reverse_judge \
-  --submission-method zip \
-  --agent-timeout 600
-python3 scripts/numoj_admin.py ranking save-endpoint <competition_id> \
-  --harness pi \
-  --protocol openai \
-  --agent-base-url https://llm.example.com/v1 \
-  --api-key-env LLM_API_KEY \
-  --env-file agent-secrets.env \
-  --model example-model \
-  --context-window-tokens 1000000 \
-  --max-output-tokens 384000 \
-  --thinking-compatibility \
-  --timeout-seconds 600
-```
-
-Endpoint model metadata defaults to a 1,000,000-token context window, 384,000
-maximum output tokens, and thinking compatibility enabled. The single-endpoint
-commands accept `--protocol`, `--context-window-tokens`, `--max-output-tokens`, and
-`--thinking-compatibility` / `--no-thinking-compatibility`. For endpoint-pool
-JSON passed to `save-endpoints` or `save-quality-gate-endpoints`, use the fields
-`protocol`, `context_window_tokens`, `max_output_tokens`,
-`thinking_compatibility`, and `thinking_format` on
-each endpoint object. New endpoints receive the server defaults when these
-fields are omitted; updates that carry an existing endpoint `id` retain that
-endpoint's current values when the fields are omitted.
-Context and maximum-output values must be positive integers no greater than
-1,000,000, and maximum output cannot exceed the context window.
-
-Configure the reverse-judge quality gate. Its endpoint pool is independent from the AI-answering pool and is scheduled automatically; participants never select a quality endpoint. The prompt and endpoint JSON support `@file`, and endpoint secrets may use `api_key_env` plus `--env-file` just like the Agent-as-Judge pool:
-
-```bash
-python3 scripts/numoj_admin.py ranking save-quality-gate <competition_id> \
-  --disabled \
-  --prompt @quality-gate-prompt.txt
-python3 scripts/numoj_admin.py ranking save-quality-gate-endpoints <competition_id> \
-  @quality-gate-endpoints.json \
-  --env-file agent-secrets.env
-python3 scripts/numoj_admin.py ranking save-quality-gate <competition_id> --enabled
-```
-
-Submit and inspect a ranking competition:
-
-```bash
-python3 scripts/numoj_admin.py ranking submit <competition_id> --base-model qwen3 --answer-file answer.json --code-zip code.zip
-python3 scripts/numoj_admin.py ranking submit <competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
-python3 scripts/numoj_admin.py ranking reverse-stream <competition_id> <submission_id> --max-lines 10
-python3 scripts/numoj_admin.py ranking download-submission <submission_id> ai-answer -o ./ai-answer.zip
-python3 scripts/numoj_admin.py ranking my-submissions <competition_id> --limit 5
-python3 scripts/numoj_admin.py ranking leaderboard <competition_id> --limit 10
-python3 scripts/numoj_admin.py ranking appeals <competition_id> --status open
-```
-
-Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
-
-```bash
-python3 scripts/numoj_admin.py ranking git <competition_id> check
-python3 scripts/numoj_admin.py ranking git <competition_id> submit
-```
-
 Use the code repository:
 
 ```bash
-python3 scripts/numoj_admin.py repository files
-python3 scripts/numoj_admin.py repository save --filename helper.hpp --content-file helper.hpp
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" repository files
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" repository save --filename helper.hpp --content-file helper.hpp
 ```

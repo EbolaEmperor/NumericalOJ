@@ -75,14 +75,14 @@ python3 -m zipfile -c ../problem-package.zip \
 先查看实际参数：
 
 ```bash
-python3 scripts/numoj_admin.py problem create --help
-python3 scripts/numoj_admin.py problem lean-upload --help
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem create --help
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem lean-upload --help
 ```
 
 创建题目并立即发布首个题目包：
 
 ```bash
-python3 scripts/numoj_admin.py problem create \
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem create \
   --title "Lean 4 证明题" \
   --content @PROBLEM.md \
   --type 1 \
@@ -95,7 +95,7 @@ python3 scripts/numoj_admin.py problem create \
 也可以先创建 `--lang lean4` 题目，再单独发布题目包：
 
 ```bash
-python3 scripts/numoj_admin.py problem lean-upload <problem_id> ./problem-package.zip
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem lean-upload <problem_id> ./problem-package.zip
 ```
 
 每个不同的有效题目包都会生成新的不可变版本；重复上传内容相同的包保持当前版本不变。更新后，旧本地工作区不能继续提交，必须重新初始化并迁移学生改动。
@@ -105,20 +105,20 @@ python3 scripts/numoj_admin.py problem lean-upload <problem_id> ./problem-packag
 查看当前版本和文件读写属性；只在确实需要读取全部源码时使用 `--full`：
 
 ```bash
-python3 scripts/numoj_admin.py problem lean-workspace <problem_id>
-python3 scripts/numoj_admin.py problem lean-workspace <problem_id> --full
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem lean-workspace <problem_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem lean-workspace <problem_id> --full
 ```
 
 下载服务器保存的规范题目包：
 
 ```bash
-python3 scripts/numoj_admin.py problem lean-download <problem_id> -o ./problem-package.zip
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem lean-download <problem_id> -o ./problem-package.zip
 ```
 
 初始化一个可供本地编译或管理员试交的完整目录：
 
 ```bash
-python3 scripts/numoj_admin.py problem lean-init <problem_id> ./lean-workspace
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem lean-init <problem_id> ./lean-workspace
 ```
 
 `lean-init` 会写入全部只读和可写源码，并在根目录的 `numoj-lean.json` 中加入当前 `problem_id` 与 `revision`。这两个字段是 CLI 的本地提交元数据，重新上传题目包时会被规范化忽略。目标路径已有文件时，只有显式传入 `--force` 才会替换。
@@ -137,12 +137,12 @@ lean -o Submission.olean Submission.lean
 完成所有可写文件后，以目录提交：
 
 ```bash
-python3 scripts/numoj_admin.py problem submit <problem_id> --workspace ./lean-workspace
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" problem submit <problem_id> --workspace ./lean-workspace
 ```
 
 CLI 从根目录 `numoj-lean.json` 读取版本和文件权限，把 `{revision, files}` JSON 放入 `lean_workspace` 表单字段提交，其中只包含全部 `writable` 文件；只读定义不会被上传。随后照常查看判题状态和日志：
 
 ```bash
-python3 scripts/numoj_admin.py submission status <submission_id>
-python3 scripts/numoj_admin.py submission stream <submission_id> --max-lines 20
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission status <submission_id>
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" submission stream <submission_id> --max-lines 20
 ```

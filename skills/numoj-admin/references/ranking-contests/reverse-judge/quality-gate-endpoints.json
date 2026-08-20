@@ -1,0 +1,4 @@
+[
+  {"id": 72, "harness": "claude_code", "protocol": null, "effective_protocol": "anthropic", "model": "MiniMax-M3", "context_window_tokens": 1000000, "max_output_tokens": 384000, "thinking_compatibility": true, "thinking_format": "thinking_type", "concurrency_limit": 2, "status": "enabled", "enabled": 1, "has_key": true},
+  {"id": 75, "harness": "claude_code", "protocol": null, "effective_protocol": "anthropic", "model": "deepseek-v4-flash", "context_window_tokens": 1000000, "max_output_tokens": 384000, "thinking_compatibility": true, "thinking_format": "thinking_type", "concurrency_limit": 2, "status": "enabled", "enabled": 1, "has_key": true}
+]
