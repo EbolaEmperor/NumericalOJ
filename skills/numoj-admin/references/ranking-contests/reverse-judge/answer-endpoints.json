@@ -1,0 +1,6 @@
+[
+  {"id": 73, "harness": "claude_code", "protocol": null, "effective_protocol": "anthropic", "model": "MiniMax-M3", "context_window_tokens": 1000000, "max_output_tokens": 384000, "thinking_compatibility": true, "thinking_format": "thinking_type", "concurrency_limit": 2, "status": "enabled", "enabled": 1, "has_key": true},
+  {"id": 74, "harness": "claude_code", "protocol": null, "effective_protocol": "anthropic", "model": "mimo-v2.5-pro", "context_window_tokens": 1000000, "max_output_tokens": 384000, "thinking_compatibility": true, "thinking_format": "thinking_type", "concurrency_limit": 2, "status": "enabled", "enabled": 1, "has_key": true},
+  {"id": 76, "harness": "claude_code", "protocol": null, "effective_protocol": "anthropic", "model": "deepseek-v4-flash", "context_window_tokens": 1000000, "max_output_tokens": 384000, "thinking_compatibility": true, "thinking_format": "thinking_type", "concurrency_limit": 2, "status": "enabled", "enabled": 1, "has_key": true},
+  {"id": 77, "harness": "pi", "protocol": null, "effective_protocol": "openai", "model": "deepseek-v4-flash", "context_window_tokens": 1000000, "max_output_tokens": 384000, "thinking_compatibility": true, "thinking_format": "enable_thinking", "concurrency_limit": 2, "status": "enabled", "enabled": 1, "has_key": true}
+]

@@ -1,0 +1,29 @@
+{
+  "competition": {
+    "id": 8,
+    "title": "期末大项目 - 钱学森问题的扩展求解",
+    "answer_format": "json",
+    "scoring_mode": "agent_judge",
+    "submission_method": "git",
+    "max_score": 110,
+    "is_active": 1,
+    "submit_limit_per_window": 10,
+    "scoring_script_timeout_seconds": 120,
+    "agent_judge_timeout_seconds": 3600,
+    "reverse_judge_finalize_timeout_seconds": 180,
+    "agent_judge_orchestration_mode": "single",
+    "elo_initial_rating": 1500.0,
+    "elo_k_factor": 32.0,
+    "elo_max_matches": 200,
+    "elo_match_interval_seconds": 60,
+    "elo_initial_burst": 5,
+    "elo_max_pairs_per_round": 1,
+    "elo_running": 0,
+    "reverse_quality_gate_enabled": 0,
+    "created_at": "2026-06-11 20:45:12",
+    "updated_at": "2026-08-02 23:09:00"
+  },
+  "attachment_count": 2,
+  "agent_judge_ready": true,
+  "quality_gate_ready": true
+}

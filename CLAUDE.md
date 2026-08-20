@@ -12,7 +12,6 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modul
 - 未经用户明确要求，不得部署生产、写生产数据、运行迁移或重启服务。
 - **生产主机禁止运行任何测试**，包括单测、pytest、Compose、CI 脚本和测试容器。
 - 生产 `.env`、`static/` 的额外资产、上传和运行数据可能不在 Git 中，禁止全量覆盖或删除。
-- 密码、Cookie、Authorization、API key、Prompt、答案和用户源码不得写入 Git 或日志。
 
 ## 架构与代码边界
 
