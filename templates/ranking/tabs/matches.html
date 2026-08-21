@@ -102,6 +102,7 @@
           var loadingEl = document.getElementById('matchDetailLoading');
           var errorEl = document.getElementById('matchDetailError');
           var contentEl = document.getElementById('matchDetailContent');
+          var toolbarEl = contentEl ? contentEl.querySelector('.match-detail-toolbar') : null;
           var metaEl = document.getElementById('matchDetailMeta');
           var verdictEl = document.getElementById('matchDetailVerdict');
           var headingEl = document.getElementById('matchDetailHeading');
@@ -233,6 +234,7 @@
               : legacyDetailOutput(data);
             var isHtml = output.format === 'html';
 
+            if (toolbarEl) toolbarEl.hidden = isHtml;
             if (formatEl) formatEl.classList.toggle('is-html', isHtml);
             if (formatLabelEl) formatLabelEl.textContent = isHtml ? '互动 HTML' : '文本';
             if (formatEl) {
