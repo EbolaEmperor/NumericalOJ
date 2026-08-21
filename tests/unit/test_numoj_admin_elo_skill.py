@@ -26,6 +26,8 @@ def test_elo_reference_only_teaches_explicit_text_and_html_protocol():
     assert "普通 JSON 对象" not in reference
     assert "动画" not in reference
     assert "requestAnimationFrame" not in reference
+    assert "<submission_a_dir> <submission_b_dir>" in reference
+    assert "Agent Judge" in reference
 
 
 def test_bundled_elo_scoring_script_emits_explicit_text_details():

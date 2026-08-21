@@ -4,15 +4,15 @@
 sketcher 打榜赛 · ELO 评分脚本
 
 调用方式（ELO 模式约定）：
-    python <script> <submission_a.zip> <submission_b.zip>
+    python <script> <submission_a_dir> <submission_b_dir>
 stdout 输出一行 JSON：
     {"winner": 0 | 1 | 2,
      "details": {"format": "text", "content": "<评测详情文本>"}}
 其中 winner=0 表示平局（最终统计后双方实力相当）。
 
 评分逻辑：
-  1. 解压两份提交的作品 zip 到独立临时目录，只读取 summaries/
-     目录下直接包含的 .tex 文件，并按 basename 建立索引。
+  1. 系统已在 Agent Judge 容器中解压两份作品；脚本只读取各作品
+     summaries/ 目录下直接包含的 .tex 文件，并按 basename 建立索引。
   2. 以服务器附件目录 ~/oj/static/articles/ 中的 .pdf 列表作为评判论文集；
      该目录不存在时退化为两份提交里 .tex 文件名的并集。
   3. 三篇论文并发处理（3 线程），对每篇论文：
@@ -37,7 +37,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 # 让脚本能 import 到 NumericalOJ 项目根目录下的 config.py
@@ -71,20 +70,6 @@ def _list_paper_basenames():
         if fn.lower().endswith('.pdf'):
             bases.append(os.path.splitext(fn)[0])
     return sorted(bases)
-
-
-def _extract_zip(zip_path, extract_root):
-    """把 zip_path 解压到 extract_root 下；成功返回 True，否则 False。"""
-    if not (zip_path and os.path.isfile(zip_path)):
-        return False
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(extract_root)
-        return True
-    except (zipfile.BadZipFile, RuntimeError):
-        return False
-    except Exception:
-        return False
 
 
 def _find_tex_paths(extract_root):
@@ -397,79 +382,70 @@ def main():
 
     submission_a, submission_b = sys.argv[1], sys.argv[2]
 
-    extract_a = tempfile.mkdtemp(prefix='sketcher_a_')
-    extract_b = tempfile.mkdtemp(prefix='sketcher_b_')
-    try:
-        ok_extract_a = _extract_zip(submission_a, extract_a)
-        ok_extract_b = _extract_zip(submission_b, extract_b)
+    tex_a_paths = _find_tex_paths(submission_a)
+    tex_b_paths = _find_tex_paths(submission_b)
 
-        tex_a_paths = _find_tex_paths(extract_a) if ok_extract_a else {}
-        tex_b_paths = _find_tex_paths(extract_b) if ok_extract_b else {}
+    paper_bases = _list_paper_basenames()
+    articles_dir_used = bool(paper_bases)
+    if not paper_bases:
+        paper_bases = sorted(set(tex_a_paths.keys()) | set(tex_b_paths.keys()))
 
-        paper_bases = _list_paper_basenames()
-        articles_dir_used = bool(paper_bases)
-        if not paper_bases:
-            paper_bases = sorted(set(tex_a_paths.keys()) | set(tex_b_paths.keys()))
+    client = _build_client()
 
-        client = _build_client()
+    wins_a = 0
+    wins_b = 0
+    draws = 0
+    compiled_a = 0
+    compiled_b = 0
+    size_a = 0
+    size_b = 0
 
-        wins_a = 0
-        wins_b = 0
-        draws = 0
-        compiled_a = 0
-        compiled_b = 0
-        size_a = 0
-        size_b = 0
+    # 三篇论文并发评判（每篇内部串行做两次 LLM 调用以消除位置偏好）。
+    # 用 paper_bases 的次序回排结果，保证详情中的 per_paper 顺序稳定。
+    with ThreadPoolExecutor(max_workers=PAPER_CONCURRENCY) as pool:
+        results = list(pool.map(
+            lambda base: _judge_paper(client, base, tex_a_paths, tex_b_paths),
+            paper_bases,
+        ))
 
-        # 三篇论文并发评判（每篇内部串行做两次 LLM 调用以消除位置偏好）。
-        # 用 paper_bases 的次序回排结果，保证详情中的 per_paper 顺序稳定。
-        with ThreadPoolExecutor(max_workers=PAPER_CONCURRENCY) as pool:
-            results = list(pool.map(
-                lambda base: _judge_paper(client, base, tex_a_paths, tex_b_paths),
-                paper_bases,
-            ))
+    per_paper = []
+    for r in results:
+        per_paper.append(r['detail'])
+        if r['ok_a']:
+            compiled_a += 1
+        if r['ok_b']:
+            compiled_b += 1
+        size_a += r['size_a']
+        size_b += r['size_b']
+        w = r['winner']
+        if w == 1:
+            wins_a += 1
+        elif w == 2:
+            wins_b += 1
+        else:
+            draws += 1
 
-        per_paper = []
-        for r in results:
-            per_paper.append(r['detail'])
-            if r['ok_a']:
-                compiled_a += 1
-            if r['ok_b']:
-                compiled_b += 1
-            size_a += r['size_a']
-            size_b += r['size_b']
-            w = r['winner']
-            if w == 1:
-                wins_a += 1
-            elif w == 2:
-                wins_b += 1
-            else:
-                draws += 1
+    winner = _decide(wins_a, wins_b, compiled_a, compiled_b, size_a, size_b)
 
-        winner = _decide(wins_a, wins_b, compiled_a, compiled_b, size_a, size_b)
-
-        detail_data = {
-            'model': MODEL,
-            'articles_dir_used': articles_dir_used,
-            'wins_a': wins_a,
-            'wins_b': wins_b,
-            'draws': draws,
-            'compiled_a': compiled_a,
-            'compiled_b': compiled_b,
-            'tex_a_total_chars': size_a,
-            'tex_b_total_chars': size_b,
-            'per_paper': per_paper,
-        }
-        print(json.dumps({
-            'winner': winner,
-            'details': {
-                'format': 'text',
-                'content': json.dumps(detail_data, ensure_ascii=False, indent=2),
-            },
-        }, ensure_ascii=False))
-    finally:
-        shutil.rmtree(extract_a, ignore_errors=True)
-        shutil.rmtree(extract_b, ignore_errors=True)
+    detail_data = {
+        'model': MODEL,
+        'articles_dir_used': articles_dir_used,
+        'wins_a': wins_a,
+        'wins_b': wins_b,
+        'draws': draws,
+        'compiled_a': compiled_a,
+        'compiled_b': compiled_b,
+        'tex_a_total_chars': size_a,
+        'tex_b_total_chars': size_b,
+        'per_paper': per_paper,
+    }
+    print(json.dumps({
+        'winner': winner,
+        'details': {
+            'format': 'text',
+            'content': json.dumps(detail_data, ensure_ascii=False, indent=2),
+        },
+    }, ensure_ascii=False))
 
 
 if __name__ == '__main__':

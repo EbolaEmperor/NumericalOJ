@@ -11,13 +11,14 @@
 """
 import json
 import random
+import subprocess
 
 import pytest
 
 from oj_modules.tasks.ranking import elo
 
 
-def test_scoring_script_preserves_explicit_html_detail_output(tmp_path):
+def test_scoring_script_preserves_explicit_html_detail_output(tmp_path, monkeypatch):
     archive_a = tmp_path / "a.zip"
     archive_b = tmp_path / "b.zip"
     script = tmp_path / "score.py"
@@ -30,6 +31,16 @@ def test_scoring_script_preserves_explicit_html_detail_output(tmp_path):
     }
     payload = json.dumps({"winner": 1, "details": detail}, ensure_ascii=False)
     script.write_text(f"print({payload!r})\n", encoding="utf-8")
+    monkeypatch.setattr(
+        elo,
+        "run_elo_scoring_container",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["docker", "run"],
+            returncode=0,
+            stdout=payload + "\n",
+            stderr="",
+        ),
+    )
 
     winner, returned_detail = elo._run_scoring_script(
         str(script),

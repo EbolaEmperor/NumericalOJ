@@ -22,8 +22,13 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking upload-script <
 评分脚本调用约定为：
 
 ```text
-python elo_scoring.py <submission_a.zip> <submission_b.zip>
+python elo_scoring.py <submission_a_dir> <submission_b_dir>
 ```
+
+系统会先安全解压两份作品包，再把评分脚本和两个提交目录一同挂载到 Agent Judge
+容器。评分脚本在该容器内运行，两个参数分别指向已解压的 A、B 作品目录；容器沿用
+Agent Judge 的资源限制并可访问外网。当前协议把容器内双方代码视为可信内容，评分
+脚本可以直接读取或执行目录中的程序。
 
 脚本必须在 stdout 最后一条有效 JSON 行输出 `winner`：`0` 表示平局，`1` 表示 A 胜，`2`
 表示 B 胜。对战详情通过 `details` 输出；`details` 必须包含 `format` 和 `content`，并在
