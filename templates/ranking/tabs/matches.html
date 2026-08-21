@@ -53,8 +53,8 @@
 
       <!-- 详情 modal -->
       <div class="modal fade" id="matchDetailModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
-          <div class="modal-content">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content match-detail-modal">
             <div class="modal-header">
               <h5 class="modal-title"><i class="fas fa-magnifying-glass me-2"></i>对战详情</h5>
               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -65,9 +65,27 @@
               </div>
               <div id="matchDetailError" class="match-detail-error d-none" role="alert"></div>
               <div id="matchDetailContent" class="d-none">
-                <div class="text-muted small mb-2" id="matchDetailMeta"></div>
-                <h6 class="mb-2">评测脚本给出的胜负理由</h6>
-                <pre id="matchDetailVerdict" class="bg-light border rounded p-3 small" style="white-space: pre-wrap; word-break: break-word;"></pre>
+                <div class="match-detail-toolbar">
+                  <div class="match-detail-meta" id="matchDetailMeta"></div>
+                  <div class="match-detail-tools">
+                    <span class="match-detail-format" id="matchDetailFormat">
+                      <i class="fas fa-align-left" aria-hidden="true"></i>
+                      <span id="matchDetailFormatLabel">文本</span>
+                    </span>
+                  </div>
+                </div>
+                <h6 class="match-detail-heading" id="matchDetailHeading">评测脚本给出的胜负理由</h6>
+                <pre id="matchDetailVerdict" class="match-detail-text"></pre>
+                <div class="match-detail-html" id="matchDetailHtmlWrap" hidden>
+                  <iframe id="matchDetailHtmlFrame"
+                          title="评分脚本生成的互动对战详情"
+                          sandbox="allow-scripts"
+                          referrerpolicy="no-referrer"></iframe>
+                  <p class="match-detail-sandbox-note">
+                    <i class="fas fa-shield-halved" aria-hidden="true"></i>
+                    HTML 可运行脚本并访问网络，但与 NumericalOJ 页面、Cookie 和本地存储隔离。
+                  </p>
+                </div>
               </div>
             </div>
             <div class="modal-footer">
@@ -90,6 +108,11 @@
           var contentEl = document.getElementById('matchDetailContent');
           var metaEl = document.getElementById('matchDetailMeta');
           var verdictEl = document.getElementById('matchDetailVerdict');
+          var headingEl = document.getElementById('matchDetailHeading');
+          var formatEl = document.getElementById('matchDetailFormat');
+          var formatLabelEl = document.getElementById('matchDetailFormatLabel');
+          var htmlWrapEl = document.getElementById('matchDetailHtmlWrap');
+          var htmlFrameEl = document.getElementById('matchDetailHtmlFrame');
           var actionErrorEl = document.getElementById('matchesActionError');
           var ownerPanel = card.closest('[data-ranking-panel]');
           var matchesRequestToken = 0;
@@ -153,13 +176,7 @@
             if (contentEl) contentEl.classList.toggle('d-none', state !== 'ok');
           }
 
-          function renderDetail(data) {
-            var winner = data.winner;
-            var winnerLabel = winner === 1 ? (data.username_a + ' 胜')
-                            : winner === 2 ? (data.username_b + ' 胜')
-                            : winner === 0 ? '平局'
-                            : '失败';
-            metaEl.textContent = '#' + data.id + ' · ' + data.created_at + ' · ' + winnerLabel;
+          function legacyDetailOutput(data) {
             var verdict = '';
             if (data.error_message) {
               verdict = '【脚本错误】\n' + data.error_message;
@@ -177,7 +194,74 @@
               var pref2 = data.details.reason || data.details.verdict || data.details.explanation || data.details.justification || data.details.message;
               verdict = pref2 ? String(pref2) : JSON.stringify(data.details, null, 2);
             } else { verdict = String(data.details); }
-            verdictEl.textContent = verdict;
+            return {format: 'text', content: verdict};
+          }
+
+          function buildHtmlDocument(content) {
+            var csp = [
+              "default-src 'none'",
+              "img-src data: blob: https: http:",
+              "media-src data: blob: https: http:",
+              "font-src data: blob: https: http:",
+              "style-src 'unsafe-inline' https: http:",
+              "script-src 'unsafe-inline' blob: https: http:",
+              "connect-src https: http: wss: ws:",
+              "worker-src blob:",
+              "object-src 'none'",
+              "base-uri 'none'",
+              "form-action 'none'",
+              "frame-src 'none'"
+            ].join('; ');
+            return '<!doctype html><html lang="zh-CN"><head>' +
+              '<meta charset="utf-8">' +
+              '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+              '<meta http-equiv="Content-Security-Policy" content="' + csp + '">' +
+              '<style>html{color-scheme:light}html,body{min-height:100%;margin:0}' +
+              'body{overflow:auto;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}</style>' +
+              '</head><body>' + String(content || '') + '</body></html>';
+          }
+
+          function stopHtmlDetail() {
+            if (htmlFrameEl) htmlFrameEl.srcdoc = '';
+          }
+
+          function renderDetail(data) {
+            var winner = data.winner;
+            var winnerLabel = winner === 1 ? (data.username_a + ' 胜')
+                            : winner === 2 ? (data.username_b + ' 胜')
+                            : winner === 0 ? '平局'
+                            : '失败';
+            metaEl.textContent = '#' + data.id + ' · ' + data.created_at + ' · ' + winnerLabel;
+            var output = data.detail_output && typeof data.detail_output === 'object'
+              ? data.detail_output
+              : legacyDetailOutput(data);
+            var isHtml = output.format === 'html';
+
+            if (formatEl) formatEl.classList.toggle('is-html', isHtml);
+            if (formatLabelEl) formatLabelEl.textContent = isHtml ? '互动 HTML' : '文本';
+            if (formatEl) {
+              var formatIcon = formatEl.querySelector('i');
+              if (formatIcon) formatIcon.className = isHtml ? 'fas fa-code' : 'fas fa-align-left';
+            }
+            if (headingEl) headingEl.textContent = isHtml ? 'HTML 对战详情' : '评测脚本给出的胜负理由';
+            if (verdictEl) {
+              verdictEl.hidden = isHtml;
+              verdictEl.textContent = isHtml ? '' : String(output.content || '');
+            }
+            if (htmlWrapEl) htmlWrapEl.hidden = !isHtml;
+
+            stopHtmlDetail();
+            if (isHtml && htmlFrameEl) {
+              var requestedHeight = parseInt(output.height, 10);
+              if (isNaN(requestedHeight)) requestedHeight = 520;
+              requestedHeight = Math.max(240, Math.min(1200, requestedHeight));
+              htmlFrameEl.style.height = requestedHeight + 'px';
+              htmlFrameEl.srcdoc = buildHtmlDocument(output.content);
+            }
+          }
+
+          if (modalEl) {
+            modalEl.addEventListener('hidden.bs.modal', stopHtmlDetail);
           }
 
           var loadedCache = {};

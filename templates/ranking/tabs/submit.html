@@ -3,12 +3,15 @@
     {# ========== 提交作品 ========== #}
     {% if tab == 'submit' %}
       {% set max_score = competition.max_score or 100 %}
-      {% set answer_format = (competition.answer_format or 'json')|lower %}
-      {% set answer_ext = '.' ~ answer_format %}
       {% set scoring_mode = (competition.scoring_mode or 'absolute')|lower %}
-      {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
+      {% set is_elo = (scoring_mode == 'elo') %}
       {% set is_agent_judge = (scoring_mode == 'agent_judge') %}
       {% set is_reverse_judge = (scoring_mode == 'reverse_judge') %}
+      {% if not is_elo and not is_agent_judge and not is_reverse_judge %}
+        {% set answer_format = (competition.answer_format or 'json')|lower %}
+        {% set answer_ext = '.' ~ answer_format %}
+        {% set answer_icon = 'fa-file-archive' if answer_format == 'zip' else 'fa-file-code' %}
+      {% endif %}
 
       <section class="ranking-v2-tab ranking-v2-submit"
                id="rankingSubmitTab"
@@ -387,7 +390,7 @@
               id="rankingSubmitForm"
               class="submit-form mb-4">
           <div class="row g-3">
-            {% if not is_agent_judge %}
+            {% if not is_agent_judge and not is_elo %}
             <div class="col-md-6">
               <label class="file-drop" data-kind="answer">
                 <input type="file" name="answer_file" accept="{{ answer_ext }}" required hidden>
@@ -406,12 +409,12 @@
               </label>
             </div>
             {% endif %}
-            <div class="{{ 'col-md-12' if is_agent_judge else 'col-md-6' }}">
+            <div class="{{ 'col-md-12' if is_agent_judge or is_elo else 'col-md-6' }}">
               <label class="file-drop" data-kind="code">
                 <input type="file" name="code_file" accept=".zip" required hidden>
                 <div class="file-drop-inner">
                   <i class="fas fa-file-archive file-drop-icon file-drop-icon-code"></i>
-                  <div class="file-drop-title">代码文件</div>
+                  <div class="file-drop-title">{{ '作品压缩包' if is_elo else '代码文件' }}</div>
                   <div class="file-drop-sub">
                     <span class="file-drop-ext">.zip</span>
                   </div>
@@ -438,7 +441,9 @@
             <button type="submit" class="btn btn-primary submit-cta" id="rankingSubmitBtn" disabled>
               <i class="fas fa-paper-plane me-2"></i>提交评测
             </button>
-            <span class="submit-hint ms-3 text-muted small" id="rankingSubmitHint">请先选择两个文件</span>
+            <span class="submit-hint ms-3 text-muted small" id="rankingSubmitHint">
+              {% if is_elo %}请选择作品压缩包{% elif is_agent_judge %}请选择代码文件{% else %}请先选择两个文件{% endif %}
+            </span>
           </div>
         </form>
       {% endif %}{# git vs zip 提交方式 #}

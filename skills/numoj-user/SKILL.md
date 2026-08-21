@@ -128,6 +128,7 @@ Submit and inspect a ranking competition:
 
 ```bash
 python3 "$NUMOJ_USER_CLI" ranking submit <competition_id> --base-model "qwen3" --answer-file answer.json --code-zip code.zip
+python3 "$NUMOJ_USER_CLI" ranking submit <elo_competition_id> --base-model "qwen3" --code-zip submission.zip
 python3 "$NUMOJ_USER_CLI" ranking detail <reverse_competition_id> --tab submit
 python3 "$NUMOJ_USER_CLI" ranking submit <reverse_competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
 python3 "$NUMOJ_USER_CLI" ranking reverse-stream <reverse_competition_id> <submission_id> --max-lines 20

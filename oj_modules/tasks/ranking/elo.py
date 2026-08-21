@@ -11,8 +11,9 @@
     冷却用 Redis 键（SET NX EX）抢占，避免多次 tick 在同一个间隔内重复调度。
   - 用户上传后立即触发 \"即时补战\"（默认 5 场，串行链式：每场打完、rating 更新
     之后，再用最新分数现挑下一对手），让新提交逐步收敛到合理分数段。
-  - 单场对战由评测脚本判定：python <script> <answer_a_path> <answer_b_path> →
-    stdout 一行 JSON {\"winner\": 0 | 1 | 2, \"details\": <可选>}；
+  - 单场对战由评测脚本判定：python <script> <submission_a_path> <submission_b_path> →
+    stdout 一行 JSON {\"winner\": 0 | 1 | 2, \"details\": <可选>}；details 可沿用
+    字符串/普通对象，也可显式输出 {\"format\": \"text|html\", \"content\": \"...\"}；
     winner=1/2 表示对应一方胜出，winner=0 表示平局（两份提交不分伯仲）。
     脚本中段失败则记录一条 winner=-1 的占位历史、不调整分数。
 
@@ -135,6 +136,8 @@ def _pick_pair(eligibles):
 def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None):
     """运行 ELO 评分脚本，返回 (winner∈{0,1,2}, details_obj_or_str)。
     winner=1/2 表示一方胜出，winner=0 表示平局。
+    details 可为兼容格式，也可为 {"format": "text|html", "content": "..."}；
+    HTML 的隔离与网络权限由对战详情页负责，不在 worker 中改写内容。
     脚本端不允许返回 -1（-1 由后端在脚本异常时落盘，作为"评测失败"占位）。
     其他取值或脚本本身报错都会抛 RuntimeError。"""
     timeout_s = int(timeout_seconds) if timeout_seconds else DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS
@@ -244,10 +247,10 @@ def register_ranking_elo_match_task(celery_app):
             return {'success': False, 'message': '提交不属于此比赛'}
         if sub_a.get('username') == sub_b.get('username'):
             return {'success': False, 'message': '同一用户提交不应对战'}
-        answer_a = sub_a.get('answer_path') or ''
-        answer_b = sub_b.get('answer_path') or ''
-        if not (answer_a and os.path.isfile(answer_a) and answer_b and os.path.isfile(answer_b)):
-            return {'success': False, 'message': '答案文件缺失'}
+        archive_a = sub_a.get('code_path') or ''
+        archive_b = sub_b.get('code_path') or ''
+        if not (archive_a and os.path.isfile(archive_a) and archive_b and os.path.isfile(archive_b)):
+            return {'success': False, 'message': '作品压缩包缺失'}
 
         initial_rating = float(comp.get('elo_initial_rating') or 1500)
         k = float(comp.get('elo_k_factor') or 32)
@@ -255,7 +258,7 @@ def register_ranking_elo_match_task(celery_app):
 
         # ===== 运行评测脚本（无锁，多场对战完全并行）=====
         try:
-            winner, details = _run_scoring_script(script, answer_a, answer_b, timeout_seconds=script_timeout)
+            winner, details = _run_scoring_script(script, archive_a, archive_b, timeout_seconds=script_timeout)
         except Exception as e:
             # 脚本异常：落一条 winner=-1 占位行、不调分（仅插入历史，不存在分数竞争，无需串行）
             rating_a = float(sub_a.get('elo_rating') if sub_a.get('elo_rating') is not None else initial_rating)

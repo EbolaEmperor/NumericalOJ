@@ -125,6 +125,57 @@ def test_artifact_submission_commits_files_metadata_and_counter_once(monkeypatch
     )
 
 
+def test_elo_submission_accepts_single_archive_and_activates_pool(monkeypatch):
+    app = Flask(__name__)
+    app.secret_key = 'test-only'
+    user = {'username': 'student', 'is_admin': 0}
+    competition = {
+        'id': 9,
+        'is_active': 1,
+        'scoring_mode': 'elo',
+        'submission_method': 'zip',
+        'elo_initial_rating': 1500,
+    }
+    monkeypatch.setattr(ranking_routes, '_require_user', lambda: (user, None))
+    monkeypatch.setattr(ranking_routes, 'get_competition', lambda _cid: competition)
+    monkeypatch.setattr(ranking_routes, '_ranking_submit_block_reason', lambda *_a, **_kw: '')
+    monkeypatch.setattr(ranking_routes, 'rate_limit_hit', lambda *_a, **_kw: (True, 0))
+    monkeypatch.setattr(ranking_routes, 'get_submission_quota', lambda *_a, **_kw: None)
+    created = []
+    monkeypatch.setattr(
+        ranking_routes,
+        '_create_uploaded_ranking_submission',
+        lambda *_a, **kwargs: created.append(kwargs) or 71,
+    )
+    activated = []
+    monkeypatch.setattr(
+        ranking_routes,
+        'activate_elo_submission',
+        lambda *args, **kwargs: activated.append((args, kwargs)),
+    )
+    monkeypatch.setattr(ranking_routes, '_elo_initial_burst_task', None)
+    monkeypatch.setattr(
+        ranking_routes,
+        'url_for',
+        lambda _endpoint, **_values: '/ranking/9?tab=submit',
+    )
+
+    with app.test_request_context(
+            '/ranking/9/submit',
+            method='POST',
+            data={
+                'base_model': 'qwen-test',
+                'code_file': (io.BytesIO(b'archive'), 'submission.zip'),
+            },
+            content_type='multipart/form-data',
+    ):
+        response = ranking_routes.ranking_submit(9)
+
+    assert response.status_code == 302
+    assert created[0]['code_name'] == 'submission.zip'
+    assert activated == [((71, 9, 'student', 1500.0), {'keep_count': 2})]
+
+
 def test_artifact_metadata_failure_rolls_back_and_removes_target(monkeypatch, tmp_path):
     code = _staged_file(tmp_path, 'code.zip')
     cursor = _FakeCursor(rowcount=0)
@@ -399,11 +450,11 @@ def test_upload_helper_cleans_staging_when_database_rejects_submission(monkeypat
     assert list((tmp_path / 'submissions').glob('.upload-*')) == []
 
 
-def test_reverse_agent_and_regular_zip_paths_share_artifact_boundary():
+def test_all_zip_submission_modes_share_artifact_boundary():
     source = inspect.getsource(ranking_routes.ranking_submit)
 
-    assert source.count('_create_uploaded_ranking_submission(') == 3
-    assert source.count('except RankingSubmissionCommitUnknown as exc:') == 3
+    assert source.count('_create_uploaded_ranking_submission(') == 4
+    assert source.count('except RankingSubmissionCommitUnknown as exc:') == 4
     assert 'create_ranking_submission(' not in source
     assert 'update_submission_files(' not in source
 
