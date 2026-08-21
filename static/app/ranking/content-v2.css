@@ -505,6 +505,10 @@
   border-bottom: 1px solid var(--rkv2-line);
 }
 
+.ranking-v2-detail .match-detail-toolbar[hidden] {
+  display: none;
+}
+
 .ranking-v2-detail .match-detail-meta {
   min-width: 0;
   overflow: hidden;
