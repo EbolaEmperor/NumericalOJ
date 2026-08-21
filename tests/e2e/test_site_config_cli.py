@@ -21,6 +21,14 @@ from tests.e2e.conftest import (
 LOCAL_LLM_BASE_URL = f"http://127.0.0.1:{QUALITY_GATE_STUB_PORT}/v1"
 LOCAL_MCP_URL = f"http://127.0.0.1:{QUALITY_GATE_STUB_PORT}/mcp"
 UPDATED_LOCAL_MCP_URL = f"http://localhost:{QUALITY_GATE_STUB_PORT}/mcp"
+LLM_PRICE_ARGS = (
+    "--input-price-per-million",
+    "1",
+    "--cached-input-price-per-million",
+    "0.1",
+    "--output-price-per-million",
+    "4",
+)
 
 
 def _db_rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
@@ -130,6 +138,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         str(env_file),
         "--model",
         probe_model,
+        *LLM_PRICE_ARGS,
         "--no-thinking",
     )
     assert direct_probe["test"]["passed"] is True
@@ -157,6 +166,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         str(env_file),
         "--model",
         failed_model,
+        *LLM_PRICE_ARGS,
         check=False,
     )
     assert failed_create["http_status"] == 422
@@ -179,6 +189,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         str(env_file),
         "--model",
         text_model,
+        *LLM_PRICE_ARGS,
         "--thinking",
     )
     text_endpoint = created_text["endpoint"]
@@ -266,6 +277,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         str(env_file),
         "--model",
         anthropic_model,
+        *LLM_PRICE_ARGS,
         "--no-thinking",
     )["endpoint"]
     same_model_endpoint_id = int(same_model_endpoint["id"])
@@ -295,6 +307,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         str(env_file),
         "--model",
         omni_model,
+        *LLM_PRICE_ARGS,
         "--no-thinking",
     )["endpoint"]
     omni_endpoint_id = int(omni_endpoint["id"])
@@ -316,6 +329,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         str(env_file),
         "--model",
         vision_model,
+        *LLM_PRICE_ARGS,
         "--no-thinking",
     )["endpoint"]
     vision_endpoint_id = int(vision_endpoint["id"])
@@ -337,6 +351,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
         f"@{embedding_key_file}",
         "--model",
         embedding_model,
+        *LLM_PRICE_ARGS,
         "--no-thinking",
     )["endpoint"]
     embedding_endpoint_id = int(embedding_endpoint["id"])

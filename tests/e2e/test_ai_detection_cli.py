@@ -26,6 +26,9 @@ def _create_ai_detection_endpoint() -> int:
         "base_url": "http://127.0.0.1:19101",
         "api_key": "quality-pool-secret",
         "model": "fake-quality-model",
+        "input_price_per_million": "1",
+        "cached_input_price_per_million": "0.1",
+        "output_price_per_million": "4",
         "thinking_enabled": False,
         "thinking_format": "none",
     }
