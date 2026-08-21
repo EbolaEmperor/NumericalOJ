@@ -11,7 +11,8 @@
     冷却用 Redis 键（SET NX EX）抢占，避免多次 tick 在同一个间隔内重复调度。
   - 用户上传后立即触发 \"即时补战\"（默认 5 场，串行链式：每场打完、rating 更新
     之后，再用最新分数现挑下一对手），让新提交逐步收敛到合理分数段。
-  - 单场对战由评测脚本判定：python <script> <submission_a_path> <submission_b_path> →
+  - 单场对战先安全解压两份作品，再由可联网的 Agent Judge 容器运行评测脚本：
+    python <script> <submission_a_dir> <submission_b_dir> →
     stdout 一行 JSON {\"winner\": 0 | 1 | 2, \"details\": <可选>}；details 可沿用
     字符串/普通对象，也可显式输出 {\"format\": \"text|html\", \"content\": \"...\"}；
     winner=1/2 表示对应一方胜出，winner=0 表示平局（两份提交不分伯仲）。
@@ -28,11 +29,11 @@ import math
 import os
 import random
 import subprocess
-import sys
 import time
 import uuid
 
 from oj_modules.infrastructure.redis import create_optional_redis_client
+from oj_modules.tasks.ranking.elo_container import run_elo_scoring_container
 from oj_modules.ranking.db import (
     get_competition,
     get_last_elo_match_time,
@@ -142,10 +143,11 @@ def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None):
     其他取值或脚本本身报错都会抛 RuntimeError。"""
     timeout_s = int(timeout_seconds) if timeout_seconds else DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS
     try:
-        proc = subprocess.run(
-            [sys.executable, script_path, path_a, path_b],
-            capture_output=True, text=True,
-            timeout=timeout_s,
+        proc = run_elo_scoring_container(
+            script_path,
+            path_a,
+            path_b,
+            timeout_s,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"评测脚本执行超时（>{timeout_s}s）")
