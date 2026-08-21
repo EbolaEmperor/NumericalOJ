@@ -282,6 +282,31 @@ def test_ranking_v2_tabs_keep_fragment_refresh_boundaries():
         assert "}, 15000)" in source
 
 
+def test_elo_match_detail_supports_text_and_networked_sandbox_html():
+    matches = _read(TEMPLATES / "tabs" / "matches.html")
+    settings = _read(TEMPLATES / "tabs" / "settings.html")
+    stylesheet = _read(STATIC / "content-v2.css")
+    routes = _read(ROUTES / "ranking_routes.py")
+
+    assert 'id="matchDetailVerdict"' in matches
+    assert 'id="matchDetailHtmlFrame"' in matches
+    assert 'sandbox="allow-scripts"' in matches
+    assert "allow-same-origin" not in matches
+    assert 'referrerpolicy="no-referrer"' in matches
+    assert "htmlFrameEl.srcdoc = buildHtmlDocument(output.content)" in matches
+    assert "connect-src https: http: wss: ws:" in matches
+    assert "script-src 'unsafe-inline' blob: https: http:" in matches
+    assert "form-action 'none'" in matches
+    assert "frame-src 'none'" in matches
+    assert "matchDetailReplay" not in matches
+    assert "detail_output" in routes
+    assert "normalize_match_detail_output" in routes
+    assert '"format":"text"' in settings
+    assert '"format":"html"' in settings
+    assert "任意 HTTP(S) 与 WebSocket" in settings
+    assert ".match-detail-html iframe" in stylesheet
+
+
 def test_ranking_ui_avoids_nonessential_interruptions():
     detail = _read(TEMPLATES / "detail.html")
     list_template = _read(TEMPLATES / "list.html")

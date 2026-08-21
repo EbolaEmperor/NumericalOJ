@@ -1,18 +1,44 @@
 # -*- coding: utf-8 -*-
-"""Task 16: ELO 评分纯函数单测（参考 §5c）。
+"""Task 16: ELO 评分函数单测（参考 §5c）。
 
-覆盖 oj_modules.tasks.ranking.elo 中不依赖 DB/Redis 的纯函数：
+覆盖 oj_modules.tasks.ranking.elo 中不依赖 DB/Redis 的函数：
+  - _run_scoring_script：保留显式 HTML 详情协议；
   - _expected_score：对称 / 单调。
   - _new_ratings：winner=1 升降且守恒；平局对等；K 越大变化越大。
   - _pick_partner / _pick_pair：<2 人或同名→None；满足时返回两个不同用户名的提交。
 
-这些函数无 IO，可直接 import 调用；涉及 random 的用例提前 seed 以保证确定性。
+除临时评分脚本用例外均无 IO；涉及 random 的用例提前 seed 以保证确定性。
 """
+import json
 import random
 
 import pytest
 
 from oj_modules.tasks.ranking import elo
+
+
+def test_scoring_script_preserves_explicit_html_detail_output(tmp_path):
+    answer_a = tmp_path / "a.json"
+    answer_b = tmp_path / "b.json"
+    script = tmp_path / "score.py"
+    answer_a.write_text("{}", encoding="utf-8")
+    answer_b.write_text("{}", encoding="utf-8")
+    detail = {
+        "format": "html",
+        "content": "<div class='arena'></div><script>startBattle()</script>",
+        "height": 680,
+    }
+    payload = json.dumps({"winner": 1, "details": detail}, ensure_ascii=False)
+    script.write_text(f"print({payload!r})\n", encoding="utf-8")
+
+    winner, returned_detail = elo._run_scoring_script(
+        str(script),
+        str(answer_a),
+        str(answer_b),
+    )
+
+    assert winner == 1
+    assert returned_detail == detail
 
 
 # ---------------------------------------------------------------------------

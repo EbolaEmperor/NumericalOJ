@@ -87,6 +87,7 @@ def _necessary_match(row: Any) -> Dict[str, Any]:
             "rating_b_after",
             "created_at",
             "details",
+            "detail_output",
             "error_message",
         )
         if key in row

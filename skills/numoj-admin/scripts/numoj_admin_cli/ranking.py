@@ -125,6 +125,7 @@ def _necessary_match(row: Any) -> Dict[str, Any]:
             "rating_b_after",
             "status",
             "details",
+            "detail_output",
             "error_message",
             "created_at",
         )

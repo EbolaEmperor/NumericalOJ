@@ -10,6 +10,83 @@
   --mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace;
   color:var(--ink);
 }
+
+.elo-output-contract {
+  overflow:hidden;
+  border:1px solid #e0ded8;
+  border-radius:7px;
+  background:#fbfbfa;
+}
+.elo-output-contract summary {
+  display:flex;
+  min-height:42px;
+  align-items:center;
+  justify-content:space-between;
+  gap:.75rem;
+  padding:.65rem .8rem;
+  color:#3f3f46;
+  cursor:pointer;
+  font-size:.82rem;
+  font-weight:650;
+  list-style:none;
+}
+.elo-output-contract summary::-webkit-details-marker { display:none; }
+.elo-output-contract summary::after {
+  content:'+';
+  color:#a1a1aa;
+  font:700 .9rem/1 ui-monospace,monospace;
+}
+.elo-output-contract[open] summary::after { content:'−'; }
+.elo-output-contract summary small {
+  margin-left:auto;
+  color:#a16207;
+  font:700 .64rem/1 ui-monospace,monospace;
+  letter-spacing:.08em;
+}
+.elo-output-contract-body {
+  padding:.8rem;
+  border-top:1px solid #e7e5e4;
+  color:#57534e;
+  font-size:.78rem;
+  line-height:1.6;
+}
+.elo-output-examples {
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:.6rem;
+  margin:.65rem 0;
+}
+.elo-output-examples > div {
+  min-width:0;
+  padding:.65rem;
+  border:1px solid #e7e5e4;
+  border-radius:5px;
+  background:#fff;
+}
+.elo-output-examples strong {
+  display:block;
+  margin-bottom:.4rem;
+  color:#44403c;
+  font-size:.72rem;
+}
+.elo-output-examples pre {
+  margin:0;
+  overflow:auto;
+  color:#292524;
+  font-size:.68rem;
+  white-space:pre-wrap;
+  word-break:break-all;
+}
+.elo-output-security {
+  padding:.55rem .65rem;
+  border-left:3px solid #f59e0b;
+  background:#fffbeb;
+  color:#78716c;
+}
+@media (max-width:760px) {
+  .elo-output-examples { grid-template-columns:1fr; }
+  .elo-output-contract summary small { display:none; }
+}
 .aje-shell { border:1px solid var(--line); background:#fff; border-radius:8px; overflow:visible; }
 .aje-head {
   display:flex; align-items:center; justify-content:space-between; gap:.9rem; flex-wrap:wrap;
