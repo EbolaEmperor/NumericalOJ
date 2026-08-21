@@ -1586,8 +1586,6 @@ def ranking_submit(competition_id):
         if quota is not None and quota['remaining'] <= 0:
             return _submit_error_response(competition_id, _submission_quota_message(quota), status=429)
 
-    answer_format = _competition_answer_format(comp)
-    answer_ext = '.' + answer_format
     scoring_mode = _competition_scoring_mode(comp)
     submission_method = (comp.get('submission_method') or 'zip').strip().lower()
     if scoring_mode == 'agent_judge' and submission_method == 'git':
@@ -1684,6 +1682,53 @@ def ranking_submit(competition_id):
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
+    # ELO 只接收一个 ZIP 作品包，沿用 code_file/code_path 存储；
+    # 不读取 answer_file，也不依赖比赛的 answer_format 字段。
+    if scoring_mode == 'elo':
+        code_file = request.files.get('code_file')
+        if not code_file or not (code_file.filename or '').strip():
+            return _submit_error_response(competition_id, '请上传作品压缩包（.zip）', category='danger')
+        if not (code_file.filename or '').lower().endswith('.zip'):
+            return _submit_error_response(competition_id, '作品压缩包必须是 .zip', category='danger')
+        code_name = _safe_filename(code_file.filename, fallback='submission.zip')
+        if not code_name.lower().endswith('.zip'):
+            code_name += '.zip'
+        try:
+            submission_id = _create_uploaded_ranking_submission(
+                competition_id,
+                user.get('username'),
+                code_file=code_file,
+                code_name=code_name,
+                code_label='作品压缩包',
+                base_model=base_model,
+                enforce_quota=not is_admin,
+            )
+        except RankingSubmissionQuotaExceeded as e:
+            return _submit_error_response(competition_id, _submission_quota_message(e.quota), status=429)
+        except RankingSubmissionCommitUnknown as exc:
+            return _submit_commit_unknown_response(competition_id, exc)
+        except Exception as e:
+            return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
+
+        initial_rating = float(comp.get('elo_initial_rating') or 1500)
+        activate_elo_submission(
+            submission_id,
+            competition_id,
+            user.get('username'),
+            initial_rating,
+            keep_count=2,
+        )
+        if _elo_initial_burst_task is not None:
+            try:
+                _elo_initial_burst_task.apply_async(
+                    args=[competition_id, submission_id], countdown=3,
+                )
+            except Exception as e:
+                flash(f'已加入 ELO 池，但即时补战入队失败：{e}', 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
+    answer_format = _competition_answer_format(comp)
+    answer_ext = '.' + answer_format
     answer_file = request.files.get('answer_file')
     code_file = request.files.get('code_file')
     if not answer_file or not (answer_file.filename or '').strip():
@@ -1701,6 +1746,7 @@ def ranking_submit(competition_id):
     answer_name = _safe_filename(answer_name_raw, fallback=f'answer{answer_ext}')
     if not answer_name.lower().endswith(answer_ext):
         answer_name += answer_ext
+
     code_name = _safe_filename(code_name_raw, fallback='code.zip')
     if not code_name.lower().endswith('.zip'):
         code_name += '.zip'
@@ -1723,44 +1769,26 @@ def ranking_submit(competition_id):
     except Exception as e:
         return _submit_error_response(competition_id, f'文件保存失败：{e}', category='danger')
 
-    if scoring_mode == 'elo':
-        # 初始化 ELO 状态、退役同用户更早提交、调度即时补战
-        initial_rating = float(comp.get('elo_initial_rating') or 1500)
-        activate_elo_submission(
-            submission_id,
-            competition_id,
-            user.get('username'),
-            initial_rating,
-            keep_count=2,
-        )
-        if _elo_initial_burst_task is not None:
-            try:
-                _elo_initial_burst_task.apply_async(
-                    args=[competition_id, submission_id], countdown=3,
-                )
-            except Exception as e:
-                flash(f'已加入 ELO 池，但即时补战入队失败：{e}', 'warning')
+    if _evaluate_ranking_task is None:
+        flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
     else:
-        if _evaluate_ranking_task is None:
-            flash('已接收提交，但评测任务未初始化，请联系管理员', 'warning')
-        else:
-            dispatch_task_id = str(uuid.uuid4())
+        dispatch_task_id = str(uuid.uuid4())
+        try:
+            if not reserve_standard_ranking_evaluation(
+                    submission_id,
+                    dispatch_task_id,
+            ):
+                raise RuntimeError('无法取得普通评测数据库租约')
+            _evaluate_ranking_task.apply_async(
+                args=[submission_id],
+                task_id=dispatch_task_id,
+            )
+        except Exception as e:
             try:
-                if not reserve_standard_ranking_evaluation(
-                        submission_id,
-                        dispatch_task_id,
-                ):
-                    raise RuntimeError('无法取得普通评测数据库租约')
-                _evaluate_ranking_task.apply_async(
-                    args=[submission_id],
-                    task_id=dispatch_task_id,
-                )
-            except Exception as e:
-                try:
-                    release_standard_ranking_evaluation(submission_id, dispatch_task_id)
-                except Exception:
-                    pass
-                flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
+                release_standard_ranking_evaluation(submission_id, dispatch_task_id)
+            except Exception:
+                pass
+            flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
@@ -2010,7 +2038,6 @@ def ranking_edit(competition_id):
     description = request.form.get('description') or ''
     max_score_raw = request.form.get('max_score')
     is_active_raw = request.form.get('is_active')
-    answer_format_raw = request.form.get('answer_format')
     scoring_mode_raw = request.form.get('scoring_mode')
     elo_initial_rating_raw = request.form.get('elo_initial_rating')
     elo_k_factor_raw = request.form.get('elo_k_factor')
@@ -2037,15 +2064,20 @@ def ranking_edit(competition_id):
 
     is_active = 1 if (is_active_raw and str(is_active_raw).lower() in ('1', 'on', 'true', 'yes')) else 0
 
-    old_format = _competition_answer_format(comp)
-    new_format = _normalize_answer_format(answer_format_raw, default=old_format)
-    format_changed = (new_format != old_format)
-
     old_mode = _competition_scoring_mode(comp)
     new_mode = _normalize_scoring_mode(scoring_mode_raw, default=old_mode)
     mode_changed = (new_mode != old_mode)
     if new_mode == 'reverse_judge':
         max_score_int = 100
+
+    if new_mode == 'absolute':
+        old_format = _competition_answer_format(comp)
+        answer_format_raw = request.form.get('answer_format')
+        new_format = _normalize_answer_format(answer_format_raw, default=old_format)
+        format_changed = (new_format != old_format)
+    else:
+        new_format = None
+        format_changed = False
 
     # 解析 ELO 参数（缺省继承当前值）
     def _parse_float(raw, fallback, lo, hi):

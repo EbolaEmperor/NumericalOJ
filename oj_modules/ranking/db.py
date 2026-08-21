@@ -2523,7 +2523,7 @@ def list_eligible_elo_submissions(competition_id, max_matches):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, username, elo_rating, elo_match_count, answer_path
+                SELECT id, username, elo_rating, elo_match_count, code_path
                 FROM ranking_submissions
                 WHERE competition_id = %s AND elo_in_pool = 1
                   AND status = 'Active' AND elo_rating IS NOT NULL

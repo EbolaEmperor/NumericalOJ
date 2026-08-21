@@ -18,11 +18,11 @@ from oj_modules.tasks.ranking import elo
 
 
 def test_scoring_script_preserves_explicit_html_detail_output(tmp_path):
-    answer_a = tmp_path / "a.json"
-    answer_b = tmp_path / "b.json"
+    archive_a = tmp_path / "a.zip"
+    archive_b = tmp_path / "b.zip"
     script = tmp_path / "score.py"
-    answer_a.write_text("{}", encoding="utf-8")
-    answer_b.write_text("{}", encoding="utf-8")
+    archive_a.write_bytes(b"archive-a")
+    archive_b.write_bytes(b"archive-b")
     detail = {
         "format": "html",
         "content": "<div class='arena'></div><script>startBattle()</script>",
@@ -33,8 +33,8 @@ def test_scoring_script_preserves_explicit_html_detail_output(tmp_path):
 
     winner, returned_detail = elo._run_scoring_script(
         str(script),
-        str(answer_a),
-        str(answer_b),
+        str(archive_a),
+        str(archive_b),
     )
 
     assert winner == 1

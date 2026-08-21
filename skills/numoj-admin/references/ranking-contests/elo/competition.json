@@ -2,7 +2,6 @@
   "competition": {
     "id": 2,
     "title": "论文摘要挑战赛",
-    "answer_format": "zip",
     "scoring_mode": "elo",
     "submission_method": "zip",
     "max_score": 100,
