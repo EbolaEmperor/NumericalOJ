@@ -112,6 +112,7 @@ from oj_modules.ranking.batch import (
     build_repo_url,
     repo_last_commit,
 )
+from oj_modules.ranking.match_details import normalize_match_detail_output
 from oj_modules.ranking.matches import (
     fetch_competition_match_detail_cached,
     fetch_competition_matches_cached,
@@ -1194,7 +1195,11 @@ def ranking_match_details(competition_id, match_id):
     row = fetch_competition_match_detail_cached(match_id, competition_id)
     if not row:
         return jsonify({'success': False, 'message': '对战记录不存在'}), 404
-    # 只暴露需要的字段；details 可能是 JSON-as-string 也可能就是普通文本
+    # 保留原始 details 以兼容 CLI；detail_output 是网页使用的稳定 text/html 协议。
+    detail_output = normalize_match_detail_output(
+        row.get('details'),
+        error_message=row.get('error_message'),
+    )
     return jsonify({
         'success': True,
         'id': int(row.get('id')),
@@ -1207,6 +1212,7 @@ def ranking_match_details(competition_id, match_id):
         'rating_b_before': float(row.get('rating_b_before') or 0),
         'rating_b_after': float(row.get('rating_b_after') or 0),
         'details': row.get('details'),
+        'detail_output': detail_output,
         'error_message': row.get('error_message'),
     })
 

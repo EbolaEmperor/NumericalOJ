@@ -6,7 +6,8 @@ sketcher 打榜赛 · ELO 评分脚本
 调用方式（ELO 模式约定）：
     python <script> <answer_a.zip> <answer_b.zip>
 stdout 输出一行 JSON：
-    {"winner": 0 | 1 | 2, "details": <object>}
+    {"winner": 0 | 1 | 2,
+     "details": {"format": "text", "content": "<评测详情文本>"}}
 其中 winner=0 表示平局（最终统计后双方实力相当）。
 
 评分逻辑：
@@ -126,7 +127,7 @@ def _load_paper_reference(basename):
 
 def _compile_xelatex(tex_path):
     """尝试用 xelatex 编译 tex_path（在文件所在目录运行，aux 写入临时输出目录）。
-    返回 (ok: bool, reason: str)；reason 只在失败时填充用于 details。"""
+    返回 (ok: bool, reason: str)；reason 只在失败时填充到最终详情文本。"""
     if not (tex_path and os.path.isfile(tex_path)):
         return False, 'no such file'
     src_dir = os.path.dirname(tex_path)
@@ -311,7 +312,7 @@ def _judge_paper(client, base, tex_a_paths, tex_b_paths):
     返回 dict 字段：
       paper, winner (0/1/2), ok_a, ok_b,
       size_a, size_b,           # tex 总字数（用于打破最终平局）
-      detail: per-paper 在最终 details.per_paper 里展示的子对象。"""
+      detail: per-paper 在最终详情文本中展示的子对象。"""
     path_a = tex_a_paths.get(base)
     path_b = tex_b_paths.get(base)
 
@@ -386,7 +387,13 @@ def _judge_paper(client, base, tex_a_paths, tex_b_paths):
 
 def main():
     if len(sys.argv) < 3:
-        print(json.dumps({'winner': 1, 'details': {'error': 'missing args'}}))
+        print(json.dumps({
+            'winner': 1,
+            'details': {
+                'format': 'text',
+                'content': '评分脚本参数不足：需要 answer_a 和 answer_b',
+            },
+        }, ensure_ascii=False))
         return
 
     answer_a, answer_b = sys.argv[1], sys.argv[2]
@@ -416,7 +423,7 @@ def main():
         size_b = 0
 
         # 三篇论文并发评判（每篇内部串行做两次 LLM 调用以消除位置偏好）。
-        # 用 paper_bases 的次序回排结果，保证 details.per_paper 顺序稳定。
+        # 用 paper_bases 的次序回排结果，保证详情中的 per_paper 顺序稳定。
         with ThreadPoolExecutor(max_workers=PAPER_CONCURRENCY) as pool:
             results = list(pool.map(
                 lambda base: _judge_paper(client, base, tex_a_paths, tex_b_paths),
@@ -442,19 +449,23 @@ def main():
 
         winner = _decide(wins_a, wins_b, compiled_a, compiled_b, size_a, size_b)
 
+        detail_data = {
+            'model': MODEL,
+            'articles_dir_used': articles_dir_used,
+            'wins_a': wins_a,
+            'wins_b': wins_b,
+            'draws': draws,
+            'compiled_a': compiled_a,
+            'compiled_b': compiled_b,
+            'tex_a_total_chars': size_a,
+            'tex_b_total_chars': size_b,
+            'per_paper': per_paper,
+        }
         print(json.dumps({
             'winner': winner,
             'details': {
-                'model': MODEL,
-                'articles_dir_used': articles_dir_used,
-                'wins_a': wins_a,
-                'wins_b': wins_b,
-                'draws': draws,
-                'compiled_a': compiled_a,
-                'compiled_b': compiled_b,
-                'tex_a_total_chars': size_a,
-                'tex_b_total_chars': size_b,
-                'per_paper': per_paper,
+                'format': 'text',
+                'content': json.dumps(detail_data, ensure_ascii=False, indent=2),
             },
         }, ensure_ascii=False))
     finally:

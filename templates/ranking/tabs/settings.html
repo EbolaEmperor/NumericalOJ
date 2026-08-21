@@ -429,6 +429,35 @@
               <span class="text-muted">未上传</span>
             {% endif %}
           </div>
+          {% if edit_mode == 'elo' %}
+          <details class="elo-output-contract mb-3">
+            <summary>
+              <span><i class="fas fa-code me-2" aria-hidden="true"></i>对战详情输出格式</span>
+              <small>TEXT / INTERACTIVE HTML</small>
+            </summary>
+            <div class="elo-output-contract-body">
+              <p>
+                stdout 最后一条 JSON 仍须包含 <code>winner</code>。<code>details</code>
+                必须包含 <code>format</code> 和 <code>content</code>，并选择以下两种格式之一：
+              </p>
+              <div class="elo-output-examples">
+                <div>
+                  <strong>纯文本</strong>
+                  <pre><code>{"winner":1,"details":{"format":"text","content":"A 的策略更稳定"}}</code></pre>
+                </div>
+                <div>
+                  <strong>互动 HTML</strong>
+                  <pre><code>{"winner":1,"details":{"format":"html","content":"&lt;style&gt;…&lt;/style&gt;&lt;div&gt;…&lt;/div&gt;&lt;script&gt;…&lt;/script&gt;","height":520}}</code></pre>
+                </div>
+              </div>
+              <p class="elo-output-security mb-0">
+                HTML 片段可包含内联或远端 CSS/JavaScript，并可访问任意 HTTP(S) 与 WebSocket；
+                它会在无同源权限的沙箱中运行，无法访问主站 DOM、Cookie 或本地存储。
+                <code>height</code> 可选，范围 240–1200px。
+              </p>
+            </div>
+          </details>
+          {% endif %}
           <form method="POST" enctype="multipart/form-data" class="mb-3"
                 action="{{ url_for('ranking.ranking_upload_scoring_script', competition_id=competition.id) }}">
             <div class="mb-3">
