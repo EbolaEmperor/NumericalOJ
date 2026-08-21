@@ -4,13 +4,15 @@
 sketcher 打榜赛 · ELO 评分脚本
 
 调用方式（ELO 模式约定）：
-    python <script> <answer_a.zip> <answer_b.zip>
+    python <script> <submission_a.zip> <submission_b.zip>
 stdout 输出一行 JSON：
-    {"winner": 0 | 1 | 2, "details": <object>}
+    {"winner": 0 | 1 | 2,
+     "details": {"format": "text", "content": "<评测详情文本>"}}
 其中 winner=0 表示平局（最终统计后双方实力相当）。
 
 评分逻辑：
-  1. 解压两份提交的答案 zip 到独立临时目录，扫出所有 .tex 文件按 basename 建索引。
+  1. 解压两份提交的作品 zip 到独立临时目录，只读取 summaries/
+     目录下直接包含的 .tex 文件，并按 basename 建立索引。
   2. 以服务器附件目录 ~/oj/static/articles/ 中的 .pdf 列表作为评判论文集；
      该目录不存在时退化为两份提交里 .tex 文件名的并集。
   3. 三篇论文并发处理（3 线程），对每篇论文：
@@ -55,6 +57,7 @@ COMPARE_TEMPERATURE = 0.0
 PER_CALL_TIMEOUT_SECONDS = 60
 XELATEX_TIMEOUT_SECONDS = 60        # 单次 xelatex 编译上限
 PAPER_CONCURRENCY = 3               # 并发处理的论文数（每篇内部 2 次 LLM 调用串行）
+SUMMARIES_DIR_NAME = 'summaries'
 
 
 # ---------- 文件层 ----------
@@ -85,18 +88,15 @@ def _extract_zip(zip_path, extract_root):
 
 
 def _find_tex_paths(extract_root):
-    """返回 dict：basename -> 第一份匹配到的 .tex 绝对路径。同名取首遇。"""
+    """返回 summaries/ 直接包含的 ``basename -> .tex 绝对路径``。"""
     found = {}
-    if not os.path.isdir(extract_root):
+    summaries_dir = os.path.join(extract_root, SUMMARIES_DIR_NAME)
+    if not os.path.isdir(summaries_dir):
         return found
-    for root, _, files in os.walk(extract_root):
-        for fn in files:
-            if not fn.lower().endswith('.tex'):
-                continue
-            base = os.path.splitext(fn)[0]
-            if base in found:
-                continue
-            found[base] = os.path.join(root, fn)
+    for fn in sorted(os.listdir(summaries_dir)):
+        path = os.path.join(summaries_dir, fn)
+        if os.path.isfile(path) and fn.lower().endswith('.tex'):
+            found[os.path.splitext(fn)[0]] = path
     return found
 
 
@@ -126,7 +126,7 @@ def _load_paper_reference(basename):
 
 def _compile_xelatex(tex_path):
     """尝试用 xelatex 编译 tex_path（在文件所在目录运行，aux 写入临时输出目录）。
-    返回 (ok: bool, reason: str)；reason 只在失败时填充用于 details。"""
+    返回 (ok: bool, reason: str)；reason 只在失败时填充到最终详情文本。"""
     if not (tex_path and os.path.isfile(tex_path)):
         return False, 'no such file'
     src_dir = os.path.dirname(tex_path)
@@ -311,7 +311,7 @@ def _judge_paper(client, base, tex_a_paths, tex_b_paths):
     返回 dict 字段：
       paper, winner (0/1/2), ok_a, ok_b,
       size_a, size_b,           # tex 总字数（用于打破最终平局）
-      detail: per-paper 在最终 details.per_paper 里展示的子对象。"""
+      detail: per-paper 在最终详情文本中展示的子对象。"""
     path_a = tex_a_paths.get(base)
     path_b = tex_b_paths.get(base)
 
@@ -386,16 +386,22 @@ def _judge_paper(client, base, tex_a_paths, tex_b_paths):
 
 def main():
     if len(sys.argv) < 3:
-        print(json.dumps({'winner': 1, 'details': {'error': 'missing args'}}))
+        print(json.dumps({
+            'winner': 1,
+            'details': {
+                'format': 'text',
+                'content': '评分脚本参数不足：需要 submission_a 和 submission_b',
+            },
+        }, ensure_ascii=False))
         return
 
-    answer_a, answer_b = sys.argv[1], sys.argv[2]
+    submission_a, submission_b = sys.argv[1], sys.argv[2]
 
     extract_a = tempfile.mkdtemp(prefix='sketcher_a_')
     extract_b = tempfile.mkdtemp(prefix='sketcher_b_')
     try:
-        ok_extract_a = _extract_zip(answer_a, extract_a)
-        ok_extract_b = _extract_zip(answer_b, extract_b)
+        ok_extract_a = _extract_zip(submission_a, extract_a)
+        ok_extract_b = _extract_zip(submission_b, extract_b)
 
         tex_a_paths = _find_tex_paths(extract_a) if ok_extract_a else {}
         tex_b_paths = _find_tex_paths(extract_b) if ok_extract_b else {}
@@ -416,7 +422,7 @@ def main():
         size_b = 0
 
         # 三篇论文并发评判（每篇内部串行做两次 LLM 调用以消除位置偏好）。
-        # 用 paper_bases 的次序回排结果，保证 details.per_paper 顺序稳定。
+        # 用 paper_bases 的次序回排结果，保证详情中的 per_paper 顺序稳定。
         with ThreadPoolExecutor(max_workers=PAPER_CONCURRENCY) as pool:
             results = list(pool.map(
                 lambda base: _judge_paper(client, base, tex_a_paths, tex_b_paths),
@@ -442,19 +448,23 @@ def main():
 
         winner = _decide(wins_a, wins_b, compiled_a, compiled_b, size_a, size_b)
 
+        detail_data = {
+            'model': MODEL,
+            'articles_dir_used': articles_dir_used,
+            'wins_a': wins_a,
+            'wins_b': wins_b,
+            'draws': draws,
+            'compiled_a': compiled_a,
+            'compiled_b': compiled_b,
+            'tex_a_total_chars': size_a,
+            'tex_b_total_chars': size_b,
+            'per_paper': per_paper,
+        }
         print(json.dumps({
             'winner': winner,
             'details': {
-                'model': MODEL,
-                'articles_dir_used': articles_dir_used,
-                'wins_a': wins_a,
-                'wins_b': wins_b,
-                'draws': draws,
-                'compiled_a': compiled_a,
-                'compiled_b': compiled_b,
-                'tex_a_total_chars': size_a,
-                'tex_b_total_chars': size_b,
-                'per_paper': per_paper,
+                'format': 'text',
+                'content': json.dumps(detail_data, ensure_ascii=False, indent=2),
             },
         }, ensure_ascii=False))
     finally:

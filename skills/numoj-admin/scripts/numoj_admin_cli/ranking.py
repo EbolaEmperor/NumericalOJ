@@ -125,6 +125,7 @@ def _necessary_match(row: Any) -> Dict[str, Any]:
             "rating_b_after",
             "status",
             "details",
+            "detail_output",
             "error_message",
             "created_at",
         )
@@ -427,6 +428,12 @@ def ranking_edit(args: argparse.Namespace) -> None:
     active = args.active
     if active is None:
         active = bool(current.get("is_active"))
+    scoring_mode = current_or_arg(current, "scoring_mode", args.scoring_mode)
+    answer_format = (
+        current_or_arg(current, "answer_format", args.answer_format)
+        if scoring_mode == "absolute"
+        else None
+    )
     data = form_from_pairs(
         [
             ("title", current_or_arg(current, "title", args.title)),
@@ -434,8 +441,8 @@ def ranking_edit(args: argparse.Namespace) -> None:
             ("description", current_or_arg(current, "description", args.description)),
             ("max_score", current_or_arg(current, "max_score", args.max_score)),
             ("is_active", active),
-            ("answer_format", current_or_arg(current, "answer_format", args.answer_format)),
-            ("scoring_mode", current_or_arg(current, "scoring_mode", args.scoring_mode)),
+            ("answer_format", answer_format),
+            ("scoring_mode", scoring_mode),
             ("scoring_script_timeout_seconds", current_or_arg(current, "scoring_script_timeout_seconds", args.script_timeout)),
             ("submit_limit_per_window", current_or_arg(current, "submit_limit_per_window", args.submit_limit)),
             ("reset_limit_window", args.reset_limit_window),
@@ -1059,7 +1066,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     active_group = pa.add_mutually_exclusive_group()
     active_group.add_argument("--active", dest="active", action="store_true", default=None, help="Mark the competition as active.")
     active_group.add_argument("--inactive", dest="active", action="store_false", default=None, help="Mark the competition as inactive.")
-    pa.add_argument("--answer-format", choices=["json", "zip"], help="Expected answer format for submissions.")
+    pa.add_argument("--answer-format", choices=["json", "zip"], help="Standard-answer format for absolute scoring only.")
     pa.add_argument("--scoring-mode", choices=["absolute", "elo", "agent_judge", "reverse_judge"], help="Scoring mode used by the competition.")
     pa.add_argument("--script-timeout", type=int, help="Timeout in seconds for scoring-script execution.")
     pa.add_argument("--submit-limit", type=int, help="Maximum number of submissions allowed in the active limit window.")
@@ -1323,15 +1330,23 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = add_cli_parser(rs, "submit", "Submit a ZIP-based ranking entry; for reverse_judge, --code-zip is the problem package.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
     pa.add_argument("--base-model", help="Base model name associated with the submission. Required unless the competition is reverse_judge.")
-    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive, or reverse-judge problem ZIP package.")
-    pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
+    pa.add_argument(
+        "--code-zip",
+        required=True,
+        help="Submitted ZIP archive; this is the only uploaded artifact for ELO, and the problem/code package for other ZIP modes.",
+    )
+    pa.add_argument("--answer-file", help="Additional answer file required by absolute scoring only.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge submissions.")
     pa.set_defaults(func=ranking_submit_zip)
     pa = add_cli_parser(rs, "submit-zip", "Alias for ranking submit; submit a ZIP-based ranking entry.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
     pa.add_argument("--base-model", help="Base model name associated with the submission. Required unless the competition is reverse_judge.")
-    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive, or reverse-judge problem ZIP package.")
-    pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
+    pa.add_argument(
+        "--code-zip",
+        required=True,
+        help="Submitted ZIP archive; this is the only uploaded artifact for ELO, and the problem/code package for other ZIP modes.",
+    )
+    pa.add_argument("--answer-file", help="Additional answer file required by absolute scoring only.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge submissions.")
     pa.set_defaults(func=ranking_submit_zip)
     pa = add_cli_parser(

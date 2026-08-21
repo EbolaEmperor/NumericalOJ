@@ -234,8 +234,29 @@ def test_ranking_elo_admin_controls(cli, unique_suffix, tmp_path):
         "1",
     )["success"] is True
     script = tmp_path / "elo_score.py"
-    script.write_text("print('{\"winner\": 0, \"details\": {}}')\n", encoding="utf-8")
+    script.write_text(
+        "print('{\"winner\":0,\"details\":{\"format\":\"text\",\"content\":\"draw\"}}')\n",
+        encoding="utf-8",
+    )
     assert cli.admin_json("ranking", "upload-script", str(ranking_id), str(script))["success"] is True
+    submission = write_zip(
+        tmp_path / "elo-submission.zip",
+        {
+            "skill/SKILL.md": "---\nname: sketcher\ndescription: Read papers.\n---\n",
+            "summaries/paper-a.tex": "\\documentclass{article}\\begin{document}摘要\\end{document}\n",
+        },
+    )
+    submitted = cli.user_json(
+        "ranking",
+        "submit",
+        str(ranking_id),
+        "--base-model",
+        "baseline",
+        "--code-zip",
+        str(submission),
+    )
+    assert submitted["success"] is True
+    assert "submission_id" in submitted
     assert cli.admin_json("ranking", "elo-start", str(ranking_id))["success"] is True
     assert cli.admin_json("ranking", "elo-stop", str(ranking_id))["success"] is True
     assert cli.admin_json("ranking", "elo-reset", str(ranking_id))["success"] is True

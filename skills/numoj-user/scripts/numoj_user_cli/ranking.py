@@ -87,6 +87,7 @@ def _necessary_match(row: Any) -> Dict[str, Any]:
             "rating_b_after",
             "created_at",
             "details",
+            "detail_output",
             "error_message",
         )
         if key in row
@@ -426,8 +427,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = common.add_cli_parser(rank_sub, "submit", "Submit a ZIP-based ranking entry.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
     pa.add_argument("--base-model", help="Base model name associated with a normal submission; reverse-judge submissions do not require it.")
-    pa.add_argument("--code-zip", required=True, help="Path to the code ZIP archive to upload.")
-    pa.add_argument("--answer-file", help="Optional answer file path to upload with the submission.")
+    pa.add_argument(
+        "--code-zip",
+        required=True,
+        help="Submitted ZIP archive; this is the only uploaded artifact for ELO.",
+    )
+    pa.add_argument("--answer-file", help="Additional answer file required by absolute scoring only.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint ID for reverse-judge submissions.")
     pa.set_defaults(func=ranking_submit)
     pa = common.add_cli_parser(
