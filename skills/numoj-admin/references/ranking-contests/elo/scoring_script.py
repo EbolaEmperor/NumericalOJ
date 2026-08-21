@@ -4,14 +4,15 @@
 sketcher 打榜赛 · ELO 评分脚本
 
 调用方式（ELO 模式约定）：
-    python <script> <answer_a.zip> <answer_b.zip>
+    python <script> <submission_a.zip> <submission_b.zip>
 stdout 输出一行 JSON：
     {"winner": 0 | 1 | 2,
      "details": {"format": "text", "content": "<评测详情文本>"}}
 其中 winner=0 表示平局（最终统计后双方实力相当）。
 
 评分逻辑：
-  1. 解压两份提交的答案 zip 到独立临时目录，扫出所有 .tex 文件按 basename 建索引。
+  1. 解压两份提交的作品 zip 到独立临时目录，只读取 summaries/
+     目录下直接包含的 .tex 文件，并按 basename 建立索引。
   2. 以服务器附件目录 ~/oj/static/articles/ 中的 .pdf 列表作为评判论文集；
      该目录不存在时退化为两份提交里 .tex 文件名的并集。
   3. 三篇论文并发处理（3 线程），对每篇论文：
@@ -56,6 +57,7 @@ COMPARE_TEMPERATURE = 0.0
 PER_CALL_TIMEOUT_SECONDS = 60
 XELATEX_TIMEOUT_SECONDS = 60        # 单次 xelatex 编译上限
 PAPER_CONCURRENCY = 3               # 并发处理的论文数（每篇内部 2 次 LLM 调用串行）
+SUMMARIES_DIR_NAME = 'summaries'
 
 
 # ---------- 文件层 ----------
@@ -86,18 +88,15 @@ def _extract_zip(zip_path, extract_root):
 
 
 def _find_tex_paths(extract_root):
-    """返回 dict：basename -> 第一份匹配到的 .tex 绝对路径。同名取首遇。"""
+    """返回 summaries/ 直接包含的 ``basename -> .tex 绝对路径``。"""
     found = {}
-    if not os.path.isdir(extract_root):
+    summaries_dir = os.path.join(extract_root, SUMMARIES_DIR_NAME)
+    if not os.path.isdir(summaries_dir):
         return found
-    for root, _, files in os.walk(extract_root):
-        for fn in files:
-            if not fn.lower().endswith('.tex'):
-                continue
-            base = os.path.splitext(fn)[0]
-            if base in found:
-                continue
-            found[base] = os.path.join(root, fn)
+    for fn in sorted(os.listdir(summaries_dir)):
+        path = os.path.join(summaries_dir, fn)
+        if os.path.isfile(path) and fn.lower().endswith('.tex'):
+            found[os.path.splitext(fn)[0]] = path
     return found
 
 
@@ -391,18 +390,18 @@ def main():
             'winner': 1,
             'details': {
                 'format': 'text',
-                'content': '评分脚本参数不足：需要 answer_a 和 answer_b',
+                'content': '评分脚本参数不足：需要 submission_a 和 submission_b',
             },
         }, ensure_ascii=False))
         return
 
-    answer_a, answer_b = sys.argv[1], sys.argv[2]
+    submission_a, submission_b = sys.argv[1], sys.argv[2]
 
     extract_a = tempfile.mkdtemp(prefix='sketcher_a_')
     extract_b = tempfile.mkdtemp(prefix='sketcher_b_')
     try:
-        ok_extract_a = _extract_zip(answer_a, extract_a)
-        ok_extract_b = _extract_zip(answer_b, extract_b)
+        ok_extract_a = _extract_zip(submission_a, extract_a)
+        ok_extract_b = _extract_zip(submission_b, extract_b)
 
         tex_a_paths = _find_tex_paths(extract_a) if ok_extract_a else {}
         tex_b_paths = _find_tex_paths(extract_b) if ok_extract_b else {}

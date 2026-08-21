@@ -58,7 +58,7 @@
               <textarea class="form-control" name="summary" rows="2" maxlength="500" placeholder="一句话介绍本场打榜赛（展示在列表卡片上，最多 500 字）">{{ competition.summary or '' }}</textarea>
             </div>
             {% set _mode = (competition.scoring_mode or 'absolute')|lower %}
-            {% set _fmt = (competition.answer_format or 'json')|lower %}
+            {% set _fmt = (competition.answer_format or 'json')|lower if _mode == 'absolute' else 'json' %}
             {% set _smethod = (competition.submission_method or 'zip')|lower %}
             {% set _limit_anchor = competition.limit_window_start or competition.created_at %}
             <div class="row mb-3 align-items-start">
@@ -135,7 +135,7 @@
                 </div>
               </div>
               <div class="col-md-4 answer-format-field" id="answerFormatField"
-                   {% if _mode in ['agent_judge', 'reverse_judge'] %}style="display:none;"{% endif %}>
+                   {% if _mode != 'absolute' %}style="display:none;"{% endif %}>
                 <label class="form-label"><i class="fas fa-file-code me-2 text-muted"></i>答案格式</label>
                 <input type="hidden" name="answer_format" id="answerFormatSelect" value="{{ _fmt }}">
                 <div class="rk-choice" data-rk-choice data-rk-choice-input="answerFormatSelect">
@@ -342,10 +342,12 @@
                   document.querySelectorAll('.script-timeout-row').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
-                  // AI 评测类不使用答案格式字段。
+                  // 只有标准答案评分需要设置答案格式。
                   document.querySelectorAll('.answer-format-field').forEach(function (el) {
-                    el.style.display = isAi ? 'none' : '';
+                    el.style.display = (isElo || isAi) ? 'none' : '';
                   });
+                  var answerFormat = document.getElementById('answerFormatSelect');
+                  if (answerFormat) answerFormat.disabled = isElo || isAi;
                   document.querySelectorAll('.non-agent-limit-row').forEach(function (el) {
                     el.style.display = isAi ? 'none' : '';
                   });
@@ -379,11 +381,11 @@
         </div>
       </div>
 
-      {% set edit_fmt = (competition.answer_format or 'json')|lower %}
-      {% set edit_ext = '.' ~ edit_fmt %}
       {% set edit_mode = (competition.scoring_mode or 'absolute')|lower %}
 
       {% if edit_mode == 'absolute' %}
+      {% set edit_fmt = (competition.answer_format or 'json')|lower %}
+      {% set edit_ext = '.' ~ edit_fmt %}
       <!-- 标准答案（仅标准答案评分模式需要；ELO / Agent 评测均不需要） -->
       <div class="card mb-3 absolute-only">
         <div class="card-header"><i class="fas fa-key me-2"></i> 标准答案（{{ edit_ext }}）</div>

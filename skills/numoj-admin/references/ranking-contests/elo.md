@@ -8,7 +8,6 @@
 ```bash
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competition_id> \
   --scoring-mode elo \
-  --answer-format zip \
   --submission-method zip \
   --script-timeout 120 \
   --elo-initial-rating 1500 \
@@ -23,7 +22,7 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking upload-script <
 评分脚本调用约定为：
 
 ```text
-python elo_scoring.py <answer_a_path> <answer_b_path>
+python elo_scoring.py <submission_a.zip> <submission_b.zip>
 ```
 
 脚本必须在 stdout 最后一条有效 JSON 行输出 `winner`：`0` 表示平局，`1` 表示 A 胜，`2`
@@ -100,13 +99,12 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking elo-reset <comp
 
 ## 提交与检查
 
-普通提交仍需答案文件、代码 ZIP 和基座模型：
+ELO 只提交一个 ZIP 作品包，不使用标准答案字段：
 
 ```bash
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking submit <competition_id> \
   --base-model <base_model> \
-  --answer-file answer.zip \
-  --code-zip code.zip
+  --code-zip submission.zip
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking matches <competition_id> --page 1
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking leaderboard <competition_id> --limit 20
 ```

@@ -57,7 +57,7 @@
         </span>
         {% endif %}
         {% if s.answer_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_answer', submission_id=s.id) }}" download title="下载 {{ s.answer_filename }}"><i class="fas fa-file-code"></i>答案</a>{% endif %}
-        {% if s.code_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" download title="下载 {{ s.code_filename }}"><i class="fas fa-file-archive"></i>代码</a>{% endif %}
+        {% if s.code_filename %}<a class="aj-file" href="{{ url_for('ranking.download_submission_code', submission_id=s.id) }}" download title="下载 {{ s.code_filename }}"><i class="fas fa-file-archive"></i>{{ '作品' if is_elo else '代码' }}</a>{% endif %}
     {% elif slot == 'actions' %}
         {% if is_agent_judge %}
         <button type="button" class="aj-detail judge-detail-btn"
