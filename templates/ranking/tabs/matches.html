@@ -239,7 +239,10 @@
               var formatIcon = formatEl.querySelector('i');
               if (formatIcon) formatIcon.className = isHtml ? 'fas fa-code' : 'fas fa-align-left';
             }
-            if (headingEl) headingEl.textContent = isHtml ? 'HTML 对战详情' : '评测脚本给出的胜负理由';
+            if (headingEl) {
+              headingEl.hidden = isHtml;
+              headingEl.textContent = isHtml ? '' : '评测脚本给出的胜负理由';
+            }
             if (verdictEl) {
               verdictEl.hidden = isHtml;
               verdictEl.textContent = isHtml ? '' : String(output.content || '');
