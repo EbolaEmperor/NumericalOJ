@@ -658,6 +658,36 @@ def test_agent_trace_prefers_server_normalized_titles():
     assert "resultError ? '工具执行失败' : '工具结果'" in controller
 
 
+def test_agent_trace_keeps_replies_visible_and_collapses_working_details():
+    template = _read("templates/admin/agent_task_detail.html")
+    controller = _read("static/app/agents/conversation.js")
+    styles = _read("static/app/agents/conversation.css")
+
+    # 已完成轮次只在用户打开“工作详情”后加载轨迹；其中的思考、工具和
+    # 子 Agent 细节继续保持折叠，assistant 的可见回复则不被包进该折叠块。
+    assert '<details class="agent-turn-details"' in template
+    assert 'data-agent-live-details {% if is_running %}open{% endif %}' in template
+    assert template.count('class="agent-trace-fold"') == 4
+    assert 'class="agent-trace-event agent-trace-event--assistant"' in template
+    assert "思考过程" in template
+    assert "调用详情" in template
+    assert "执行完成" in template
+
+    assert "function isCollapsibleTraceKind(kind)" in controller
+    assert "if (isCollapsibleTraceKind(kind))" in controller
+    assert "var fold = createElement('details', 'agent-trace-fold');" in controller
+    assert "function appendTraceEventContent(body, message, kind)" in controller
+    assert "kind === 'assistant'" in controller
+
+    for selector in (
+        ".agent-trace-fold {",
+        ".agent-trace-fold > summary {",
+        ".agent-trace-fold[open] {",
+        ".agent-trace-fold-body {",
+    ):
+        assert selector in styles
+
+
 def test_agent_detail_archives_each_live_response_before_starting_the_next_turn():
     controller = _read("static/app/agents/conversation.js")
 

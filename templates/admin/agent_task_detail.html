@@ -102,38 +102,50 @@
   {% elif kind in ('thinking', 'reasoning') %}
     <section class="agent-trace-event agent-trace-event--thinking">
       <span class="agent-trace-event-icon"><i class="fas fa-circle-notch" aria-hidden="true"></i></span>
-      <div>
-        <strong>思考</strong>
-        <div class="agent-trace-copy{% if message.html %} numoj-markdown{% endif %}"
+      <details class="agent-trace-fold">
+        <summary>
+          <span class="agent-trace-fold-copy"><strong>思考过程</strong><small>推理内容</small></span>
+          <span class="agent-trace-fold-action">展开</span>
+        </summary>
+        <div class="agent-trace-fold-body agent-trace-copy{% if message.html %} numoj-markdown{% endif %}"
              {% if message.html %}data-numoj-markdown{% endif %}>
           {% if message.html %}{{ message.html|safe }}{% else %}<pre>{{ message.text|default(message.content|default('', true), true) }}</pre>{% endif %}
         </div>
-      </div>
+      </details>
     </section>
   {% elif kind in ('tool', 'tool_call') %}
     <section class="agent-trace-event agent-trace-event--tool">
       <span class="agent-trace-event-icon"><i class="fas fa-terminal" aria-hidden="true"></i></span>
-      <div>
-        <strong>{{ message.title|default(message.name|default(message.tool_name|default('工具调用', true), true), true) }}</strong>
-        <pre>{{ message.text|default(message.input|default(message.content|default('', true), true), true) }}</pre>
-      </div>
+      <details class="agent-trace-fold">
+        <summary>
+          <span class="agent-trace-fold-copy"><strong>{{ message.title|default(message.name|default(message.tool_name|default('工具调用', true), true), true) }}</strong><small>调用详情</small></span>
+          <span class="agent-trace-fold-action">展开</span>
+        </summary>
+        <div class="agent-trace-fold-body"><pre>{{ message.text|default(message.input|default(message.content|default('', true), true), true) }}</pre></div>
+      </details>
     </section>
   {% elif kind in ('tool_result', 'tool-result') %}
     {% set result_error = message.is_error|default(false) %}
     <section class="agent-trace-event agent-trace-event--{{ 'error' if result_error else 'result' }}">
       <span class="agent-trace-event-icon"><i class="fas {{ 'fa-exclamation-triangle' if result_error else 'fa-check' }}" aria-hidden="true"></i></span>
-      <div>
-        <strong>{{ message.title|default('工具执行失败' if result_error else '工具结果', true) }}</strong>
-        <pre>{{ message.text|default(message.output|default(message.content|default('', true), true), true) }}</pre>
-      </div>
+      <details class="agent-trace-fold">
+        <summary>
+          <span class="agent-trace-fold-copy"><strong>{{ message.title|default('工具执行失败' if result_error else '工具结果', true) }}</strong><small>{{ '执行失败' if result_error else '执行完成' }}</small></span>
+          <span class="agent-trace-fold-action">展开</span>
+        </summary>
+        <div class="agent-trace-fold-body"><pre>{{ message.text|default(message.output|default(message.content|default('', true), true), true) }}</pre></div>
+      </details>
     </section>
   {% elif kind == 'subagent' %}
     <section class="agent-trace-event agent-trace-event--subagent">
       <span class="agent-trace-event-icon"><i class="fas fa-code-branch" aria-hidden="true"></i></span>
-      <div>
-        <strong>{{ message.title|default(message.name|default('子 Agent', true), true) }}</strong>
-        <pre>{{ message.text|default(message.content|default('', true), true) }}</pre>
-      </div>
+      <details class="agent-trace-fold">
+        <summary>
+          <span class="agent-trace-fold-copy"><strong>{{ message.title|default(message.name|default('子 Agent', true), true) }}</strong><small>协作详情</small></span>
+          <span class="agent-trace-fold-action">展开</span>
+        </summary>
+        <div class="agent-trace-fold-body"><pre>{{ message.text|default(message.content|default('', true), true) }}</pre></div>
+      </details>
     </section>
   {% else %}
     <section class="agent-trace-event agent-trace-event--assistant">

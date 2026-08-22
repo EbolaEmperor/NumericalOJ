@@ -684,6 +684,105 @@
   font-family: var(--agent-mono);
 }
 
+/* 轨迹默认呈现为轻量活动胶囊；内容仅在用户主动展开后出现。 */
+.agent-trace-fold {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #e3ddd2;
+  border-radius: 7px;
+  background: #f8f6f1;
+  overflow: hidden;
+}
+
+.agent-trace-fold > summary {
+  display: flex;
+  min-height: 31px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  cursor: pointer;
+  list-style: none;
+  color: #837b70;
+  user-select: none;
+}
+
+.agent-trace-fold > summary::-webkit-details-marker { display: none; }
+
+.agent-trace-fold > summary:hover {
+  background: #f0ece4;
+  color: #514c45;
+}
+
+.agent-trace-fold > summary:focus-visible {
+  outline: 2px solid rgb(151 126 87 / 50%);
+  outline-offset: -2px;
+}
+
+.agent-trace-fold-copy {
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.agent-trace-fold-copy > strong {
+  display: inline;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: inherit;
+  font: 620 8.5px/1.35 var(--agent-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace-fold-copy > small {
+  overflow: hidden;
+  color: #aaa196;
+  font: 500 8px/1.3 var(--agent-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace-fold-action {
+  flex: 0 0 auto;
+  color: #9a9184;
+  font: 600 7.5px/1 var(--agent-mono);
+}
+
+.agent-trace-fold[open] {
+  border-color: #d5ccbd;
+  background: #fbfaf7;
+}
+
+.agent-trace-fold[open] > summary {
+  border-bottom: 1px solid #e4ddd1;
+}
+
+.agent-trace-fold[open] .agent-trace-fold-action {
+  font-size: 0;
+}
+
+.agent-trace-fold[open] .agent-trace-fold-action::after {
+  content: "收起";
+  font-size: 7.5px;
+}
+
+.agent-trace-fold-body {
+  min-width: 0;
+  padding: 8px;
+}
+
+.agent-trace-fold-body > .agent-trace-copy {
+  margin: 0;
+}
+
+.agent-trace-fold-body > pre {
+  margin: 0;
+}
+
 .agent-working-placeholder {
   min-height: 62px;
   display: grid;

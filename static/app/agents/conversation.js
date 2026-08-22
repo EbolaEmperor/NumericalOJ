@@ -1130,6 +1130,53 @@
     return kind === 'assistant' || kind === 'thinking' || kind === 'reasoning';
   }
 
+  function isCollapsibleTraceKind(kind) {
+    return kind === 'thinking' || kind === 'reasoning'
+      || kind === 'tool' || kind === 'tool_call'
+      || kind === 'tool_result' || kind === 'tool-result'
+      || kind === 'subagent';
+  }
+
+  function traceEventTitle(kind, message, resultError) {
+    if (kind === 'thinking' || kind === 'reasoning') return '思考过程';
+    if (kind === 'tool' || kind === 'tool_call') {
+      return asText(message.title || message.name || message.tool_name || '工具调用');
+    }
+    if (kind === 'tool_result' || kind === 'tool-result') {
+      return asText(message.title || (resultError ? '工具执行失败' : '工具结果'));
+    }
+    if (kind === 'subagent') return asText(message.title || message.name || '子 Agent');
+    return '';
+  }
+
+  function traceFoldHint(kind, resultError) {
+    if (kind === 'thinking' || kind === 'reasoning') return '推理内容';
+    if (kind === 'tool' || kind === 'tool_call') return '调用详情';
+    if (kind === 'tool_result' || kind === 'tool-result') {
+      return resultError ? '执行失败' : '执行完成';
+    }
+    return '协作详情';
+  }
+
+  function appendTraceEventContent(body, message, kind) {
+    var html = message && message.html;
+    var content = asText(message && (
+      message.text != null ? message.text
+        : message.content != null ? message.content
+          : message.input != null ? message.input
+            : message.output
+    ));
+    if (html && isRichTraceKind(kind)) {
+      var copy = createElement('div', 'agent-trace-copy numoj-markdown');
+      setServerHtml(copy, html);
+      body.appendChild(copy);
+    } else if (kind === 'assistant') {
+      body.appendChild(createElement('div', 'agent-trace-copy', content));
+    } else {
+      body.appendChild(createElement('pre', '', content));
+    }
+  }
+
   function traceEvent(message) {
     var kind = messageKind(message);
     if (kind === 'user') {
@@ -1150,28 +1197,24 @@
     icon.appendChild(glyph);
 
     var body = createElement('div');
-    var title = '';
-    if (kind === 'thinking' || kind === 'reasoning') title = '思考';
-    else if (kind === 'tool' || kind === 'tool_call') title = asText(message.title || message.name || message.tool_name || '工具调用');
-    else if (resultKind) title = asText(message.title || (resultError ? '工具执行失败' : '工具结果'));
-    else if (kind === 'subagent') title = asText(message.title || message.name || '子 Agent');
-    if (title) body.appendChild(createElement('strong', '', title));
-
-    var html = message && message.html;
-    var content = asText(message && (
-      message.text != null ? message.text
-        : message.content != null ? message.content
-          : message.input != null ? message.input
-            : message.output
-    ));
-    if (html && isRichTraceKind(kind)) {
-      var copy = createElement('div', 'agent-trace-copy numoj-markdown');
-      setServerHtml(copy, html);
-      body.appendChild(copy);
-    } else if (kind === 'assistant') {
-      body.appendChild(createElement('div', 'agent-trace-copy', content));
+    var title = traceEventTitle(kind, message, resultError);
+    if (isCollapsibleTraceKind(kind)) {
+      var fold = createElement('details', 'agent-trace-fold');
+      var summary = document.createElement('summary');
+      var summaryCopy = createElement('span', 'agent-trace-fold-copy');
+      summaryCopy.appendChild(createElement('strong', '', title));
+      summaryCopy.appendChild(createElement('small', '', traceFoldHint(kind, resultError)));
+      summary.append(
+        summaryCopy,
+        createElement('span', 'agent-trace-fold-action', '展开')
+      );
+      var foldBody = createElement('div', 'agent-trace-fold-body');
+      appendTraceEventContent(foldBody, message, kind);
+      fold.append(summary, foldBody);
+      body.appendChild(fold);
     } else {
-      body.appendChild(createElement('pre', '', content));
+      if (title) body.appendChild(createElement('strong', '', title));
+      appendTraceEventContent(body, message, kind);
     }
     row.append(icon, body);
     return row;
