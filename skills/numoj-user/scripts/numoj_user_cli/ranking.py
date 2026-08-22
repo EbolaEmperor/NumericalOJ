@@ -301,6 +301,25 @@ def ranking_submit(args: argparse.Namespace) -> None:
         )
     finally:
         common.close_files(files)
+
+    # 反向代理可能在上游已落库后才因回写重定向失败返回 5xx。此时先用
+    # 只读历史确认提交是否已创建；若已创建，绝不能把它误报为失败并诱发
+    # 用户或 Agent 重复提交。
+    if resp.status_code >= 500:
+        after_ids = _ranking_submission_ids(client, args.competition_id)
+        new_ids = sorted(after_ids - before_ids)
+        if new_ids:
+            common.output_json({
+                "success": True,
+                "submission_id": new_ids[-1],
+                "recovered_from_transport_error": True,
+                "message": (
+                    f"提交接口返回 HTTP {resp.status_code}，但已确认提交 "
+                    f"#{new_ids[-1]} 已创建；请不要重复提交。"
+                ),
+            })
+            return
+
     if resp.status_code >= 400 and common.response_is_json(resp):
         payload = resp.json()
         if isinstance(payload, dict) and "success" not in payload:
