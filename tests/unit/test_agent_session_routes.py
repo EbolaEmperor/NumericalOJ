@@ -1664,7 +1664,7 @@ def test_each_turn_uses_its_task_local_v2_public_timeline(monkeypatch):
         {
             "kind": "work_summary",
             "block_id": "work-1234567890abcdef",
-            "summary": "进行了 3 次思考，调用了 2 次工具",
+            "summary": "3 thinkings, 2 tool calls",
         },
         {"kind": "assistant", "text": "second-progress"},
     ]
@@ -1761,7 +1761,7 @@ def test_decorate_turns_loads_public_timeline_without_internal_events(monkeypatc
                 {
                     "kind": "work_summary",
                     "block_id": "work-1234567890abcdef",
-                    "summary": "进行了 4 次思考，调用了 3 次工具",
+                    "summary": "4 thinkings, 3 tool calls",
                 },
                 {"kind": "assistant", "text": "阶段进展"},
             ]},

@@ -287,11 +287,16 @@ def ingest_agent_trace_records(task_id, records, *, final=False):
 
 
 def _work_summary(thinking_count, tool_count, is_running):
+    parts = []
+    thinkings = int(thinking_count)
+    calls = int(tool_count)
+    if thinkings > 0:
+        parts.append(f"{thinkings} thinking" + ("" if thinkings == 1 else "s"))
+    if calls > 0:
+        parts.append(f"{calls} tool call" + ("" if calls == 1 else "s"))
     prefix = "工作中…" if is_running else ""
-    return (
-        f"{prefix}进行了 {int(thinking_count)} 次思考，"
-        f"调用了 {int(tool_count)} 次工具"
-    )
+    summary = ", ".join(parts)
+    return f"{prefix}{summary}" if summary else prefix
 
 
 def list_agent_trace_timeline(task_id, *, status="", steer_records=()):

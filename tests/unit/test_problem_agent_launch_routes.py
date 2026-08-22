@@ -865,7 +865,7 @@ def test_agent_status_and_cancel_keep_v2_task_local_public_timeline(
         {
             "kind": "work_summary",
             "block_id": "work-1234567890abcdef",
-            "summary": "工作中…进行了 2 次思考，调用了 1 次工具",
+            "summary": "工作中…2 thinkings, 1 tool call",
         },
     ]
     token_usage = {"source": "pi", "request_count": 2}
@@ -1318,7 +1318,7 @@ def test_agent_run_stream_keeps_v2_public_timeline_task_local(monkeypatch):
             "thinking_count": 2,
             "tool_count": 1,
             "is_running": True,
-            "summary": "工作中…进行了 2 次思考，调用了 1 次工具",
+            "summary": "工作中…2 thinkings, 1 tool call",
         },
     ]
     completed_messages = [
@@ -1328,7 +1328,7 @@ def test_agent_run_stream_keeps_v2_public_timeline_task_local(monkeypatch):
             "thinking_count": 4,
             "tool_count": 3,
             "is_running": False,
-            "summary": "进行了 4 次思考，调用了 3 次工具",
+            "summary": "4 thinkings, 3 tool calls",
         },
     ]
     token_usage = {
@@ -2109,7 +2109,7 @@ def test_agent_run_state_reuses_worker_projected_redis_trace(monkeypatch):
         "trace_messages": [{
             "kind": "work_summary",
             "block_id": "work-1234567890abcdef",
-            "summary": "工作中…进行了 1 次思考，调用了 0 次工具",
+            "summary": "工作中…1 thinking",
         }],
         "trace_files": [],
         "token_usage": None,
@@ -2151,7 +2151,7 @@ def test_agent_run_state_hydrates_empty_worker_trace_from_v2_store(monkeypatch):
         "trace_messages": [{
             "kind": "work_summary",
             "block_id": "work-1234567890abcdef",
-            "summary": "工作中…进行了 1 次思考，调用了 0 次工具",
+            "summary": "工作中…1 thinking",
         }],
         "token_usage": {
             "source": "codex",
