@@ -221,7 +221,7 @@ def test_public_timeline_contains_only_replies_steers_and_work_summaries(
     assert [item["kind"] for item in running] == [
         "assistant", "work_summary", "user", "assistant",
     ]
-    assert running[1]["summary"] == "工作中…进行了 3 次思考，调用了 2 次工具"
+    assert running[1]["summary"] == "工作中…3 thinkings, 2 tool calls"
     assert running[2]["text"] == "请再核对一次"
 
     completed = trace_store.list_agent_trace_timeline(
@@ -230,7 +230,7 @@ def test_public_timeline_contains_only_replies_steers_and_work_summaries(
     assert [item["kind"] for item in completed] == [
         "assistant", "work_summary", "user",
     ]
-    assert completed[1]["summary"] == "进行了 3 次思考，调用了 2 次工具"
+    assert completed[1]["summary"] == "3 thinkings, 2 tool calls"
 
 
 def test_token_usage_round_trips_through_v2_sync_state(monkeypatch):

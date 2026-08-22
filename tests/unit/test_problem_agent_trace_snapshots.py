@@ -55,7 +55,7 @@ def test_hydrate_agent_run_snapshot_reads_public_v2_timeline_only(
             "block_id": "work-1234567890abcdef",
             "thinking_count": 2,
             "tool_count": 1,
-            "summary": "工作中…进行了 2 次思考，调用了 1 次工具",
+            "summary": "工作中…2 thinkings, 1 tool call",
         },
     ]
     monkeypatch.setattr(
