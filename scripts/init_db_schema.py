@@ -46,6 +46,9 @@ REQUIRED_AGENT_QUOTA_TABLES = (
 )
 REQUIRED_AGENT_PUBLIC_TABLES = (
     "agent_user_endpoints",
+    "agent_trace_sync_state",
+    "agent_trace_migrations",
+    "agent_trace_events",
 )
 # 这类变更只放宽列约束、不改写历史数据，并按声明式 schema 保持幂等。
 NULLABLE_COLUMN_MIGRATIONS = {

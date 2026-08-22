@@ -5,6 +5,10 @@ import json
 import time
 
 from oj_modules.config import SUBMISSION_SNAPSHOT_TTL_SECONDS
+from oj_modules.agents.trace_store import (
+    ingest_agent_trace_records,
+    save_agent_trace_token_usage,
+)
 from oj_modules.db_services import (
     cancel_agent_run_snapshot,
     get_agent_run_by_task_id,
@@ -15,7 +19,11 @@ from oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
 )
-from oj_modules.problems.agent_runs import hydrate_agent_run_snapshot
+from oj_modules.problems.agent_runs import (
+    agent_run_trace_dir,
+    hydrate_agent_run_snapshot,
+)
+from oj_modules.ranking.reverse_judge.traces import collect_agent_token_usage
 
 
 AGENT_SOLVE_TASK_NAME = "oj.agent.solve_problem"
@@ -311,9 +319,23 @@ def _update_agent_state(state, message=None, **updates):
 
 
 def _publish_agent_trace(state):
-    """轨迹 tick 只发布 Redis/SSE，不以约 2 秒频率写数据库。"""
+    """在 worker 侧刷新 v2 用量快照，再发布公开状态到 Redis/SSE。"""
 
+    task_id = str((state or {}).get("task_id") or "").strip()
+    if task_id:
+        usage = collect_agent_token_usage(agent_run_trace_dir(task_id))
+        if usage is not None:
+            save_agent_trace_token_usage(task_id, usage)
     _publish_agent_snapshot(state)
+
+
+def _persist_agent_trace_records(state, records, *, final=False):
+    """把 observer 新增事件写入 v2 轨迹表；失败由 harness tick 重试。"""
+
+    task_id = str((state or {}).get("task_id") or "").strip()
+    if not task_id:
+        return 0
+    return ingest_agent_trace_records(task_id, records, final=final)
 
 
 def agent_run_is_canceled(task_id):

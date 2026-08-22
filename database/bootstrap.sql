@@ -564,6 +564,81 @@ CREATE TABLE `agent_task_runs` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- Table structure for table `agent_trace_sync_state`
+--
+
+DROP TABLE IF EXISTS `agent_trace_sync_state`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_trace_sync_state` (
+  `task_id` varchar(64) NOT NULL,
+  `schema_version` smallint NOT NULL DEFAULT '2',
+  `last_event_order` bigint unsigned NOT NULL DEFAULT '0',
+  `next_item_index` int unsigned NOT NULL DEFAULT '1',
+  `active_block_id` varchar(80) DEFAULT NULL,
+  `active_item_index` int unsigned DEFAULT NULL,
+  `token_usage_json` longtext,
+  `migration_completed` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`task_id`),
+  CONSTRAINT `chk_agent_trace_schema_version` CHECK (`schema_version` = 2),
+  CONSTRAINT `chk_agent_trace_next_item` CHECK (`next_item_index` > 0),
+  CONSTRAINT `chk_agent_trace_migration_completed` CHECK (`migration_completed` IN (0,1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_trace_migrations`
+--
+
+DROP TABLE IF EXISTS `agent_trace_migrations`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_trace_migrations` (
+  `migration_key` varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `summary_json` longtext NOT NULL,
+  `completed_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`migration_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `agent_trace_events`
+--
+
+DROP TABLE IF EXISTS `agent_trace_events`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `agent_trace_events` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `task_id` varchar(64) NOT NULL,
+  `event_id` varchar(80) NOT NULL,
+  `event_order` bigint unsigned NOT NULL,
+  `item_index` int unsigned NOT NULL,
+  `block_id` varchar(80) DEFAULT NULL,
+  `kind` varchar(16) NOT NULL,
+  `title` varchar(255) DEFAULT NULL,
+  `text` longtext,
+  `meta` varchar(255) DEFAULT NULL,
+  `format` varchar(16) NOT NULL DEFAULT 'text',
+  `is_error` tinyint(1) NOT NULL DEFAULT '0',
+  `message_id` varchar(64) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_agent_trace_event` (`task_id`,`event_id`),
+  UNIQUE KEY `uniq_agent_trace_order` (`task_id`,`event_order`),
+  KEY `idx_agent_trace_timeline` (`task_id`,`item_index`,`event_order`),
+  KEY `idx_agent_trace_block` (`task_id`,`block_id`,`event_order`),
+  KEY `idx_agent_trace_assistant` (`task_id`,`kind`,`event_order`),
+  CONSTRAINT `chk_agent_trace_item_index` CHECK (`item_index` > 0),
+  CONSTRAINT `chk_agent_trace_kind` CHECK (`kind` IN ('assistant','user','thinking','reasoning','tool','tool_call','tool_result','tool-result','subagent')),
+  CONSTRAINT `chk_agent_trace_format` CHECK (`format` IN ('text','json')),
+  CONSTRAINT `chk_agent_trace_is_error` CHECK (`is_error` IN (0,1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
 -- Table structure for table `agent_sessions`
 --
 

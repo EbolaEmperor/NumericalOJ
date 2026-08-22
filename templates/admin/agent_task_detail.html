@@ -84,9 +84,22 @@
   </section>
 {% endmacro %}
 
-{% macro trace_message(message) %}
+{% macro trace_message(message, task_id) %}
   {% set kind = message.kind|default(message.type|default('assistant', true), true)|lower %}
-  {% if kind == 'user' %}
+  {% if kind == 'work_summary' %}
+    <details class="agent-work-block{% if message.has_error %} agent-work-block--error{% endif %}{% if message.is_running %} is-running{% endif %}"
+             data-agent-work-block
+             data-agent-work-block-id="{{ message.block_id }}"
+             data-agent-work-block-task-id="{{ task_id }}">
+      <summary>
+        <i class="fas {{ 'fa-exclamation-triangle' if message.has_error else 'fa-wrench' }}" aria-hidden="true"></i>
+        <span data-agent-work-block-summary>{{ message.summary }}</span>
+      </summary>
+      <div class="agent-work-block-body" data-agent-work-block-body>
+        <div class="agent-work-block-placeholder">展开后加载工作详情</div>
+      </div>
+    </details>
+  {% elif kind == 'user' %}
     <section class="agent-user-message agent-timeline-steer agent-timeline-steer--detail"
              data-agent-steer-message data-message-id="{{ message.message_id|default('', true) }}">
       <div class="agent-user-bubble{% if message.html %} numoj-markdown{% endif %}"
@@ -99,63 +112,20 @@
         </div>
       {% endif %}
     </section>
-  {% elif kind in ('thinking', 'reasoning') %}
-    <section class="agent-trace-event agent-trace-event--thinking">
-      <span class="agent-trace-event-icon"><i class="fas fa-circle-notch" aria-hidden="true"></i></span>
-      <details class="agent-trace-fold">
-        <summary>
-          <span class="agent-trace-fold-copy"><strong>思考过程</strong><small>推理内容</small></span>
-          <span class="agent-trace-fold-action">展开</span>
-        </summary>
-        <div class="agent-trace-fold-body agent-trace-copy{% if message.html %} numoj-markdown{% endif %}"
-             {% if message.html %}data-numoj-markdown{% endif %}>
-          {% if message.html %}{{ message.html|safe }}{% else %}<pre>{{ message.text|default(message.content|default('', true), true) }}</pre>{% endif %}
-        </div>
-      </details>
-    </section>
-  {% elif kind in ('tool', 'tool_call') %}
-    <section class="agent-trace-event agent-trace-event--tool">
-      <span class="agent-trace-event-icon"><i class="fas fa-terminal" aria-hidden="true"></i></span>
-      <details class="agent-trace-fold">
-        <summary>
-          <span class="agent-trace-fold-copy"><strong>{{ message.title|default(message.name|default(message.tool_name|default('工具调用', true), true), true) }}</strong><small>调用详情</small></span>
-          <span class="agent-trace-fold-action">展开</span>
-        </summary>
-        <div class="agent-trace-fold-body"><pre>{{ message.text|default(message.input|default(message.content|default('', true), true), true) }}</pre></div>
-      </details>
-    </section>
-  {% elif kind in ('tool_result', 'tool-result') %}
-    {% set result_error = message.is_error|default(false) %}
-    <section class="agent-trace-event agent-trace-event--{{ 'error' if result_error else 'result' }}">
-      <span class="agent-trace-event-icon"><i class="fas {{ 'fa-exclamation-triangle' if result_error else 'fa-check' }}" aria-hidden="true"></i></span>
-      <details class="agent-trace-fold">
-        <summary>
-          <span class="agent-trace-fold-copy"><strong>{{ message.title|default('工具执行失败' if result_error else '工具结果', true) }}</strong><small>{{ '执行失败' if result_error else '执行完成' }}</small></span>
-          <span class="agent-trace-fold-action">展开</span>
-        </summary>
-        <div class="agent-trace-fold-body"><pre>{{ message.text|default(message.output|default(message.content|default('', true), true), true) }}</pre></div>
-      </details>
-    </section>
-  {% elif kind == 'subagent' %}
-    <section class="agent-trace-event agent-trace-event--subagent">
-      <span class="agent-trace-event-icon"><i class="fas fa-code-branch" aria-hidden="true"></i></span>
-      <details class="agent-trace-fold">
-        <summary>
-          <span class="agent-trace-fold-copy"><strong>{{ message.title|default(message.name|default('子 Agent', true), true) }}</strong><small>协作详情</small></span>
-          <span class="agent-trace-fold-action">展开</span>
-        </summary>
-        <div class="agent-trace-fold-body"><pre>{{ message.text|default(message.content|default('', true), true) }}</pre></div>
-      </details>
-    </section>
   {% else %}
-    <section class="agent-trace-event agent-trace-event--assistant">
-      <span class="agent-trace-event-icon"><i class="fas fa-comment-alt" aria-hidden="true"></i></span>
+    <section class="agent-trace-reply">
       <div class="agent-trace-copy{% if message.html %} numoj-markdown{% endif %}"
            {% if message.html %}data-numoj-markdown{% endif %}>
         {% if message.html %}{{ message.html|safe }}{% else %}<pre>{{ message.text|default(message.content|default('', true), true) }}</pre>{% endif %}
       </div>
     </section>
   {% endif %}
+{% endmacro %}
+
+{% macro trace_messages(messages, task_id) %}
+  {% for message in messages %}
+    {{ trace_message(message, task_id) }}
+  {% endfor %}
 {% endmacro %}
 
 <main class="agent-session"
@@ -173,6 +143,7 @@
       data-workspace-tree-url="{{ url_for('problem_core.agent_workspace_tree', session_id=session_id) }}"
       data-workspace-file-url="{{ url_for('problem_core.agent_workspace_file', session_id=session_id) }}"
       data-status-url-template="{{ url_for('problem_core.agent_run_status', task_id='__TASK_ID__') }}"
+      data-work-block-url-template="{{ url_for('problem_core.agent_run_work_block', task_id='__TASK_ID__', block_id='__BLOCK_ID__') }}"
       data-stream-url-template="{{ url_for('problem_core.agent_run_stream', task_id='__TASK_ID__') }}"
       data-cancel-url-template="{{ url_for('problem_core.agent_run_cancel', task_id='__TASK_ID__') }}"
       data-session-state-url="{{ message_urls['state']|default('', true) }}"
@@ -257,7 +228,7 @@
     <div class="agent-conversation-scroll" data-agent-conversation-scroll>
       <div class="agent-conversation-feed" data-agent-turns>
         {% for turn in turns|default([], true) %}
-          {% set detail_messages = turn.detail_messages|default(turn.messages|default(turn.execution_trace.trace_messages|default([], true), true), true) %}
+          {% set detail_messages = turn.detail_messages|default(turn.messages|default(turn.execution_trace.trace_messages|default([], true), true)) %}
           <article class="agent-turn" data-agent-turn
                    data-agent-task-id="{{ turn.task_id }}"
                    data-message-id="{{ turn.message_id|default(turn.task_id, true) }}">
@@ -292,18 +263,13 @@
             {% if not (is_running and turn.task_id == current_task_id) %}
             <section class="agent-response">
               {% if detail_messages or turn.has_detail|default(false) %}
-                <details class="agent-turn-details"
-                         {% if not detail_messages %}data-agent-lazy-trace data-agent-task-id="{{ turn.task_id }}"{% endif %}>
+                <details class="agent-turn-details">
                   <summary>
                     <span><i class="fas fa-chevron-right" aria-hidden="true"></i>工作详情</span>
                     {% if turn.duration %}<small>{{ turn.duration }}</small>{% endif %}
                   </summary>
-                  <div class="agent-turn-trace"{% if not detail_messages %} data-agent-lazy-trace-body{% endif %}>
-                    {% if detail_messages %}
-                      {% for message in detail_messages %}{{ trace_message(message) }}{% endfor %}
-                    {% else %}
-                      <div class="agent-workspace-empty" data-agent-lazy-trace-status>展开后加载工作详情</div>
-                    {% endif %}
+                  <div class="agent-turn-trace">
+                    {{ trace_messages(detail_messages, turn.task_id) }}
                   </div>
                 </details>
               {% endif %}

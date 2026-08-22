@@ -26,6 +26,7 @@ from oj_modules.tasks.agent.harness_runtime import (
 from oj_modules.tasks.agent.shared import (
     AGENT_SOLVE_TASK_NAME,
     _format_local_time,
+    _persist_agent_trace_records,
     _publish_agent_trace,
     _update_agent_state,
     agent_run_is_canceled,
@@ -273,6 +274,13 @@ def register_agent_solve_problem_task(celery_app):
                 session_cookie_name=session_cookie_name,
                 prompt=agent_prompt,
                 trace_callback=lambda: _publish_agent_trace(state),
+                trace_records_callback=lambda records, final=False: (
+                    _persist_agent_trace_records(
+                        state,
+                        records,
+                        final=final,
+                    )
+                ),
                 cancel_check=lambda: agent_run_is_canceled(task_id),
                 control_source=control_source,
                 control_callback=control_callback,

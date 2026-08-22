@@ -395,20 +395,24 @@ def test_agent_detail_falls_back_when_task_stream_has_no_first_payload():
     assert "clearStreamFirstPayloadTimer();\n    stopTaskPolling();" in controller
 
 
-def test_agent_detail_defers_folded_trace_until_first_expand():
+def test_agent_detail_fetches_each_work_block_only_on_first_expand():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
 
-    assert "data-agent-lazy-trace" in template
-    assert "data-agent-lazy-trace-body" in template
+    assert "data-agent-lazy-trace" not in template
+    assert "data-agent-lazy-trace-body" not in template
     assert "turn.has_detail|default(false)" in template
-    assert "function requestTaskState(taskId)" in controller
-    assert "function loadHistoricalTrace(details)" in controller
+    assert "data-work-block-url-template" in template
+    assert "data-agent-work-block" in template
+    assert "function loadWorkBlock(details)" in controller
+    assert "var workBlockCache = new Map();" in controller
+    assert "workBlockCache.set(workBlockCacheKey(taskId, blockId), fold);" in controller
+    assert "details.dataset.agentWorkBlockLoaded === 'true'" in controller
+    assert "details.dataset.agentWorkBlockLoaded = 'true';" in controller
+    assert "if (fold.open) loadWorkBlock(fold);" in controller
     assert "function bindTurnDetails(scope)" in controller
     assert "syncTurnDetailState(details)" in controller
-    assert "details.open && details.hasAttribute('data-agent-lazy-trace')" in controller
-    assert "loadHistoricalTrace(details);" in controller
-    assert "details.dataset.agentLazyLoaded = 'true';" in controller
+    assert "function loadHistoricalTrace(details)" not in controller
 
 
 def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
@@ -458,7 +462,7 @@ def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
     assert "function sentSteerMessages(state, taskId)" in controller
     assert "function userTimelineMessage(message, extraClass)" in controller
     assert "messageKind(message) === 'user'" in controller
-    assert "agent-trace-event--before-steer" in controller
+    assert "agent-trace-event--before-steer" not in controller
     assert "new global.EventSource(endpoint)" in controller
     assert "transitionToTask(taskId, state)" in controller
     assert 'aria-keyshortcuts="Enter Shift+Enter Control+Enter Meta+Enter"' in template
@@ -646,16 +650,15 @@ def test_agent_markdown_code_stays_compact_and_scrollable_in_narrow_panes():
 
 
 def test_agent_trace_prefers_server_normalized_titles():
-    template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
+    routes = _read("oj_modules/routes/problem_core_routes.py")
 
-    assert "message.title|default(message.name" in template
     assert "message.title || message.name || message.tool_name" in controller
     assert "message.title || message.name || '子 Agent'" in controller
-    assert "message.title|default('工具执行失败' if result_error else '工具结果'" in template
     assert "message.is_error === true" in controller
     assert "resultError ? 'error' : 'result'" in controller
     assert "resultError ? '工具执行失败' : '工具结果'" in controller
+    assert "get_agent_trace_work_block(task_id, block_id)" in routes
 
 
 def test_agent_trace_keeps_replies_visible_and_collapses_working_details():
@@ -663,27 +666,31 @@ def test_agent_trace_keeps_replies_visible_and_collapses_working_details():
     controller = _read("static/app/agents/conversation.js")
     styles = _read("static/app/agents/conversation.css")
 
-    # 已完成轮次只在用户打开“工作详情”后加载轨迹；其中的思考、工具和
-    # 子 Agent 细节继续保持折叠，assistant 的可见回复则不被包进该折叠块。
+    # 运行中主时间线只接收主动回复、插话和工作块摘要；内部事件必须等
+    # 用户展开某一块后单独请求。完成后外层工作详情收起，只露出 conclude。
     assert '<details class="agent-turn-details"' in template
     assert 'data-agent-live-details {% if is_running %}open{% endif %}' in template
-    assert template.count('class="agent-trace-fold"') == 4
-    assert 'class="agent-trace-event agent-trace-event--assistant"' in template
-    assert "思考过程" in template
-    assert "调用详情" in template
-    assert "执行完成" in template
+    assert 'class="agent-work-block' in template
+    assert 'class="agent-trace-reply"' in template
+    assert 'data-agent-live-conclusion hidden' in template
+    assert 'class="agent-trace-fold"' not in template
 
-    assert "function isCollapsibleTraceKind(kind)" in controller
-    assert "if (isCollapsibleTraceKind(kind))" in controller
-    assert "var fold = createElement('details', 'agent-trace-fold');" in controller
+    append_public = controller.split(
+        "function appendTraceMessages(element, messages, taskId)", 1
+    )[1].split("function renderTrace(state)", 1)[0]
+    assert "kind === 'assistant' || kind === 'user'" in append_public
+    assert "kind === 'work_summary'" in append_public
+    assert "thinking/tool/tool_result" in append_public
+    assert "traceWorkDetail" not in append_public
+    assert "function traceWorkBlock(message, taskId)" in controller
+    assert "function loadWorkBlock(details)" in controller
     assert "function appendTraceEventContent(body, message, kind)" in controller
-    assert "kind === 'assistant'" in controller
 
     for selector in (
-        ".agent-trace-fold {",
-        ".agent-trace-fold > summary {",
-        ".agent-trace-fold[open] {",
-        ".agent-trace-fold-body {",
+        ".agent-work-block {",
+        ".agent-work-block > summary {",
+        ".agent-work-block-body {",
+        ".agent-work-detail {",
     ):
         assert selector in styles
 
@@ -716,15 +723,15 @@ def test_agent_thinking_markdown_uses_compact_paragraph_spacing():
 
     markdown_rule = _css_rule(
         styles,
-        ".agent-trace-event--thinking .agent-trace-copy.numoj-markdown {",
+        ".agent-work-detail--thinking .agent-trace-copy.numoj-markdown,",
     )
     paragraph_rule = _css_rule(
         styles,
-        ".agent-trace-event--thinking .agent-trace-copy > p {",
+        ".agent-work-detail--thinking .agent-trace-copy > p,",
     )
     last_paragraph_rule = _css_rule(
         styles,
-        ".agent-trace-event--thinking .agent-trace-copy > p:last-child {",
+        ".agent-work-detail--thinking .agent-trace-copy > p:last-child,",
     )
 
     assert "white-space: normal;" in markdown_rule

@@ -5,6 +5,22 @@ import pytest
 from oj_modules.problems import agent_runs
 
 
+@pytest.fixture(autouse=True)
+def _empty_v2_timeline(monkeypatch):
+    """快照测试默认不访问本机 MySQL；v2 存储语义由独立单测覆盖。"""
+
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_timeline",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        agent_runs,
+        "get_agent_trace_token_usage",
+        lambda _task_id: None,
+    )
+
+
 def test_agent_trace_dir_is_task_scoped_and_rejects_untrusted_ids(
     monkeypatch,
     tmp_path,
@@ -19,7 +35,7 @@ def test_agent_trace_dir_is_task_scoped_and_rejects_untrusted_ids(
             agent_runs.agent_run_trace_dir(task_id)
 
 
-def test_hydrate_agent_run_snapshot_reads_canonical_jsonl_only(
+def test_hydrate_agent_run_snapshot_reads_public_v2_timeline_only(
     monkeypatch,
     tmp_path,
 ):
@@ -32,6 +48,21 @@ def test_hydrate_agent_run_snapshot_reads_canonical_jsonl_only(
         encoding="utf-8",
     )
 
+    public_timeline = [
+        {"kind": "assistant", "text": "对用户可见的回复"},
+        {
+            "kind": "work_summary",
+            "block_id": "work-1234567890abcdef",
+            "thinking_count": 2,
+            "tool_count": 1,
+            "summary": "工作中…进行了 2 次思考，调用了 1 次工具",
+        },
+    ]
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_timeline",
+        lambda task_id, **_kwargs: public_timeline if task_id == "task-2" else [],
+    )
     original = {
         "task_id": "task-2",
         "status": "Running",
@@ -44,10 +75,12 @@ def test_hydrate_agent_run_snapshot_reads_canonical_jsonl_only(
     assert "events" in original
     trace = snapshot["execution_trace"]
     assert trace["status"] == "running"
-    assert [message["text"] for message in trace["trace_messages"]] == [
-        "真实 harness 回复"
-    ]
-    assert trace["trace_files"][0]["path"] == "codex_agent_judge.jsonl"
+    assert trace["trace_messages"] == public_timeline
+    assert trace["trace_files"] == []
+    assert all(
+        message.get("text") != "真实 harness 回复"
+        for message in trace["trace_messages"]
+    )
 
 
 def test_canonical_journal_marks_trace_incremental_before_usage_arrives(
@@ -83,27 +116,7 @@ def test_canonical_steer_boundary_is_delivery_fact_if_status_write_was_lost(
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
     trace_dir = agent_runs.agent_run_trace_dir("task-steer")
     trace_dir.mkdir(parents=True)
-    records = [
-        {
-            "type": "numoj_trace",
-            "version": 1,
-            "event": {"kind": "thinking", "text": "插话前"},
-        },
-        {
-            "type": "numoj_steer",
-            "version": 1,
-            "message_id": "steer-1",
-        },
-        {
-            "type": "numoj_trace",
-            "version": 1,
-            "event": {"kind": "assistant", "text": "插话后"},
-        },
-    ]
-    (trace_dir / "numoj_trace_v1.jsonl").write_text(
-        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
-        encoding="utf-8",
-    )
+    captured = {}
     monkeypatch.setattr(
         agent_runs,
         "list_agent_session_messages",
@@ -117,6 +130,20 @@ def test_canonical_steer_boundary_is_delivery_fact_if_status_write_was_lost(
             "delivered_at": "2026-08-17 10:00:00",
         }],
     )
+    def timeline(task_id, *, status, steer_records):
+        captured.update(
+            task_id=task_id,
+            status=status,
+            steer_records=list(steer_records),
+        )
+        return [{
+            "kind": "user",
+            "message_id": "steer-1",
+            "text": steer_records[0]["user_message"],
+            "attachments": steer_records[0]["attachments"],
+        }]
+
+    monkeypatch.setattr(agent_runs, "list_agent_trace_timeline", timeline)
 
     trace = agent_runs.build_agent_execution_trace({
         "task_id": "task-steer",
@@ -124,12 +151,12 @@ def test_canonical_steer_boundary_is_delivery_fact_if_status_write_was_lost(
         "status": "Running",
     })
 
-    assert [item["kind"] for item in trace["trace_messages"]] == [
-        "thinking", "user", "assistant",
-    ]
-    assert trace["trace_messages"][1]["text"] == "改为检查边界"
-    assert trace["trace_messages"][1]["message_id"] == "steer-1"
-    assert trace["trace_messages"][1]["attachments"][0]["name"] == "note.txt"
+    assert [item["kind"] for item in trace["trace_messages"]] == ["user"]
+    assert trace["trace_messages"][0]["text"] == "改为检查边界"
+    assert trace["trace_messages"][0]["message_id"] == "steer-1"
+    assert trace["trace_messages"][0]["attachments"][0]["name"] == "note.txt"
+    assert captured["task_id"] == "task-steer"
+    assert captured["status"] == "Running"
 
 
 def test_canonical_steer_boundary_does_not_render_unconfirmed_message(
@@ -139,18 +166,17 @@ def test_canonical_steer_boundary_does_not_render_unconfirmed_message(
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
     trace_dir = agent_runs.agent_run_trace_dir("task-steer-pending")
     trace_dir.mkdir(parents=True)
-    (trace_dir / "numoj_trace_v1.jsonl").write_text(
-        json.dumps({
-            "type": "numoj_steer",
-            "version": 1,
-            "message_id": "steer-pending",
-        }) + "\n",
-        encoding="utf-8",
-    )
     monkeypatch.setattr(
         agent_runs,
         "list_agent_session_messages",
         lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_timeline",
+        lambda _task_id, *, status, steer_records: (
+            [] if not steer_records else pytest.fail("不应传入未确认插话")
+        ),
     )
 
     trace = agent_runs.build_agent_execution_trace({
@@ -196,18 +222,18 @@ def test_agent_snapshot_recalculates_cost_from_the_current_endpoint_prices(
     tmp_path,
 ):
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
-    trace_dir = agent_runs.agent_run_trace_dir("task-priced")
-    trace_dir.mkdir(parents=True)
-    (trace_dir / "codex_reverse_solve.jsonl").write_text(
-        json.dumps({
-            "type": "turn.completed",
-            "usage": {
-                "input_tokens": 900_000,
-                "cached_input_tokens": 700_000,
-                "output_tokens": 50_000,
-            },
-        }) + "\n",
-        encoding="utf-8",
+    monkeypatch.setattr(
+        agent_runs,
+        "get_agent_trace_token_usage",
+        lambda _task_id: {
+            "source": "codex",
+            "request_count": 1,
+            "input_uncached_tokens": 200_000,
+            "input_cached_tokens": 700_000,
+            "input_cache_write_tokens": 0,
+            "input_total_tokens": 900_000,
+            "output_tokens": 50_000,
+        },
     )
 
     current_endpoint = {

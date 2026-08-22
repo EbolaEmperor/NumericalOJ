@@ -8,16 +8,16 @@ from pathlib import Path
 import re
 
 from oj_modules.agents.messages import (
-    get_agent_session_message,
     list_agent_session_messages,
+)
+from oj_modules.agents.trace_store import (
+    get_agent_trace_token_usage,
+    list_agent_trace_timeline,
 )
 from oj_modules.config import AGENT_WORKSPACE_ROOT
 from oj_modules.problems.agent_launch import token_pricing_from_endpoint
 from oj_modules.ranking.reverse_judge.traces import (
     calculate_agent_token_cost_rmb,
-    collect_agent_token_usage,
-    collect_agent_trace_files,
-    collect_agent_trace_messages,
 )
 from oj_modules.site_config.services import get_llm_endpoint
 
@@ -33,76 +33,6 @@ _SESSION_USAGE_COUNTER_FIELDS = (
     "reasoning_output_tokens",
 )
 _CUMULATIVE_RESUME_USAGE_SOURCES = frozenset({"claude_code", "pi"})
-
-
-def _hydrate_agent_steer_trace_messages(state, messages, *, records=None):
-    """把 canonical journal 中不含 Prompt 的已接收锚点投影为用户消息。
-
-    marker 本身来自 Harness 的 accepted 回执，是投递事实；数据库状态只
-    保存页面/队列进度，不能因一次回执写库失败而覆盖这个更强的事实源。
-    """
-
-    marker_ids = tuple(dict.fromkeys(
-        str(item.get("message_id") or "").strip()
-        for item in messages or ()
-        if isinstance(item, dict)
-        and str(item.get("kind") or "").strip().lower() == "steer"
-        and str(item.get("message_id") or "").strip()
-    ))
-    if not marker_ids:
-        return list(messages or ())
-
-    session_id = str((state or {}).get("session_id") or "").strip()
-    if records is None:
-        try:
-            if session_id:
-                records = list_agent_session_messages(
-                    session_id,
-                    delivery_modes="steer",
-                )
-            else:
-                records = [
-                    get_agent_session_message(message_id)
-                    for message_id in marker_ids
-                ]
-        except Exception:
-            # 轨迹仍可以继续显示；数据库瞬时不可用时宁可暂不
-            # 显示插话，也不能把只有 control id 的锚点泄露给页面。
-            records = []
-    else:
-        records = list(records or ())
-    task_id = str((state or {}).get("task_id") or "").strip()
-    records_by_id = {
-        str(record.get("message_id") or "").strip(): record
-        for record in records
-        if isinstance(record, dict)
-        and str(record.get("delivery_mode") or "").strip().lower() == "steer"
-        and (
-            not task_id
-            or str(record.get("target_task_id") or "").strip() == task_id
-        )
-    }
-    hydrated = []
-    for item in messages or ():
-        if not isinstance(item, dict) or str(
-            item.get("kind") or ""
-        ).strip().lower() != "steer":
-            hydrated.append(item)
-            continue
-        message_id = str(item.get("message_id") or "").strip()
-        record = records_by_id.get(message_id)
-        if not record:
-            continue
-        hydrated.append({
-            "kind": "user",
-            "title": "用户插话",
-            "text": str(record.get("user_message") or ""),
-            "message_id": message_id,
-            "attachments": list(record.get("attachments") or ()),
-            "delivered_at": record.get("delivered_at"),
-            "line": item.get("line"),
-        })
-    return hydrated
 
 
 def normalize_agent_task_id(task_id):
@@ -168,20 +98,12 @@ def _current_token_pricing(state):
 
 
 def build_agent_execution_trace(state, *, steer_records=None):
-    """按 Reverse Judge 的公共 JSONL 解析契约构造执行轨迹。"""
+    """从 v2 存储构造只含公开时间线与用量快照的执行轨迹。"""
 
     state = state if isinstance(state, dict) else {}
     task_id = str(state.get("task_id") or "").strip()
-    try:
-        trace_dir = agent_run_trace_dir(task_id)
-    except ValueError:
-        trace_dir = None
-    canonical_journal = bool(
-        trace_dir is not None
-        and (trace_dir / "numoj_trace_v1.jsonl").is_file()
-    )
     status = _execution_trace_status(state.get("status"))
-    token_usage = collect_agent_token_usage(trace_dir)
+    token_usage = get_agent_trace_token_usage(task_id) if task_id else None
     if token_usage is not None:
         token_usage = dict(token_usage)
         cost_rmb = calculate_agent_token_cost_rmb(
@@ -190,15 +112,28 @@ def build_agent_execution_trace(state, *, steer_records=None):
         )
         if cost_rmb is not None:
             token_usage["cost_rmb"] = cost_rmb
-    trace_messages = _hydrate_agent_steer_trace_messages(
-        state,
-        collect_agent_trace_messages(
-            trace_dir,
-            include_steer_markers=True,
-        ),
-        records=steer_records,
+    if steer_records is None:
+        session_id = str(state.get("session_id") or "").strip()
+        try:
+            steer_records = (
+                list_agent_session_messages(
+                    session_id,
+                    delivery_modes="steer",
+                )
+                if session_id else []
+            )
+        except Exception:
+            steer_records = []
+    trace_messages = (
+        list_agent_trace_timeline(
+            task_id,
+            status=state.get("status"),
+            steer_records=steer_records,
+        )
+        if task_id else []
     )
     trace = {
+        "schema_version": 2,
         "trace_id": (
             hashlib.sha256(task_id.encode("utf-8", "replace")).hexdigest()[:16]
             if task_id else ""
@@ -210,14 +145,11 @@ def build_agent_execution_trace(state, *, steer_records=None):
         ),
         "stdout": "",
         "stderr": "",
-        "trace_files": collect_agent_trace_files(trace_dir),
+        "trace_files": [],
         "trace_messages": trace_messages,
         "token_usage": token_usage,
+        "incremental": True,
     }
-    if canonical_journal:
-        # trace 级口径不能依赖 usage 是否已经到达：运行中的 thinking/tool
-        # 事件也已经是当前任务增量，且有些上游不会返回 usage。
-        trace["incremental"] = True
     return trace
 
 
