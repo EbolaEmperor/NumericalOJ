@@ -1557,6 +1557,22 @@
     background: var(--numoj-brand-hover);
   }
 
+  /* 主操作按钮（如"添加题目"）统一黑底白字。 */
+  .numoj-content .btn-primary.numoj-primary-action,
+  .modal .btn-primary.numoj-primary-action {
+    --bs-btn-focus-shadow-rgb: 24, 24, 27;
+    border-color: var(--numoj-ink);
+    background: var(--numoj-ink);
+    color: #fff;
+  }
+
+  .numoj-content .btn-primary.numoj-primary-action:hover,
+  .modal .btn-primary.numoj-primary-action:hover {
+    border-color: #000;
+    background: #000;
+    color: #fff;
+  }
+
   .numoj-content .btn-outline-primary,
   .modal .btn-outline-primary {
     border-color: var(--numoj-line);
@@ -3073,6 +3089,22 @@ html.is-problem-pane-resizing * {
     background: var(--numoj-brand-hover);
   }
 
+  /* 主操作按钮（如"添加题目"）统一黑底白字，覆盖上面的通用按钮颜色。 */
+  .numoj-problems-content .btn-primary.numoj-primary-action,
+  .problem-detail-content-shell .btn-primary.numoj-primary-action {
+    --bs-btn-focus-shadow-rgb: 24, 24, 27;
+    border-color: var(--numoj-ink);
+    background: var(--numoj-ink);
+    color: #fff;
+  }
+
+  .numoj-problems-content .btn-primary.numoj-primary-action:hover,
+  .problem-detail-content-shell .btn-primary.numoj-primary-action:hover {
+    border-color: #000;
+    background: #000;
+    color: #fff;
+  }
+
   .numoj-problems-content .btn-outline-primary,
   .numoj-problems-content .modal .btn-outline-primary,
   .problem-detail-content-shell .btn-outline-primary,
@@ -3508,9 +3540,9 @@ html.is-problem-pane-resizing * {
     justify-content: center;
     gap: 4px;
     padding: 0 12px;
-    border-color: var(--numoj-brand);
+    border-color: var(--numoj-ink);
     border-radius: 7px;
-    background: var(--numoj-brand);
+    background: var(--numoj-ink);
     color: #fff;
     font-size: 0.75rem;
     font-weight: 600;
@@ -3518,8 +3550,8 @@ html.is-problem-pane-resizing * {
   }
 
   .numoj-primary-action:hover {
-    border-color: var(--numoj-brand-hover);
-    background: var(--numoj-brand-hover);
+    border-color: #000;
+    background: #000;
     color: #fff;
   }
 

@@ -554,30 +554,6 @@ def get_agent_trace_token_usage(task_id):
     return _normalized_token_usage(usage)
 
 
-def mark_agent_trace_migration_completed(task_id):
-    """标记一次性旧轨迹迁移完成；运行时写入不会触碰该标记。"""
-
-    task_id = _normalize_task_id(task_id)
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            _ensure_sync_state(cursor, task_id)
-            cursor.execute(
-                """
-                UPDATE agent_trace_sync_state
-                SET migration_completed=1
-                WHERE task_id=%s AND schema_version=%s
-                """,
-                (task_id, AGENT_TRACE_SCHEMA_VERSION),
-            )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 __all__ = [
     "AGENT_TRACE_SCHEMA_VERSION",
     "AgentTraceStoreError",
@@ -586,6 +562,5 @@ __all__ = [
     "get_last_agent_trace_assistant",
     "ingest_agent_trace_records",
     "list_agent_trace_timeline",
-    "mark_agent_trace_migration_completed",
     "save_agent_trace_token_usage",
 ]
