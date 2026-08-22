@@ -165,7 +165,7 @@
 .agent-status-chip--cancelled,
 .agent-status-chip--cleanupfailed {
   background: #fff1ef;
-  color: var(--agent-danger);
+  color: #4d4943;
 }
 
 .agent-session-header-side {
@@ -598,7 +598,7 @@
 
 .agent-trace-reply {
   min-width: 0;
-  margin: 6px 0 8px;
+  margin: 6px 0 2px;
   color: #292724;
 }
 
@@ -637,7 +637,7 @@
 .agent-work-block {
   display: block;
   min-width: 0;
-  margin: 2px 0 4px;
+  margin: 0 0 4px;
   border: 0;
   background: transparent;
 }
@@ -653,8 +653,8 @@
   color: #96918a;
   font-size: 12.5px;
   line-height: 1.45;
-  font-weight: 540;
-  font-family: var(--agent-sans, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif);
+  font-weight: 400;
+  font-family: inherit;
   user-select: none;
 }
 
@@ -684,7 +684,7 @@
 
 .agent-work-block--error > summary,
 .agent-work-block--error > summary > i {
-  color: var(--agent-danger);
+  color: #4d4943;
 }
 
 .agent-work-block-body {
@@ -883,7 +883,7 @@
 
 .agent-queue-action:hover { background: #eee9e0; color: #504b44; }
 .agent-queue-action--send { color: #6d685f; }
-.agent-queue-action--danger:hover { background: #fff0ed; color: var(--agent-danger); }
+.agent-queue-action--danger:hover { background: #fff0ed; color: #4d4943; }
 
 .agent-queue-body { min-width: 0; }
 
@@ -1301,7 +1301,7 @@
   font-size: 9px;
 }
 
-.agent-resume-feedback.is-error { color: var(--agent-danger); }
+.agent-resume-feedback.is-error { color: #4d4943; }
 
 .agent-rename-modal .modal-content {
   overflow: hidden;
@@ -1363,7 +1363,7 @@
 
 .agent-rename-modal-body p {
   margin: 2px 0 0;
-  color: var(--agent-danger);
+  color: #4d4943;
   font-size: 9px;
 }
 
@@ -1544,7 +1544,7 @@
   font-size: 13px;
 }
 
-.agent-file-error { color: var(--agent-danger); }
+.agent-file-error { color: #4d4943; }
 
 .agent-file-code,
 .agent-file-code-fallback,
@@ -1696,7 +1696,7 @@
 }
 
 .agent-workspace-sync.is-syncing i { animation: agent-spin 900ms linear infinite; }
-.agent-workspace-sync.is-error { color: var(--agent-danger); }
+.agent-workspace-sync.is-error { color: #4d4943; }
 
 .agent-workspace-tree {
   min-height: 0;
@@ -1720,7 +1720,7 @@
   text-align: center;
 }
 
-.agent-workspace-error { color: var(--agent-danger); }
+.agent-workspace-error { color: #4d4943; }
 
 .agent-tree-directory {
   margin: 0;

@@ -1183,7 +1183,7 @@
     var heading = document.createElement('header');
     var iconClass = 'fas fa-terminal';
     if (kind === 'thinking' || kind === 'reasoning') iconClass = 'fas fa-circle-notch';
-    else if (resultKind) iconClass = resultError ? 'fas fa-exclamation-triangle' : 'fas fa-check';
+    else if (resultKind) iconClass = resultError ? 'fas fa-times-circle' : 'fas fa-check';
     else if (kind === 'subagent') iconClass = 'fas fa-code-branch';
     var glyph = createElement('i', iconClass);
     glyph.setAttribute('aria-hidden', 'true');
@@ -1213,7 +1213,7 @@
     var glyph = fold.querySelector('summary > i');
     if (glyph) {
       glyph.className = message.has_error === true
-        ? 'fas fa-exclamation-triangle' : 'fas fa-wrench';
+        ? 'fas fa-times-circle' : 'fas fa-wrench';
     }
   }
 
@@ -2306,7 +2306,7 @@
       if (icon) icon.className = 'fas fa-sync-alt';
     } else if (state === 'error') {
       workspaceSync.classList.add('is-error');
-      if (icon) icon.className = 'fas fa-exclamation-triangle';
+      if (icon) icon.className = 'fas fa-times-circle';
     } else if (icon) {
       icon.className = 'fas fa-check';
     }
@@ -2726,7 +2726,7 @@
     }).catch(function (error) {
       if (generation !== fileFetchGeneration || error.name === 'AbortError') return;
       var holder = createElement('div', 'agent-file-error');
-      var icon = createElement('i', 'fas fa-exclamation-triangle');
+      var icon = createElement('i', 'fas fa-times-circle');
       icon.setAttribute('aria-hidden', 'true');
       holder.append(icon, createElement('strong', '', error.message || '无法读取文件'));
       fileSurface.replaceChildren(holder);

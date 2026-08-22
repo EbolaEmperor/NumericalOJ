@@ -92,7 +92,7 @@
              data-agent-work-block-id="{{ message.block_id }}"
              data-agent-work-block-task-id="{{ task_id }}">
       <summary>
-        <i class="fas {{ 'fa-exclamation-triangle' if message.has_error else 'fa-wrench' }}" aria-hidden="true"></i>
+        <i class="fas {{ 'fa-times-circle' if message.has_error else 'fa-wrench' }}" aria-hidden="true"></i>
         <span data-agent-work-block-summary>{{ message.summary }}</span>
       </summary>
       <div class="agent-work-block-body" data-agent-work-block-body>
