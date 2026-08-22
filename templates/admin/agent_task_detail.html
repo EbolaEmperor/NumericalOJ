@@ -87,12 +87,12 @@
 {% macro trace_message(message, task_id) %}
   {% set kind = message.kind|default(message.type|default('assistant', true), true)|lower %}
   {% if kind == 'work_summary' %}
-    <details class="agent-work-block{% if message.has_error %} agent-work-block--error{% endif %}{% if message.is_running %} is-running{% endif %}"
+    <details class="agent-work-block{% if message.is_running %} is-running{% endif %}"
              data-agent-work-block
              data-agent-work-block-id="{{ message.block_id }}"
              data-agent-work-block-task-id="{{ task_id }}">
       <summary>
-        <i class="fas {{ 'fa-times-circle' if message.has_error else 'fa-wrench' }}" aria-hidden="true"></i>
+        <i class="fas fa-wrench" aria-hidden="true"></i>
         <span data-agent-work-block-summary>{{ message.summary }}</span>
       </summary>
       <div class="agent-work-block-body" data-agent-work-block-body>

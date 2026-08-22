@@ -1208,13 +1208,9 @@
   function updateWorkBlock(fold, message) {
     var summary = fold.querySelector('[data-agent-work-block-summary]');
     if (summary) summary.textContent = asText(message.summary || '工作详情');
-    fold.classList.toggle('agent-work-block--error', message.has_error === true);
     fold.classList.toggle('is-running', message.is_running === true);
     var glyph = fold.querySelector('summary > i');
-    if (glyph) {
-      glyph.className = message.has_error === true
-        ? 'fas fa-times-circle' : 'fas fa-wrench';
-    }
+    if (glyph) glyph.className = 'fas fa-wrench';
   }
 
   function bindWorkBlock(fold) {

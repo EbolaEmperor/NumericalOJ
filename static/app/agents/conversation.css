@@ -598,7 +598,7 @@
 
 .agent-trace-reply {
   min-width: 0;
-  margin: 6px 0 2px;
+  margin: 6px 0 0;
   color: #292724;
 }
 
@@ -613,6 +613,10 @@
   color: inherit;
   font-size: 12.5px;
   line-height: 1.72;
+}
+
+.agent-trace-reply .agent-trace-copy > p:last-child {
+  margin-bottom: 0;
 }
 
 .agent-trace-reply .agent-trace-copy > pre {
@@ -680,11 +684,6 @@
 .agent-work-block.is-running > summary > i {
   color: #8d8579;
   animation: agent-live-pulse 1.6s ease-in-out infinite;
-}
-
-.agent-work-block--error > summary,
-.agent-work-block--error > summary > i {
-  color: #4d4943;
 }
 
 .agent-work-block-body {
