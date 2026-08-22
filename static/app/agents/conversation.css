@@ -1917,7 +1917,6 @@
   }
 
   .agent-conversation-pane { width: 100%; }
-  .agent-session-header { padding-right: 58px; }
   .agent-session-header-side { gap: 5px; }
   .agent-session-requester {
     max-width: 112px;

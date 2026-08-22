@@ -870,9 +870,6 @@ rm -f -- "$ARC_RESULT_FILE"
 
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 
-phase='迁移 Agent v2 轨迹'
-"$CANDIDATE_PYTHON" -B scripts/migrate_agent_traces_v2.py --apply
-
 phase='种入 VibeHub 示例作品'
 "$CANDIDATE_PYTHON" -B deploy/seed_vibehub_examples.py \
   --repository-root "$ROOT_DIR" \
