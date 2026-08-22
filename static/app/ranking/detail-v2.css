@@ -1002,7 +1002,7 @@
     min-height: 94px;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 12px;
-    padding: 13px 74px 13px 15px;
+    padding: 13px 15px;
   }
 
   .ranking-header-facts {
@@ -1011,6 +1011,7 @@
 
   .ranking-mobile-rail-open {
     display: inline-flex;
+    justify-self: end;
     min-height: 33px;
     align-items: center;
     justify-content: center;
@@ -1051,7 +1052,7 @@
     top: 0;
     right: 0;
     bottom: 0;
-    width: min(86vw, 310px);
+    width: var(--numoj-mobile-sidebar-width);
     padding-top: 48px;
     border-left-color: var(--ranking-v2-line);
     box-shadow: -22px 0 54px rgba(24, 24, 27, 0.14);
@@ -1102,7 +1103,7 @@
 @media (max-width: 620px) {
   .ranking-competition-header {
     min-height: 88px;
-    padding-left: 12px;
+    padding-inline: 12px;
   }
 
   .ranking-competition-eyebrow > span:last-child {

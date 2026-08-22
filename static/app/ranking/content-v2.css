@@ -213,6 +213,9 @@
 }
 
 .ranking-v2-detail .matches-card {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow: visible;
   border: 0;
   border-radius: 0;
@@ -327,6 +330,10 @@
   color: var(--rkv2-ink);
 }
 
+.ranking-v2-detail .matches-rebuild-btn:hover i {
+  color: inherit;
+}
+
 .ranking-v2-detail .matches-scroll {
   overflow-x: auto;
   padding: 0 clamp(16px, 2.2vw, 30px);
@@ -341,14 +348,16 @@
 }
 
 .ranking-v2-detail .match-row {
+  position: relative;
   display: grid;
   min-height: 64px;
   grid-template-columns: 76px minmax(200px, 1fr) 52px minmax(200px, 1fr) 78px;
   align-items: center;
   gap: 12px;
-  padding: 0 4px;
+  padding: 0 14px 0 18px;
   border-bottom: 1px solid var(--rkv2-line);
   background: #fff;
+  cursor: pointer;
 }
 
 .ranking-v2-detail .match-row:hover {
@@ -439,12 +448,35 @@
 }
 
 .ranking-v2-detail .match-action {
+  position: relative;
+  z-index: 2;
   display: flex;
   justify-content: flex-end;
   gap: 3px;
+  pointer-events: none;
 }
 
-.ranking-v2-detail .match-detail-btn,
+.ranking-v2-detail .match-detail-btn {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ranking-v2-detail .match-detail-btn:focus-visible {
+  outline: 2px solid var(--rkv2-orange);
+  outline-offset: -3px;
+}
+
+.ranking-v2-detail .match-detail-label,
 .ranking-v2-detail .match-delete-btn {
   display: inline-flex;
   min-height: 28px;
@@ -458,13 +490,29 @@
   font-size: 9px;
 }
 
-.ranking-v2-detail .match-detail-btn:hover {
+.ranking-v2-detail .match-detail-label {
+  transition: color 140ms ease;
+}
+
+.ranking-v2-detail .match-detail-label i {
+  transition: transform 140ms ease;
+}
+
+.ranking-v2-detail .match-row:hover .match-detail-label {
   color: var(--rkv2-orange);
 }
 
+.ranking-v2-detail .match-row:hover .match-detail-label i {
+  transform: translateX(2px);
+}
+
 .ranking-v2-detail .match-delete-btn {
+  position: relative;
+  z-index: 3;
   width: 28px;
   color: var(--rkv2-ink-4);
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .ranking-v2-detail .match-delete-btn:hover {
@@ -2031,18 +2079,102 @@
     padding-left: 0;
   }
 
+  .ranking-v2-detail .matches-scroll {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+    padding: 0;
+  }
+
+  .ranking-v2-detail #matchesDynamic,
+  .ranking-v2-detail .matches-list {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .ranking-v2-detail .match-row {
+    min-width: 0;
+    min-height: 142px;
+    grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr);
+    grid-template-areas:
+      "time time time"
+      "side-a versus side-b"
+      "action action action";
+    gap: 10px;
+    padding: 12px 14px 12px 18px;
+  }
+
+  .ranking-v2-detail .match-time {
+    grid-area: time;
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+
+  .ranking-v2-detail .match-side {
+    min-width: 0;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .ranking-v2-detail .match-side-a {
+    grid-area: side-a;
+    text-align: right;
+  }
+
+  .ranking-v2-detail .match-side-b {
+    grid-area: side-b;
+    text-align: left;
+  }
+
+  .ranking-v2-detail .match-side-a .match-person,
+  .ranking-v2-detail .match-side-a .match-stats {
+    justify-content: flex-end;
+  }
+
+  .ranking-v2-detail .match-side-b .match-person,
+  .ranking-v2-detail .match-side-b .match-stats {
+    justify-content: flex-start;
+  }
+
+  .ranking-v2-detail .match-person {
+    max-width: 100%;
+  }
+
+  .ranking-v2-detail .match-username {
+    max-width: 100%;
+  }
+
+  .ranking-v2-detail .match-vs {
+    grid-area: versus;
+    min-height: 58px;
+  }
+
+  .ranking-v2-detail .match-action {
+    grid-area: action;
+    justify-content: flex-end;
+  }
+
   .ranking-v2-detail .leaderboard-row {
     grid-template-columns: 48px minmax(170px, 1fr) minmax(160px, 32%) 82px;
   }
 
   .ranking-v2-detail .matches-head {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: nowrap;
   }
 
   .ranking-v2-detail .matches-head-actions {
-    width: 100%;
-    justify-content: space-between;
+    width: auto;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+
+  .ranking-v2-detail .matches-meta {
+    display: none;
   }
 
   .ranking-v2-detail .match-detail-toolbar {

@@ -96,7 +96,24 @@
 
 .vibe-card-author > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.vibe-card-author .vibe-author-avatar { --avatar-cell: #18181b; width: 22px; height: 22px; flex-basis: 22px; padding: 1px; border-color: rgb(255 255 255 / 55%); border-radius: 6px; background: rgb(255 255 255 / 92%); }
+.vibe-card-author .vibe-author-avatar {
+  --avatar-cell: #18181b;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  overflow: hidden;
+  padding: 1px;
+  border: 1px solid rgb(255 255 255 / 55%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 92%);
+}
+
+.vibe-card-author .vibe-author-avatar > span { background: transparent; }
+
+.vibe-card-author .vibe-author-avatar > span.is-filled { background: var(--avatar-cell); }
 
 .vibe-card-pending { position: absolute; z-index: 2; inset: 0; display: flex; align-items: flex-start; gap: 6px; padding: 13px; background: rgb(9 9 11 / 43%); color: #fff; font-size: .68rem; font-weight: 650; pointer-events: none; }
 

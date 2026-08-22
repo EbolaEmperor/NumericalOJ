@@ -28,6 +28,11 @@
       <article class="match-row{% if winner == -1 %} is-failed{% elif winner == 0 %} is-draw{% endif %}{% if is_me_a or is_me_b %} is-mine{% endif %}"
                data-ranking-match-row
                {% if is_me_a or is_me_b %}data-mine{% endif %}>
+        <button type="button"
+                class="match-detail-btn"
+                data-match-id="{{ m.id }}"
+                aria-label="查看 {{ name_a }} 对阵 {{ name_b }} 的对战详情"></button>
+
         <time class="match-time">
           <span class="match-time-date">{{ ts[5:10] if ts|length >= 10 else ts }}</span>
           <span class="match-time-clock">{{ ts[11:16] if ts|length >= 16 else '' }}</span>
@@ -83,10 +88,10 @@
         </div>
 
         <div class="match-action">
-          <button type="button" class="match-detail-btn" data-match-id="{{ m.id }}">
+          <span class="match-detail-label" aria-hidden="true">
             <span>详情</span>
             <i class="fas fa-arrow-right" aria-hidden="true"></i>
-          </button>
+          </span>
           {% if is_admin %}
             {% if winner == -1 %}
               {% set confirm_text = '确认删除对战 #' ~ m.id ~ '？该场为评测失败记录，删除后不会影响双方分数。' %}
