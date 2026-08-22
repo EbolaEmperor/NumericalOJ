@@ -564,6 +564,10 @@ class _IdentityRelayPolicy:
         try:
             redirect_path, canonical_redirect_path = _canonical_request_path(
                 parts.path or "/",
+                # 站内页面路由可以合法地以 `/` 结尾，例如打榜赛详情页。
+                # 这是已完成同源校验的上游 Location；保留末尾斜杠不会放宽
+                # 入站请求的路径边界，却不能把成功提交误报为 502。
+                allow_trailing_slash=True,
             )
         except _RequestRejected as exc:
             raise _RequestRejected(502, "unsafe upstream redirect path") from exc

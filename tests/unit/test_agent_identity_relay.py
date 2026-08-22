@@ -374,6 +374,19 @@ def test_same_origin_absolute_redirect_is_rewritten_and_records_submission():
     )
 
 
+def test_same_origin_redirect_allows_a_single_trailing_slash():
+    policy = relay._IdentityRelayPolicy("custom", None, "https://oj.example.test")
+    plan = policy.plan("POST", "/ranking/11/submit")
+
+    rewritten = policy.inspect_redirect(
+        plan,
+        302,
+        _headers(Location="/ranking/11/?tab=submit"),
+    )
+
+    assert rewritten == "/ranking/11/?tab=submit"
+
+
 def test_request_and_response_size_limits_fail_closed():
     with pytest.raises(relay._RequestRejected) as exc_info:
         relay._request_content_length(

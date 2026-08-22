@@ -1080,6 +1080,45 @@ def test_user_ranking_submit_allows_missing_base_model_and_omits_it_from_request
     assert submit_request[2]["data"] == {"agent_endpoint_id": "7"}
 
 
+def test_user_ranking_submit_confirms_creation_after_a_proxy_5xx(monkeypatch, capsys, tmp_path):
+    cli = _load_numoj_user_cli_module()
+    problem_zip = tmp_path / "submission.zip"
+    problem_zip.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+
+    class _SubmitClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.submitted = False
+
+        def request(self, method, path, **kwargs):
+            self.requests.append((method, path, kwargs))
+            if path.endswith("/my-submissions"):
+                rows = [{"id": 42}] if self.submitted else []
+                return _PayloadResponse({"submissions": rows})
+            if path.endswith("/submit"):
+                self.submitted = True
+                return _StatusPayloadResponse(502, {"message": "upstream redirect failed"})
+            raise AssertionError(path)
+
+    fake_client = _SubmitClient()
+    monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
+
+    cli.ranking_submit(Namespace(
+        competition_id=9,
+        base_model="search-bot",
+        code_zip=str(problem_zip),
+        answer_file=None,
+        agent_endpoint_id=None,
+    ))
+
+    assert cli.json.loads(capsys.readouterr().out) == {
+        "success": True,
+        "submission_id": 42,
+        "recovered_from_transport_error": True,
+        "message": "提交接口返回 HTTP 502，但已确认提交 #42 已创建；请不要重复提交。",
+    }
+
+
 def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeypatch, capsys):
     cli = _load_numoj_user_cli_module()
     fake_client = _FakeClient()
