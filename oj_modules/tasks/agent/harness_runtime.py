@@ -634,6 +634,8 @@ class _CanonicalJournalObserver:
         self._buffer = bytearray()
         self._discarding_record = False
         self._closed = False
+        self._trace_sequence = 0
+        self._pending_trace_records = []
         self._lock = threading.Lock()
         flags = (
             os.O_WRONLY
@@ -737,14 +739,30 @@ class _CanonicalJournalObserver:
             or event.get("version") != 1
         ):
             return
+        if event.get("type") in {"numoj_trace", "numoj_steer"}:
+            self._trace_sequence += 1
+            event["sequence"] = self._trace_sequence
+        if event.get("type") == "numoj_trace":
+            trace_event = (
+                event.get("event")
+                if isinstance(event.get("event"), dict)
+                else None
+            )
+            if trace_event is None:
+                return
+            record_id = str(trace_event.get("id") or "").strip()
+            if not record_id:
+                record_id = f"trace-{self._trace_sequence}"
+                trace_event["id"] = record_id
         if event.get("type") == "numoj_usage":
             record_id = str(event.get("id") or "").strip()
             if not record_id:
                 return
             event["id"] = record_id
+        redacted_event = self._redact(event)
         payload = (
             json.dumps(
-                self._redact(event),
+                redacted_event,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -756,6 +774,14 @@ class _CanonicalJournalObserver:
             payload,
             pinned=event.get("type") == "numoj_steer",
         )
+        if event.get("type") in {"numoj_trace", "numoj_steer"}:
+            self._pending_trace_records.append(redacted_event)
+
+    def drain_trace_records(self):
+        with self._lock:
+            records = tuple(self._pending_trace_records)
+            self._pending_trace_records.clear()
+            return records
 
     def feed(self, block):
         payload = bytes(block or b"")
@@ -875,6 +901,7 @@ def _run_with_bounded_output(
     canonical_journal_path=None,
     canonical_journal_secrets=(),
 ):
+    final_tick_error = None
     interactive = callable(control_source)
     stdout_mirror = (
         _BoundedStdoutMirror(
@@ -1088,7 +1115,15 @@ def _run_with_bounded_output(
                     try:
                         if stdout_mirror is not None:
                             stdout_mirror.publish()
-                        on_tick(final=False)
+                        if canonical_observer is not None:
+                            on_tick(
+                                final=False,
+                                trace_records=(
+                                    canonical_observer.drain_trace_records()
+                                ),
+                            )
+                        else:
+                            on_tick(final=False)
                     except Exception:
                         pass
                     last_tick = now
@@ -1123,11 +1158,22 @@ def _run_with_bounded_output(
             stdout_mirror.publish()
         if callable(on_tick):
             try:
-                on_tick(final=True)
-            except Exception:
-                pass
+                if canonical_observer is not None:
+                    on_tick(
+                        final=True,
+                        trace_records=canonical_observer.drain_trace_records(),
+                    )
+                else:
+                    on_tick(final=True)
+            except Exception as exc:
+                # 中间 tick 可以等待下一轮重试；最后一次 canonical tick
+                # 没有后继，必须把 v2 持久化失败交给任务收束逻辑处理。
+                if canonical_observer is not None:
+                    final_tick_error = exc
         if stdout_mirror is not None:
             stdout_mirror.close()
+    if final_tick_error is not None:
+        raise final_tick_error
     return HarnessRunResult(
         returncode=int(returncode),
         timed_out=False,
@@ -1459,6 +1505,7 @@ def run_agent_harness(
     workspace_files=None,
     artifact_files=None,
     trace_callback=None,
+    trace_records_callback=None,
     cancel_check=None,
     reset_trace=True,
     control_source=None,
@@ -1674,7 +1721,10 @@ def run_agent_harness(
                     (web_search_settings or {}).get("authorization"),
                 )
 
-                def sync_trace(*, final=False):
+                pending_trace_records = []
+
+                def sync_trace(*, final=False, trace_records=()):
+                    pending_trace_records.extend(trace_records or ())
                     sync_kwargs = {"secrets": trace_secrets}
                     if canonical_enabled:
                         sync_kwargs["canonical"] = True
@@ -1685,6 +1735,22 @@ def run_agent_harness(
                         canonical_trace_path or stdout_trace_path,
                         **sync_kwargs,
                     )
+                    if callable(trace_records_callback) and (
+                        pending_trace_records or final
+                    ):
+                        try:
+                            trace_records_callback(
+                                tuple(pending_trace_records),
+                                final=bool(final),
+                            )
+                        except Exception:
+                            # v2 入库失败时保留批次，下一次 tick 重试；轨迹
+                            # 中间故障不能堵塞 stdout drain；final 已没有后继，
+                            # 必须向上传递，避免终态缺少 conclude/工作详情。
+                            if final:
+                                raise
+                        else:
+                            pending_trace_records.clear()
                     if callable(trace_callback):
                         try:
                             trace_callback()

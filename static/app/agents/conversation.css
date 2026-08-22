@@ -421,9 +421,6 @@
   padding: 12px 0;
 }
 
-.agent-trace-event--before-steer::after,
-.agent-trace-event:has(+ .agent-timeline-steer)::after { display: none; }
-
 .agent-response {
   min-width: 0;
 }
@@ -528,14 +525,12 @@
 
 .agent-turn-details {
   margin: 0 0 18px;
-  border: 1px solid transparent;
-  border-radius: 10px;
+  border: 0;
   color: var(--agent-muted);
 }
 
 .agent-turn-details[open] {
-  border-color: var(--agent-line);
-  background: #fbfaf7;
+  background: transparent;
 }
 
 .agent-turn-details > summary {
@@ -544,8 +539,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 7px 9px;
-  border-radius: 9px;
+  padding: 7px 0;
+  border-bottom: 1px solid transparent;
   cursor: pointer;
   list-style: none;
   color: #81796e;
@@ -556,8 +551,11 @@
 .agent-turn-details > summary::-webkit-details-marker { display: none; }
 
 .agent-turn-details > summary:hover {
-  background: #f2efe8;
   color: #4d4943;
+}
+
+.agent-turn-details[open] > summary {
+  border-bottom-color: var(--agent-line);
 }
 
 .agent-turn-details > summary > span:first-child {
@@ -594,65 +592,33 @@
 }
 
 .agent-turn-trace {
-  display: grid;
-  gap: 0;
-  padding: 1px 12px 10px;
-}
-
-.agent-trace-event {
-  position: relative;
-  display: grid;
-  min-width: 0;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 9px;
-  padding: 9px 0;
-  color: #57534e;
-}
-
-.agent-trace-event:not(:last-child)::after {
-  position: absolute;
-  top: 30px;
-  bottom: -7px;
-  left: 10px;
-  width: 1px;
-  background: #dfd9ce;
-  content: "";
-}
-
-.agent-trace-event-icon {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border: 1px solid #dfd8cc;
-  border-radius: 6px;
-  background: #fff;
-  color: #847968;
-  font-size: 7px;
-}
-
-.agent-trace-event--tool .agent-trace-event-icon { color: #2f6c9b; }
-.agent-trace-event--result .agent-trace-event-icon { color: var(--agent-success); }
-.agent-trace-event--error .agent-trace-event-icon { color: var(--agent-danger); }
-.agent-trace-event--subagent .agent-trace-event-icon { color: #8b5c9b; }
-
-.agent-trace-event--error pre {
-  border-color: rgb(185 56 50 / 22%);
-  background: rgb(185 56 50 / 5%);
-}
-
-.agent-trace-event > div { min-width: 0; }
-
-.agent-trace-event strong {
   display: block;
-  margin: 3px 0 5px;
-  color: #5c574f;
-  font: 620 8.5px/1.35 var(--agent-mono);
+  padding: 10px 0 4px;
 }
 
-.agent-trace-event pre,
+.agent-trace-reply {
+  min-width: 0;
+  margin: 13px 0 17px;
+  color: #292724;
+}
+
+.agent-trace-reply:first-child { margin-top: 4px; }
+.agent-trace-reply:last-child { margin-bottom: 7px; }
+
+.agent-trace-reply .agent-trace-copy {
+  color: inherit;
+  font-size: 12.5px;
+  line-height: 1.72;
+}
+
+.agent-trace-reply .agent-trace-copy > pre {
+  margin: 0;
+  overflow: auto;
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .agent-trace-copy {
   margin: 0;
   overflow: auto;
@@ -663,124 +629,126 @@
   word-break: break-word;
 }
 
-.agent-trace-event--thinking .agent-trace-copy.numoj-markdown {
-  white-space: normal;
+/* Codex 式低权重工作摘要：主时间线只占一行，不形成事件卡片。 */
+.agent-work-block {
+  display: block;
+  min-width: 0;
+  margin: 5px 0 9px;
+  border: 0;
+  background: transparent;
 }
 
-.agent-trace-event--thinking .agent-trace-copy > p {
-  margin: 0 0 .45em;
+.agent-work-block > summary {
+  display: inline-flex;
+  min-height: 25px;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 1px;
+  cursor: pointer;
+  list-style: none;
+  color: #96918a;
+  font: 540 10.5px/1.45 var(--agent-sans);
+  user-select: none;
 }
 
-.agent-trace-event--thinking .agent-trace-copy > p:last-child {
-  margin-bottom: 0;
+.agent-work-block > summary::-webkit-details-marker { display: none; }
+
+.agent-work-block > summary > i {
+  width: 14px;
+  color: #aaa59d;
+  font-size: 8.5px;
+  text-align: center;
 }
 
-.agent-trace-event pre {
+.agent-work-block > summary:hover {
+  color: #625e58;
+}
+
+.agent-work-block > summary:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid rgb(151 126 87 / 42%);
+  outline-offset: 2px;
+}
+
+.agent-work-block.is-running > summary > i {
+  color: #8d8579;
+  animation: agent-live-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-work-block--error > summary,
+.agent-work-block--error > summary > i {
+  color: var(--agent-danger);
+}
+
+.agent-work-block-body {
+  min-width: 0;
+  margin: 6px 0 14px 7px;
+  padding: 3px 0 3px 17px;
+  border-left: 1px solid #ddd8d0;
+}
+
+.agent-work-detail {
+  min-width: 0;
+  padding: 7px 0 9px;
+}
+
+.agent-work-detail > header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  color: #777169;
+}
+
+.agent-work-detail > header > i {
+  width: 13px;
+  color: #9d968d;
+  font-size: 7.5px;
+  text-align: center;
+}
+
+.agent-work-detail > header > strong {
+  font: 620 8.5px/1.4 var(--agent-mono);
+}
+
+.agent-work-detail-body > pre {
   max-height: 260px;
+  margin: 0;
+  overflow: auto;
   padding: 7px 9px;
   border: 1px solid #e7e1d6;
   border-radius: 6px;
   background: #f5f2ec;
-  font-family: var(--agent-mono);
+  color: #716a60;
+  font: 9px/1.58 var(--agent-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-/* 轨迹默认呈现为轻量活动胶囊；内容仅在用户主动展开后出现。 */
-.agent-trace-fold {
-  display: block;
-  min-width: 0;
-  margin: 0;
-  border: 1px solid #e3ddd2;
-  border-radius: 7px;
-  background: #f8f6f1;
-  overflow: hidden;
+.agent-work-detail--error .agent-work-detail-body > pre {
+  border-color: rgb(185 56 50 / 22%);
+  background: rgb(185 56 50 / 5%);
 }
 
-.agent-trace-fold > summary {
-  display: flex;
-  min-height: 31px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 6px 8px;
-  cursor: pointer;
-  list-style: none;
-  color: #837b70;
-  user-select: none;
+.agent-work-detail--thinking .agent-trace-copy.numoj-markdown,
+.agent-work-detail--reasoning .agent-trace-copy.numoj-markdown {
+  white-space: normal;
 }
 
-.agent-trace-fold > summary::-webkit-details-marker { display: none; }
-
-.agent-trace-fold > summary:hover {
-  background: #f0ece4;
-  color: #514c45;
+.agent-work-detail--thinking .agent-trace-copy > p,
+.agent-work-detail--reasoning .agent-trace-copy > p {
+  margin: 0 0 .45em;
 }
 
-.agent-trace-fold > summary:focus-visible {
-  outline: 2px solid rgb(151 126 87 / 50%);
-  outline-offset: -2px;
+.agent-work-detail--thinking .agent-trace-copy > p:last-child,
+.agent-work-detail--reasoning .agent-trace-copy > p:last-child {
+  margin-bottom: 0;
 }
 
-.agent-trace-fold-copy {
-  display: inline-flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 7px;
-}
-
-.agent-trace-fold-copy > strong {
-  display: inline;
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  color: inherit;
-  font: 620 8.5px/1.35 var(--agent-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-trace-fold-copy > small {
-  overflow: hidden;
-  color: #aaa196;
-  font: 500 8px/1.3 var(--agent-mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-trace-fold-action {
-  flex: 0 0 auto;
-  color: #9a9184;
-  font: 600 7.5px/1 var(--agent-mono);
-}
-
-.agent-trace-fold[open] {
-  border-color: #d5ccbd;
-  background: #fbfaf7;
-}
-
-.agent-trace-fold[open] > summary {
-  border-bottom: 1px solid #e4ddd1;
-}
-
-.agent-trace-fold[open] .agent-trace-fold-action {
-  font-size: 0;
-}
-
-.agent-trace-fold[open] .agent-trace-fold-action::after {
-  content: "收起";
-  font-size: 7.5px;
-}
-
-.agent-trace-fold-body {
-  min-width: 0;
-  padding: 8px;
-}
-
-.agent-trace-fold-body > .agent-trace-copy {
-  margin: 0;
-}
-
-.agent-trace-fold-body > pre {
-  margin: 0;
+.agent-work-block-placeholder {
+  padding: 6px 0;
+  color: var(--agent-faint);
+  font: 9px/1.5 var(--agent-mono);
 }
 
 .agent-working-placeholder {
@@ -2089,6 +2057,7 @@
 @media (prefers-reduced-motion: reduce) {
   .agent-status-chip > i,
   .agent-live-mark i,
+  .agent-work-block.is-running > summary > i,
   .agent-workspace-sync i { animation: none !important; }
 
   .agent-workspace-pane,

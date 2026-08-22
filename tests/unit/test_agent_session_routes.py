@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from types import SimpleNamespace
 
 from flask import Flask
@@ -1454,7 +1455,6 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     assert decorate_calls[0][1] == {
         "current_task_id": "turn-1",
         "current_state": current_state,
-        "include_trace": False,
         "steer_records": [],
     }
 
@@ -1658,49 +1658,20 @@ def test_session_usage_cost_prefers_frozen_quota_ledger_amount():
     assert projected["session_token_usage"]["cost_complete"] is True
 
 
-def test_ordered_pi_turns_render_only_each_resume_trace_delta_and_keep_nonempty_baseline(
-    monkeypatch,
-):
-    first_messages = [
+def test_each_turn_uses_its_task_local_v2_public_timeline(monkeypatch):
+    first_messages = [{"kind": "assistant", "text": "first-progress"}]
+    second_messages = [
         {
-            "kind": "tool",
-            "title": "运行命令",
-            "text": f"command-{index}",
-            "line": index + 1,
-            "offset": index * 100,
-            "source": "pi-first",
-            "html": "<b>不可信</b>",
-        }
-        for index in range(39)
+            "kind": "work_summary",
+            "block_id": "work-1234567890abcdef",
+            "summary": "进行了 3 次思考，调用了 2 次工具",
+        },
+        {"kind": "assistant", "text": "second-progress"},
     ]
-    copied_prefix = [
-        {
-            **message,
-            # resume 后日志位置和服务端 HTML 可以变化，但不影响语义 LCP。
-            "line": int(message["line"]) + 900,
-            "offset": int(message["offset"]) + 100_000,
-            "source": "pi-resume",
-            "html": "<i>仍不可信</i>",
-        }
-        for message in first_messages
-    ]
-    second_messages = copied_prefix + [
-        {
-            "kind": "assistant",
-            "title": "AI 回复",
-            "text": f"second-{index}",
-            "meta": "deepseek-v4-flash",
-        }
-        for index in range(24)
-    ]
-    fourth_messages = second_messages + [
-        {"kind": "assistant", "title": "AI 回复", "text": "fourth-0"},
-        {"kind": "assistant", "title": "AI 回复", "text": "fourth-1"},
-    ]
+    fourth_messages = [{"kind": "assistant", "text": "fourth-progress"}]
     traces = {
         "turn-1": first_messages,
         "turn-2": second_messages,
-        # 入队/运行失败且没有 trace 时不能把第二轮完整轨迹 baseline 清空。
         "turn-3": [],
         "turn-4": fourth_messages,
     }
@@ -1723,17 +1694,19 @@ def test_ordered_pi_turns_render_only_each_resume_trace_delta_and_keep_nonempty_
             "harness": "pi",
             "status": "Completed" if index != 3 else "Failed",
             "user_message": f"message-{index}",
+            "conclusion": f"conclusion-{index}",
         }
         for index in range(1, 5)
     ])
 
-    deltas = [
+    timelines = [
         turn["execution_trace"]["trace_messages"]
         for turn in turns
     ]
-    assert [len(messages) for messages in deltas] == [39, 24, 0, 2]
-    assert deltas[1][0]["text"] == "second-0"
-    assert deltas[3][0]["text"] == "fourth-0"
+    assert [len(messages) for messages in timelines] == [1, 2, 0, 1]
+    assert timelines[1][0]["kind"] == "work_summary"
+    assert timelines[1][1]["text"] == "second-progress"
+    assert timelines[3][0]["text"] == "fourth-progress"
     assert turns[1]["execution_trace"]["token_usage"] == {
         "source": "pi",
         "request_count": 4,
@@ -1745,6 +1718,7 @@ def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
         "task_id": "turn-current",
         "harness": "codex",
         "status": "Completed",
+        "conclusion": "已完成",
         "execution_trace": {"trace_messages": [{
             "kind": "assistant",
             "text": "已完成",
@@ -1755,11 +1729,6 @@ def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
         routes,
         "hydrate_agent_run_snapshot",
         lambda _state: pytest.fail("当前轮不应重复 hydrate"),
-    )
-    monkeypatch.setattr(
-        routes,
-        "_decorate_agent_state_markdown",
-        lambda _state: pytest.fail("当前轮不应重复渲染轨迹 Markdown"),
     )
     monkeypatch.setattr(
         routes,
@@ -1782,22 +1751,21 @@ def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
     assert turn["conclusion"] == "已完成"
 
 
-def test_decorate_turns_can_defer_full_trace_markdown(monkeypatch):
+def test_decorate_turns_loads_public_timeline_without_internal_events(monkeypatch):
     monkeypatch.setattr(
         routes,
         "hydrate_agent_run_snapshot",
         lambda state: {
             **state,
             "execution_trace": {"trace_messages": [
-                {"kind": "thinking", "text": "很长的思考"},
-                {"kind": "assistant", "text": "已完成具体任务"},
+                {
+                    "kind": "work_summary",
+                    "block_id": "work-1234567890abcdef",
+                    "summary": "进行了 4 次思考，调用了 3 次工具",
+                },
+                {"kind": "assistant", "text": "阶段进展"},
             ]},
         },
-    )
-    monkeypatch.setattr(
-        routes,
-        "_decorate_agent_state_markdown",
-        lambda _state: pytest.fail("折叠轨迹不应在首屏渲染 Markdown"),
     )
     rendered = []
     monkeypatch.setattr(
@@ -1810,53 +1778,23 @@ def test_decorate_turns_can_defer_full_trace_markdown(monkeypatch):
         "task_id": "turn-lazy",
         "status": "Completed",
         "user_message": "执行任务",
-        "conclusion": "笼统结论",
-    }], include_trace=False)[0]
+        "conclusion": "已完成具体任务",
+    }])[0]
 
     assert turn["has_detail"] is True
-    assert turn["execution_trace"] == {}
+    assert [
+        item["kind"] for item in turn["execution_trace"]["trace_messages"]
+    ] == ["work_summary", "assistant"]
     assert turn["conclusion"] == "已完成具体任务"
-    assert rendered == ["执行任务", "已完成具体任务"]
+    assert rendered == ["阶段进展", "执行任务", "已完成具体任务"]
 
 
-@pytest.mark.parametrize("harness", ["codex", "opencode"])
-def test_incremental_harness_trace_is_not_resume_filtered(harness):
-    previous = [{"kind": "assistant", "text": "first"}]
-    current = previous + [{"kind": "assistant", "text": "second"}]
-    state = {
-        "harness": harness,
-        "execution_trace": {
-            "trace_messages": current,
-            "token_usage": {"source": harness, "request_count": 1},
-        },
-    }
-
-    assert routes._agent_state_with_trace_delta(
-        state,
-        previous,
-        harness,
-    ) is state
-    assert state["execution_trace"]["trace_messages"] == current
-
-
-@pytest.mark.parametrize("harness", ["pi", "claude_code"])
-def test_canonical_incremental_trace_is_not_legacy_resume_filtered(harness):
-    previous = [{"kind": "assistant", "text": "same opening"}]
-    current = previous + [{"kind": "assistant", "text": "new answer"}]
-    state = {
-        "harness": harness,
-        "execution_trace": {
-            "incremental": True,
-            "trace_messages": current,
-        },
-    }
-
-    assert routes._agent_state_with_trace_delta(
-        state,
-        previous,
-        harness,
-    ) is state
-    assert state["execution_trace"]["trace_messages"] == current
+def test_runtime_has_no_legacy_resume_trace_filter():
+    routes_source = (
+        Path(routes.__file__).read_text(encoding="utf-8")
+    )
+    assert "_agent_state_with_trace_delta" not in routes_source
+    assert "_load_agent_previous_trace_messages" not in routes_source
 
 
 @pytest.mark.parametrize(
@@ -1866,7 +1804,7 @@ def test_canonical_incremental_trace_is_not_legacy_resume_filtered(harness):
             "Completed",
             "解题 Agent 已提交并通过",
             [{"kind": "assistant", "text": "代码已经提交，并通过全部测试。"}],
-            "代码已经提交，并通过全部测试。",
+            "解题 Agent 已提交并通过",
         ),
         (
             "Completed",
@@ -1882,7 +1820,7 @@ def test_canonical_incremental_trace_is_not_legacy_resume_filtered(harness):
         ),
     ],
 )
-def test_agent_turn_conclusion_uses_trace_only_for_completed_output(
+def test_agent_turn_conclusion_uses_persisted_conclude(
     monkeypatch,
     status,
     stored,

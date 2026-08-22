@@ -101,6 +101,7 @@
   var taskTransitionProbePending = false;
   var steerSignature = '';
   var traceSignature = '';
+  var workBlockCache = new Map();
   var treeSignature = '';
   var workspaceFetchGeneration = 0;
   var workspaceFetchPending = null;
@@ -1130,13 +1131,6 @@
     return kind === 'assistant' || kind === 'thinking' || kind === 'reasoning';
   }
 
-  function isCollapsibleTraceKind(kind) {
-    return kind === 'thinking' || kind === 'reasoning'
-      || kind === 'tool' || kind === 'tool_call'
-      || kind === 'tool_result' || kind === 'tool-result'
-      || kind === 'subagent';
-  }
-
   function traceEventTitle(kind, message, resultError) {
     if (kind === 'thinking' || kind === 'reasoning') return '思考过程';
     if (kind === 'tool' || kind === 'tool_call') {
@@ -1147,15 +1141,6 @@
     }
     if (kind === 'subagent') return asText(message.title || message.name || '子 Agent');
     return '';
-  }
-
-  function traceFoldHint(kind, resultError) {
-    if (kind === 'thinking' || kind === 'reasoning') return '推理内容';
-    if (kind === 'tool' || kind === 'tool_call') return '调用详情';
-    if (kind === 'tool_result' || kind === 'tool-result') {
-      return resultError ? '执行失败' : '执行完成';
-    }
-    return '协作详情';
   }
 
   function appendTraceEventContent(body, message, kind) {
@@ -1177,71 +1162,126 @@
     }
   }
 
-  function traceEvent(message) {
+  function traceReply(message) {
     var kind = messageKind(message);
     if (kind === 'user') {
       return userTimelineMessage(message, 'agent-timeline-steer--detail');
     }
+    var row = createElement('section', 'agent-trace-reply');
+    var body = createElement('div');
+    appendTraceEventContent(body, message, kind);
+    while (body.firstChild) row.appendChild(body.firstChild);
+    return row;
+  }
+
+  function traceWorkDetail(message) {
+    var kind = messageKind(message);
     var resultKind = kind === 'tool_result' || kind === 'tool-result';
     var resultError = resultKind && message && message.is_error === true;
     var visualKind = resultKind ? (resultError ? 'error' : 'result') : kind.replace(/_/g, '-');
-    var row = createElement('section', 'agent-trace-event agent-trace-event--' + visualKind);
-    var icon = createElement('span', 'agent-trace-event-icon');
-    var iconClass = 'fas fa-comment-alt';
+    var row = createElement('section', 'agent-work-detail agent-work-detail--' + visualKind);
+    var heading = document.createElement('header');
+    var iconClass = 'fas fa-terminal';
     if (kind === 'thinking' || kind === 'reasoning') iconClass = 'fas fa-circle-notch';
-    else if (kind === 'tool' || kind === 'tool_call') iconClass = 'fas fa-terminal';
     else if (resultKind) iconClass = resultError ? 'fas fa-exclamation-triangle' : 'fas fa-check';
     else if (kind === 'subagent') iconClass = 'fas fa-code-branch';
     var glyph = createElement('i', iconClass);
     glyph.setAttribute('aria-hidden', 'true');
-    icon.appendChild(glyph);
-
-    var body = createElement('div');
     var title = traceEventTitle(kind, message, resultError);
-    if (isCollapsibleTraceKind(kind)) {
-      var fold = createElement('details', 'agent-trace-fold');
-      var summary = document.createElement('summary');
-      var summaryCopy = createElement('span', 'agent-trace-fold-copy');
-      summaryCopy.appendChild(createElement('strong', '', title));
-      summaryCopy.appendChild(createElement('small', '', traceFoldHint(kind, resultError)));
-      summary.append(
-        summaryCopy,
-        createElement('span', 'agent-trace-fold-action', '展开')
-      );
-      var foldBody = createElement('div', 'agent-trace-fold-body');
-      appendTraceEventContent(foldBody, message, kind);
-      fold.append(summary, foldBody);
-      body.appendChild(fold);
-    } else {
-      if (title) body.appendChild(createElement('strong', '', title));
-      appendTraceEventContent(body, message, kind);
-    }
-    row.append(icon, body);
+    heading.append(glyph, createElement('strong', '', title));
+    var body = createElement('div', 'agent-work-detail-body');
+    appendTraceEventContent(body, message, kind);
+    row.append(heading, body);
     return row;
   }
 
-  function appendTraceMessages(element, messages) {
+  function workBlockCacheKey(taskId, blockId) {
+    return asText(taskId).trim() + ':' + asText(blockId).trim();
+  }
+
+  function workBlockUrl(taskId, blockId) {
+    return asText(root.dataset.workBlockUrlTemplate)
+      .replace('__TASK_ID__', encodeURIComponent(asText(taskId).trim()))
+      .replace('__BLOCK_ID__', encodeURIComponent(asText(blockId).trim()));
+  }
+
+  function updateWorkBlock(fold, message) {
+    var summary = fold.querySelector('[data-agent-work-block-summary]');
+    if (summary) summary.textContent = asText(message.summary || '工作详情');
+    fold.classList.toggle('agent-work-block--error', message.has_error === true);
+    fold.classList.toggle('is-running', message.is_running === true);
+    var glyph = fold.querySelector('summary > i');
+    if (glyph) {
+      glyph.className = message.has_error === true
+        ? 'fas fa-exclamation-triangle' : 'fas fa-wrench';
+    }
+  }
+
+  function bindWorkBlock(fold) {
+    if (!fold || fold.dataset.agentWorkBlockBound === 'true') return;
+    var taskId = asText(fold.dataset.agentWorkBlockTaskId).trim();
+    var blockId = asText(fold.dataset.agentWorkBlockId).trim();
+    if (!taskId || !blockId) return;
+    fold.dataset.agentWorkBlockBound = 'true';
+    workBlockCache.set(workBlockCacheKey(taskId, blockId), fold);
+    fold.addEventListener('toggle', function () {
+      if (fold.open) loadWorkBlock(fold);
+    });
+  }
+
+  function bindWorkBlocks(scope) {
+    (scope || root).querySelectorAll('[data-agent-work-block]').forEach(bindWorkBlock);
+  }
+
+  function traceWorkBlock(message, taskId) {
+    var blockId = asText(message && message.block_id).trim();
+    var cacheKey = workBlockCacheKey(taskId, blockId);
+    var fold = workBlockCache.get(cacheKey);
+    if (!fold) {
+      fold = createElement('details', 'agent-work-block');
+      fold.setAttribute('data-agent-work-block', '');
+      fold.dataset.agentWorkBlockId = blockId;
+      fold.dataset.agentWorkBlockTaskId = asText(taskId).trim();
+      var summary = document.createElement('summary');
+      var glyph = createElement('i', 'fas fa-wrench');
+      glyph.setAttribute('aria-hidden', 'true');
+      var summaryCopy = createElement('span', '', '');
+      summaryCopy.setAttribute('data-agent-work-block-summary', '');
+      summary.append(glyph, summaryCopy);
+      var body = createElement('div', 'agent-work-block-body');
+      body.setAttribute('data-agent-work-block-body', '');
+      body.appendChild(createElement(
+        'div', 'agent-work-block-placeholder', '展开后加载工作详情'
+      ));
+      fold.append(summary, body);
+      bindWorkBlock(fold);
+    }
+    updateWorkBlock(fold, message || {});
+    return fold;
+  }
+
+  function appendTraceMessages(element, messages, taskId) {
     (Array.isArray(messages) ? messages : []).forEach(function (message) {
-      var node = traceEvent(message || {});
-      if (
-        messageKind(message) === 'user'
-        && element.lastElementChild
-        && element.lastElementChild.classList.contains('agent-trace-event')
-      ) {
-        element.lastElementChild.classList.add('agent-trace-event--before-steer');
+      var kind = messageKind(message);
+      if (kind === 'assistant' || kind === 'user') {
+        element.appendChild(traceReply(message || {}));
+      } else if (kind === 'work_summary') {
+        element.appendChild(traceWorkBlock(message || {}, taskId));
       }
-      element.appendChild(node);
+      // 常规状态与 SSE 不应携带内部事件；即使服务端契约意外回归，
+      // 浏览器也不会把 thinking/tool/tool_result 直接放到时间线上。
     });
   }
 
   function renderTrace(state) {
     if (!liveTrace) return;
     var messages = traceMessages(state);
-    var signature = JSON.stringify(messages.map(function (message) {
+    var signature = statusKey(state && state.status) + ':' + JSON.stringify(messages.map(function (message) {
       return [
         message.kind, message.type, message.title, message.name,
-        message.is_error, message.message_id, message.text, message.content,
-        message.html, message.attachments
+        message.is_error, message.message_id, message.block_id,
+        message.thinking_count, message.tool_count, message.is_running,
+        message.summary, message.text, message.html, message.attachments
       ];
     }));
     if (signature === traceSignature) return;
@@ -1257,7 +1297,7 @@
       syncSteerSummaryAnchors(liveTurn);
       return;
     }
-    appendTraceMessages(liveTrace, messages);
+    appendTraceMessages(liveTrace, messages, asText(state && state.task_id || currentTaskId));
     syncSteerSummaryAnchors(liveTurn);
     enhanceMarkdown(liveTrace);
   }
@@ -1313,7 +1353,7 @@
       summaryLabel.append(caret, document.createTextNode('工作详情'));
       summary.appendChild(summaryLabel);
       var trace = createElement('div', 'agent-turn-trace');
-      appendTraceMessages(trace, messages);
+      appendTraceMessages(trace, messages, asText(state && state.task_id || currentTaskId));
       details.append(summary, trace);
       response.appendChild(details);
     }
@@ -1458,31 +1498,49 @@
     });
   }
 
-  function loadHistoricalTrace(details) {
-    if (!details || details.dataset.agentLazyLoaded === 'true'
-        || details.dataset.agentLazyLoading === 'true') return;
-    var taskId = asText(details.dataset.agentTaskId).trim();
-    var body = details.querySelector('[data-agent-lazy-trace-body]');
-    if (!taskId || !body) return;
-    details.dataset.agentLazyLoading = 'true';
-    body.replaceChildren(createElement('div', 'agent-workspace-empty', '正在加载工作详情…'));
-    requestTaskState(taskId).then(function (state) {
-      var messages = traceMessages(state);
+  function loadWorkBlock(details) {
+    if (!details || details.dataset.agentWorkBlockLoaded === 'true'
+        || details.dataset.agentWorkBlockLoading === 'true') return;
+    var taskId = asText(details.dataset.agentWorkBlockTaskId).trim();
+    var blockId = asText(details.dataset.agentWorkBlockId).trim();
+    var body = details.querySelector('[data-agent-work-block-body]');
+    if (!taskId || !blockId || !body) return;
+    details.dataset.agentWorkBlockLoading = 'true';
+    body.replaceChildren(createElement(
+      'div', 'agent-work-block-placeholder', '正在加载工作详情…'
+    ));
+    global.fetch(workBlockUrl(taskId, blockId), {
+      headers: {'Accept': 'application/json'},
+      credentials: 'same-origin',
+      cache: 'no-store',
+      mathCurveLoader: false
+    }).then(function (response) {
+      return response.json().catch(function () { return {}; }).then(function (payload) {
+        if (!response.ok || !payload || !payload.block) {
+          throw new Error(asText(payload && payload.message) || '无法读取工作详情');
+        }
+        return payload.block;
+      });
+    }).then(function (block) {
+      var messages = Array.isArray(block.messages) ? block.messages : [];
       body.replaceChildren();
       if (!messages.length) {
-        body.appendChild(createElement('div', 'agent-workspace-empty', '本轮没有可展示的工作详情。'));
+        body.appendChild(createElement(
+          'div', 'agent-work-block-placeholder', '这个工作块没有可展示的详情。'
+        ));
       } else {
-        appendTraceMessages(body, messages);
+        messages.forEach(function (message) {
+          body.appendChild(traceWorkDetail(message || {}));
+        });
         enhanceMarkdown(body);
       }
-      syncSteerSummaryAnchors(details.closest('[data-agent-turn]'));
-      details.dataset.agentLazyLoaded = 'true';
+      details.dataset.agentWorkBlockLoaded = 'true';
     }).catch(function () {
       body.replaceChildren(createElement(
-        'div', 'agent-workspace-empty', '工作详情加载失败，请收起后重试。'
+        'div', 'agent-work-block-placeholder', '工作详情加载失败，请收起后重试。'
       ));
     }).finally(function () {
-      delete details.dataset.agentLazyLoading;
+      delete details.dataset.agentWorkBlockLoading;
     });
   }
 
@@ -1506,9 +1564,6 @@
       syncSteerSummaryAnchors(details.closest('[data-agent-turn]'));
       details.addEventListener('toggle', function () {
         syncTurnDetailState(details);
-        if (details.open && details.hasAttribute('data-agent-lazy-trace')) {
-          loadHistoricalTrace(details);
-        }
       });
     });
   }
@@ -2856,6 +2911,7 @@
   bindRename();
   bindWorkspaceAndFiles();
   bindTurnDetails(root);
+  bindWorkBlocks(root);
   paintSessionAvatars();
   renderHeaderTokenUsage(currentState && currentState.session_token_usage);
   renderContextUsage(currentState && currentState.context_usage);

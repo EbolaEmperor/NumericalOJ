@@ -1136,6 +1136,45 @@ def test_bounded_runner_publishes_periodic_and_final_trace_ticks(
     assert False in ticks
 
 
+def test_bounded_runner_propagates_final_canonical_persistence_failure(
+    monkeypatch,
+    tmp_path,
+):
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(
+                b'{"type":"numoj_trace","version":1,"event":'
+                b'{"id":"event-1","kind":"assistant","text":"done"}}\n'
+            )
+            self.stderr = io.BytesIO()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        runtime.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: FakeProcess(),
+    )
+
+    def persist(*, final=False, trace_records=()):
+        assert final is True
+        assert len(trace_records) == 1
+        raise RuntimeError("v2 database unavailable")
+
+    with pytest.raises(RuntimeError, match="v2 database unavailable"):
+        runtime._run_with_bounded_output(
+            ["docker"],
+            "prompt",
+            canonical_journal_path=tmp_path / "canonical.jsonl",
+            on_tick=persist,
+        )
+
+
 def test_bounded_runner_stops_docker_exec_when_task_is_canceled(monkeypatch):
     checks = []
 

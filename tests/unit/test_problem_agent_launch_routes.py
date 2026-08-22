@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from flask import Flask
 import pytest
 
+from oj_modules.problems import agent_runs
 from oj_modules.routes import problem_core_routes as routes
 
 
@@ -54,6 +55,18 @@ def _patch_agent_runtime_checkpoint_io(monkeypatch):
         ],
     )
     monkeypatch.setattr(routes, "remove_agent_attachments", lambda *_args: 0)
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_timeline",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        agent_runs,
+        "get_agent_trace_token_usage",
+        lambda _task_id: None,
+    )
+    monkeypatch.setattr(routes, "get_last_agent_trace_assistant", lambda _task_id: "")
+    monkeypatch.setattr(routes, "get_agent_session_by_task_id", lambda _task_id: None)
 
 
 @pytest.fixture(autouse=True)
@@ -843,18 +856,17 @@ def test_historical_usage_failure_keeps_requested_session_task_usage(
 
 
 @pytest.mark.parametrize("operation", ["status", "cancel"])
-def test_agent_status_and_cancel_project_pi_resume_trace_delta(
+def test_agent_status_and_cancel_keep_v2_task_local_public_timeline(
     monkeypatch,
     operation,
 ):
-    previous = [
-        {"kind": "assistant", "title": "AI 回复", "text": "first"},
-        {"kind": "tool", "title": "运行命令", "text": "command"},
-    ]
     current = [
-        {**previous[0], "line": 91, "offset": 9000, "html": "<b>伪造</b>"},
-        {**previous[1], "line": 92, "offset": 9100},
-        {"kind": "assistant", "title": "AI 回复", "text": "second"},
+        {"kind": "assistant", "text": "阶段进展"},
+        {
+            "kind": "work_summary",
+            "block_id": "work-1234567890abcdef",
+            "summary": "工作中…进行了 2 次思考，调用了 1 次工具",
+        },
     ]
     token_usage = {"source": "pi", "request_count": 2}
     state = {
@@ -863,6 +875,8 @@ def test_agent_status_and_cancel_project_pi_resume_trace_delta(
         "harness": "pi",
         "status": "Canceled" if operation == "cancel" else "Running",
         "execution_trace": {
+            "schema_version": 2,
+            "status": "error" if operation == "cancel" else "running",
             "trace_messages": current,
             "token_usage": token_usage,
         },
@@ -876,11 +890,6 @@ def test_agent_status_and_cancel_project_pi_resume_trace_delta(
         routes,
         "_load_agent_historical_token_usages",
         lambda _sid, _tid: [],
-    )
-    monkeypatch.setattr(
-        routes,
-        "_load_agent_previous_trace_messages",
-        lambda _sid, _tid, _harness: previous,
     )
     if operation == "status":
         monkeypatch.setattr(routes, "_get_agent_run_state", lambda _tid: state)
@@ -910,10 +919,12 @@ def test_agent_status_and_cancel_project_pi_resume_trace_delta(
         )
 
     projected = response.get_json()["state"]
-    assert [
-        message["text"]
-        for message in projected["execution_trace"]["trace_messages"]
-    ] == ["second"]
+    projected_messages = projected["execution_trace"]["trace_messages"]
+    assert [message["kind"] for message in projected_messages] == [
+        "assistant", "work_summary",
+    ]
+    assert projected_messages[0]["text"] == "阶段进展"
+    assert projected_messages[1]["summary"].startswith("工作中…")
     assert projected["execution_trace"]["token_usage"] == token_usage
 
 
@@ -1298,30 +1309,27 @@ def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
     assert ledger_calls == ["session-ledger-live"] * expected_ledger_calls
 
 
-def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):
-    previous_messages = [
+def test_agent_run_stream_keeps_v2_public_timeline_task_local(monkeypatch):
+    running_messages = [
+        {"kind": "assistant", "text": "我正在检查数据"},
         {
-            "kind": "tool",
-            "title": "运行命令",
-            "text": f"first-{index}",
-            "line": index,
-            "offset": index * 10,
-            "source": "pi-first",
-        }
-        for index in range(39)
+            "kind": "work_summary",
+            "block_id": "work-1234567890abcdef",
+            "thinking_count": 2,
+            "tool_count": 1,
+            "is_running": True,
+            "summary": "工作中…进行了 2 次思考，调用了 1 次工具",
+        },
     ]
-    copied_prefix = [
+    completed_messages = [
+        running_messages[0],
         {
-            **message,
-            "line": int(message["line"]) + 1000,
-            "offset": int(message["offset"]) + 200_000,
-            "source": "pi-resume",
-        }
-        for message in previous_messages
-    ]
-    full_resume_messages = copied_prefix + [
-        {"kind": "assistant", "title": "AI 回复", "text": f"new-{index}"}
-        for index in range(24)
+            **running_messages[1],
+            "thinking_count": 4,
+            "tool_count": 3,
+            "is_running": False,
+            "summary": "进行了 4 次思考，调用了 3 次工具",
+        },
     ]
     token_usage = {
         "source": "pi",
@@ -1337,15 +1345,20 @@ def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):
         "harness": "pi",
         "status": "Running",
         "execution_trace": {
-            "trace_messages": copied_prefix,
+            "schema_version": 2,
+            "status": "running",
+            "trace_messages": running_messages,
             "token_usage": token_usage,
         },
     }
     completed = {
         **initial,
         "status": "Completed",
+        "conclusion": "检查已经完成",
         "execution_trace": {
-            "trace_messages": full_resume_messages,
+            "schema_version": 2,
+            "status": "passed",
+            "trace_messages": completed_messages,
             "token_usage": token_usage,
         },
     }
@@ -1374,11 +1387,6 @@ def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):
         "_load_agent_historical_token_usages",
         lambda _sid, _tid: [],
     )
-    monkeypatch.setattr(
-        routes,
-        "_load_agent_previous_trace_messages",
-        lambda _sid, _tid, _harness: previous_messages,
-    )
 
     app = _app()
     with app.test_request_context("/admin/agent_run_stream/turn-2"):
@@ -1392,8 +1400,10 @@ def test_agent_run_stream_projects_only_new_pi_resume_messages(monkeypatch):
     assert [
         len(snapshot["execution_trace"]["trace_messages"])
         for snapshot in snapshots
-    ] == [0, 24, 24]
-    assert snapshots[1]["execution_trace"]["trace_messages"][0]["text"] == "new-0"
+    ] == [2, 2, 2]
+    assert snapshots[1]["execution_trace"]["trace_messages"][1][
+        "thinking_count"
+    ] == 4
     assert snapshots[1]["execution_trace"]["token_usage"] == token_usage
     assert snapshots[1]["session_token_usage"]["request_count"] == 2
     assert pubsub.closed is True
@@ -1542,7 +1552,7 @@ def test_agent_run_stream_stays_open_past_the_previous_one_hour_cutoff(
     assert "event: timeout" not in body
 
 
-def test_agent_state_markdown_is_rebuilt_only_for_rich_trace_text(monkeypatch):
+def test_agent_state_markdown_only_projects_public_v2_items(monkeypatch):
     rendered = []
     monkeypatch.setattr(
         routes,
@@ -1569,16 +1579,13 @@ def test_agent_state_markdown_is_rebuilt_only_for_rich_trace_text(monkeypatch):
     messages = state["execution_trace"]["trace_messages"]
 
     assert messages[0]["html"] == "<safe>**回答**</safe>"
-    assert messages[1]["html"] == "<safe>$x$</safe>"
-    assert messages[2]["html"] == "<safe>推理</safe>"
-    assert "html" not in messages[3]
-    assert "html" not in messages[4]
-    assert state["conclusion"] == "**回答**"
-    assert state["conclusion_html"] == "<safe>**回答**</safe>"
+    assert len(messages) == 1
+    assert state["conclusion"] == "**最终结论**"
+    assert state["conclusion_html"] == "<safe>**最终结论**</safe>"
     assert "conclusion_html" not in state["execution_trace"]
     assert raw["conclusion_html"] == "<script>unsafe()</script>"
     assert raw["execution_trace"]["trace_messages"][0]["html"] == "<b>伪造</b>"
-    assert rendered == ["**回答**", "$x$", "推理", "**回答**"]
+    assert rendered == ["**回答**", "**最终结论**"]
 
 
 def test_failed_agent_state_keeps_failure_reason_over_trace_conclusion(
@@ -1626,6 +1633,11 @@ def test_agent_run_status_returns_server_rendered_markdown(monkeypatch):
     monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", lambda state: state)
     monkeypatch.setattr(
         routes,
+        "get_last_agent_trace_assistant",
+        lambda _task_id: "结论含公式 $x^2$",
+    )
+    monkeypatch.setattr(
+        routes,
         "render_rich_markdown",
         lambda text: f"<safe>{text}</safe>",
     )
@@ -1638,6 +1650,59 @@ def test_agent_run_status_returns_server_rendered_markdown(monkeypatch):
     message = state["execution_trace"]["trace_messages"][0]
     assert message["html"] == "<safe>结论含公式 $x^2$</safe>"
     assert state["conclusion_html"] == "<safe>结论含公式 $x^2$</safe>"
+
+
+def test_agent_work_block_endpoint_returns_only_the_requested_internal_block(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        routes,
+        "current_user",
+        lambda: {"id": 7, "username": "admin", "is_admin": 1},
+    )
+    authorized = []
+    monkeypatch.setattr(
+        routes,
+        "_agent_task_for_actor",
+        lambda task_id, actor, **kwargs: authorized.append(
+            (task_id, actor["username"], kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_agent_trace_work_block",
+        lambda task_id, block_id: {
+            "block_id": block_id,
+            "messages": [
+                {"kind": "thinking", "text": "核对 $x^2$"},
+                {"kind": "tool", "title": "已运行命令", "text": "rg trace"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "render_rich_markdown",
+        lambda text: f"<safe>{text}</safe>",
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/agent/runs/task-1/work-blocks/work-1234567890abcdef"
+    ):
+        response = routes.agent_run_work_block(
+            "task-1", "work-1234567890abcdef"
+        )
+
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["block"]["block_id"] == "work-1234567890abcdef"
+    assert payload["block"]["messages"][0]["html"] == "<safe>核对 $x^2$</safe>"
+    assert "html" not in payload["block"]["messages"][1]
+    assert authorized == [(
+        "task-1",
+        "admin",
+        {"allow_unknown_for_admin": True},
+    )]
 
 
 def test_agent_run_state_overlays_session_cleanup_failure_on_sticky_cancel(
@@ -2039,8 +2104,13 @@ def test_agent_run_state_prefers_persisted_completion_over_stale_cache_and_celer
 
 def test_agent_run_state_reuses_worker_projected_redis_trace(monkeypatch):
     trace = {
+        "schema_version": 2,
         "status": "running",
-        "trace_messages": [{"kind": "thinking", "text": "正在分析"}],
+        "trace_messages": [{
+            "kind": "work_summary",
+            "block_id": "work-1234567890abcdef",
+            "summary": "工作中…进行了 1 次思考，调用了 0 次工具",
+        }],
         "trace_files": [],
         "token_usage": None,
     }
@@ -2058,15 +2128,17 @@ def test_agent_run_state_reuses_worker_projected_redis_trace(monkeypatch):
     monkeypatch.setattr(
         routes,
         "hydrate_agent_run_snapshot",
-        lambda _state: pytest.fail("Redis 已有轨迹时不应再次读取磁盘"),
+        lambda _state: pytest.fail("Redis 已有 v2 公开轨迹时不应再次查询数据库"),
     )
 
     state = routes._get_agent_run_state("task-cached-trace")
 
-    assert state["execution_trace"]["trace_messages"][0]["text"] == "正在分析"
+    assert state["execution_trace"]["trace_messages"][0]["summary"].startswith(
+        "工作中…"
+    )
 
 
-def test_agent_run_state_hydrates_empty_worker_trace_from_journal(monkeypatch):
+def test_agent_run_state_hydrates_empty_worker_trace_from_v2_store(monkeypatch):
     empty_trace = {
         "status": "running",
         "trace_messages": [],
@@ -2075,7 +2147,12 @@ def test_agent_run_state_hydrates_empty_worker_trace_from_journal(monkeypatch):
     }
     journal_trace = {
         **empty_trace,
-        "trace_messages": [{"kind": "thinking", "text": "已经开始工作"}],
+        "schema_version": 2,
+        "trace_messages": [{
+            "kind": "work_summary",
+            "block_id": "work-1234567890abcdef",
+            "summary": "工作中…进行了 1 次思考，调用了 0 次工具",
+        }],
         "token_usage": {
             "source": "codex",
             "input_total_tokens": 120,
@@ -2107,7 +2184,7 @@ def test_agent_run_state_hydrates_empty_worker_trace_from_journal(monkeypatch):
     state = routes._get_agent_run_state("task-empty-cached-trace")
 
     assert len(hydrated) == 1
-    assert state["execution_trace"]["trace_messages"][0]["text"] == "已经开始工作"
+    assert state["execution_trace"]["trace_messages"][0]["kind"] == "work_summary"
     assert state["execution_trace"]["token_usage"]["input_cached_tokens"] == 80
 
 
@@ -2181,4 +2258,4 @@ def test_agent_run_stream_skips_duplicate_snapshot_before_markdown(monkeypatch):
     assert body.count("event: status") == 2
     assert "event: done" in body
     assert [state["status"] for state in hydrated] == ["Completed"]
-    assert rendered == ["已经完成", "已经完成"]
+    assert rendered == ["已经完成"]
