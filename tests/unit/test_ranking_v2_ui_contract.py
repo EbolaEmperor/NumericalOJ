@@ -143,6 +143,50 @@ def test_ranking_detail_function_rail_matches_global_sidebar_type_scale():
     assert "font-size: 11.5px" in stylesheet
 
 
+def test_ranking_mobile_function_rail_aligns_and_matches_global_drawer_width():
+    stylesheet = _read(STATIC / "detail-v2.css")
+    mobile = stylesheet[
+        stylesheet.index("@media (max-width: 991.98px)") : stylesheet.index(
+            "@media (max-width: 620px)"
+        )
+    ]
+
+    assert "padding: 13px 15px" in mobile
+    assert "justify-self: end" in mobile
+    assert "width: var(--numoj-mobile-sidebar-width)" in mobile
+
+
+def test_elo_match_cards_fit_mobile_and_open_from_the_whole_card():
+    component = _read(TEMPLATES / "components" / "matches.html")
+    stylesheet = _read(STATIC / "content-v2.css")
+    mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+
+    assert 'class="match-detail-btn"' in component
+    assert 'aria-label="查看 {{ name_a }} 对阵 {{ name_b }} 的对战详情"' in component
+    assert 'class="match-detail-label" aria-hidden="true"' in component
+    assert "position: absolute" in stylesheet
+    assert "inset: 0" in stylesheet
+    assert "padding: 0 14px 0 18px" in stylesheet
+    assert "overflow-x: hidden" in mobile
+    assert "min-width: 0" in mobile
+    assert '"side-a versus side-b"' in mobile
+    assert "padding: 12px 14px 12px 18px" in mobile
+
+
+def test_elo_admin_rebuild_control_stays_inline_and_keeps_its_hover_icon():
+    detail = _read(TEMPLATES / "detail.html")
+    stylesheet = _read(STATIC / "content-v2.css")
+    mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+
+    assert ".matches-rebuild-btn:hover i { color: inherit; }" in detail
+    assert ".ranking-v2-detail .matches-rebuild-btn:hover i" in stylesheet
+    assert "align-items: center" in mobile
+    assert "flex-direction: row" in mobile
+    assert "flex-wrap: nowrap" in mobile
+    assert "width: auto" in mobile
+    assert "margin-left: auto" in mobile
+
+
 def test_harness_logos_follow_selected_endpoints_across_ranking_surfaces():
     detail = _read(TEMPLATES / "detail.html")
     submit = _read(TEMPLATES / "tabs" / "submit.html")

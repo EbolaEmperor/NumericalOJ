@@ -1,6 +1,7 @@
 """VibeHub 页面、示例作品与嵌入式游玩安全契约。"""
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,22 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert "JSON.stringify({ featured: featured })" in javascript
     assert "expected_version" in javascript
     assert "NumojIdenticon" in javascript
+
+
+def test_vibehub_author_avatar_keeps_its_identicon_grid_on_mobile():
+    css = _read("static/app/vibehub.css")
+    avatar_rule = re.search(
+        r"\.vibe-card-author \.vibe-author-avatar\s*\{(?P<body>[^{}]+)\}",
+        css,
+    )
+
+    assert avatar_rule is not None
+    body = avatar_rule.group("body")
+    assert "display: grid" in body
+    assert "grid-template-columns: repeat(8, 1fr)" in body
+    assert "grid-template-rows: repeat(8, 1fr)" in body
+    assert "flex: 0 0 22px" in body
+    assert ".vibe-card-author .vibe-author-avatar > span.is-filled" in css
 
 
 def test_navigation_replaces_standalone_games_with_vibehub():

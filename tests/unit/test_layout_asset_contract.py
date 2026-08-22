@@ -195,10 +195,9 @@ def test_mobile_navigation_uses_compact_v2_topbar_and_shared_left_drawer():
         "\n  .numoj-mobile-sidebar.offcanvas {",
     )
     assert re.search(r"(?:^|;)\s*height:\s*48px\s*;", topbar_rule)
-    assert re.search(
-        r"(?:^|;)\s*(?:--bs-offcanvas-width|width):\s*150px(?:\s*!important)?\s*;",
-        sidebar_rule,
-    )
+    assert "--numoj-mobile-sidebar-width: 150px" in mobile_rules
+    assert "--bs-offcanvas-width: var(--numoj-mobile-sidebar-width)" in sidebar_rule
+    assert "width: var(--numoj-mobile-sidebar-width) !important" in sidebar_rule
 
 
 def test_sidebar_avatar_reuses_the_forum_username_identicon_renderer():

@@ -2911,6 +2911,7 @@ html.is-problem-pane-resizing * {
     --numoj-danger: #dc2626;
     --numoj-danger-soft: #fef2f2;
     --numoj-info: #0369a1;
+    --numoj-mobile-sidebar-width: 150px;
     --numoj-radius: 12px;
     --numoj-radius-sm: 8px;
     --numoj-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -3200,9 +3201,9 @@ html.is-problem-pane-resizing * {
   }
 
   .numoj-mobile-sidebar.offcanvas {
-    --bs-offcanvas-width: 150px;
-    width: 150px !important;
-    max-width: 150px;
+    --bs-offcanvas-width: var(--numoj-mobile-sidebar-width);
+    width: var(--numoj-mobile-sidebar-width) !important;
+    max-width: var(--numoj-mobile-sidebar-width);
     flex-direction: column;
     overflow: hidden;
     border-right: 1px solid var(--numoj-line);
