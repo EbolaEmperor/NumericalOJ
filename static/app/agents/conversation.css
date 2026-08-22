@@ -524,7 +524,7 @@
 }
 
 .agent-turn-details {
-  margin: 0 0 18px;
+  margin: 0 0 12px;
   border: 0;
   color: var(--agent-muted);
 }
@@ -593,13 +593,17 @@
 
 .agent-turn-trace {
   display: block;
-  padding: 10px 0 4px;
+  padding: 6px 0 2px;
 }
 
 .agent-trace-reply {
   min-width: 0;
-  margin: 13px 0 17px;
+  margin: 6px 0 8px;
   color: #292724;
+}
+
+.agent-session .agent-trace-copy p {
+  margin-bottom: 8px;
 }
 
 .agent-trace-reply:first-child { margin-top: 4px; }
@@ -633,21 +637,24 @@
 .agent-work-block {
   display: block;
   min-width: 0;
-  margin: 5px 0 9px;
+  margin: 2px 0 4px;
   border: 0;
   background: transparent;
 }
 
 .agent-work-block > summary {
   display: inline-flex;
-  min-height: 25px;
+  min-height: 20px;
   align-items: center;
   gap: 7px;
-  padding: 3px 1px;
+  padding: 1px 1px;
   cursor: pointer;
   list-style: none;
   color: #96918a;
-  font: 540 10.5px/1.45 var(--agent-sans);
+  font-size: 12.5px;
+  line-height: 1.45;
+  font-weight: 540;
+  font-family: var(--agent-sans, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif);
   user-select: none;
 }
 
