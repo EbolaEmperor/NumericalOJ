@@ -415,6 +415,20 @@ def _first_usage_count(mapping, names, label, *, required=False, default=0):
     return int(default), False
 
 
+def _first_optional_usage_count(mapping, names, label):
+    """读取可选 usage；字段缺失或非法时按 0 处理。"""
+
+    source = mapping if isinstance(mapping, dict) else {}
+    for name in names:
+        if name not in source:
+            continue
+        try:
+            return _usage_count(source[name], label), True
+        except AgentSecretRelayUsageError:
+            return 0, True
+    return 0, False
+
+
 def _default_cached_input_split(total_input_tokens, cache_write_tokens=0):
     """在 provider 没有可识别 cached 字段时按 90% 命中率估算。"""
 
@@ -510,13 +524,13 @@ def _normalize_openai_usage(usage):
         "completion_tokens_details",
         "output_tokens_details",
     )
-    cache_write_tokens, cache_write_present = _first_usage_count(
+    cache_write_tokens, cache_write_present = _first_optional_usage_count(
         usage,
         ("input_cache_write_tokens", "cache_creation_input_tokens"),
         "缓存写入 Token",
     )
     if not cache_write_present:
-        cache_write_tokens, _ = _first_usage_count(
+        cache_write_tokens, _ = _first_optional_usage_count(
             input_details,
             ("cache_write_tokens", "cache_creation_tokens"),
             "缓存写入 Token",
@@ -610,12 +624,12 @@ def _normalize_anthropic_usage(usages):
             "cache_creation_input_tokens" not in record
             and isinstance(cache_creation, dict)
         ):
-            five_minutes, _ = _first_usage_count(
+            five_minutes, _ = _first_optional_usage_count(
                 cache_creation,
                 ("ephemeral_5m_input_tokens",),
                 "5 分钟缓存写入 Token",
             )
-            one_hour, _ = _first_usage_count(
+            one_hour, _ = _first_optional_usage_count(
                 cache_creation,
                 ("ephemeral_1h_input_tokens",),
                 "1 小时缓存写入 Token",
@@ -638,6 +652,12 @@ def _normalize_anthropic_usage(usages):
                         cached_field_invalid = True
                         found = False
                     break
+            elif target == "input_cache_write_tokens":
+                value, found = _first_optional_usage_count(
+                    record,
+                    names,
+                    target,
+                )
             else:
                 value, found = _first_usage_count(
                     record,

@@ -126,6 +126,15 @@ def _token_count(value, label):
     return parsed
 
 
+def _optional_token_count(value, label):
+    """读取可选计数字段；无法识别时按 0 处理。"""
+
+    try:
+        return _token_count(value, label)
+    except AgentQuotaValidationError:
+        return 0
+
+
 def _cached_fallback_metadata(usage):
     """校验并读取 cached 字段回退计费的审计信息。"""
 
@@ -1062,7 +1071,7 @@ def calculate_agent_usage_charge(usage, pricing):
         "input_cached_tokens": _token_count(
             usage.get("input_cached_tokens"), "缓存输入 Token"
         ),
-        "input_cache_write_tokens": _token_count(
+        "input_cache_write_tokens": _optional_token_count(
             usage.get("input_cache_write_tokens"), "缓存写入 Token"
         ),
         "output_tokens": _token_count(usage.get("output_tokens"), "输出 Token"),
