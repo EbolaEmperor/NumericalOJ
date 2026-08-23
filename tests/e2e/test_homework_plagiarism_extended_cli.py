@@ -416,29 +416,47 @@ def test_ranking_plagiarism_extended_submission_flows(cli, unique_suffix, tmp_pa
     elo_script = tmp_path / "elo_score.py"
     elo_script.write_text("print('{\"winner\": 0, \"details\": {}}')\n", encoding="utf-8")
     assert cli.admin_json("ranking", "upload-script", str(elo_id), str(elo_script))["success"] is True
-    elo_answer_a = write_zip(tmp_path / "elo_answer_a.zip", {"answer.txt": "same answer\n"})
-    elo_answer_b = write_zip(tmp_path / "elo_answer_b.zip", {"answer.txt": "unique answer\n"})
-    elo_code_a = write_zip(tmp_path / "elo_code_a.zip", {"main.py": "print('same code')\n"})
-    elo_code_b = write_zip(tmp_path / "elo_code_b.zip", {"main.py": "print('unique code')\n"})
+    # ELO now accepts one complete work archive; plagiarism compares that archive
+    # as a whole rather than combining separate answer and code fingerprints.
+    elo_submission_a = write_zip(
+        tmp_path / "elo_submission_a.zip",
+        {
+            "answer.txt": "same answer\n",
+            "main.py": "print('same code')\n",
+        },
+    )
+    elo_submission_b = write_zip(
+        tmp_path / "elo_submission_b.zip",
+        {
+            "answer.txt": "unique answer\n",
+            "main.py": "print('unique code')\n",
+        },
+    )
     elo_submissions = [
-        _submit_ranking_zip(cli, elo_users[0], elo_id, code_zip=elo_code_a, answer_file=elo_answer_a),
-        _submit_ranking_zip(cli, elo_users[1], elo_id, code_zip=elo_code_b, answer_file=elo_answer_a),
-        _submit_ranking_zip(cli, elo_users[2], elo_id, code_zip=elo_code_a, answer_file=elo_answer_b),
-        _submit_ranking_zip(cli, elo_users[3], elo_id, code_zip=elo_code_b, answer_file=elo_answer_b),
+        _submit_ranking_zip(cli, elo_users[0], elo_id, code_zip=elo_submission_a),
+        _submit_ranking_zip(cli, elo_users[1], elo_id, code_zip=elo_submission_a),
+        _submit_ranking_zip(cli, elo_users[2], elo_id, code_zip=elo_submission_b),
+        _submit_ranking_zip(cli, elo_users[3], elo_id, code_zip=elo_submission_b),
     ]
     for sid in elo_submissions:
         _wait_ranking_submission_status(cli, elo_id, sid, {"Active"})
 
     elo_result = _run_plagiarism(cli, f"ranking:{elo_id}", mode="byte")
-    assert elo_result["group_count"] == 1
+    assert elo_result["group_count"] == 2
     assert elo_result["record_count"] == 4
-    _assert_plagiarism_group(
+    elo_rows = _records_for_target(
         cli,
         target_kind="ranking",
         target_id=elo_id,
         comparison_rule="byte-identical",
-        expected_users=set(elo_users),
     )
+    elo_groups = {row["username"]: set(row["matched_usernames"]) for row in elo_rows}
+    assert elo_groups == {
+        elo_users[0]: {elo_users[1]},
+        elo_users[1]: {elo_users[0]},
+        elo_users[2]: {elo_users[3]},
+        elo_users[3]: {elo_users[2]},
+    }
 
     agent_users = _create_users("cli_plag_agent", unique_suffix, 3)
     agent_id = _create_ranking(cli, f"CLI Agent Plagiarism {unique_suffix}")
