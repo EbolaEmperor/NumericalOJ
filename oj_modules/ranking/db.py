@@ -120,7 +120,7 @@ def get_competition(competition_id):
                 SELECT id, title, summary, description, answer_format,
                        scoring_mode, elo_initial_rating, elo_k_factor,
                        elo_max_matches, elo_match_interval_seconds, elo_initial_burst,
-                       elo_max_pairs_per_round, elo_running,
+                       elo_max_pairs_per_round, elo_runtime_mode, elo_running,
                        scoring_script_timeout_seconds,
                        agent_judge_timeout_seconds,
                        reverse_judge_finalize_timeout_seconds,
