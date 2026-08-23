@@ -7,7 +7,7 @@
     "max_score": 100,
     "is_active": 1,
     "submit_limit_per_window": null,
-    "scoring_script_timeout_seconds": 600,
+    "scoring_script_timeout_seconds": 900,
     "agent_judge_timeout_seconds": 1800,
     "reverse_judge_finalize_timeout_seconds": 180,
     "agent_judge_orchestration_mode": "single",
@@ -17,11 +17,11 @@
     "elo_match_interval_seconds": 60,
     "elo_initial_burst": 5,
     "elo_max_pairs_per_round": 1,
-    "elo_runtime_mode": null,
+    "elo_runtime_mode": "isolated",
     "elo_running": 1,
     "reverse_quality_gate_enabled": 0,
     "created_at": "2026-08-22 02:30:20",
-    "updated_at": "2026-08-24 01:11:44"
+    "updated_at": "2026-08-24 07:02:51"
   },
   "attachment_count": 0,
   "agent_judge_ready": false,
