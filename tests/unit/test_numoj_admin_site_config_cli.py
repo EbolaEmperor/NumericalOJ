@@ -49,6 +49,8 @@ def _llm_args(**overrides):
         "api_key_env": None,
         "env_file": None,
         "model": "example-model",
+        "context_window_tokens": None,
+        "max_output_tokens": None,
         "thinking_enabled": True,
         "input_price_per_million": "1",
         "cached_input_price_per_million": "0.1",
@@ -83,13 +85,18 @@ def test_llm_create_tests_then_saves_without_printing_secrets(monkeypatch, capsy
     )
     monkeypatch.setattr(cli.site_config.common, "client_from_args", lambda _args: client)
 
-    cli.site_config.llm_create(_llm_args())
+    cli.site_config.llm_create(_llm_args(
+        context_window_tokens=256_000,
+        max_output_tokens=12_000,
+    ))
 
     assert [request[:2] for request in client.requests] == [
         ("POST", "/api/admin/dynamic-config/llm-endpoints/test"),
         ("POST", "/api/admin/dynamic-config/llm-endpoints"),
     ]
     assert client.requests[0][2]["json"]["api_key"] == "very-secret-key"
+    assert client.requests[0][2]["json"]["context_window_tokens"] == 256_000
+    assert client.requests[0][2]["json"]["max_output_tokens"] == 12_000
     assert client.requests[1][2]["json"]["test_token"] == "one-time-token"
     assert client.requests[1][2]["json"]["context_window_tokens"] == 128_000
     assert client.requests[1][2]["json"]["max_output_tokens"] == 16_000
