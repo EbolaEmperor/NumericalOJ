@@ -19,7 +19,16 @@
             <span>等待首位选手完成评测，排名将在这里出现。</span>
           </div>
         {% else %}
+          <header class="leaderboard-mobile-heading">
+            <span class="leaderboard-mobile-kicker">LIVE STANDINGS</span>
+            <strong>排行榜</strong>
+            <span class="leaderboard-mobile-count">{{ leaderboard|length }} 位选手</span>
+          </header>
           <div class="ranking-v2-leaderboard-scroll">
+            <div class="leaderboard-column-key" aria-hidden="true">
+              <span>排名 / 选手</span>
+              <span>{% if is_elo %}当前评分{% else %}当前成绩{% endif %}</span>
+            </div>
             <div class="leaderboard-list">
             {% for row in leaderboard %}
               {% set is_me = user and user.username == row.username %}

@@ -169,8 +169,75 @@ def test_elo_match_cards_fit_mobile_and_open_from_the_whole_card():
     assert "padding: 0 14px 0 18px" in stylesheet
     assert "overflow-x: hidden" in mobile
     assert "min-width: 0" in mobile
-    assert '"side-a versus side-b"' in mobile
-    assert "padding: 12px 14px 12px 18px" in mobile
+    assert 'grid-template-areas: "time side-a versus side-b action"' in mobile
+    assert "height: 64px" in mobile
+    assert "grid-template-columns: 43px minmax(0, 1fr) 26px minmax(0, 1fr) auto" in mobile
+    assert "gap: 6px" in mobile
+    assert "padding: 8px 10px 26px" in mobile
+    assert "padding: 0 7px 0 0" in mobile
+    assert ".ranking-v2-detail .match-avatar" in mobile
+    assert "display: none" in mobile
+
+
+def test_elo_match_cards_remove_mine_rail_and_align_you_badges_on_both_sides():
+    detail = _read(TEMPLATES / "detail.html")
+    component = _read(TEMPLATES / "components" / "matches.html")
+    stylesheet = _read(STATIC / "content-v2.css")
+
+    assert ".match-row.is-mine::after" not in detail
+
+    side_a = component[component.index("match-side-a") : component.index("match-vs")]
+    side_b = component[component.index("match-side-b") : component.index("match-action")]
+    assert side_a.index("{{ name_a }}") < side_a.index("is_me_a")
+    assert side_b.index("is_me_b") < side_b.index("{{ name_b }}")
+
+    tag_rule = re.search(
+        r"\.ranking-v2-detail \.match-me-tag\s*\{(?P<body>[^{}]+)\}",
+        stylesheet,
+    )
+    assert tag_rule is not None
+    tag_body = tag_rule.group("body")
+    assert "display: inline-flex" in tag_body
+    assert "align-items: center" in tag_body
+    assert "justify-content: center" in tag_body
+    assert "background: var(--rkv2-orange)" in tag_body
+    assert "color: #fff" in tag_body
+    assert "text-align: center" in tag_body
+
+
+def test_mobile_leaderboard_uses_compact_full_width_rows_and_existing_model_logos():
+    template = _read(TEMPLATES / "tabs" / "leaderboard.html")
+    stylesheet = _read(STATIC / "content-v2.css")
+    mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+    leaderboard_start = mobile.index(
+        ".ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard {"
+    )
+    leaderboard_end = mobile.index(
+        ".ranking-v2-detail .matches-head", leaderboard_start
+    )
+    leaderboard_mobile = mobile[leaderboard_start:leaderboard_end]
+
+    assert 'class="leaderboard-mobile-heading"' in template
+    assert 'class="leaderboard-column-key"' in template
+    assert "{{ model_logo(row.best_base_model) }}" in template
+    model_region = template[
+        template.index("{% if row.best_base_model %}") : template.index(
+            "{% if row.best_agent_endpoint_label %}"
+        )
+    ]
+    assert model_region.index("model_logo(row.best_base_model)") < model_region.index(
+        "{{ row.best_base_model }}"
+    )
+
+    assert "overflow-x: hidden" in leaderboard_mobile
+    assert "min-width: 0" in leaderboard_mobile
+    assert "grid-template-columns: 27px minmax(0, 1fr) 55px" in leaderboard_mobile
+    assert "height: 58px" in leaderboard_mobile
+    assert leaderboard_mobile.count("grid-area: auto") == 3
+    assert "align-self: center" in leaderboard_mobile
+    assert "position: absolute" in leaderboard_mobile
+    assert "height: 2px" in leaderboard_mobile
+    assert "linear-gradient" not in leaderboard_mobile
 
 
 def test_elo_admin_rebuild_control_stays_inline_and_keeps_its_hover_icon():
