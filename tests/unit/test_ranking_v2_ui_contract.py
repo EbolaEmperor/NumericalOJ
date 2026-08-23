@@ -205,6 +205,41 @@ def test_elo_match_cards_remove_mine_rail_and_align_you_badges_on_both_sides():
     assert "text-align: center" in tag_body
 
 
+def test_mobile_leaderboard_uses_compact_full_width_rows_and_existing_model_logos():
+    template = _read(TEMPLATES / "tabs" / "leaderboard.html")
+    stylesheet = _read(STATIC / "content-v2.css")
+    mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+    leaderboard_start = mobile.index(
+        ".ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard {"
+    )
+    leaderboard_end = mobile.index(
+        ".ranking-v2-detail .matches-head", leaderboard_start
+    )
+    leaderboard_mobile = mobile[leaderboard_start:leaderboard_end]
+
+    assert 'class="leaderboard-mobile-heading"' in template
+    assert 'class="leaderboard-column-key"' in template
+    assert "{{ model_logo(row.best_base_model) }}" in template
+    model_region = template[
+        template.index("{% if row.best_base_model %}") : template.index(
+            "{% if row.best_agent_endpoint_label %}"
+        )
+    ]
+    assert model_region.index("model_logo(row.best_base_model)") < model_region.index(
+        "{{ row.best_base_model }}"
+    )
+
+    assert "overflow-x: hidden" in leaderboard_mobile
+    assert "min-width: 0" in leaderboard_mobile
+    assert "grid-template-columns: 27px minmax(0, 1fr) 55px" in leaderboard_mobile
+    assert "height: 58px" in leaderboard_mobile
+    assert leaderboard_mobile.count("grid-area: auto") == 3
+    assert "align-self: center" in leaderboard_mobile
+    assert "position: absolute" in leaderboard_mobile
+    assert "height: 2px" in leaderboard_mobile
+    assert "linear-gradient" not in leaderboard_mobile
+
+
 def test_elo_admin_rebuild_control_stays_inline_and_keeps_its_hover_icon():
     detail = _read(TEMPLATES / "detail.html")
     stylesheet = _read(STATIC / "content-v2.css")
