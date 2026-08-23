@@ -89,6 +89,25 @@ def test_usage_charge_uses_price_snapshot_and_adaptive_money_text():
     assert quota._money_text(Decimal("10")) == "10"
 
 
+def test_usage_charge_treats_invalid_cache_write_as_zero():
+    counts, _prices, _charged = quota.calculate_agent_usage_charge(
+        {
+            "input_uncached_tokens": 10,
+            "input_cached_tokens": 90,
+            "input_cache_write_tokens": "invalid",
+            "output_tokens": 1,
+            "reasoning_output_tokens": 0,
+        },
+        {
+            "input_price_per_million": "1",
+            "cached_input_price_per_million": "0.1",
+            "output_price_per_million": "2",
+        },
+    )
+
+    assert counts["input_cache_write_tokens"] == 0
+
+
 def test_quota_request_payload_preserves_legacy_amount_and_allows_new_null():
     base = {"id": 9, "user_id": 7, "status": "pending"}
 

@@ -438,6 +438,34 @@ def test_cached_usage_missing_or_invalid_uses_default_hit_rate(
 
 
 @pytest.mark.parametrize(
+    ("mode", "route", "payload"),
+    [
+        (
+            "openai",
+            "/v1/responses",
+            b'{"usage":{"input_tokens":10,"input_cached_tokens":4,'
+            b'"input_cache_write_tokens":"invalid","output_tokens":1}}',
+        ),
+        (
+            "anthropic",
+            "/v1/messages",
+            b'{"usage":{"input_tokens":5,"cache_read_input_tokens":2,'
+            b'"cache_creation_input_tokens":null,"output_tokens":1}}',
+        ),
+    ],
+)
+def test_cache_write_usage_missing_or_invalid_falls_back_to_zero(
+    mode,
+    route,
+    payload,
+):
+    usage = relay._extract_response_usage(mode, route, payload)
+
+    assert usage["input_cache_write_tokens"] == 0
+    assert "cached_fallback_request_count" not in usage
+
+
+@pytest.mark.parametrize(
     ("mode", "route", "payload", "message"),
     [
         ("openai", "/v1/chat/completions", b'{"choices":[]}', "缺少 usage"),
