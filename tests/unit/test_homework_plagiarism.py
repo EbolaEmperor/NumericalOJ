@@ -140,26 +140,26 @@ def test_tex_similarity_pairs_same_filename_only():
     assert [[item["username"] for item in comp] for comp in components] == [["u1", "u2"]]
 
 
-def test_byte_plagiarism_supports_multiple_fingerprints_for_elo():
-    shared_answer = _fingerprint("answer-zip", b"same-answer")
+def test_byte_plagiarism_groups_elo_submissions_by_complete_archive():
+    shared_submission = _fingerprint("code-zip", b"same-submission")
     data = [
         {
             **_item("u1", "", problem_id=-7, submission_id=10),
             "target_kind": "ranking",
             "target_key": "ranking:7",
-            "byte_fingerprints": [shared_answer, _fingerprint("code-zip", b"code-a")],
+            "byte_fingerprints": [shared_submission],
         },
         {
             **_item("u2", "", problem_id=-7, submission_id=11),
             "target_kind": "ranking",
             "target_key": "ranking:7",
-            "byte_fingerprints": [shared_answer, _fingerprint("code-zip", b"code-b")],
+            "byte_fingerprints": [shared_submission],
         },
         {
             **_item("u3", "", problem_id=-7, submission_id=12),
             "target_kind": "ranking",
             "target_key": "ranking:7",
-            "byte_fingerprints": [_fingerprint("answer-zip", b"other-answer")],
+            "byte_fingerprints": [_fingerprint("code-zip", b"other-submission")],
         },
     ]
 
