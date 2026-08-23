@@ -125,13 +125,6 @@
             htmlFrameEl.style.height = htmlFrameRequestedHeight + 'px';
           }
 
-          function applyHtmlFrameViewport(scale) {
-            if (!htmlFrameEl || !Number.isFinite(scale) || scale <= 0.25 || scale >= 4) return;
-            htmlFrameEl.style.zoom = String(1 / scale);
-            htmlFrameEl.style.width = (scale * 100) + '%';
-            htmlFrameEl.style.height = (htmlFrameRequestedHeight * scale) + 'px';
-          }
-
           function requestHtmlFrameViewportSync() {
             if (!htmlFrameEl || !htmlFrameEl.srcdoc) return;
             resetHtmlFrameViewport();
@@ -144,13 +137,6 @@
               }, '*');
             });
           }
-
-          window.addEventListener('message', function (event) {
-            if (!htmlFrameEl || event.source !== htmlFrameEl.contentWindow) return;
-            var message = event.data;
-            if (!message || message.type !== htmlFrameSyncMessage) return;
-            applyHtmlFrameViewport(Number(message.scale));
-          });
 
           function beginQuery(page, mine) {
             var target = new URL(window.location.href);
@@ -248,6 +234,7 @@
             ].join('; ');
             var viewportBridge = '<script>(function(){' +
               'var TYPE="numoj:html-detail-viewport";' +
+              'var syncFrame=0;' +
               'function readScale(){' +
                 'var root=document.documentElement;' +
                 'var width=root.clientWidth||window.innerWidth;' +
@@ -255,11 +242,21 @@
                 'var scale=width>0&&rendered>0?rendered/width:1;' +
                 'return Number.isFinite(scale)&&scale>0.25&&scale<4?scale:1;' +
               '}' +
-              'function report(){parent.postMessage({type:TYPE,scale:readScale()},"*");}' +
+              'function sync(){' +
+                'var root=document.documentElement;' +
+                'root.style.zoom="1";' +
+                'if(syncFrame)cancelAnimationFrame(syncFrame);' +
+                'syncFrame=requestAnimationFrame(function(){' +
+                  'syncFrame=0;' +
+                  'root.style.zoom=String(1/readScale());' +
+                '});' +
+              '}' +
               'window.addEventListener("message",function(event){' +
-                'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")report();' +
+                'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")sync();' +
               '});' +
-              'report();requestAnimationFrame(report);' +
+              'window.addEventListener("resize",sync);' +
+              'if(window.visualViewport)visualViewport.addEventListener("resize",sync);' +
+              'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",sync,{once:true});else sync();' +
             '})();</scr' + 'ipt>';
             return '<!doctype html><html lang="zh-CN"><head>' +
               '<meta charset="utf-8">' +

@@ -417,9 +417,9 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert "form-action 'none'" in matches
     assert "frame-src 'none'" in matches
     assert "numoj:html-detail-viewport" in matches
-    assert "event.source !== htmlFrameEl.contentWindow" in matches
-    assert "htmlFrameEl.style.zoom = String(1 / scale)" in matches
-    assert "htmlFrameEl.style.width = (scale * 100) + '%'" in matches
+    assert "event.source===parent" in matches
+    assert "root.style.zoom=String(1/readScale())" in matches
+    assert 'root.style.zoom="1"' in matches
     assert "requestHtmlFrameViewportSync" in matches
     assert "matchDetailReplay" not in matches
     assert "detail_output" in routes
