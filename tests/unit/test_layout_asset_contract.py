@@ -244,7 +244,7 @@ def test_class_membership_and_registration_share_the_custom_logo_picker():
     assert "all_classes=attach_class_logos(all_classes)" in CLASS_MANAGEMENT_ROUTES
 
 
-def test_class_manager_picker_opens_downward_without_modal_clipping():
+def test_class_manager_picker_opens_downward_on_desktop_and_upward_on_mobile():
     overflow_rule = LAYOUT_CSS.split(
         ".numoj-class-modal .modal-content,", 1
     )[1].split("}", 1)[0]
@@ -256,6 +256,24 @@ def test_class_manager_picker_opens_downward_without_modal_clipping():
     assert "overflow: visible;" in overflow_rule
     assert "top: calc(100% + 6px);" in menu_rule
     assert "bottom: auto;" in menu_rule
+
+    mobile_rule = LAYOUT_CSS[
+        LAYOUT_CSS.rfind(".numoj-class-modal .numoj-class-select-menu"):
+    ].split("}", 1)[0]
+    assert ".numoj-class-modal .numoj-class-select-menu" in mobile_rule
+    assert "top: auto;" in mobile_rule
+    assert "bottom: calc(100% + 6px);" in mobile_rule
+    assert "animation-name: numoj-class-select-enter-up;" in mobile_rule
+
+
+def test_registration_picker_opens_upward_on_mobile():
+    mobile_rule = AUTH_CSS.split(
+        "@media (max-width: 575.98px)", 1
+    )[1].split("}", 1)[0]
+    assert ".numoj-register-class-select .numoj-class-select-menu" in mobile_rule
+    assert "top: auto;" in mobile_rule
+    assert "bottom: calc(100% + 6px);" in mobile_rule
+    assert "animation-name: numoj-class-select-enter-up;" in mobile_rule
 
 
 def test_auth_pages_share_the_ui_v2_card_and_homepage_logo_contract():

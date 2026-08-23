@@ -391,6 +391,14 @@
   box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.05);
 }
 
+@media (max-width: 575.98px) {
+  .numoj-auth-card .numoj-register-class-select .numoj-class-select-menu {
+    top: auto;
+    bottom: calc(100% + 6px);
+    animation-name: numoj-class-select-enter-up;
+  }
+}
+
 @media (max-width: 440px) {
   .numoj-auth-shell .numoj-site-main {
     align-items: start;
