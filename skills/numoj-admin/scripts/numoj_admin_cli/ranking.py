@@ -423,6 +423,7 @@ def ranking_edit(args: argparse.Namespace) -> None:
         "elo_match_interval_seconds": comp.get("elo_match_interval_seconds"),
         "elo_initial_burst": comp.get("elo_initial_burst"),
         "elo_max_pairs_per_round": comp.get("elo_max_pairs_per_round"),
+        "elo_runtime_mode": comp.get("elo_runtime_mode"),
         "agent_judge_timeout_seconds": comp.get("agent_judge_timeout_seconds"),
     }
     active = args.active
@@ -456,6 +457,7 @@ def ranking_edit(args: argparse.Namespace) -> None:
             ("elo_match_interval_seconds", current_or_arg(current, "elo_match_interval_seconds", args.elo_match_interval)),
             ("elo_initial_burst", current_or_arg(current, "elo_initial_burst", args.elo_initial_burst)),
             ("elo_max_pairs_per_round", current_or_arg(current, "elo_max_pairs_per_round", args.elo_max_pairs_per_round)),
+            ("elo_runtime_mode", current_or_arg(current, "elo_runtime_mode", args.elo_runtime_mode)),
             ("agent_judge_timeout_seconds", current_or_arg(current, "agent_judge_timeout_seconds", args.agent_timeout)),
             ("reverse_judge_finalize_timeout_seconds", current_or_arg(
                 current, "reverse_judge_finalize_timeout_seconds", args.reverse_finalize_timeout)),
@@ -1080,6 +1082,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--elo-match-interval", type=int, help="Interval in seconds between automatic ELO match rounds.")
     pa.add_argument("--elo-initial-burst", type=int, help="Number of initial ELO matches to schedule quickly for a new submission.")
     pa.add_argument("--elo-max-pairs-per-round", type=int, help="Maximum number of ELO match pairs generated per scheduler round.")
+    pa.add_argument("--elo-runtime-mode", choices=["legacy", "isolated"], help="ELO match runtime: legacy single container, or isolated arbiter with network-disabled worker containers.")
     pa.add_argument("--agent-timeout", type=int, help="Timeout in seconds for Agent-as-Judge evaluation or reverse-judge AI answering.")
     pa.add_argument("--reverse-finalize-timeout", type=int, help="Timeout in seconds for reverse-judge forced finalization after AI answering is cut off.")
     pa.set_defaults(func=ranking_edit)

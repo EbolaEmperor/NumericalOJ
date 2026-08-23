@@ -2045,6 +2045,7 @@ def ranking_edit(competition_id):
     elo_match_interval_raw = request.form.get('elo_match_interval_seconds')
     elo_initial_burst_raw = request.form.get('elo_initial_burst')
     elo_max_pairs_per_round_raw = request.form.get('elo_max_pairs_per_round')
+    elo_runtime_mode_raw = request.form.get('elo_runtime_mode')
     script_timeout_raw = request.form.get('scoring_script_timeout_seconds')
     submit_limit_raw = request.form.get('submit_limit_per_window')
     reset_limit_window_raw = request.form.get('reset_limit_window')
@@ -2123,6 +2124,12 @@ def ranking_edit(competition_id):
         SCORING_SCRIPT_TIMEOUT_RANGE[0], SCORING_SCRIPT_TIMEOUT_RANGE[1],
     )
 
+    # ELO 对局运行时：仅在显式给出时更新；legacy=旧版单容器，isolated=仲裁者隔离运行时
+    elo_runtime_mode = None
+    if elo_runtime_mode_raw is not None and str(elo_runtime_mode_raw).strip() != '':
+        mode = str(elo_runtime_mode_raw).strip().lower()
+        elo_runtime_mode = mode if mode in ('legacy', 'isolated') else 'legacy'
+
     # Agent 评测的模型配置只由端点池管理；这里仅保存比赛级运行参数。
     aj_timeout_raw = request.form.get('agent_judge_timeout_seconds')
     finalize_timeout_raw = request.form.get('reverse_judge_finalize_timeout_seconds')
@@ -2180,6 +2187,7 @@ def ranking_edit(competition_id):
         elo_match_interval_seconds=elo_match_interval,
         elo_initial_burst=elo_initial_burst,
         elo_max_pairs_per_round=elo_max_pairs_per_round,
+        elo_runtime_mode=elo_runtime_mode,
         scoring_script_timeout_seconds=script_timeout,
         agent_judge_timeout_seconds=aj_timeout,
         reverse_judge_finalize_timeout_seconds=finalize_timeout,
