@@ -104,11 +104,6 @@
   padding: 0 clamp(16px, 2.2vw, 30px);
 }
 
-.ranking-v2-detail .leaderboard-mobile-heading,
-.ranking-v2-detail .leaderboard-column-key {
-  display: none;
-}
-
 .ranking-v2-detail .leaderboard-list {
   min-width: 650px;
   padding: 0;
@@ -215,6 +210,7 @@
 /* Matches */
 .ranking-v2-detail .ranking-v2-matches {
   padding: 0 0 50px;
+  background: #fff;
 }
 
 .ranking-v2-detail .matches-card {
@@ -240,6 +236,7 @@
   gap: 12px;
   padding: 10px clamp(16px, 2.2vw, 30px);
   border-bottom: 1px solid var(--rkv2-line);
+  background: #fff;
 }
 
 .ranking-v2-detail .matches-head-actions {
@@ -549,7 +546,7 @@
 
 .ranking-v2-detail .match-detail-modal .modal-header {
   border-bottom-color: var(--rkv2-line);
-  background: linear-gradient(90deg, #fafafa 0%, #fff 58%, var(--rkv2-orange-soft) 100%);
+  background: #fff;
 }
 
 .ranking-v2-detail .match-detail-modal .modal-title {
@@ -2113,7 +2110,7 @@
     display: grid;
     gap: 6px;
     padding: 8px 10px 26px;
-    background: #f6f5f2;
+    background: #fff;
   }
 
   .ranking-v2-detail .match-row {
@@ -2169,6 +2166,9 @@
 
   .ranking-v2-detail .match-side-b {
     grid-area: side-b;
+    width: 100%;
+    justify-content: stretch;
+    justify-items: end;
     padding: 0;
     text-align: right;
   }
@@ -2180,6 +2180,7 @@
 
   .ranking-v2-detail .match-side-b .match-person,
   .ranking-v2-detail .match-side-b .match-stats {
+    width: 100%;
     justify-content: flex-end;
   }
 
@@ -2298,37 +2299,7 @@
     max-width: 100%;
     padding-top: 13px;
     overflow-x: hidden;
-    background: #f7f6f3;
-  }
-
-  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-heading {
-    display: flex;
-    height: 46px;
-    min-width: 0;
-    align-items: flex-end;
-    gap: 8px;
-    padding: 0 12px 8px;
-  }
-
-  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-heading > strong {
-    color: var(--rkv2-ink);
-    font-size: 15px;
-    font-weight: 750;
-    letter-spacing: -.02em;
-    line-height: 1;
-  }
-
-  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-kicker {
-    color: var(--rkv2-orange);
-    font: 700 7px/1 var(--rkv2-mono);
-    letter-spacing: .12em;
-  }
-
-  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-count {
-    margin-left: auto;
-    color: var(--rkv2-ink-4);
-    font: 600 8px/1 var(--rkv2-mono);
-    white-space: nowrap;
+    background: #fff;
   }
 
   .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard-scroll {
@@ -2339,30 +2310,13 @@
     padding: 0 10px 24px;
   }
 
-  .ranking-detail-v2.ranking-v2-detail .leaderboard-column-key {
-    display: flex;
-    width: 100%;
-    height: 23px;
-    min-width: 0;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 10px;
-    border: 1px solid #e7e6e3;
-    border-bottom: 0;
-    border-radius: 8px 8px 0 0;
-    background: #efeeeb;
-    color: #939299;
-    font: 700 7px/1 var(--rkv2-mono);
-    letter-spacing: .08em;
-  }
-
   .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-list {
     width: 100%;
     min-width: 0;
     max-width: 100%;
     overflow: hidden;
     border: 1px solid #e7e6e3;
-    border-radius: 0 0 8px 8px;
+    border-radius: 8px;
     background: #fff;
   }
 

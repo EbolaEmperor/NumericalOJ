@@ -160,6 +160,11 @@ def test_elo_match_cards_fit_mobile_and_open_from_the_whole_card():
     component = _read(TEMPLATES / "components" / "matches.html")
     stylesheet = _read(STATIC / "content-v2.css")
     mobile = stylesheet[stylesheet.index("@media (max-width: 760px)") :]
+    match_styles = stylesheet[
+        stylesheet.index("/* Matches */") : stylesheet.index(
+            "/* Submission/appeal shared cards */"
+        )
+    ]
 
     assert 'class="match-detail-btn"' in component
     assert 'aria-label="查看 {{ name_a }} 对阵 {{ name_b }} 的对战详情"' in component
@@ -175,8 +180,12 @@ def test_elo_match_cards_fit_mobile_and_open_from_the_whole_card():
     assert "gap: 6px" in mobile
     assert "padding: 8px 10px 26px" in mobile
     assert "padding: 0 7px 0 0" in mobile
+    assert "justify-content: stretch" in mobile
+    assert "justify-items: end" in mobile
     assert ".ranking-v2-detail .match-avatar" in mobile
     assert "display: none" in mobile
+    assert "linear-gradient" not in match_styles
+    assert "background: #f6f5f2" not in mobile
 
 
 def test_elo_match_cards_remove_mine_rail_and_align_you_badges_on_both_sides():
@@ -217,8 +226,6 @@ def test_mobile_leaderboard_uses_compact_full_width_rows_and_existing_model_logo
     )
     leaderboard_mobile = mobile[leaderboard_start:leaderboard_end]
 
-    assert 'class="leaderboard-mobile-heading"' in template
-    assert 'class="leaderboard-column-key"' in template
     assert "{{ model_logo(row.best_base_model) }}" in template
     model_region = template[
         template.index("{% if row.best_base_model %}") : template.index(
