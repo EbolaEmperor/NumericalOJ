@@ -279,11 +279,34 @@ def _validate_cached_set(
     return payload
 
 
+def _find_complete_cached_set(
+    sets_root: Path,
+    expected_count: int,
+) -> str | None:
+    """优先复用本地完整集合；只有找不到时才需要访问线上目录。"""
+
+    try:
+        candidates = sorted(sets_root.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise ArcPublicSetError("ARC-AGI-3 缓存目录无法读取。") from exc
+    for candidate in candidates:
+        if candidate.is_symlink() or not candidate.is_dir():
+            continue
+        if not _SET_ID_PATTERN.fullmatch(candidate.name):
+            continue
+        try:
+            _validate_cached_set(candidate, expected_count)
+        except (ArcPublicSetError, OSError):
+            continue
+        return f"sets/{candidate.name}"
+    return None
+
+
 def _fetch_public_catalog(
     session: requests.Session,
     expected_count: int,
 ) -> tuple[str, ...]:
-    """每次部署都读取官方线上目录；异常时 fail-closed。"""
+    """本地没有完整缓存时读取官方线上目录；异常时 fail-closed。"""
     anonymous = _get_json(session, "/api/games/anonkey")
     api_key = anonymous.get("api_key") if isinstance(anonymous, dict) else None
     if not isinstance(api_key, str) or not _API_KEY_PATTERN.fullmatch(api_key):
@@ -431,6 +454,17 @@ def prepare_public_set(
     data_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     sets_root = data_root / "sets"
     sets_root.mkdir(mode=0o700, exist_ok=True)
+
+    cached_target = _find_complete_cached_set(sets_root, expected_count)
+    if cached_target:
+        _show_progress(
+            expected_count,
+            expected_count,
+            "本地完整缓存有效，跳过线上下载",
+            output=output,
+        )
+        _write_result(result_file, cached_target)
+        return cached_target
 
     session = _build_http_session()
     try:

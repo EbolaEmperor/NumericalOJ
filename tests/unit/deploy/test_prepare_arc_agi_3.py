@@ -130,7 +130,7 @@ def _install_fake_online(monkeypatch, *, variant="v1", game_count=25):
     return catalog_checks, source_requests
 
 
-def test_complete_cache_is_reused_only_after_all_online_sources_are_downloaded(
+def test_complete_cache_is_reused_without_online_download(
     tmp_path,
     monkeypatch,
 ):
@@ -149,19 +149,16 @@ def test_complete_cache_is_reused_only_after_all_online_sources_are_downloaded(
 
     assert target == f"sets/{cached.name}"
     assert result_file.read_text(encoding="ascii").strip() == target
-    assert "25/25" in output.getvalue()
-    assert "线上内容哈希一致" in output.getvalue()
-    assert online_checks == [25]
-    assert len(source_requests) == 25
-    assert len(set(source_requests)) == 25
+    assert "本地完整缓存有效，跳过线上下载" in output.getvalue()
+    assert online_checks == []
+    assert source_requests == []
 
 
-def test_same_game_ids_with_changed_source_publish_a_new_set(tmp_path, monkeypatch):
+def test_missing_cache_downloads_and_publishes_set(tmp_path, monkeypatch):
     data_root = tmp_path / "arc-agi-3"
     data_root.mkdir()
-    cached = _make_complete_cache(data_root, variant="v1")
     result_file = data_root / ".candidate-test"
-    _catalog_checks, source_requests = _install_fake_online(
+    catalog_checks, source_requests = _install_fake_online(
         monkeypatch,
         variant="v2",
     )
@@ -172,7 +169,7 @@ def test_same_game_ids_with_changed_source_publish_a_new_set(tmp_path, monkeypat
         output=io.StringIO(),
     )
 
-    assert target != f"sets/{cached.name}"
+    assert catalog_checks == [25]
     published = data_root / target
     manifest = prepare_arc_agi_3._validate_cached_set(published, 25)
     assert b"v2" in next((published / "environments").glob("*/*/*.py")).read_bytes()
@@ -183,13 +180,11 @@ def test_same_game_ids_with_changed_source_publish_a_new_set(tmp_path, monkeypat
         for game in manifest["games"]
     )
     assert len(source_requests) == 25
-    assert cached.is_dir()
 
 
-def test_catalog_failure_does_not_silently_reuse_old_cache(tmp_path, monkeypatch):
+def test_catalog_failure_is_reported_when_local_cache_is_missing(tmp_path, monkeypatch):
     data_root = tmp_path / "arc-agi-3"
     data_root.mkdir()
-    _make_complete_cache(data_root)
 
     def failed_catalog(*_args, **_kwargs):
         raise prepare_arc_agi_3.ArcPublicSetError("catalog unavailable")
