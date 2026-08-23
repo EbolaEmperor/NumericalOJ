@@ -25,6 +25,7 @@
   var editStatus = document.getElementById('ajeEditStatus');
   var editDelete = document.getElementById('ajeEditDelete');
   var editApply = document.getElementById('ajeEditApply');
+  var modalGrid = document.querySelector('.aje-modal-grid');
   var harnessPickerCtrl = null;
   var statusPickerCtrl = null;
   var orchPickerCtrl = null;
@@ -382,11 +383,11 @@
       editBaseUrl.value = candidate.base_url || '';
       editModel.value = candidate.model || '';
       editThinkingCompatibility.checked = !!candidate.thinking_enabled;
-      setChoiceValue(protocolPickerCtrl, editProtocol, candidate.protocol || '');
+      setChoiceValue(protocolPickerCtrl, editProtocol, candidate.protocol || 'openai');
     }
     setChoiceDisabled(protocolPickerCtrl, editProtocol, sourceMode === 'global' || h !== 'pi');
     if (sourceMode === 'global' && !candidate) {
-      setChoiceValue(protocolPickerCtrl, editProtocol, '');
+      setChoiceValue(protocolPickerCtrl, editProtocol, 'openai');
     }
     editApiKey.placeholder = sourceMode === 'global' ?
       '由后端安全复制' : (editApiKey.dataset.customPlaceholder || '请输入 API Key');
@@ -402,7 +403,7 @@
       setChoiceValue(protocolPickerCtrl, editProtocol, fixedProtocol);
       if (harnessChanged) editProtocol.dataset.changed = 'true';
     } else if (harnessChanged && editIndex === null) {
-      setChoiceValue(protocolPickerCtrl, editProtocol, '');
+      setChoiceValue(protocolPickerCtrl, editProtocol, 'openai');
     } else if (harnessChanged) {
       setChoiceValue(protocolPickerCtrl, editProtocol, inferProtocol(h, null));
       editProtocol.dataset.changed = 'true';
@@ -419,6 +420,7 @@
   function openEditor(manager, index){
     activeManager = manager;
     editIndex = (typeof index === 'number') ? index : null;
+    if (modalGrid) modalGrid.classList.toggle('is-add', editIndex === null);
     var e = editIndex === null ? defaultEndpoint() : manager.eps[editIndex];
     document.getElementById('ajeEditModalLabel').textContent =
       (editIndex === null ? '添加' : '编辑') + manager.endpointName;
@@ -560,11 +562,6 @@
     if (sourceMode === 'global' && !globalCandidate) {
       editGlobalEndpoint.setCustomValidity('请选择要复制的全局端点');
       editGlobalEndpoint.reportValidity();
-      return;
-    }
-    if (sourceMode === 'custom' && h === 'pi' && !editProtocol.value) {
-      editProtocol.setCustomValidity('新 Pi 端点必须明确选择协议');
-      editProtocol.reportValidity();
       return;
     }
     if (sourceMode === 'custom' && !(editBaseUrl.value || '').trim()) {
