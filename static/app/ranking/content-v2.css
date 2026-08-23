@@ -104,6 +104,11 @@
   padding: 0 clamp(16px, 2.2vw, 30px);
 }
 
+.ranking-v2-detail .leaderboard-mobile-heading,
+.ranking-v2-detail .leaderboard-column-key {
+  display: none;
+}
+
 .ranking-v2-detail .leaderboard-list {
   min-width: 650px;
   padding: 0;
@@ -407,9 +412,20 @@
 }
 
 .ranking-v2-detail .match-me-tag {
-  color: var(--rkv2-orange);
-  font: 700 8px/1 var(--rkv2-mono);
+  display: inline-flex;
+  width: auto;
+  min-width: 24px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--rkv2-orange);
+  color: #fff;
+  font: 700 7px/1 var(--rkv2-mono);
   font-style: normal;
+  letter-spacing: .04em;
+  text-align: center;
 }
 
 .ranking-v2-detail .match-stats {
@@ -2093,72 +2109,369 @@
     max-width: 100%;
   }
 
+  .ranking-v2-detail .matches-list {
+    display: grid;
+    gap: 6px;
+    padding: 8px 10px 26px;
+    background: #f6f5f2;
+  }
+
   .ranking-v2-detail .match-row {
+    width: 100%;
+    height: 64px;
     min-width: 0;
-    min-height: 142px;
-    grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr);
-    grid-template-areas:
-      "time time time"
-      "side-a versus side-b"
-      "action action action";
-    gap: 10px;
-    padding: 12px 14px 12px 18px;
+    min-height: 64px;
+    grid-template-columns: 43px minmax(0, 1fr) 26px minmax(0, 1fr) auto;
+    grid-template-areas: "time side-a versus side-b action";
+    gap: 6px;
+    overflow: hidden;
+    padding: 0 7px 0 0;
+    border: 1px solid #e3e1dc;
+    border-radius: 7px;
+    background: #fff;
+    box-shadow: 0 1px 4px rgb(32 33 38 / 4%);
   }
 
   .ranking-v2-detail .match-time {
     grid-area: time;
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
+    display: grid;
+    height: 100%;
+    align-content: center;
+    justify-items: center;
+    gap: 5px;
+    border-right: 1px solid #eeece8;
+    background: #faf9f7;
+  }
+
+  .ranking-v2-detail .match-time-clock {
+    order: -1;
+    color: var(--rkv2-ink);
+    font: 700 10px/1 var(--rkv2-mono);
+  }
+
+  .ranking-v2-detail .match-time-date {
+    color: #aaa9a4;
+    font: 8px/1 var(--rkv2-mono);
   }
 
   .ranking-v2-detail .match-side {
+    display: grid;
     min-width: 0;
-    align-items: stretch;
-    flex-direction: column;
-    gap: 6px;
+    align-content: center;
+    gap: 7px;
   }
 
   .ranking-v2-detail .match-side-a {
     grid-area: side-a;
-    text-align: right;
+    padding: 0;
+    text-align: left;
   }
 
   .ranking-v2-detail .match-side-b {
     grid-area: side-b;
-    text-align: left;
+    padding: 0;
+    text-align: right;
   }
 
   .ranking-v2-detail .match-side-a .match-person,
   .ranking-v2-detail .match-side-a .match-stats {
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
 
   .ranking-v2-detail .match-side-b .match-person,
   .ranking-v2-detail .match-side-b .match-stats {
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
 
   .ranking-v2-detail .match-person {
+    min-width: 0;
     max-width: 100%;
+  }
+
+  .ranking-v2-detail .match-side-b .match-person {
+    order: 1;
+  }
+
+  .ranking-v2-detail .match-side-b .match-stats {
+    order: 2;
+  }
+
+  .ranking-v2-detail .match-avatar {
+    display: none;
   }
 
   .ranking-v2-detail .match-username {
     max-width: 100%;
+    gap: 4px;
+    color: var(--rkv2-ink-2);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .ranking-v2-detail .match-stats {
+    gap: 5px;
+    font: 9px/1 var(--rkv2-mono);
+  }
+
+  .ranking-v2-detail .match-rating,
+  .ranking-v2-detail .match-side.match-winner .match-rating,
+  .ranking-v2-detail .match-side.match-loser .match-rating {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 10px;
+    line-height: 1;
   }
 
   .ranking-v2-detail .match-vs {
     grid-area: versus;
-    min-height: 58px;
+    width: 26px;
+    min-height: 0;
+  }
+
+  .ranking-v2-detail .match-vs-badge {
+    width: 25px;
+    height: 25px;
+    border-width: 1px;
+    box-shadow: 0 0 0 3px #fff;
+  }
+
+  .ranking-v2-detail .match-row:hover .match-vs-badge {
+    transform: none;
+    box-shadow: 0 0 0 3px #fff;
+  }
+
+  .ranking-v2-detail .match-vs-draw {
+    display: inline-grid;
+    width: 25px;
+    height: 25px;
+    padding: 0;
+    border-radius: 50%;
+    font-size: 0;
+    letter-spacing: 0;
+    place-items: center;
+  }
+
+  .ranking-v2-detail .match-vs-draw::after {
+    content: "=";
+    font: 700 7px/1 var(--rkv2-mono);
+  }
+
+  .ranking-v2-detail .match-vs-failed {
+    display: inline-grid;
+    width: 25px;
+    height: 25px;
+    padding: 0;
+    font-size: 7px;
+    letter-spacing: 0;
+    place-items: center;
   }
 
   .ranking-v2-detail .match-action {
     grid-area: action;
+    align-items: center;
     justify-content: flex-end;
+    gap: 0;
   }
 
-  .ranking-v2-detail .leaderboard-row {
-    grid-template-columns: 48px minmax(170px, 1fr) minmax(160px, 32%) 82px;
+  .ranking-v2-detail .match-detail-label {
+    width: 17px;
+    height: 32px;
+    min-height: 0;
+    padding: 0;
+    color: #b4b2ac;
+  }
+
+  .ranking-v2-detail .match-detail-label > span {
+    display: none;
+  }
+
+  .ranking-v2-detail .match-detail-label i {
+    font-size: 10px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    padding-top: 13px;
+    overflow-x: hidden;
+    background: #f7f6f3;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-heading {
+    display: flex;
+    height: 46px;
+    min-width: 0;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 0 12px 8px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-heading > strong {
+    color: var(--rkv2-ink);
+    font-size: 15px;
+    font-weight: 750;
+    letter-spacing: -.02em;
+    line-height: 1;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-kicker {
+    color: var(--rkv2-orange);
+    font: 700 7px/1 var(--rkv2-mono);
+    letter-spacing: .12em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-count {
+    margin-left: auto;
+    color: var(--rkv2-ink-4);
+    font: 600 8px/1 var(--rkv2-mono);
+    white-space: nowrap;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard-scroll {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+    padding: 0 10px 24px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-column-key {
+    display: flex;
+    width: 100%;
+    height: 23px;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    border: 1px solid #e7e6e3;
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    background: #efeeeb;
+    color: #939299;
+    font: 700 7px/1 var(--rkv2-mono);
+    letter-spacing: .08em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-list {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid #e7e6e3;
+    border-radius: 0 0 8px 8px;
+    background: #fff;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row {
+    position: relative;
+    width: 100%;
+    height: 58px;
+    min-width: 0;
+    min-height: 58px;
+    grid-template-columns: 27px minmax(0, 1fr) 55px;
+    grid-template-rows: 1fr;
+    gap: 0 7px;
+    overflow: hidden;
+    padding: 0 9px;
+    border-bottom: 1px solid #f2f1ee;
+    background: #fff;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row:last-child {
+    border-bottom: 0;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row:hover {
+    background: #fafafa;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row.is-current-user {
+    background: var(--rkv2-orange-soft);
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-rank {
+    grid-area: auto;
+    font-size: 11px;
+    letter-spacing: -.04em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-user {
+    grid-area: auto;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-user-copy {
+    gap: 4px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-username {
+    gap: 5px;
+    color: var(--rkv2-ink-2);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-me-badge {
+    display: inline-flex;
+    min-width: 24px;
+    height: 13px;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--rkv2-orange);
+    color: #fff;
+    font-size: 7px;
+    letter-spacing: .03em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-subs {
+    min-width: 0;
+    font-size: 7px;
+    line-height: 1.15;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-subs .model-family-logo,
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-subs .fa-microchip,
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-harness .harness-logo {
+    font-size: 9px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score {
+    display: grid;
+    grid-area: auto;
+    align-self: center;
+    justify-items: end;
+    gap: 3px;
+    font-size: 14px;
+    line-height: .9;
+    letter-spacing: -.05em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score small {
+    font-size: 7px;
+    letter-spacing: .08em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score-bar {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: 2px;
+    background: #f2f1ef;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score-bar > i {
+    background: #85848b;
   }
 
   .ranking-v2-detail .matches-head {
