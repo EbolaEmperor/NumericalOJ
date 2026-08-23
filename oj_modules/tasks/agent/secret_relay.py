@@ -645,6 +645,8 @@ def _normalize_anthropic_usage(usages):
                 for name in names:
                     if name not in record:
                         continue
+                    if record[name] is None:
+                        continue
                     found = True
                     try:
                         value = _usage_count(record[name], target)

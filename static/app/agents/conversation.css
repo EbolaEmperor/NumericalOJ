@@ -269,7 +269,7 @@
 .agent-usage-tooltip {
   position: absolute;
   z-index: 8;
-  bottom: calc(100% + 7px);
+  top: calc(100% + 7px);
   left: 50%;
   display: block;
   width: max-content;
@@ -286,22 +286,22 @@
   opacity: 0;
   pointer-events: none;
   text-align: left;
-  transform: translate(-50%, 3px);
+  transform: translate(-50%, -3px);
   transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
   white-space: normal;
 }
 
 .agent-usage-tooltip::after {
   position: absolute;
-  top: 100%;
+  bottom: 100%;
   left: 50%;
   width: 7px;
   height: 7px;
-  border-right: 1px solid #e5e0d6;
-  border-bottom: 1px solid #e5e0d6;
+  border-top: 1px solid #e5e0d6;
+  border-left: 1px solid #e5e0d6;
   background: #fffefb;
   content: "";
-  transform: translate(-50%, -4px) rotate(45deg);
+  transform: translate(-50%, 4px) rotate(45deg);
 }
 
 .agent-usage-warning:hover .agent-usage-tooltip,

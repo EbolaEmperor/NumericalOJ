@@ -284,6 +284,14 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
         in controller
     )
 
+    usage_tooltip = _css_rule(styles, ".agent-usage-tooltip {")
+    assert "top: calc(100% + 7px);" in usage_tooltip
+    assert "bottom: calc(100% + 7px);" not in usage_tooltip
+    usage_tooltip_arrow = _css_rule(styles, ".agent-usage-tooltip::after {")
+    assert "bottom: 100%;" in usage_tooltip_arrow
+    assert "border-top: 1px solid #e5e0d6;" in usage_tooltip_arrow
+    assert "border-left: 1px solid #e5e0d6;" in usage_tooltip_arrow
+
     assert "container-name: agent-conversation;" in styles
     assert "@container agent-conversation" in styles
     assert ".agent-session .agent-session-avatar" in styles
