@@ -250,6 +250,29 @@ def test_every_cli_command_has_help(script, paths):
 
 
 @pytest.mark.e2e
+@pytest.mark.parametrize("subcommand", ["test", "create", "update"])
+def test_admin_llm_help_exposes_capacity_options(subcommand):
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ADMIN_CLI),
+            "site-config",
+            "llm",
+            subcommand,
+            "--help",
+        ],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "--context-window-tokens" in completed.stdout
+    assert "--max-output-tokens" in completed.stdout
+
+
+@pytest.mark.e2e
 def test_admin_problem_agent_help_only_exposes_current_launch_contract():
     """Agent CLI 只暴露 Harness 启动参数，不再接受旧自建循环参数。"""
 

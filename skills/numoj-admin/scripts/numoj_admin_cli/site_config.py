@@ -198,6 +198,22 @@ def _add_llm_candidate_args(parser: argparse.ArgumentParser, *, required: bool) 
     )
     parser.add_argument("--model", required=required, help="Provider model identifier.")
     parser.add_argument(
+        "--context-window-tokens",
+        type=int,
+        help=(
+            "Configured model context-window size in tokens; the connection "
+            "test may reduce it to the upstream limit."
+        ),
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        help=(
+            "Configured maximum model output size in tokens; the connection "
+            "test may reduce it to the upstream limit."
+        ),
+    )
+    parser.add_argument(
         "--input-price-per-million",
         required=required,
         help="RMB price per 1M uncached input tokens.",
@@ -237,6 +253,8 @@ def _llm_payload(
         ("category", "category"),
         ("endpoint_base_url", "base_url"),
         ("model", "model"),
+        ("context_window_tokens", "context_window_tokens"),
+        ("max_output_tokens", "max_output_tokens"),
         ("input_price_per_million", "input_price_per_million"),
         ("cached_input_price_per_million", "cached_input_price_per_million"),
         ("output_price_per_million", "output_price_per_million"),
