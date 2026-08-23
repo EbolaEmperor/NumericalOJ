@@ -418,16 +418,19 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert "frame-src 'none'" in matches
     assert "numoj:html-detail-viewport" in matches
     assert "event.source===parent" in matches
-    assert "var scale=readScale()" in matches
-    assert "root.style.zoom=String(1/scale)" in matches
-    assert 'root.style.zoom="1"' in matches
+    assert "scale:readScale()" in matches
+    assert "applyHtmlFrameViewport(Number(event.data.scale))" in matches
+    assert "htmlFrameEl.style.transform = Math.abs(correction - 1)" in matches
+    assert "'scale(' + correction + ')'" in matches
+    assert "root.style.zoom" not in matches
+    assert "htmlFrameEl.style.zoom" not in matches
     assert "postMeasureRequest();" in matches
     assert "htmlFrameSyncMessage + ':ready'" in matches
     assert "setHtmlFrameReady(false)" in matches
     assert "setHtmlFrameReady(true)" in matches
     assert "htmlFrameEl.style.visibility" in matches
     assert "htmlFrameEl.style.pointerEvents" in matches
-    assert "sync(true)" in matches
+    assert "reportReady()" in matches
     assert 'window.addEventListener("resize",sync)' not in matches
     assert 'visualViewport.addEventListener("resize",sync)' not in matches
     assert "requestHtmlFrameViewportSync" in matches
