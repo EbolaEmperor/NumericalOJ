@@ -411,29 +411,28 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert 'sandbox="allow-scripts"' in matches
     assert "allow-same-origin" not in matches
     assert 'referrerpolicy="no-referrer"' in matches
-    assert "htmlFrameEl.srcdoc = buildHtmlDocument(output.content)" in matches
+    assert "[buildHtmlDocument(output.content)]" in matches
     assert "connect-src https: http: wss: ws:" in matches
     assert "script-src 'unsafe-inline' blob: https: http:" in matches
     assert "form-action 'none'" in matches
     assert "frame-src 'none'" in matches
-    assert "numoj:html-detail-viewport" in matches
-    assert "event.source===parent" in matches
-    assert "var correction=1/readScale()" in matches
-    assert 'body.style.transformOrigin="0 0"' in matches
-    assert 'body.style.transform=Math.abs(correction-1)' in matches
+    assert "window.URL.createObjectURL(new Blob(" in matches
+    assert "window.URL.revokeObjectURL" in matches
+    assert "htmlFrameEl.src = htmlFrameObjectUrl" in matches
+    assert "htmlFrameEl.removeAttribute('srcdoc')" in matches
+    assert "previousFrame.cloneNode(false)" in matches
+    assert "previousFrame.replaceWith(htmlFrameEl)" in matches
+    assert "currentFrame.src !== currentObjectUrl" in matches
+    assert "htmlFrameEl.style.opacity" in matches
     assert "root.style.zoom" not in matches
     assert "htmlFrameEl.style.zoom" not in matches
     assert "htmlFrameEl.style.transform" not in matches
-    assert "postMeasureRequest();" in matches
-    assert "htmlFrameSyncMessage + ':ready'" in matches
+    assert "numoj:html-detail-viewport" not in matches
+    assert "htmlFrameEl.srcdoc =" not in matches
     assert "setHtmlFrameReady(false)" in matches
     assert "setHtmlFrameReady(true)" in matches
     assert "htmlFrameEl.style.visibility" in matches
     assert "htmlFrameEl.style.pointerEvents" in matches
-    assert "reportReady()" in matches
-    assert 'window.addEventListener("resize",sync)' not in matches
-    assert 'visualViewport.addEventListener("resize",sync)' not in matches
-    assert "requestHtmlFrameViewportSync" in matches
     assert "matchDetailReplay" not in matches
     assert "detail_output" in routes
     assert "normalize_match_detail_output" in routes

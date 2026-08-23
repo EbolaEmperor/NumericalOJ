@@ -115,15 +115,14 @@
           var matchesRequestToken = 0;
           var queryController = null;
           var htmlFrameRequestedHeight = 520;
-          var htmlFrameSyncFrame = 0;
-          var htmlFrameSyncMessage = 'numoj:html-detail-viewport';
-          var htmlFrameLoaded = false;
+          var htmlFrameObjectUrl = null;
           var htmlFrameReady = false;
 
           function setHtmlFrameReady(ready) {
             if (!htmlFrameEl) return;
             htmlFrameReady = Boolean(ready);
             htmlFrameEl.style.visibility = htmlFrameReady ? 'visible' : 'hidden';
+            htmlFrameEl.style.opacity = htmlFrameReady ? '1' : '0';
             htmlFrameEl.style.pointerEvents = htmlFrameReady ? 'auto' : 'none';
             htmlFrameEl.setAttribute('aria-busy', htmlFrameReady ? 'false' : 'true');
           }
@@ -134,28 +133,11 @@
             htmlFrameEl.style.height = htmlFrameRequestedHeight + 'px';
           }
 
-          function requestHtmlFrameViewportSync() {
-            if (!htmlFrameEl || !htmlFrameEl.srcdoc) return;
-            function postMeasureRequest() {
-              if (!htmlFrameEl.contentWindow) return;
-              htmlFrameEl.contentWindow.postMessage({
-                type: htmlFrameSyncMessage + ':measure'
-              }, '*');
-            }
-            if (htmlFrameReady) postMeasureRequest();
-            if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
-            htmlFrameSyncFrame = window.requestAnimationFrame(function () {
-              htmlFrameSyncFrame = 0;
-              postMeasureRequest();
-            });
+          function releaseHtmlFrameObjectUrl() {
+            if (!htmlFrameObjectUrl) return;
+            window.URL.revokeObjectURL(htmlFrameObjectUrl);
+            htmlFrameObjectUrl = null;
           }
-
-          window.addEventListener('message', function (event) {
-            if (!htmlFrameEl || event.source !== htmlFrameEl.contentWindow) return;
-            if (!event.data || event.data.type !== htmlFrameSyncMessage + ':ready') return;
-            if (!htmlFrameLoaded || !htmlFrameEl.srcdoc) return;
-            setHtmlFrameReady(true);
-          });
 
           function beginQuery(page, mine) {
             var target = new URL(window.location.href);
@@ -251,43 +233,22 @@
               "form-action 'none'",
               "frame-src 'none'"
             ].join('; ');
-            var viewportBridge = '<script>(function(){' +
-              'var TYPE="numoj:html-detail-viewport";' +
-              'function readScale(){' +
-                'var root=document.documentElement;' +
-                'var width=root.clientWidth||window.innerWidth;' +
-                'var rendered=root.getBoundingClientRect().width;' +
-                'var scale=width>0&&rendered>0?rendered/width:1;' +
-                'return Number.isFinite(scale)&&scale>0.25&&scale<4?scale:1;' +
-              '}' +
-              'function reportReady(){' +
-                'var body=document.body;' +
-                'if(!body)return;' +
-                'var correction=1/readScale();' +
-                'body.style.transformOrigin="0 0";' +
-                'body.style.transform=Math.abs(correction-1)<0.001?"none":"scale("+correction+")";' +
-                'parent.postMessage({type:TYPE+":ready"},"*");' +
-              '}' +
-              'window.addEventListener("message",function(event){' +
-                'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")reportReady();' +
-              '});' +
-            '})();</scr' + 'ipt>';
             return '<!doctype html><html lang="zh-CN"><head>' +
               '<meta charset="utf-8">' +
               '<meta name="viewport" content="width=device-width,initial-scale=1">' +
               '<meta http-equiv="Content-Security-Policy" content="' + csp + '">' +
               '<style>html{color-scheme:light}html,body{min-height:100%;margin:0}' +
               'body{overflow:auto;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}</style>' +
-              viewportBridge + '</head><body>' + String(content || '') + '</body></html>';
+              '</head><body>' + String(content || '') + '</body></html>';
           }
 
           function stopHtmlDetail(clearDocument) {
             if (!htmlFrameEl) return;
-            if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
-            htmlFrameSyncFrame = 0;
-            htmlFrameLoaded = false;
             setHtmlFrameReady(false);
-            if (clearDocument !== false) htmlFrameEl.srcdoc = '';
+            if (clearDocument !== false) {
+              htmlFrameEl.removeAttribute('src');
+              releaseHtmlFrameObjectUrl();
+            }
             resetHtmlFrameViewport();
           }
 
@@ -326,30 +287,32 @@
               if (isNaN(requestedHeight)) requestedHeight = 520;
               requestedHeight = Math.max(240, Math.min(1200, requestedHeight));
               htmlFrameRequestedHeight = requestedHeight;
+              var previousFrame = htmlFrameEl;
+              htmlFrameEl = previousFrame.cloneNode(false);
+              htmlFrameEl.removeAttribute('src');
+              htmlFrameEl.removeAttribute('srcdoc');
               resetHtmlFrameViewport();
-              htmlFrameLoaded = false;
               setHtmlFrameReady(false);
-              htmlFrameEl.srcdoc = buildHtmlDocument(output.content);
+              var previousObjectUrl = htmlFrameObjectUrl;
+              htmlFrameObjectUrl = window.URL.createObjectURL(new Blob(
+                [buildHtmlDocument(output.content)],
+                {type: 'text/html;charset=utf-8'}
+              ));
+              var currentFrame = htmlFrameEl;
+              var currentObjectUrl = htmlFrameObjectUrl;
+              currentFrame.addEventListener('load', function handleHtmlFrameLoad() {
+                if (htmlFrameEl !== currentFrame || currentFrame.src !== currentObjectUrl) return;
+                currentFrame.removeEventListener('load', handleHtmlFrameLoad);
+                setHtmlFrameReady(true);
+              });
+              htmlFrameEl.src = htmlFrameObjectUrl;
+              previousFrame.replaceWith(htmlFrameEl);
+              if (previousObjectUrl) window.URL.revokeObjectURL(previousObjectUrl);
             }
           }
 
           if (modalEl) {
             modalEl.addEventListener('hidden.bs.modal', stopHtmlDetail);
-            modalEl.addEventListener('shown.bs.modal', requestHtmlFrameViewportSync);
-          }
-          if (htmlFrameEl) {
-            htmlFrameEl.addEventListener('load', function () {
-              if (!htmlFrameEl.srcdoc) {
-                htmlFrameLoaded = false;
-                return;
-              }
-              htmlFrameLoaded = true;
-              requestHtmlFrameViewportSync();
-            });
-          }
-          window.addEventListener('resize', requestHtmlFrameViewportSync);
-          if (window.visualViewport) {
-            window.visualViewport.addEventListener('resize', requestHtmlFrameViewportSync);
           }
 
           var loadedCache = {};
