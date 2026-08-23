@@ -104,6 +104,11 @@
   padding: 0 clamp(16px, 2.2vw, 30px);
 }
 
+.ranking-v2-detail .leaderboard-mobile-heading,
+.ranking-v2-detail .leaderboard-column-key {
+  display: none;
+}
+
 .ranking-v2-detail .leaderboard-list {
   min-width: 650px;
   padding: 0;
@@ -2287,8 +2292,186 @@
     font-size: 10px;
   }
 
-  .ranking-v2-detail .leaderboard-row {
-    grid-template-columns: 48px minmax(170px, 1fr) minmax(160px, 32%) 82px;
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    padding-top: 13px;
+    overflow-x: hidden;
+    background: #f7f6f3;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-heading {
+    display: flex;
+    height: 46px;
+    min-width: 0;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 0 12px 8px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-heading > strong {
+    color: var(--rkv2-ink);
+    font-size: 15px;
+    font-weight: 750;
+    letter-spacing: -.02em;
+    line-height: 1;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-kicker {
+    color: var(--rkv2-orange);
+    font: 700 7px/1 var(--rkv2-mono);
+    letter-spacing: .12em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-mobile-count {
+    margin-left: auto;
+    color: var(--rkv2-ink-4);
+    font: 600 8px/1 var(--rkv2-mono);
+    white-space: nowrap;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard-scroll {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+    padding: 0 10px 24px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .leaderboard-column-key {
+    display: flex;
+    width: 100%;
+    height: 23px;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    border: 1px solid #e7e6e3;
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    background: #efeeeb;
+    color: #939299;
+    font: 700 7px/1 var(--rkv2-mono);
+    letter-spacing: .08em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-list {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid #e7e6e3;
+    border-radius: 0 0 8px 8px;
+    background: #fff;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row {
+    position: relative;
+    width: 100%;
+    height: 58px;
+    min-width: 0;
+    min-height: 58px;
+    grid-template-columns: 27px minmax(0, 1fr) 55px;
+    grid-template-rows: 1fr;
+    gap: 0 7px;
+    overflow: hidden;
+    padding: 0 9px;
+    border-bottom: 1px solid #f2f1ee;
+    background: #fff;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row:last-child {
+    border-bottom: 0;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row:hover {
+    background: #fafafa;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .leaderboard-row.is-current-user {
+    background: var(--rkv2-orange-soft);
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-rank {
+    grid-area: auto;
+    font-size: 11px;
+    letter-spacing: -.04em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-user {
+    grid-area: auto;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-user-copy {
+    gap: 4px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-username {
+    gap: 5px;
+    color: var(--rkv2-ink-2);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-me-badge {
+    display: inline-flex;
+    min-width: 24px;
+    height: 13px;
+    align-items: center;
+    justify-content: center;
+    margin-left: 0;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--rkv2-orange);
+    color: #fff;
+    font-size: 7px;
+    letter-spacing: .03em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-subs {
+    min-width: 0;
+    font-size: 7px;
+    line-height: 1.15;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-subs .model-family-logo,
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-subs .fa-microchip,
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-harness .harness-logo {
+    font-size: 9px;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score {
+    display: grid;
+    grid-area: auto;
+    align-self: center;
+    justify-items: end;
+    gap: 3px;
+    font-size: 14px;
+    line-height: .9;
+    letter-spacing: -.05em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score small {
+    font-size: 7px;
+    letter-spacing: .08em;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score-bar {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: 2px;
+    background: #f2f1ef;
+  }
+
+  .ranking-detail-v2.ranking-v2-detail .ranking-v2-leaderboard .lb-score-bar > i {
+    background: #85848b;
   }
 
   .ranking-v2-detail .matches-head {
