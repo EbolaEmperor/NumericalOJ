@@ -42,6 +42,14 @@ def test_agent_quota_schema_is_part_of_incremental_schema_source():
         specs["agent_usage_ledger"].columns["charged_amount"].lower()
         == "decimal(30,14) not null"
     )
+    assert (
+        specs["agent_usage_ledger"].columns["cached_fallback_request_count"].lower()
+        == "bigint unsigned not null default '0'"
+    )
+    assert (
+        specs["agent_usage_ledger"].columns["cached_fallback_input_tokens"].lower()
+        == "bigint unsigned not null default '0'"
+    )
     unique_event = specs["agent_usage_ledger"].indexes["uniq_agent_usage_event"]
     assert "(`task_id`,`source`,`usage_event_id`)" in unique_event
 
@@ -184,6 +192,8 @@ class _ChargeCursor:
                 "output_price_per_million": params[15],
                 "charged_amount": params[16],
                 "remaining_after": params[17],
+                "cached_fallback_request_count": params[18],
+                "cached_fallback_input_tokens": params[19],
             }
         elif normalized.startswith("UPDATE agent_quota_accounts SET used_amount="):
             store.account_updates += 1
@@ -266,6 +276,45 @@ def test_usage_debit_is_atomic_idempotent_and_reports_hard_stop(monkeypatch):
     assert store.account["used_amount"] == Decimal("5.10000000000000")
     assert all(connection.commits == 1 for connection in connections)
     assert all(connection.rollbacks == 0 for connection in connections)
+
+
+def test_usage_charge_persists_cached_fallback_audit_metadata(monkeypatch):
+    store = _ChargeStore()
+    monkeypatch.setattr(
+        quota,
+        "get_db_connection",
+        lambda: _ChargeConnection(store),
+    )
+
+    result = quota.charge_agent_usage(
+        user_id=7,
+        session_id="session-fallback",
+        task_id="task-fallback",
+        source="relay_openai",
+        usage_event_id="response-fallback",
+        endpoint_id=3,
+        endpoint_revision=2,
+        endpoint_model="model-fallback",
+        usage={
+            "input_uncached_tokens": 10,
+            "input_cached_tokens": 90,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 1,
+            "reasoning_output_tokens": 0,
+            "cached_fallback_request_count": 1,
+            "cached_fallback_input_tokens": 100,
+        },
+        pricing={
+            "input_price_per_million": "1",
+            "cached_input_price_per_million": "0.1",
+            "output_price_per_million": "2",
+        },
+    )
+
+    assert result["cached_fallback_request_count"] == 1
+    assert result["cached_fallback_input_tokens"] == 100
+    assert store.ledger["cached_fallback_request_count"] == 1
+    assert store.ledger["cached_fallback_input_tokens"] == 100
 
 
 def test_admin_usage_is_recorded_without_debiting_a_quota_account(monkeypatch):

@@ -42,6 +42,7 @@ _HANDLER_SHUTDOWN_TIMEOUT_SECONDS = 5
 _CLIENT_TIMEOUT_SECONDS = 30
 _ENDPOINT_USAGE_GATE_WAIT_SECONDS = 30
 _ENDPOINT_USAGE_DRAIN_SECONDS = _UPSTREAM_TIMEOUT_SECONDS + 5
+_DEFAULT_CACHED_HIT_RATE_PERCENT = 90
 _REDACTION = b"[REDACTED]"
 _ALLOWED_METHODS = {
     "openai": frozenset({"POST"}),
@@ -414,6 +415,66 @@ def _first_usage_count(mapping, names, label, *, required=False, default=0):
     return int(default), False
 
 
+def _default_cached_input_split(total_input_tokens, cache_write_tokens=0):
+    """在 provider 没有可识别 cached 字段时按 90% 命中率估算。"""
+
+    total_input_tokens = max(0, int(total_input_tokens))
+    cache_write_tokens = max(0, int(cache_write_tokens))
+    effective_input_tokens = max(total_input_tokens, cache_write_tokens)
+    hit_candidate = max(0, effective_input_tokens - cache_write_tokens)
+    cached_tokens = (
+        hit_candidate * _DEFAULT_CACHED_HIT_RATE_PERCENT + 50
+    ) // 100
+    uncached_tokens = hit_candidate - cached_tokens
+    return {
+        "input_uncached_tokens": uncached_tokens,
+        "input_cached_tokens": cached_tokens,
+        "input_cache_write_tokens": cache_write_tokens,
+        "cached_fallback_request_count": 1,
+        "cached_fallback_input_tokens": effective_input_tokens,
+    }
+
+
+def _cached_input_count_with_fallback(
+    mapping,
+    names,
+    details,
+    detail_names,
+    *,
+    total_input_tokens,
+    cache_write_tokens=0,
+    label,
+):
+    """读取 cached 字段；缺少或非法时返回 90% 命中率的估算值。"""
+
+    source = mapping if isinstance(mapping, dict) else {}
+    detail_source = details if isinstance(details, dict) else {}
+    for candidate_source, candidate_names in (
+        (source, names),
+        (detail_source, detail_names),
+    ):
+        for name in candidate_names:
+            if name not in candidate_source:
+                continue
+            try:
+                return {
+                    "input_cached_tokens": _usage_count(
+                        candidate_source[name], label
+                    ),
+                    "cached_fallback_request_count": 0,
+                    "cached_fallback_input_tokens": 0,
+                }
+            except AgentSecretRelayUsageError:
+                return _default_cached_input_split(
+                    total_input_tokens,
+                    cache_write_tokens,
+                )
+    return _default_cached_input_split(
+        total_input_tokens,
+        cache_write_tokens,
+    )
+
+
 def _usage_details(usage, *names):
     for name in names:
         value = usage.get(name) if isinstance(usage, dict) else None
@@ -449,21 +510,6 @@ def _normalize_openai_usage(usage):
         "completion_tokens_details",
         "output_tokens_details",
     )
-    cached_tokens, cached_present = _first_usage_count(
-        usage,
-        (
-            "prompt_cache_hit_tokens",
-            "input_cached_tokens",
-            "cache_read_input_tokens",
-        ),
-        "缓存输入 Token",
-    )
-    if not cached_present:
-        cached_tokens, _ = _first_usage_count(
-            input_details,
-            ("cached_tokens", "cache_read_tokens"),
-            "缓存输入 Token",
-        )
     cache_write_tokens, cache_write_present = _first_usage_count(
         usage,
         ("input_cache_write_tokens", "cache_creation_input_tokens"),
@@ -475,6 +521,29 @@ def _normalize_openai_usage(usage):
             ("cache_write_tokens", "cache_creation_tokens"),
             "缓存写入 Token",
         )
+    cached_split = _cached_input_count_with_fallback(
+        usage,
+        (
+            "prompt_cache_hit_tokens",
+            "input_cached_tokens",
+            "cache_read_input_tokens",
+        ),
+        input_details,
+        ("cached_tokens", "cache_read_tokens"),
+        total_input_tokens=total_input,
+        cache_write_tokens=cache_write_tokens if cache_write_present else 0,
+        label="缓存输入 Token",
+    )
+    cached_tokens = cached_split["input_cached_tokens"]
+    fallback_meta = {
+        key: cached_split[key]
+        for key in (
+            "cached_fallback_request_count",
+            "cached_fallback_input_tokens",
+        )
+    }
+    if fallback_meta["cached_fallback_request_count"]:
+        cache_write_tokens = cached_split["input_cache_write_tokens"]
     uncached_tokens, uncached_present = _first_usage_count(
         usage,
         ("prompt_cache_miss_tokens", "input_uncached_tokens"),
@@ -485,6 +554,8 @@ def _normalize_openai_usage(usage):
         if cached_total > total_input:
             raise AgentSecretRelayUsageError("缓存输入 Token 超过总输入 Token")
         uncached_tokens = total_input - cached_total
+    if fallback_meta["cached_fallback_request_count"]:
+        uncached_tokens = cached_split["input_uncached_tokens"]
     reasoning_tokens, reasoning_present = _first_usage_count(
         usage,
         ("reasoning_output_tokens", "reasoning_tokens"),
@@ -498,13 +569,16 @@ def _normalize_openai_usage(usage):
         )
     if reasoning_tokens > output_tokens:
         raise AgentSecretRelayUsageError("推理输出 Token 超过总输出 Token")
-    return {
+    normalized = {
         "input_uncached_tokens": uncached_tokens,
         "input_cached_tokens": cached_tokens,
         "input_cache_write_tokens": cache_write_tokens,
         "output_tokens": output_tokens,
         "reasoning_output_tokens": reasoning_tokens,
     }
+    if fallback_meta["cached_fallback_request_count"]:
+        normalized.update(fallback_meta)
+    return normalized
 
 
 def _normalize_anthropic_usage(usages):
@@ -529,6 +603,7 @@ def _normalize_anthropic_usage(usages):
         ),
     }
     present = set()
+    cached_field_invalid = False
     for record in records:
         cache_creation = record.get("cache_creation")
         if (
@@ -550,11 +625,25 @@ def _normalize_anthropic_usage(usages):
                 "cache_creation_input_tokens": five_minutes + one_hour,
             }
         for target, names in aliases.items():
-            value, found = _first_usage_count(
-                record,
-                names,
-                target,
-            )
+            if target == "input_cached_tokens":
+                value = 0
+                found = False
+                for name in names:
+                    if name not in record:
+                        continue
+                    found = True
+                    try:
+                        value = _usage_count(record[name], target)
+                    except AgentSecretRelayUsageError:
+                        cached_field_invalid = True
+                        found = False
+                    break
+            else:
+                value, found = _first_usage_count(
+                    record,
+                    names,
+                    target,
+                )
             if found:
                 present.add(target)
                 maxima[target] = max(maxima.get(target, 0), value)
@@ -562,7 +651,15 @@ def _normalize_anthropic_usage(usages):
         raise AgentSecretRelayUsageError("模型响应缺少输入 Token")
     if "output_tokens" not in present:
         raise AgentSecretRelayUsageError("模型响应缺少输出 Token")
-    return {field: maxima.get(field, 0) for field in aliases}
+    normalized = {field: maxima.get(field, 0) for field in aliases}
+    if cached_field_invalid or "input_cached_tokens" not in present:
+        fallback = _default_cached_input_split(
+            maxima.get("input_uncached_tokens", 0)
+            + maxima.get("input_cache_write_tokens", 0),
+            maxima.get("input_cache_write_tokens", 0),
+        )
+        normalized.update(fallback)
+    return normalized
 
 
 def _response_documents(payload):

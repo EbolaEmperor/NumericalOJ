@@ -320,6 +320,27 @@ def test_session_usage_treats_pi_resume_traces_as_cumulative_snapshots():
     }
 
 
+def test_session_usage_aggregates_cached_fallback_audit_metadata():
+    usage = agent_runs.aggregate_agent_session_token_usage([
+        ("turn-1", {
+            "source": "relay_anthropic",
+            "request_count": 2,
+            "input_uncached_tokens": 20,
+            "input_cached_tokens": 180,
+            "input_cache_write_tokens": 0,
+            "input_total_tokens": 200,
+            "output_tokens": 10,
+            "reasoning_output_tokens": 0,
+            "cached_fallback_request_count": 2,
+            "cached_fallback_input_tokens": 200,
+            "cost_rmb": "0.20",
+        }),
+    ])
+
+    assert usage["cached_fallback_request_count"] == 2
+    assert usage["cached_fallback_input_tokens"] == 200
+
+
 def test_session_usage_sums_incremental_tasks_and_overlays_duplicate_task_id():
     usage = agent_runs.aggregate_agent_session_token_usage([
         ("turn-1", {

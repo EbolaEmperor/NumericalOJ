@@ -31,6 +31,8 @@ _SESSION_USAGE_COUNTER_FIELDS = (
     "input_total_tokens",
     "output_tokens",
     "reasoning_output_tokens",
+    "cached_fallback_request_count",
+    "cached_fallback_input_tokens",
 )
 _CUMULATIVE_RESUME_USAGE_SOURCES = frozenset({"claude_code", "pi"})
 
@@ -271,6 +273,9 @@ def aggregate_agent_session_token_usage(task_usages):
         "cost_complete": cost_complete,
         "cost_rmb": _decimal_text(total_cost) if cost_complete else None,
     })
+    if totals["cached_fallback_request_count"] <= 0:
+        totals.pop("cached_fallback_request_count")
+        totals.pop("cached_fallback_input_tokens")
     return totals
 
 

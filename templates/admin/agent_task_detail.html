@@ -194,7 +194,18 @@
           </div>
           <div class="agent-session-usage-fact agent-session-usage-fact--cached">
             <dt><span aria-hidden="true">CACHED</span><span class="visually-hidden">缓存输入占比</span></dt>
-            <dd data-agent-usage-cached>—</dd>
+            <dd data-agent-usage-cached>
+              <span data-agent-usage-cached-value>—</span>
+              <button class="agent-usage-warning" type="button"
+                      data-agent-usage-warning hidden
+                      aria-label="cached 字段回退计费提示"
+                      aria-describedby="agentUsageWarningTooltip">
+                <span class="agent-usage-warning-mark" aria-hidden="true">!</span>
+                <span class="agent-usage-tooltip" id="agentUsageWarningTooltip" role="tooltip">
+                  <span data-agent-usage-warning-text></span>
+                </span>
+              </button>
+            </dd>
           </div>
           <div class="agent-session-usage-fact agent-session-usage-fact--output">
             <dt><span aria-hidden="true">OUTPUT</span><span class="visually-hidden">输出 Token</span></dt>
