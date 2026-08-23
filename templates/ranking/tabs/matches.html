@@ -128,13 +128,17 @@
           function requestHtmlFrameViewportSync() {
             if (!htmlFrameEl || !htmlFrameEl.srcdoc) return;
             resetHtmlFrameViewport();
-            if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
-            htmlFrameSyncFrame = window.requestAnimationFrame(function () {
-              htmlFrameSyncFrame = 0;
+            function postMeasureRequest() {
               if (!htmlFrameEl.contentWindow) return;
               htmlFrameEl.contentWindow.postMessage({
                 type: htmlFrameSyncMessage + ':measure'
               }, '*');
+            }
+            postMeasureRequest();
+            if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
+            htmlFrameSyncFrame = window.requestAnimationFrame(function () {
+              htmlFrameSyncFrame = 0;
+              postMeasureRequest();
             });
           }
 
@@ -234,7 +238,6 @@
             ].join('; ');
             var viewportBridge = '<script>(function(){' +
               'var TYPE="numoj:html-detail-viewport";' +
-              'var syncFrame=0;' +
               'function readScale(){' +
                 'var root=document.documentElement;' +
                 'var width=root.clientWidth||window.innerWidth;' +
@@ -245,18 +248,14 @@
               'function sync(){' +
                 'var root=document.documentElement;' +
                 'root.style.zoom="1";' +
-                'if(syncFrame)cancelAnimationFrame(syncFrame);' +
-                'syncFrame=requestAnimationFrame(function(){' +
-                  'syncFrame=0;' +
-                  'root.style.zoom=String(1/readScale());' +
-                '});' +
+                'var scale=readScale();' +
+                'root.style.zoom=String(1/scale);' +
               '}' +
               'window.addEventListener("message",function(event){' +
                 'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")sync();' +
               '});' +
-              'window.addEventListener("resize",sync);' +
-              'if(window.visualViewport)visualViewport.addEventListener("resize",sync);' +
-              'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",sync,{once:true});else sync();' +
+              'sync();' +
+              'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",sync,{once:true});' +
             '})();</scr' + 'ipt>';
             return '<!doctype html><html lang="zh-CN"><head>' +
               '<meta charset="utf-8">' +
