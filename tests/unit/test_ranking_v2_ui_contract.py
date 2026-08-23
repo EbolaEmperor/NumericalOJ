@@ -437,6 +437,10 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert "window.outerWidth / window.innerWidth" in matches
     assert "Math.abs(nativeDpr - roundedDpr) > 0.03" in matches
     assert "!/(?:Chrome|Chromium|CriOS|Edg|OPR)\\//.test(ua)" in matches
+    assert "var repaintObserver=new MutationObserver" in matches
+    assert 'body.style.setProperty("visibility","hidden","important")' in matches
+    assert "void body.offsetHeight" in matches
+    assert "repaintObserver.observe(body,{subtree:true,childList:true,characterData:true})" in matches
     assert "numoj:html-detail-ready" in matches
     assert "event.source !== currentFrame.contentWindow" in matches
     assert "event.data.token !== readyToken" in matches

@@ -265,6 +265,18 @@
                 'style.setAttribute("data-numoj-viewport-fix","");' +
                 'style.textContent="body{transform-origin:0 0!important;transform:scale("+(1/scale)+")!important;width:"+percent+"%!important;height:"+percent+"%!important;min-height:"+percent+"%!important}";' +
                 'document.head.appendChild(style);' +
+                'var body=document.body;' +
+                'var repaintObserver=new MutationObserver(function(records){' +
+                  'var needsRepaint=records.some(function(record){return record.type==="childList"||record.type==="characterData";});' +
+                  'if(!needsRepaint)return;' +
+                  'var visibility=body.style.getPropertyValue("visibility");' +
+                  'var priority=body.style.getPropertyPriority("visibility");' +
+                  'body.style.setProperty("visibility","hidden","important");' +
+                  'void body.offsetHeight;' +
+                  'if(visibility)body.style.setProperty("visibility",visibility,priority);' +
+                  'else body.style.removeProperty("visibility");' +
+                '});' +
+                'repaintObserver.observe(body,{subtree:true,childList:true,characterData:true});' +
               '}' +
               'window.parent.postMessage({type:"numoj:html-detail-ready",token:readyToken},"*");' +
               '})()<\/script>';
