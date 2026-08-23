@@ -638,6 +638,7 @@
 .ranking-v2-detail .match-detail-html iframe {
   display: block;
   width: 100%;
+  max-width: none;
   min-height: 240px;
   border: 0;
   background: #fff;
