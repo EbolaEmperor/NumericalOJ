@@ -117,6 +117,8 @@
           var htmlFrameRequestedHeight = 520;
           var htmlFrameObjectUrl = null;
           var htmlFrameReady = false;
+          var htmlFrameReadySequence = 0;
+          var htmlFrameReadyCleanup = null;
 
           function setHtmlFrameReady(ready) {
             if (!htmlFrameEl) return;
@@ -131,6 +133,13 @@
             if (!htmlFrameEl) return;
             htmlFrameEl.style.width = '100%';
             htmlFrameEl.style.height = htmlFrameRequestedHeight + 'px';
+          }
+
+          function clearHtmlFrameReadyWait() {
+            if (!htmlFrameReadyCleanup) return;
+            var cleanup = htmlFrameReadyCleanup;
+            htmlFrameReadyCleanup = null;
+            cleanup();
           }
 
           function releaseHtmlFrameObjectUrl() {
@@ -218,7 +227,7 @@
             return {format: 'text', content: verdict};
           }
 
-          function buildHtmlDocument(content) {
+          function buildHtmlDocument(content, readyToken) {
             var csp = [
               "default-src 'none'",
               "img-src data: blob: https: http:",
@@ -234,17 +243,25 @@
               "frame-src 'none'"
             ].join('; ');
             var viewportFix = '<script>(function(){' +
-              'var root=document.documentElement;' +
-              'var logicalWidth=root.clientWidth||window.innerWidth;' +
-              'var renderedWidth=root.getBoundingClientRect().width;' +
-              'var scale=logicalWidth>0?renderedWidth/logicalWidth:1;' +
-              'if(!isFinite(scale)||scale<=0||Math.abs(scale-1)<0.005)return;' +
-              'var percent=scale*100;' +
-              'var style=document.createElement("style");' +
-              'style.setAttribute("data-numoj-viewport-fix","");' +
-              'style.textContent="body{transform-origin:0 0!important;transform:scale("+(1/scale)+")!important;width:"+percent+"%!important;height:"+percent+"%!important;min-height:"+percent+"%!important}";' +
-              'document.head.appendChild(style);' +
-              'root.setAttribute("data-numoj-embedded-scale",String(scale));' +
+              'var readyToken=' + JSON.stringify(String(readyToken || '')) + ';' +
+              'function finish(){' +
+                'var root=document.documentElement;' +
+                'var logicalWidth=root.clientWidth||window.innerWidth;' +
+                'var renderedWidth=root.getBoundingClientRect().width;' +
+                'var scale=logicalWidth>0?renderedWidth/logicalWidth:1;' +
+                'root.setAttribute("data-numoj-embedded-scale",String(scale));' +
+                'if(isFinite(scale)&&scale>0&&Math.abs(scale-1)>=0.005){' +
+                  'var percent=scale*100;' +
+                  'var style=document.createElement("style");' +
+                  'style.setAttribute("data-numoj-viewport-fix","");' +
+                  'style.textContent="body{transform-origin:0 0!important;transform:scale("+(1/scale)+")!important;width:"+percent+"%!important;height:"+percent+"%!important;min-height:"+percent+"%!important}";' +
+                  'document.head.appendChild(style);' +
+                '}' +
+                'window.parent.postMessage({type:"numoj:html-detail-ready",token:readyToken},"*");' +
+              '}' +
+              'function afterLayout(){requestAnimationFrame(function(){requestAnimationFrame(finish);});}' +
+              'if(document.readyState==="complete")afterLayout();' +
+              'else window.addEventListener("load",afterLayout,{once:true});' +
               '})()<\/script>';
             return '<!doctype html><html lang="zh-CN"><head>' +
               '<meta charset="utf-8">' +
@@ -257,6 +274,7 @@
 
           function stopHtmlDetail(clearDocument) {
             if (!htmlFrameEl) return;
+            clearHtmlFrameReadyWait();
             setHtmlFrameReady(false);
             if (clearDocument !== false) {
               htmlFrameEl.removeAttribute('src');
@@ -306,18 +324,38 @@
               htmlFrameEl.removeAttribute('srcdoc');
               resetHtmlFrameViewport();
               setHtmlFrameReady(false);
+              clearHtmlFrameReadyWait();
+              var readyToken = String(++htmlFrameReadySequence) + '-' + String(Date.now());
               var previousObjectUrl = htmlFrameObjectUrl;
               htmlFrameObjectUrl = window.URL.createObjectURL(new Blob(
-                [buildHtmlDocument(output.content)],
+                [buildHtmlDocument(output.content, readyToken)],
                 {type: 'text/html;charset=utf-8'}
               ));
               var currentFrame = htmlFrameEl;
               var currentObjectUrl = htmlFrameObjectUrl;
+              var readyFallback = null;
+              function markHtmlFrameReady() {
+                if (htmlFrameEl !== currentFrame || currentFrame.src !== currentObjectUrl) return;
+                clearHtmlFrameReadyWait();
+                setHtmlFrameReady(true);
+              }
+              function handleHtmlFrameReady(event) {
+                if (event.source !== currentFrame.contentWindow) return;
+                if (!event.data || event.data.type !== 'numoj:html-detail-ready') return;
+                if (event.data.token !== readyToken) return;
+                markHtmlFrameReady();
+              }
               currentFrame.addEventListener('load', function handleHtmlFrameLoad() {
                 if (htmlFrameEl !== currentFrame || currentFrame.src !== currentObjectUrl) return;
                 currentFrame.removeEventListener('load', handleHtmlFrameLoad);
-                setHtmlFrameReady(true);
+                readyFallback = window.setTimeout(markHtmlFrameReady, 1500);
               });
+              window.addEventListener('message', handleHtmlFrameReady);
+              htmlFrameReadyCleanup = function () {
+                currentFrame.removeEventListener('load', handleHtmlFrameLoad);
+                window.removeEventListener('message', handleHtmlFrameReady);
+                if (readyFallback !== null) window.clearTimeout(readyFallback);
+              };
               htmlFrameEl.src = htmlFrameObjectUrl;
               previousFrame.replaceWith(htmlFrameEl);
               if (previousObjectUrl) window.URL.revokeObjectURL(previousObjectUrl);

@@ -411,7 +411,7 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert 'sandbox="allow-scripts"' in matches
     assert "allow-same-origin" not in matches
     assert 'referrerpolicy="no-referrer"' in matches
-    assert "[buildHtmlDocument(output.content)]" in matches
+    assert "[buildHtmlDocument(output.content, readyToken)]" in matches
     assert "connect-src https: http: wss: ws:" in matches
     assert "script-src 'unsafe-inline' blob: https: http:" in matches
     assert "form-action 'none'" in matches
@@ -432,8 +432,13 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert 'data-numoj-embedded-scale' in matches
     assert 'root.getBoundingClientRect().width' in matches
     assert 'transform:scale(' in matches
-    assert 'Math.abs(scale-1)<0.005' in matches
+    assert 'Math.abs(scale-1)>=0.005' in matches
     assert "String(content || '') + viewportFix + '</body>" in matches
+    assert "requestAnimationFrame(function(){requestAnimationFrame(finish);})" in matches
+    assert "numoj:html-detail-ready" in matches
+    assert "event.source !== currentFrame.contentWindow" in matches
+    assert "event.data.token !== readyToken" in matches
+    assert "clearHtmlFrameReadyWait()" in matches
     assert "htmlFrameEl.srcdoc =" not in matches
     assert "setHtmlFrameReady(false)" in matches
     assert "setHtmlFrameReady(true)" in matches
