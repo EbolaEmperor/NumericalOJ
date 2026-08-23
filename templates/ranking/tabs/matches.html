@@ -132,17 +132,6 @@
             if (!htmlFrameEl) return;
             htmlFrameEl.style.width = '100%';
             htmlFrameEl.style.height = htmlFrameRequestedHeight + 'px';
-            htmlFrameEl.style.transform = 'none';
-            htmlFrameEl.style.transformOrigin = '0 0';
-          }
-
-          function applyHtmlFrameViewport(scale) {
-            if (!htmlFrameEl || !Number.isFinite(scale) || scale <= 0.25 || scale >= 4) return;
-            var correction = 1 / scale;
-            htmlFrameEl.style.transformOrigin = '0 0';
-            htmlFrameEl.style.transform = Math.abs(correction - 1) < 0.001
-              ? 'none'
-              : 'scale(' + correction + ')';
           }
 
           function requestHtmlFrameViewportSync() {
@@ -165,7 +154,6 @@
             if (!htmlFrameEl || event.source !== htmlFrameEl.contentWindow) return;
             if (!event.data || event.data.type !== htmlFrameSyncMessage + ':ready') return;
             if (!htmlFrameLoaded || !htmlFrameEl.srcdoc) return;
-            applyHtmlFrameViewport(Number(event.data.scale));
             setHtmlFrameReady(true);
           });
 
@@ -273,7 +261,12 @@
                 'return Number.isFinite(scale)&&scale>0.25&&scale<4?scale:1;' +
               '}' +
               'function reportReady(){' +
-                'parent.postMessage({type:TYPE+":ready",scale:readScale()},"*");' +
+                'var body=document.body;' +
+                'if(!body)return;' +
+                'var correction=1/readScale();' +
+                'body.style.transformOrigin="0 0";' +
+                'body.style.transform=Math.abs(correction-1)<0.001?"none":"scale("+correction+")";' +
+                'parent.postMessage({type:TYPE+":ready"},"*");' +
               '}' +
               'window.addEventListener("message",function(event){' +
                 'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")reportReady();' +
