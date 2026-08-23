@@ -349,14 +349,14 @@ def test_usage_stop_event_rejects_subsequent_endpoint_requests():
             "/v1/responses",
             b'data: {"type":"response.completed","response":{"usage":'
             b'{"input_tokens":6,"output_tokens":3}}}\n\n',
-            (6, 0, 0, 3, 0),
+            (1, 5, 0, 3, 0),
         ),
         (
             "openai",
             "/v1/responses/compact",
             b'{"object":"response.compaction","usage":'
             b'{"input_tokens":9,"output_tokens":1}}',
-            (9, 0, 0, 1, 0),
+            (1, 8, 0, 1, 0),
         ),
         (
             "anthropic",
@@ -385,7 +385,56 @@ def test_extracts_authoritative_usage_from_supported_json_and_sse(
 ):
     usage = relay._extract_response_usage(mode, route, payload)
 
-    assert tuple(usage.values()) == expected
+    assert tuple(
+        usage[field]
+        for field in (
+            "input_uncached_tokens",
+            "input_cached_tokens",
+            "input_cache_write_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+        )
+    ) == expected
+    if "cached_fallback_request_count" in usage:
+        assert usage["cached_fallback_request_count"] == 1
+        assert usage["cached_fallback_input_tokens"] == sum(expected[:3])
+    else:
+        assert "cached_fallback_request_count" not in usage
+
+
+@pytest.mark.parametrize(
+    ("mode", "route", "payload", "expected_input"),
+    [
+        (
+            "openai",
+            "/v1/responses",
+            b'{"usage":{"input_tokens":10,"input_cached_tokens":null,'
+            b'"output_tokens":1}}',
+            (1, 9),
+        ),
+        (
+            "anthropic",
+            "/v1/messages",
+            b'{"usage":{"input_tokens":10,"cache_read_input_tokens":'
+            b'"not-a-number","output_tokens":1}}',
+            (1, 9),
+        ),
+    ],
+)
+def test_cached_usage_missing_or_invalid_uses_default_hit_rate(
+    mode,
+    route,
+    payload,
+    expected_input,
+):
+    usage = relay._extract_response_usage(mode, route, payload)
+
+    assert (
+        usage["input_uncached_tokens"],
+        usage["input_cached_tokens"],
+    ) == expected_input
+    assert usage["cached_fallback_request_count"] == 1
+    assert usage["cached_fallback_input_tokens"] == 10
 
 
 @pytest.mark.parametrize(

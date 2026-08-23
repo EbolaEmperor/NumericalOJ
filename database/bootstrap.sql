@@ -2018,6 +2018,8 @@ CREATE TABLE `agent_usage_ledger` (
   `output_price_per_million` decimal(30,14) NOT NULL,
   `charged_amount` decimal(30,14) NOT NULL,
   `remaining_after` decimal(30,14) NOT NULL,
+  `cached_fallback_request_count` bigint unsigned NOT NULL DEFAULT '0',
+  `cached_fallback_input_tokens` bigint unsigned NOT NULL DEFAULT '0',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_agent_usage_event` (`task_id`,`source`,`usage_event_id`),

@@ -53,7 +53,9 @@
   var statusLabel = root.querySelector('[data-agent-status-label]');
   var sessionTitle = root.querySelector('[data-agent-session-title]');
   var usageInput = root.querySelector('[data-agent-usage-input]');
-  var usageCached = root.querySelector('[data-agent-usage-cached]');
+  var usageCached = root.querySelector('[data-agent-usage-cached-value]');
+  var usageCachedWarning = root.querySelector('[data-agent-usage-warning]');
+  var usageCachedWarningText = root.querySelector('[data-agent-usage-warning-text]');
   var usageOutput = root.querySelector('[data-agent-usage-output]');
   var usageCost = root.querySelector('[data-agent-usage-cost]');
   var contextMeter = root.querySelector('[data-agent-context-meter]');
@@ -176,8 +178,10 @@
 
   function formatTokenCount(tokens) {
     if (!Number.isFinite(tokens) || tokens < 0) return '—';
-    if (tokens < 10000) return formatMeasuredValue(tokens / 1000) + ' K';
-    return formatMeasuredValue(tokens / 1000000) + ' M';
+    if (tokens < 1000) return formatMeasuredValue(tokens);
+    if (tokens < 1000000) return formatMeasuredValue(tokens / 1000) + ' K';
+    if (tokens < 1000000000) return formatMeasuredValue(tokens / 1000000) + ' M';
+    return formatMeasuredValue(tokens / 1000000000000) + ' T';
   }
 
   function formatMoneyValue(value) {
@@ -196,12 +200,32 @@
     if (element && element.textContent !== value) element.textContent = value;
   }
 
+  function renderCachedUsageWarning(usage) {
+    if (!usageCachedWarning) return;
+    var fallbackCount = Number(usage && usage.cached_fallback_request_count);
+    var fallbackTokens = Number(usage && usage.cached_fallback_input_tokens);
+    var hasFallback = Number.isFinite(fallbackCount)
+      && fallbackCount > 0
+      && Number.isFinite(fallbackTokens)
+      && fallbackTokens >= 0;
+    var message = hasFallback
+      ? '您的本次对话中，有 ' + fallbackCount
+        + ' 次 LLM 调用没有返回可识别的 cached 字段，因此有 '
+        + formatTokenCount(fallbackTokens)
+        + ' 的 input tokens 按照 90% 的默认命中率来计费。'
+      : '';
+    usageCachedWarning.hidden = !hasFallback;
+    usageCachedWarning.setAttribute('aria-label', message || 'cached 字段回退计费提示');
+    setUsageValue(usageCachedWarningText, message);
+  }
+
   function renderHeaderTokenUsage(usage) {
     usage = usage && typeof usage === 'object' ? usage : null;
     if (!usage) {
       [usageInput, usageCached, usageOutput].forEach(function (element) {
         setUsageValue(element, '—');
       });
+      renderCachedUsageWarning(null);
       setUsageValue(usageCost, usesPersonalEndpoint ? '用户自费' : '—');
       return;
     }
@@ -215,6 +239,7 @@
     setUsageValue(usageInput, formatTokenCount(inputTokens));
     setUsageValue(usageCached, cachedPercent.toFixed(2) + '%');
     setUsageValue(usageOutput, formatTokenCount(outputTokens));
+    renderCachedUsageWarning(usage);
 
     var hasCost = usage.cost_rmb !== null
       && usage.cost_rmb !== undefined

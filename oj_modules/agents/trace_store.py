@@ -31,6 +31,8 @@ _TOKEN_USAGE_COUNTER_FIELDS = (
     "input_total_tokens",
     "output_tokens",
     "reasoning_output_tokens",
+    "cached_fallback_request_count",
+    "cached_fallback_input_tokens",
     "last_input_total_tokens",
     "last_output_tokens",
 )

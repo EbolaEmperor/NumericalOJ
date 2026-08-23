@@ -29,8 +29,6 @@ _USAGE_PRICE_FIELDS = (
     "cached_input_price_per_million",
     "output_price_per_million",
 )
-
-
 class AgentQuotaError(RuntimeError):
     """可预期的 Agent 额度领域错误。"""
 
@@ -128,6 +126,26 @@ def _token_count(value, label):
     return parsed
 
 
+def _cached_fallback_metadata(usage):
+    """校验并读取 cached 字段回退计费的审计信息。"""
+
+    request_count = _token_count(
+        usage.get("cached_fallback_request_count", 0),
+        "cached 回退调用次数",
+    )
+    input_tokens = _token_count(
+        usage.get("cached_fallback_input_tokens", 0),
+        "cached 回退输入 Token",
+    )
+    if request_count > 1:
+        raise AgentQuotaValidationError("cached 回退调用次数无效")
+    if request_count == 0 and input_tokens != 0:
+        raise AgentQuotaValidationError("cached 回退输入 Token 无效")
+    if request_count == 1 and input_tokens <= 0:
+        raise AgentQuotaValidationError("cached 回退输入 Token 无效")
+    return request_count, input_tokens
+
+
 def _setting_enabled(value):
     return str(value if value is not None else "1").strip().lower() not in {
         "0",
@@ -206,6 +224,12 @@ def _ledger_from_row(row, *, applied):
         "endpoint_model": str(row.get("endpoint_model") or ""),
         "charged_amount": _money_text(row.get("charged_amount")),
         "remaining_amount": _money_text(remaining),
+        "cached_fallback_request_count": int(
+            row.get("cached_fallback_request_count") or 0
+        ),
+        "cached_fallback_input_tokens": int(
+            row.get("cached_fallback_input_tokens") or 0
+        ),
         "hard_stop": remaining <= AGENT_QUOTA_HARD_STOP_AMOUNT,
         "applied": bool(applied),
         "created_at": _time_text(row.get("created_at")),
@@ -420,6 +444,10 @@ def get_agent_session_token_usage(session_id):
                        SUM(input_cache_write_tokens) AS input_cache_write_tokens,
                        SUM(output_tokens) AS output_tokens,
                        SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                       SUM(cached_fallback_request_count)
+                           AS cached_fallback_request_count,
+                       SUM(cached_fallback_input_tokens)
+                           AS cached_fallback_input_tokens,
                        SUM(charged_amount) AS charged_amount
                 FROM agent_usage_ledger
                 WHERE session_id=%s
@@ -465,6 +493,14 @@ def get_agent_session_token_usage(session_id):
         "reasoning_output_tokens": sum(
             int(row.get("reasoning_output_tokens") or 0) for row in rows
         ),
+        "cached_fallback_request_count": sum(
+            int(row.get("cached_fallback_request_count") or 0)
+            for row in rows
+        ),
+        "cached_fallback_input_tokens": sum(
+            int(row.get("cached_fallback_input_tokens") or 0)
+            for row in rows
+        ),
         "cost_rmb": _money_text(sum(
             (_decimal_from_row(row.get("charged_amount")) for row in rows),
             start=Decimal("0"),
@@ -472,6 +508,9 @@ def get_agent_session_token_usage(session_id):
         "cost_complete": True,
         "_task_ids": [str(row.get("task_id") or "") for row in rows],
     }
+    if usage["cached_fallback_request_count"] <= 0:
+        usage.pop("cached_fallback_request_count")
+        usage.pop("cached_fallback_input_tokens")
     usage["input_total_tokens"] = (
         usage["input_uncached_tokens"]
         + usage["input_cached_tokens"]
@@ -1010,6 +1049,7 @@ def calculate_agent_usage_charge(usage, pricing):
 
     if not isinstance(usage, dict) or not isinstance(pricing, dict):
         raise AgentQuotaValidationError("Usage 与价格快照必须是对象")
+    _cached_fallback_metadata(usage)
     missing_usage_fields = [
         field for field in _USAGE_COUNT_FIELDS if field not in usage
     ]
@@ -1073,6 +1113,8 @@ def _ledger_matches_usage(
     counts,
     prices,
     charge,
+    cached_fallback_request_count,
+    cached_fallback_input_tokens,
 ):
     """校验同一幂等键确实是同一条 usage，而非冲突重放。"""
 
@@ -1103,6 +1145,13 @@ def _ledger_matches_usage(
         if any(
             int(row[field]) != counts[field]
             for field in _USAGE_COUNT_FIELDS
+        ):
+            return False
+        if (
+            int(row.get("cached_fallback_request_count") or 0)
+            != cached_fallback_request_count
+            or int(row.get("cached_fallback_input_tokens") or 0)
+            != cached_fallback_input_tokens
         ):
             return False
         if any(
@@ -1164,6 +1213,10 @@ def charge_agent_usage(
     endpoint_id = _positive_int(endpoint_id, "LLM 端点 ID")
     endpoint_revision = _positive_int(endpoint_revision, "LLM 端点版本")
     counts, prices, charge = calculate_agent_usage_charge(usage, pricing)
+    (
+        cached_fallback_request_count,
+        cached_fallback_input_tokens,
+    ) = _cached_fallback_metadata(usage)
 
     conn = get_db_connection()
     try:
@@ -1207,6 +1260,8 @@ def charge_agent_usage(
                     counts=counts,
                     prices=prices,
                     charge=charge,
+                    cached_fallback_request_count=cached_fallback_request_count,
+                    cached_fallback_input_tokens=cached_fallback_input_tokens,
                 ):
                     raise AgentQuotaConflictError(
                         "Usage 事件幂等键与既有记账内容冲突"
@@ -1234,9 +1289,10 @@ def charge_agent_usage(
                          input_price_per_million,
                          cached_input_price_per_million,
                          output_price_per_million, charged_amount,
-                         remaining_after)
+                         remaining_after, cached_fallback_request_count,
+                         cached_fallback_input_tokens)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -1257,6 +1313,8 @@ def charge_agent_usage(
                         prices["output_price_per_million"],
                         charge,
                         remaining,
+                        cached_fallback_request_count,
+                        cached_fallback_input_tokens,
                     ),
                 )
                 ledger_id = cursor.lastrowid

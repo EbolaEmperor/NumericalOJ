@@ -262,9 +262,12 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     assert "Number(usage.input_cached_tokens)" in controller
     assert "Number(usage.output_tokens)" in controller
     assert "usage.cost_rmb" in controller
-    assert "if (tokens < 10000)" in controller
+    assert "if (tokens < 1000)" in controller
     assert "formatMeasuredValue(tokens / 1000) + ' K'" in controller
     assert "formatMeasuredValue(tokens / 1000000) + ' M'" in controller
+    assert "formatMeasuredValue(tokens / 1000000000000) + ' T'" in controller
+    assert "cached_fallback_request_count" in controller
+    assert "90% 的默认命中率来计费" in controller
     assert "Math.min(100, cachedTokens / inputTokens * 100)" in controller
     assert "setUsageValue(usageCached, cachedPercent.toFixed(2) + '%');" in controller
     assert "formatMoneyValue(usage.cost_rmb) + ' 元'" in controller
