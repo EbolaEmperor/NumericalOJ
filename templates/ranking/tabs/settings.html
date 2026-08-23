@@ -60,6 +60,7 @@
             {% set _mode = (competition.scoring_mode or 'absolute')|lower %}
             {% set _fmt = (competition.answer_format or 'json')|lower if _mode == 'absolute' else 'json' %}
             {% set _smethod = (competition.submission_method or 'zip')|lower %}
+            {% set _rt = (competition.elo_runtime_mode or 'legacy')|lower %}
             {% set _limit_anchor = competition.limit_window_start or competition.created_at %}
             <div class="row mb-3 align-items-start">
               <div class="col-md-4">
@@ -193,6 +194,34 @@
                        name="scoring_script_timeout_seconds"
                        value="{{ competition.scoring_script_timeout_seconds or 120 }}"
                        min="5" max="1800" step="1">
+              </div>
+              <div class="col-md-4 elo-runtime-only" id="eloRuntimeModeField"
+                   {% if _mode != 'elo' %}style="display:none;"{% endif %}>
+                <label class="form-label"><i class="fas fa-layer-group me-2 text-muted"></i>评测脚本执行模式</label>
+                <input type="hidden" name="elo_runtime_mode" id="eloRuntimeModeSelect" value="{{ _rt }}">
+                <div class="rk-choice" data-rk-choice data-rk-choice-input="eloRuntimeModeSelect">
+                  <button type="button" class="rk-choice-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="rk-choice-trigger-main">
+                      <i class="fas {% if _rt == 'isolated' %}fa-shield-alt{% else %}fa-cube{% endif %}" data-rk-choice-icon></i>
+                      <span data-rk-choice-label>{% if _rt == 'isolated' %}隔离运行时{% else %}单容器运行时{% endif %}</span>
+                    </span>
+                    <i class="fas fa-chevron-down rk-choice-caret"></i>
+                  </button>
+                  <div class="rk-choice-menu" role="listbox" aria-label="评测脚本执行模式">
+                    <button type="button" class="rk-choice-option {% if _rt == 'legacy' %}active{% endif %}" role="option"
+                            aria-selected="{% if _rt == 'legacy' %}true{% else %}false{% endif %}"
+                            data-choice-value="legacy" data-choice-label="单容器运行时" data-choice-icon="fa-cube">
+                      <span class="rk-choice-option-main"><i class="fas fa-cube"></i><span class="rk-choice-option-name">单容器运行时</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                    <button type="button" class="rk-choice-option {% if _rt == 'isolated' %}active{% endif %}" role="option"
+                            aria-selected="{% if _rt == 'isolated' %}true{% else %}false{% endif %}"
+                            data-choice-value="isolated" data-choice-label="隔离运行时" data-choice-icon="fa-shield-alt">
+                      <span class="rk-choice-option-main"><i class="fas fa-shield-alt"></i><span class="rk-choice-option-name">隔离运行时</span></span>
+                      <i class="fas fa-check rk-choice-option-check"></i>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="row mb-3 agent-judge-only" id="gitFormatRow"
@@ -342,6 +371,12 @@
                   document.querySelectorAll('.script-timeout-row').forEach(function (el) {
                     el.style.display = isAgent ? 'none' : '';
                   });
+                  // 评测脚本执行模式仅对 ELO 有意义；其他模式下隐藏并禁用，避免误提交。
+                  document.querySelectorAll('.elo-runtime-only').forEach(function (el) {
+                    el.style.display = isElo ? '' : 'none';
+                  });
+                  var runtimeMode = document.getElementById('eloRuntimeModeSelect');
+                  if (runtimeMode) runtimeMode.disabled = !isElo;
                   // 只有标准答案评分需要设置答案格式。
                   document.querySelectorAll('.answer-format-field').forEach(function (el) {
                     el.style.display = (isElo || isAi) ? 'none' : '';
@@ -431,35 +466,6 @@
               <span class="text-muted">未上传</span>
             {% endif %}
           </div>
-          {% if edit_mode == 'elo' %}
-          <details class="elo-output-contract mb-3">
-            <summary>
-              <span><i class="fas fa-code me-2" aria-hidden="true"></i>对战详情输出格式</span>
-              <small>TEXT / INTERACTIVE HTML</small>
-            </summary>
-            <div class="elo-output-contract-body">
-              <p>
-                stdout 最后一条 JSON 仍须包含 <code>winner</code>。<code>details</code>
-                必须包含 <code>format</code> 和 <code>content</code>，并选择以下两种格式之一：
-              </p>
-              <div class="elo-output-examples">
-                <div>
-                  <strong>纯文本</strong>
-                  <pre><code>{"winner":1,"details":{"format":"text","content":"A 的策略更稳定"}}</code></pre>
-                </div>
-                <div>
-                  <strong>互动 HTML</strong>
-                  <pre><code>{"winner":1,"details":{"format":"html","content":"&lt;style&gt;…&lt;/style&gt;&lt;div&gt;…&lt;/div&gt;&lt;script&gt;…&lt;/script&gt;","height":520}}</code></pre>
-                </div>
-              </div>
-              <p class="elo-output-security mb-0">
-                HTML 片段可包含内联或远端 CSS/JavaScript，并可访问任意 HTTP(S) 与 WebSocket；
-                它会在无同源权限的沙箱中运行，无法访问主站 DOM、Cookie 或本地存储。
-                <code>height</code> 可选，范围 240–1200px。
-              </p>
-            </div>
-          </details>
-          {% endif %}
           <form method="POST" enctype="multipart/form-data" class="mb-3"
                 action="{{ url_for('ranking.ranking_upload_scoring_script', competition_id=competition.id) }}">
             <div class="mb-3">

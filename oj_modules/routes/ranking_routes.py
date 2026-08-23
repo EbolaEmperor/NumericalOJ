@@ -2125,7 +2125,7 @@ def ranking_edit(competition_id):
         SCORING_SCRIPT_TIMEOUT_RANGE[0], SCORING_SCRIPT_TIMEOUT_RANGE[1],
     )
 
-    # ELO 对局运行时：仅在显式给出时更新；legacy=旧版单容器，isolated=仲裁者隔离运行时
+    # ELO 对局运行时：仅在显式给出时更新；legacy=单容器运行时，isolated=仲裁者隔离运行时
     elo_runtime_mode = None
     if elo_runtime_mode_raw is not None and str(elo_runtime_mode_raw).strip() != '':
         mode = str(elo_runtime_mode_raw).strip().lower()
