@@ -114,6 +114,43 @@
           var ownerPanel = card.closest('[data-ranking-panel]');
           var matchesRequestToken = 0;
           var queryController = null;
+          var htmlFrameRequestedHeight = 520;
+          var htmlFrameSyncFrame = 0;
+          var htmlFrameSyncMessage = 'numoj:html-detail-viewport';
+
+          function resetHtmlFrameViewport() {
+            if (!htmlFrameEl) return;
+            htmlFrameEl.style.zoom = '1';
+            htmlFrameEl.style.width = '100%';
+            htmlFrameEl.style.height = htmlFrameRequestedHeight + 'px';
+          }
+
+          function applyHtmlFrameViewport(scale) {
+            if (!htmlFrameEl || !Number.isFinite(scale) || scale <= 0.25 || scale >= 4) return;
+            htmlFrameEl.style.zoom = String(1 / scale);
+            htmlFrameEl.style.width = (scale * 100) + '%';
+            htmlFrameEl.style.height = (htmlFrameRequestedHeight * scale) + 'px';
+          }
+
+          function requestHtmlFrameViewportSync() {
+            if (!htmlFrameEl || !htmlFrameEl.srcdoc) return;
+            resetHtmlFrameViewport();
+            if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
+            htmlFrameSyncFrame = window.requestAnimationFrame(function () {
+              htmlFrameSyncFrame = 0;
+              if (!htmlFrameEl.contentWindow) return;
+              htmlFrameEl.contentWindow.postMessage({
+                type: htmlFrameSyncMessage + ':measure'
+              }, '*');
+            });
+          }
+
+          window.addEventListener('message', function (event) {
+            if (!htmlFrameEl || event.source !== htmlFrameEl.contentWindow) return;
+            var message = event.data;
+            if (!message || message.type !== htmlFrameSyncMessage) return;
+            applyHtmlFrameViewport(Number(message.scale));
+          });
 
           function beginQuery(page, mine) {
             var target = new URL(window.location.href);
@@ -209,17 +246,36 @@
               "form-action 'none'",
               "frame-src 'none'"
             ].join('; ');
+            var viewportBridge = '<script>(function(){' +
+              'var TYPE="numoj:html-detail-viewport";' +
+              'function readScale(){' +
+                'var root=document.documentElement;' +
+                'var width=root.clientWidth||window.innerWidth;' +
+                'var rendered=root.getBoundingClientRect().width;' +
+                'var scale=width>0&&rendered>0?rendered/width:1;' +
+                'return Number.isFinite(scale)&&scale>0.25&&scale<4?scale:1;' +
+              '}' +
+              'function report(){parent.postMessage({type:TYPE,scale:readScale()},"*");}' +
+              'window.addEventListener("message",function(event){' +
+                'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")report();' +
+              '});' +
+              'report();requestAnimationFrame(report);' +
+            '})();</scr' + 'ipt>';
             return '<!doctype html><html lang="zh-CN"><head>' +
               '<meta charset="utf-8">' +
               '<meta name="viewport" content="width=device-width,initial-scale=1">' +
               '<meta http-equiv="Content-Security-Policy" content="' + csp + '">' +
               '<style>html{color-scheme:light}html,body{min-height:100%;margin:0}' +
               'body{overflow:auto;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}</style>' +
-              '</head><body>' + String(content || '') + '</body></html>';
+              viewportBridge + '</head><body>' + String(content || '') + '</body></html>';
           }
 
           function stopHtmlDetail() {
-            if (htmlFrameEl) htmlFrameEl.srcdoc = '';
+            if (!htmlFrameEl) return;
+            if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
+            htmlFrameSyncFrame = 0;
+            htmlFrameEl.srcdoc = '';
+            resetHtmlFrameViewport();
           }
 
           function renderDetail(data) {
@@ -256,13 +312,22 @@
               var requestedHeight = parseInt(output.height, 10);
               if (isNaN(requestedHeight)) requestedHeight = 520;
               requestedHeight = Math.max(240, Math.min(1200, requestedHeight));
-              htmlFrameEl.style.height = requestedHeight + 'px';
+              htmlFrameRequestedHeight = requestedHeight;
+              resetHtmlFrameViewport();
               htmlFrameEl.srcdoc = buildHtmlDocument(output.content);
             }
           }
 
           if (modalEl) {
             modalEl.addEventListener('hidden.bs.modal', stopHtmlDetail);
+            modalEl.addEventListener('shown.bs.modal', requestHtmlFrameViewportSync);
+          }
+          if (htmlFrameEl) {
+            htmlFrameEl.addEventListener('load', requestHtmlFrameViewportSync);
+          }
+          window.addEventListener('resize', requestHtmlFrameViewportSync);
+          if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', requestHtmlFrameViewportSync);
           }
 
           var loadedCache = {};
