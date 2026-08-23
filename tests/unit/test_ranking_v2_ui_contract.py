@@ -456,9 +456,11 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert "matchDetailReplay" not in matches
     assert "detail_output" in routes
     assert "normalize_match_detail_output" in routes
-    assert '"format":"text"' in settings
-    assert '"format":"html"' in settings
-    assert "任意 HTTP(S) 与 WebSocket" in settings
+    # 输出契约说明统一沉淀在 elo.md，编辑页不再重复展示。
+    assert "elo-output-contract" not in settings
+    assert "对战详情输出格式" not in settings
+    elo_doc = _read(ROOT / "skills" / "numoj-admin" / "references" / "ranking-contests" / "elo.md")
+    assert "details" in elo_doc and "format" in elo_doc and "content" in elo_doc
     assert ".match-detail-html iframe" in stylesheet
 
 
