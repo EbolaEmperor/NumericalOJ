@@ -117,6 +117,16 @@
           var htmlFrameRequestedHeight = 520;
           var htmlFrameSyncFrame = 0;
           var htmlFrameSyncMessage = 'numoj:html-detail-viewport';
+          var htmlFrameLoaded = false;
+          var htmlFrameReady = false;
+
+          function setHtmlFrameReady(ready) {
+            if (!htmlFrameEl) return;
+            htmlFrameReady = Boolean(ready);
+            htmlFrameEl.style.visibility = htmlFrameReady ? 'visible' : 'hidden';
+            htmlFrameEl.style.pointerEvents = htmlFrameReady ? 'auto' : 'none';
+            htmlFrameEl.setAttribute('aria-busy', htmlFrameReady ? 'false' : 'true');
+          }
 
           function resetHtmlFrameViewport() {
             if (!htmlFrameEl) return;
@@ -134,13 +144,20 @@
                 type: htmlFrameSyncMessage + ':measure'
               }, '*');
             }
-            postMeasureRequest();
+            if (htmlFrameReady) postMeasureRequest();
             if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
             htmlFrameSyncFrame = window.requestAnimationFrame(function () {
               htmlFrameSyncFrame = 0;
               postMeasureRequest();
             });
           }
+
+          window.addEventListener('message', function (event) {
+            if (!htmlFrameEl || event.source !== htmlFrameEl.contentWindow) return;
+            if (!event.data || event.data.type !== htmlFrameSyncMessage + ':ready') return;
+            if (!htmlFrameLoaded || !htmlFrameEl.srcdoc) return;
+            setHtmlFrameReady(true);
+          });
 
           function beginQuery(page, mine) {
             var target = new URL(window.location.href);
@@ -245,17 +262,18 @@
                 'var scale=width>0&&rendered>0?rendered/width:1;' +
                 'return Number.isFinite(scale)&&scale>0.25&&scale<4?scale:1;' +
               '}' +
-              'function sync(){' +
+              'function sync(reportReady){' +
                 'var root=document.documentElement;' +
                 'root.style.zoom="1";' +
                 'var scale=readScale();' +
                 'root.style.zoom=String(1/scale);' +
+                'if(reportReady)parent.postMessage({type:TYPE+":ready"},"*");' +
               '}' +
               'window.addEventListener("message",function(event){' +
-                'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")sync();' +
+                'if(event.source===parent&&event.data&&event.data.type===TYPE+":measure")sync(true);' +
               '});' +
-              'sync();' +
-              'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",sync,{once:true});' +
+              'sync(false);' +
+              'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",function(){sync(false);},{once:true});' +
             '})();</scr' + 'ipt>';
             return '<!doctype html><html lang="zh-CN"><head>' +
               '<meta charset="utf-8">' +
@@ -266,11 +284,13 @@
               viewportBridge + '</head><body>' + String(content || '') + '</body></html>';
           }
 
-          function stopHtmlDetail() {
+          function stopHtmlDetail(clearDocument) {
             if (!htmlFrameEl) return;
             if (htmlFrameSyncFrame) window.cancelAnimationFrame(htmlFrameSyncFrame);
             htmlFrameSyncFrame = 0;
-            htmlFrameEl.srcdoc = '';
+            htmlFrameLoaded = false;
+            setHtmlFrameReady(false);
+            if (clearDocument !== false) htmlFrameEl.srcdoc = '';
             resetHtmlFrameViewport();
           }
 
@@ -303,13 +323,15 @@
             }
             if (htmlWrapEl) htmlWrapEl.hidden = !isHtml;
 
-            stopHtmlDetail();
+            stopHtmlDetail(!isHtml);
             if (isHtml && htmlFrameEl) {
               var requestedHeight = parseInt(output.height, 10);
               if (isNaN(requestedHeight)) requestedHeight = 520;
               requestedHeight = Math.max(240, Math.min(1200, requestedHeight));
               htmlFrameRequestedHeight = requestedHeight;
               resetHtmlFrameViewport();
+              htmlFrameLoaded = false;
+              setHtmlFrameReady(false);
               htmlFrameEl.srcdoc = buildHtmlDocument(output.content);
             }
           }
@@ -319,7 +341,14 @@
             modalEl.addEventListener('shown.bs.modal', requestHtmlFrameViewportSync);
           }
           if (htmlFrameEl) {
-            htmlFrameEl.addEventListener('load', requestHtmlFrameViewportSync);
+            htmlFrameEl.addEventListener('load', function () {
+              if (!htmlFrameEl.srcdoc) {
+                htmlFrameLoaded = false;
+                return;
+              }
+              htmlFrameLoaded = true;
+              requestHtmlFrameViewportSync();
+            });
           }
           window.addEventListener('resize', requestHtmlFrameViewportSync);
           if (window.visualViewport) {
