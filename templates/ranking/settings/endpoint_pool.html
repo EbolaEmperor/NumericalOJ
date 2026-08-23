@@ -166,7 +166,7 @@
             </div>
             <div class="modal-body">
               <div class="aje-modal-grid">
-                <label class="aje-modal-field">
+                <label class="aje-modal-field aje-col-pick" id="ajeEditHarnessWrap">
                   <span>Agent Harness</span>
                   <input type="hidden" id="ajeEditHarness" value="claude_code">
                   <div class="aje-harness-picker" id="ajeHarnessPicker">
@@ -226,7 +226,7 @@
                     </div>
                   </div>
                 </label>
-                <div class="aje-modal-field" id="ajeEditSourceModeWrap">
+                <div class="aje-modal-field aje-col-pick" id="ajeEditSourceModeWrap">
                   <span>创建方式</span>
                   {{ simple_choice(
                     field_id='ajeEditSourceMode',
@@ -241,7 +241,7 @@
                     aria_label='创建方式'
                   ) }}
                 </div>
-                <div class="aje-modal-field" id="ajeEditProtocolWrap">
+                <div class="aje-modal-field aje-col-pick" id="ajeEditProtocolWrap">
                   <span>协议</span>
                   {{ simple_choice(
                     field_id='ajeEditProtocol',
@@ -250,8 +250,8 @@
                       {'value': 'openai', 'label': 'OpenAI 兼容'},
                       {'value': 'anthropic', 'label': 'Anthropic 兼容'}
                     ],
-                    selected_value='',
-                    placeholder_label='请选择协议',
+                    selected_value='openai',
+                    placeholder_label=none,
                     default_icon='fa-code',
                     aria_label='协议'
                   ) }}
@@ -266,11 +266,11 @@
                   ) }}
                   <small class="text-muted">保存时由后端复制 URL、API Key、model 与思考设置；之后与全局端点完全独立。</small>
                 </div>
-                <label class="aje-modal-field">
+                <label class="aje-modal-field aje-col-half" id="ajeEditConcurrencyWrap">
                   <span>并发上限</span>
                   <input type="number" id="ajeEditConcurrency" min="1" max="64" step="1">
                 </label>
-                <label class="aje-modal-field choice-top">
+                <label class="aje-modal-field aje-col-half choice-top" id="ajeEditStatusWrap">
                   <span>状态</span>
                   <input type="hidden" id="ajeEditStatus" value="enabled">
                   <div class="aje-harness-picker" id="ajeStatusPicker">
@@ -331,47 +331,28 @@
                   <span>模型</span>
                   <input type="text" id="ajeEditModel" required>
                 </label>
-                <section class="aje-model-capabilities full" aria-labelledby="ajeModelCapabilitiesTitle">
-                  <div class="aje-model-capabilities-head">
-                    <div>
-                      <h6 id="ajeModelCapabilitiesTitle">模型能力</h6>
-                      <p>用于向 Harness 描述模型的 Token 边界与多轮思考协议。</p>
-                    </div>
-                    <span class="aje-model-capabilities-badge">Model contract</span>
-                  </div>
-                  <div class="aje-model-capabilities-grid">
-                    <label class="aje-modal-field">
-                      <span>上下文窗口</span>
-                      <span class="aje-token-input">
-                        <input type="number" id="ajeEditContextWindowTokens"
-                               min="1" max="1000000" step="1" required
-                               inputmode="numeric" value="1000000">
-                        <span aria-hidden="true">Token</span>
-                      </span>
-                    </label>
-                    <label class="aje-modal-field">
-                      <span>最大输出</span>
-                      <span class="aje-token-input">
-                        <input type="number" id="ajeEditMaxOutputTokens"
-                               min="1" max="1000000" step="1" required
-                               inputmode="numeric" value="384000">
-                        <span aria-hidden="true">Token</span>
-                      </span>
-                    </label>
-                    <div class="aje-thinking-compatibility">
-                      <div>
-                        <label for="ajeEditThinkingCompatibility">Thinking 兼容</label>
-                        <p>保留多轮工具调用所需的 reasoning 内容。</p>
-                      </div>
-                      <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox"
-                               id="ajeEditThinkingCompatibility" checked
-                               aria-describedby="ajeThinkingCompatibilityHint">
-                      </div>
-                      <span class="visually-hidden" id="ajeThinkingCompatibilityHint">启用后保留多轮工具调用所需的 reasoning 内容</span>
+                <label class="aje-modal-field aje-col-4">
+                  <span>上下文窗口</span>
+                  <input type="number" id="ajeEditContextWindowTokens"
+                         min="1" max="1000000" step="1" required
+                         inputmode="numeric" value="1000000">
+                </label>
+                <label class="aje-modal-field aje-col-4">
+                  <span>最大输出</span>
+                  <input type="number" id="ajeEditMaxOutputTokens"
+                         min="1" max="1000000" step="1" required
+                         inputmode="numeric" value="384000">
+                </label>
+                <div class="aje-modal-field aje-col-4">
+                  <span id="ajeEditThinkingLabel">Thinking 兼容</span>
+                  <div class="aje-thinking-compatibility">
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox"
+                             id="ajeEditThinkingCompatibility" checked
+                             aria-labelledby="ajeEditThinkingLabel">
                     </div>
                   </div>
-                </section>
+                </div>
               </div>
             </div>
             <div class="modal-footer d-flex justify-content-between">
