@@ -433,6 +433,7 @@ def test_elo_match_detail_supports_text_and_networked_sandbox_html():
     assert 'root.getBoundingClientRect().width' in matches
     assert 'transform:scale(' in matches
     assert 'Math.abs(scale-1)<0.005' in matches
+    assert "String(content || '') + viewportFix + '</body>" in matches
     assert "htmlFrameEl.srcdoc =" not in matches
     assert "setHtmlFrameReady(false)" in matches
     assert "setHtmlFrameReady(true)" in matches
