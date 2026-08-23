@@ -1616,6 +1616,7 @@ CREATE TABLE `ranking_competitions` (
   `scoring_script_timeout_seconds` int NOT NULL DEFAULT '120',
   `elo_running` tinyint(1) NOT NULL DEFAULT '0',
   `elo_max_pairs_per_round` int NOT NULL DEFAULT '1',
+  `elo_runtime_mode` varchar(16) NOT NULL DEFAULT 'legacy',
   `agent_judge_timeout_seconds` int NOT NULL DEFAULT '1800',
   `reverse_judge_finalize_timeout_seconds` int NOT NULL DEFAULT '180',
   `reverse_quality_gate_enabled` tinyint(1) NOT NULL DEFAULT '0',

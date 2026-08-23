@@ -723,6 +723,7 @@ def update_competition(competition_id, *, title=None, summary=None, description=
                         scoring_mode=None, elo_initial_rating=None, elo_k_factor=None,
                         elo_max_matches=None, elo_match_interval_seconds=None,
                         elo_initial_burst=None, elo_max_pairs_per_round=None,
+                        elo_runtime_mode=None,
                         scoring_script_timeout_seconds=None,
                         agent_judge_timeout_seconds=None,
                         reverse_judge_finalize_timeout_seconds=None,
@@ -778,6 +779,12 @@ def update_competition(competition_id, *, title=None, summary=None, description=
     if elo_max_pairs_per_round is not None:
         fields.append("elo_max_pairs_per_round = %s")
         params.append(int(elo_max_pairs_per_round))
+    if elo_runtime_mode is not None:
+        mode = str(elo_runtime_mode or '').strip().lower()
+        if mode not in ('legacy', 'isolated'):
+            mode = 'legacy'
+        fields.append("elo_runtime_mode = %s")
+        params.append(mode)
     if scoring_script_timeout_seconds is not None:
         fields.append("scoring_script_timeout_seconds = %s")
         params.append(int(scoring_script_timeout_seconds))

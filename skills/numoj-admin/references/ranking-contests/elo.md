@@ -19,6 +19,23 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competiti
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking upload-script <competition_id> elo_scoring.py
 ```
 
+ELO 提供两种并列的对局运行时，用 `elo_runtime_mode` 按比赛内容选用：
+
+- `legacy`（默认）：**单容器运行时**。评分脚本与双方作品在同一个可联网的
+  Agent Judge 容器中运行，脚本可以直接读取或执行目录中的程序。适合作品本身
+  是纯文件（文档、数据、配置等）、评测不需要执行不可信代码的比赛，例如
+  论文摘要挑战赛这类"提交 .tex 解读、比较内容质量"的赛题。
+- `isolated`：**隔离运行时**。评分脚本与被测作品分处不同容器，被测代码在断网
+  工作容器中由可信运行器看管执行。适合需要实际运行作品代码的比赛（如回合
+  对抗赛），被测代码之间、被测代码与评分脚本之间互相不可见。
+
+两种运行时的裁决输出协议相同：脚本必须在 stdout 最后一条有效 JSON 行输出
+`winner`：`0` 表示平局，`1` 表示 A 胜，`2` 表示 B 胜。对战详情通过 `details`
+输出；`details` 必须包含 `format` 和 `content`，并在 `text`、`html` 两种格式中
+选择一种。
+
+## 单容器运行时（`elo_runtime_mode = legacy`，默认）
+
 评分脚本调用约定为：
 
 ```text
@@ -27,12 +44,79 @@ python elo_scoring.py <submission_a_dir> <submission_b_dir>
 
 系统会先安全解压两份作品包，再把评分脚本和两个提交目录一同挂载到 Agent Judge
 容器。评分脚本在该容器内运行，两个参数分别指向已解压的 A、B 作品目录；容器沿用
-Agent Judge 的资源限制并可访问外网。当前协议把容器内双方代码视为可信内容，评分
-脚本可以直接读取或执行目录中的程序。
+Agent Judge 的资源限制并可访问外网。
 
-脚本必须在 stdout 最后一条有效 JSON 行输出 `winner`：`0` 表示平局，`1` 表示 A 胜，`2`
-表示 B 胜。对战详情通过 `details` 输出；`details` 必须包含 `format` 和 `content`，并在
-`text`、`html` 两种格式中选择一种。
+注意：该运行时把容器内双方作品视为评分脚本可直接处理的内容。如果评测过程会
+执行作品中的代码，被执行的代码与对手作品、评分脚本同处一个容器，可以互相读写
+并联网；因此仅在作品不含需要执行的代码（或完全信任参赛代码）时选用。
+
+## 隔离运行时（`elo_runtime_mode = isolated`）
+
+每场对战由宿主仲裁者编排三个平级容器（不嵌套）：
+
+- 两个**工作容器**：各挂载一方作品，**断网**（`--network none`），由可信运行器
+  看管被测代码（启动 `bot.py`、按回合收发协议行、在工作容器内强制执行单回合时限、
+  超时强杀）。被测代码看不到对手作品与评分脚本，也没有网络，无法内嵌在线 agent。
+- 一个**裁判容器**：只挂载评分脚本，保持联网（沿用 Agent Judge 网络），供脚本
+  调用 LLM 等外部服务；脚本看不到任何作品文件，只能通过主机 API 间接调用双方。
+
+### 评分脚本协议（隔离模式）
+
+隔离模式下评分脚本**没有路径参数**（`sys.argv` 不含作品目录），改经同目录自动注入的
+`elo_host_api` 模块调用：
+
+```python
+import elo_host_api
+
+status = elo_host_api.wait_ready("A", timeout_ms=12000)  # 阻塞等待 A 方启动握手
+reply = elo_host_api.call_bot("A", {"type": "turn", ...}, timeout_ms=1000)
+# 成功：{"ok": True, "response": {...}, "elapsed_ms": x}
+# 失败：{"ok": False, "error": "timeout|bot_exited|bad_output|oversize|
+#        bot_not_running|worker_unavailable|worker_unresponsive", ...}
+
+result = elo_host_api.run_worker(          # 静态作品：在隔离容器内执行命令并取回产物
+    "A", ["xelatex", "-interaction=nonstopmode", "main.tex"],
+    timeout_ms=60000, export_files=["main.pdf"])
+# {"ok": True, "exit_code": 0, "stdout": "...", "stderr": "...",
+#  "files": {"main.pdf": "<base64>"}, "timed_out": False}
+```
+
+- `call_bot(side, payload, timeout_ms)`：向某方下发一行 JSON 局面并限时等待一行
+  JSON 决策。**单回合计时在工作容器内部执行**（单调时钟只覆盖被测代码本身），
+  宿主↔容器的通信开销不占用比赛时限；`elapsed_ms` 为容器内测得的真实思考耗时。
+  实测单回合纯通信开销约 0.3ms（p99 < 1ms），对"每回合 1 秒"级别的时限无影响。
+- `wait_ready(side, timeout_ms)` / `bot_status(side)`：等待/查询启动握手
+  （被测进程需在启动后 10 秒内输出 `{"ready": true}`）。
+- `run_worker(side, argv, timeout_ms, workdir=, export_files=)`：在断网工作容器内
+  执行受信命令（编译、静态分析等）并按白名单导出产物（单文件 8MiB、合计 16MiB）。
+- 脚本仍需在 stdout 最后一行输出 `{"winner": 0|1|2, "details": ...}`，输出协议
+  与单容器运行时相同。
+
+回合制比赛的完整官方示例见
+[elo-isolated 示例]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo-isolated/)
+（含比赛参数快照、题目描述与完整评分脚本）。
+
+### 时限与超时配置
+
+- 比赛级 `--script-timeout`（`scoring_script_timeout_seconds`）是**整场对战**的总
+  时限（含容器启动与全部回合）。回合制比赛按最坏情况估算：
+  `回合上限 × 2 × 单回合时限 + 启动/清理余量`。例如 20×20 棋盘、每方每回合 1 秒，
+  建议配置 900 秒左右；超时会按"评测失败"记录（winner=-1，不调分）。
+- 工作容器启动握手宽限 30 秒、回合看门狗宽限 2 秒，可用环境变量
+  `ELO_ISOLATED_WORKER_STARTUP_GRACE_SECONDS`、`ELO_ISOLATED_CALL_GRACE_MS`、
+  `ELO_ISOLATED_EXEC_GRACE_MS` 调整（见 `docs/runtime-configuration.md`）。
+
+### 运行时切换
+
+```bash
+# 两种运行时可按比赛内容互切；评分脚本需与所选运行时的协议匹配
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competition_id> \
+  --elo-runtime-mode isolated --script-timeout 900
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competition_id> \
+  --elo-runtime-mode legacy
+```
+
+运行时切换不影响历史对战记录与 ELO 分数；新对战立即按所选运行时执行。
 
 ### 文本详情
 
@@ -114,10 +198,21 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking matches <compet
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking leaderboard <competition_id> --limit 20
 ```
 
-## 线上示例：比赛 #2 论文摘要挑战赛
+## 线上示例
+
+### 比赛 #2 论文摘要挑战赛（单容器运行时）
 
 - [比赛完整参数与状态]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo/competition.json)
 - [公开题目描述]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo/description.md)
 - [完整 ELO 评分脚本]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo/scoring_script.py)
 
 这是一个包含实际 ELO 参数和完整评分实现的线上实例。
+
+### 比赛 #11 镜像迷踪（隔离运行时）
+
+- [比赛完整参数与状态]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo-isolated/competition.json)
+- [公开题目描述]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo-isolated/description.md)
+- [完整 ELO 评分脚本]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo-isolated/scoring_script.py)
+
+回合对抗赛的完整官方示例：题目描述只约定参赛者的输入输出契约，评分脚本经
+`elo_host_api` 驱动双方 bot 对局并生成可回放的对战详情。

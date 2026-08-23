@@ -111,6 +111,11 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 | `AGENT_JUDGE_PIDS_LIMIT` | string | `512` |
 | `AGENT_JUDGE_RESULT_POLL_INTERVAL` | float | `1.5` |
 | `AGENT_JUDGE_PROGRESS_TTL` | int | `21600` |
+| `ELO_ISOLATED_WORKER_NETWORK` | string | `none` |
+| `ELO_ISOLATED_JUDGE_NETWORK` | string | `bridge` |
+| `ELO_ISOLATED_WORKER_STARTUP_GRACE_SECONDS` | float | `30` |
+| `ELO_ISOLATED_CALL_GRACE_MS` | int | `2000` |
+| `ELO_ISOLATED_EXEC_GRACE_MS` | int | `5000` |
 | `JUDGER_DOCKER_IMAGE` | string | `numericaloj-judger:latest` |
 | `JUDGER_DOCKER_MEM_LIMIT` | string | `1g` |
 | `JUDGER_DOCKER_CPU_LIMIT` | string | `2` |

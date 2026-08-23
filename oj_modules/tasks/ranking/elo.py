@@ -11,10 +11,13 @@
     冷却用 Redis 键（SET NX EX）抢占，避免多次 tick 在同一个间隔内重复调度。
   - 用户上传后立即触发 \"即时补战\"（默认 5 场，串行链式：每场打完、rating 更新
     之后，再用最新分数现挑下一对手），让新提交逐步收敛到合理分数段。
-  - 单场对战先安全解压两份作品，再由可联网的 Agent Judge 容器运行评测脚本：
-    python <script> <submission_a_dir> <submission_b_dir> →
-    stdout 一行 JSON {\"winner\": 0 | 1 | 2, \"details\": <可选>}；details 可沿用
-    字符串/普通对象，也可显式输出 {\"format\": \"text|html\", \"content\": \"...\"}；
+  - 单场对战先安全解压两份作品，再按比赛的 elo_runtime_mode 选择运行时：
+    默认在单个可联网 Agent Judge 容器中运行评测脚本
+    （python <script> <submission_a_dir> <submission_b_dir>）；
+    配置为 isolated 时改用隔离运行时（评分脚本在联网裁判容器，双方作品在
+    各自断网的工作容器，见 tasks/ranking/elo_runtime/）。两种运行时输出
+    协议相同：stdout 一行 JSON {\"winner\": 0 | 1 | 2, \"details\": <可选>}；
+    details 可沿用字符串/普通对象，也可显式输出 {\"format\": \"text|html\", \"content\": \"...\"}；
     winner=1/2 表示对应一方胜出，winner=0 表示平局（两份提交不分伯仲）。
     脚本中段失败则记录一条 winner=-1 的占位历史、不调整分数。
 
@@ -134,14 +137,34 @@ def _pick_pair(eligibles):
 
 # ---------- Scoring script ----------
 
-def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None):
-    """运行 ELO 评分脚本，返回 (winner∈{0,1,2}, details_obj_or_str)。
+def _run_scoring_script(script_path, path_a, path_b, timeout_seconds=None,
+                        runtime_mode=None):
+    """运行 ELO 评分，返回 (winner∈{0,1,2}, details_obj_or_str)。
+
+    runtime_mode（两种并列的运行时，按比赛内容选用）：
+      - ``isolated``：隔离运行时。两份作品各自在断网的工作容器中由可信运行器
+        执行，评分脚本在联网的裁判容器中通过宿主仲裁者调用双方，被测代码
+        看不到对手作品与评分脚本（见 tasks/ranking/elo_runtime/）。适合需要
+        执行作品代码的比赛（如回合对抗）。
+      - 其它值（含 None，默认）：单容器运行时。评分脚本与双方作品同处一个
+        可联网 Agent Judge 容器，脚本可直接读取或执行目录中的程序。适合作品
+        本身是纯文件（文档、数据等）、不需要执行不可信代码的比赛。
+
     winner=1/2 表示一方胜出，winner=0 表示平局。
     details 可为兼容格式，也可为 {"format": "text|html", "content": "..."}；
     HTML 的隔离与网络权限由对战详情页负责，不在 worker 中改写内容。
     脚本端不允许返回 -1（-1 由后端在脚本异常时落盘，作为"评测失败"占位）。
     其他取值或脚本本身报错都会抛 RuntimeError。"""
     timeout_s = int(timeout_seconds) if timeout_seconds else DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS
+    if str(runtime_mode or '').strip().lower() == 'isolated':
+        from oj_modules.tasks.ranking.elo_runtime import (
+            EloRuntimeError,
+            run_isolated_elo_match,
+        )
+        try:
+            return run_isolated_elo_match(script_path, path_a, path_b, timeout_s)
+        except EloRuntimeError as exc:
+            raise RuntimeError(str(exc))
     try:
         proc = run_elo_scoring_container(
             script_path,
@@ -260,7 +283,11 @@ def register_ranking_elo_match_task(celery_app):
 
         # ===== 运行评测脚本（无锁，多场对战完全并行）=====
         try:
-            winner, details = _run_scoring_script(script, archive_a, archive_b, timeout_seconds=script_timeout)
+            winner, details = _run_scoring_script(
+                script, archive_a, archive_b,
+                timeout_seconds=script_timeout,
+                runtime_mode=comp.get('elo_runtime_mode'),
+            )
         except Exception as e:
             # 脚本异常：落一条 winner=-1 占位行、不调分（仅插入历史，不存在分数竞争，无需串行）
             rating_a = float(sub_a.get('elo_rating') if sub_a.get('elo_rating') is not None else initial_rating)
