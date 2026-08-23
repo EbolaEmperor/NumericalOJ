@@ -375,6 +375,19 @@ def test_usage_stop_event_rejects_subsequent_endpoint_requests():
             b'data: {"type":"message_stop"}\n\n',
             (5, 1, 2, 4, 0),
         ),
+        (
+            "anthropic",
+            "/v1/messages",
+            b'data: {"type":"message_start","message":{"usage":'
+            b'{"input_tokens":0,"cache_read_input_tokens":null,'
+            b'"cache_creation_input_tokens":null,"output_tokens":0}}}\n\n'
+            b'data: {"type":"message_delta","usage":'
+            b'{"input_tokens":28,"output_tokens":16,'
+            b'"cache_read_input_tokens":64,'
+            b'"cache_creation_input_tokens":null}}\n\n'
+            b'data: {"type":"message_stop"}\n\n',
+            (28, 64, 0, 16, 0),
+        ),
     ],
 )
 def test_extracts_authoritative_usage_from_supported_json_and_sse(
