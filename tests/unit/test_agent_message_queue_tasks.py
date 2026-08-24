@@ -165,7 +165,7 @@ def test_dispatch_keeps_attempt_when_broker_receipt_write_fails(monkeypatch):
     assert released == []
 
 
-def test_explicit_continue_dispatches_marked_head_as_a_fresh_native_session(
+def test_legacy_fresh_native_payload_is_not_forwarded_to_worker(
     monkeypatch,
 ):
     run_turn = _RecordedTask()
@@ -187,7 +187,7 @@ def test_explicit_continue_dispatches_marked_head_as_a_fresh_native_session(
     _args, kwargs = run_turn.calls[0]
     assert kwargs["args"][8] == ""
     assert kwargs["args"][10] == ""
-    assert kwargs["args"][11] is True
+    assert kwargs["args"][11] is False
 
 
 def test_dispatch_does_nothing_when_session_has_no_claim(monkeypatch):

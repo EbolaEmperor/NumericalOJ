@@ -197,10 +197,7 @@ def test_claim_queue_message_creates_turn_and_updates_session_atomically(monkeyp
     assert claim["newly_promoted"] is True
     assert claim["reasoning_effort"] == "minimal"
     assert claim["dispatch_attempt_id"]
-    assert claim["dispatch_payload"] == {
-        "start_fresh_native_session": True,
-        "private_value": 7,
-    }
+    assert claim["dispatch_payload"] == {"private_value": 7}
     assert prepared == [("session-1", "turn-next")]
     queries = [query for query, _params in connection.cursor_instance.calls]
     assert "FOR UPDATE" in queries[0]
@@ -377,31 +374,44 @@ def test_continue_queue_rechecks_terminal_state_under_session_lock(
     assert connection.rollbacks == 1
 
 
-def test_continue_queue_sets_a_session_level_fresh_native_authorization(
+def test_continue_queue_rejects_missing_native_snapshot(
     monkeypatch,
 ):
     connection = _ScriptedConnection(one_values=[
         _session_row(status="Canceled", native_session_id=""),
-        {
-            "message_id": "message-1",
-        },
+    ])
+    monkeypatch.setattr(messages, "get_db_connection", lambda: connection)
+
+    with pytest.raises(
+        messages.AgentSessionMessageConflictError,
+        match="没有可恢复的原生会话快照",
+    ):
+        messages.continue_agent_session_queue("session-1")
+
+    queries = connection.cursor_instance.calls
+    assert "status, native_session_id" in queries[0][0]
+    assert "FOR UPDATE" in queries[0][0]
+    assert len(queries) == 1
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
+
+
+def test_continue_queue_with_native_snapshot_clears_legacy_fresh_flag(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        _session_row(
+            status="Failed",
+            native_session_id="native-recoverable",
+            fresh_native_session_pending=1,
+        ),
     ])
     monkeypatch.setattr(messages, "get_db_connection", lambda: connection)
 
     assert messages.continue_agent_session_queue("session-1") is True
 
-    queries = connection.cursor_instance.calls
-    assert "status, native_session_id" in queries[0][0]
-    assert "FOR UPDATE" in queries[0][0]
-    assert "ORDER BY queue_position ASC, id ASC" in queries[1][0]
-    assert "FOR UPDATE" in queries[1][0]
-    assert "SET queue_paused=0" in queries[2][0]
-    assert "fresh_native_session_pending=%s" in queries[2][0]
-    assert queries[2][1] == (1, "session-1")
-    assert not any(
-        "UPDATE agent_session_messages" in query
-        for query, _params in queries
-    )
+    update_query, update_params = connection.cursor_instance.calls[1]
+    assert "SET queue_paused=0" in update_query
+    assert "fresh_native_session_pending=0" in update_query
+    assert update_params == ("session-1",)
     assert connection.commits == 1
 
 
@@ -458,19 +468,19 @@ def test_broker_receipt_and_pre_broker_release_are_attempt_scoped(monkeypatch):
     assert release_update[1] == ("message-1", "turn-next", "attempt-2")
 
 
-def test_continue_queue_without_native_requires_a_queued_head(monkeypatch):
+def test_continue_queue_without_native_rejects_before_reading_queue(monkeypatch):
     connection = _ScriptedConnection(one_values=[
         _session_row(status="Failed", native_session_id=""),
-        None,
     ])
     monkeypatch.setattr(messages, "get_db_connection", lambda: connection)
 
     with pytest.raises(
         messages.AgentSessionMessageConflictError,
-        match="没有可继续",
+        match="没有可恢复的原生会话快照",
     ):
         messages.continue_agent_session_queue("session-1")
 
+    assert len(connection.cursor_instance.calls) == 1
     assert connection.commits == 0
     assert connection.rollbacks == 1
 

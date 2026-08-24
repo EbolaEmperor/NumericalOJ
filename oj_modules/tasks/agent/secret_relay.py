@@ -44,6 +44,9 @@ _ENDPOINT_USAGE_GATE_WAIT_SECONDS = 30
 _ENDPOINT_USAGE_DRAIN_SECONDS = _UPSTREAM_TIMEOUT_SECONDS + 5
 _DEFAULT_CACHED_HIT_RATE_PERCENT = 90
 _REDACTION = b"[REDACTED]"
+_EMPTY_ANTHROPIC_CONTENT_ERROR = (
+    "Provider returned error: empty assistant content; retry the request"
+)
 _ALLOWED_METHODS = {
     "openai": frozenset({"POST"}),
     "anthropic": frozenset({"POST"}),
@@ -924,6 +927,132 @@ class _StreamingRedactor:
         return bytes(output)
 
 
+class _AnthropicEmptyContentTransformer:
+    """把协议完整但无 content 的 Anthropic 成功响应转成可重试错误。
+
+    Anthropic 协议没有 ``error`` stop_reason；使用合法的 ``refusal`` 并
+    附带瞬时上游错误说明，Pi 会把它规范化为内部 ``stopReason=error``。
+    SSE 只缓存当前 record，非流式 JSON 才缓存完整响应。
+    """
+
+    def __init__(self, *, event_stream):
+        self._event_stream = bool(event_stream)
+        self._pending = b""
+        self._saw_content = False
+
+    @staticmethod
+    def _mark_error(document):
+        delta = document.get("delta")
+        if not isinstance(delta, dict) or not delta.get("stop_reason"):
+            return False
+        if str(delta.get("stop_reason")) in {"refusal", "sensitive"}:
+            # Provider 已经明确返回安全拒绝，Pi 本来就会映射为 error；不能
+            # 把它伪装成瞬时空响应并诱发无意义重试。
+            return False
+        delta["stop_reason"] = "refusal"
+        delta["stop_details"] = {
+            "type": "refusal",
+            "explanation": _EMPTY_ANTHROPIC_CONTENT_ERROR,
+        }
+        return True
+
+    def _transform_document(self, document):
+        if not isinstance(document, dict):
+            return False
+        event_type = str(document.get("type") or "")
+        if event_type == "message_start":
+            message = document.get("message")
+            if isinstance(message, dict) and message.get("content"):
+                self._saw_content = True
+            return False
+        if event_type == "content_block_start":
+            self._saw_content = True
+            return False
+        if event_type == "message_delta" and not self._saw_content:
+            return self._mark_error(document)
+        return False
+
+    def _transform_sse_record(self, record):
+        newline = b"\r\n" if b"\r\n" in record else b"\n"
+        lines = record.split(newline)
+        data_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if line == b"data" or line.startswith(b"data:")
+        ]
+        if not data_indexes:
+            return record
+        data_parts = []
+        for index in data_indexes:
+            line = lines[index]
+            value = b"" if line == b"data" else line[5:]
+            if value.startswith(b" "):
+                value = value[1:]
+            data_parts.append(value)
+        try:
+            document = json.loads(b"\n".join(data_parts).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return record
+        if not self._transform_document(document):
+            return record
+        first = data_indexes[0]
+        lines[first] = b"data: " + json.dumps(
+            document,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        for index in reversed(data_indexes[1:]):
+            del lines[index]
+        return newline.join(lines)
+
+    def _transform_json(self, payload):
+        try:
+            document = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return payload
+        if (
+            not isinstance(document, dict)
+            or str(document.get("type") or "") != "message"
+            or document.get("content")
+            or str(document.get("stop_reason") or "")
+            in {"refusal", "sensitive"}
+        ):
+            return payload
+        document["stop_reason"] = "refusal"
+        document["stop_details"] = {
+            "type": "refusal",
+            "explanation": _EMPTY_ANTHROPIC_CONTENT_ERROR,
+        }
+        return json.dumps(
+            document,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def feed(self, chunk=b"", *, final=False):
+        self._pending += bytes(chunk or b"")
+        if not self._event_stream:
+            if not final:
+                return b""
+            payload, self._pending = self._pending, b""
+            return self._transform_json(payload)
+
+        output = bytearray()
+        while True:
+            separator = re.search(br"\r?\n\r?\n", self._pending)
+            if separator is None:
+                break
+            record = self._pending[:separator.start()]
+            delimiter = self._pending[separator.start():separator.end()]
+            self._pending = self._pending[separator.end():]
+            output.extend(self._transform_sse_record(record))
+            output.extend(delimiter)
+        if final and self._pending:
+            output.extend(self._transform_sse_record(self._pending))
+            self._pending = b""
+        return bytes(output)
+
+
 def _sanitize_text(value, secret_values):
     rendered = str(value or "")
     for secret in secret_values:
@@ -1185,7 +1314,23 @@ class _AgentSecretRelay:
         if not self._require_usage_ack:
             return None
         try:
-            usage = _extract_response_usage(self.mode, relative_route, payload)
+            try:
+                usage = _extract_response_usage(
+                    self.mode,
+                    relative_route,
+                    payload,
+                )
+            except AgentSecretRelayUsageError:
+                # 响应已经实际发生，但第三方代理可能省略、截断或返回非法
+                # usage。解析失败只影响本次计费精度，按全 0 写一条可审计
+                # 账本记录，不能因此封锁 relay 并终止 Agent。
+                usage = {
+                    "input_uncached_tokens": 0,
+                    "input_cached_tokens": 0,
+                    "input_cache_write_tokens": 0,
+                    "output_tokens": 0,
+                    "reasoning_output_tokens": 0,
+                }
             event = {
                 "type": "numoj_usage",
                 "version": 1,
@@ -1440,6 +1585,20 @@ class _AgentSecretRelay:
                     transferred = 0
                     response_payload = bytearray()
                     redactor = _StreamingRedactor(secret_values)
+                    response_transformer = None
+                    if endpoint_response_accepted and relay.mode == "anthropic":
+                        response_content_type = _single_header(
+                            response.headers,
+                            "Content-Type",
+                        ).partition(";")[0].strip().lower()
+                        response_transformer = (
+                            _AnthropicEmptyContentTransformer(
+                                event_stream=(
+                                    response_content_type
+                                    == "text/event-stream"
+                                ),
+                            )
+                        )
                     while True:
                         chunk = _read_response_chunk(response)
                         if not chunk:
@@ -1449,7 +1608,12 @@ class _AgentSecretRelay:
                             raise AgentSecretRelayUsageError("模型响应过大")
                         if endpoint_response_accepted:
                             response_payload.extend(chunk)
-                        rendered = redactor.feed(chunk)
+                        forwarded = (
+                            response_transformer.feed(chunk)
+                            if response_transformer is not None
+                            else chunk
+                        )
+                        rendered = redactor.feed(forwarded)
                         if rendered and client_writable:
                             try:
                                 self.wfile.write(rendered)
@@ -1461,7 +1625,12 @@ class _AgentSecretRelay:
                                 socket.timeout,
                             ):
                                 client_writable = False
-                    rendered = redactor.feed(final=True)
+                    forwarded = (
+                        response_transformer.feed(final=True)
+                        if response_transformer is not None
+                        else b""
+                    )
+                    rendered = redactor.feed(forwarded, final=True)
                     if rendered and client_writable:
                         try:
                             self.wfile.write(rendered)

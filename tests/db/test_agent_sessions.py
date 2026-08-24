@@ -598,7 +598,7 @@ def test_manual_stop_without_queued_messages_keeps_next_message_immediate():
     assert messages[-1]["status"] == "dispatching"
 
 
-def test_explicit_continue_after_pre_native_stop_starts_only_the_queue_head_fresh():
+def test_explicit_continue_after_pre_native_stop_requires_recoverable_snapshot():
     session_id = "db-agent-pre-native-stop"
     first_task_id = f"{session_id}-turn-1"
     create_agent_session(
@@ -634,44 +634,16 @@ def test_explicit_continue_after_pre_native_stop_starts_only_the_queue_head_fres
     assert stopped["native_session_id"] == ""
     assert stopped["queue_paused"] is True
 
-    assert continue_agent_session_queue(session_id) is True
-    assert get_agent_session(session_id)["fresh_native_session_pending"] is True
-    assert reorder_queued_agent_session_messages(
-        session_id,
-        [
-            "db-agent-pre-native-message-2",
-            "db-agent-pre-native-message-1",
-        ],
-    ) is True
-    assert cancel_queued_agent_session_message(
-        session_id,
-        "db-agent-pre-native-message-2",
-        expected_attachments=[],
-    ) == []
-    claim = claim_next_agent_session_message(
-        session_id,
-        task_id=f"{session_id}-turn-2",
-    )
+    with pytest.raises(
+        AgentSessionMessageConflictError,
+        match="没有可恢复的原生会话快照",
+    ):
+        continue_agent_session_queue(session_id)
 
-    assert claim["message_id"] == "db-agent-pre-native-message-1"
-    assert claim["native_session_id"] == ""
-    assert claim["base_native_session_id"] == ""
-    assert claim["dispatch_payload"] == {
-        "start_fresh_native_session": True,
-    }
-    assert get_agent_session(session_id)["fresh_native_session_pending"] is False
-
-    assert release_agent_session_message_dispatch_attempt(
-        claim["message_id"],
-        dispatch_attempt_id=claim["dispatch_attempt_id"],
-        task_id=f"{session_id}-turn-2",
-    ) is True
-    repeated = claim_next_agent_session_message(
-        session_id,
-        task_id=f"{session_id}-turn-2",
-    )
-    assert repeated["message_id"] == claim["message_id"]
-    assert repeated["dispatch_payload"] == claim["dispatch_payload"]
+    unchanged = get_agent_session(session_id)
+    assert unchanged["queue_paused"] is True
+    assert unchanged["fresh_native_session_pending"] is False
+    assert claim_next_agent_session_message(session_id) is None
 
 
 def test_concurrent_fifo_claim_creates_only_one_turn():

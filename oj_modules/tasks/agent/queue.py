@@ -300,11 +300,7 @@ def register_agent_queue_tasks(
                                 if claim.get("retry_of_task_id")
                                 else ""
                             ),
-                            (
-                                payload.get("start_fresh_native_session") is True
-                                if isinstance(payload, dict)
-                                else False
-                            ),
+                            False,
                         ),
                         **common,
                     )

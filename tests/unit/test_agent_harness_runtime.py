@@ -835,6 +835,7 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
     )
 
     trace_updates = []
+    native_session_updates = []
     result = runtime.run_agent_harness(
         task_id="task-1",
         task_kind=task_kind,
@@ -847,10 +848,14 @@ def test_run_materializes_current_skill_and_persists_session_workspace(
         session_cookie_name="numoj_session",
         prompt="请完成任务",
         trace_callback=lambda: trace_updates.append("updated"),
+        native_session_callback=native_session_updates.append,
     )
 
     assert result.returncode == 0
     assert result.native_session_id == "11111111-1111-1111-1111-111111111111"
+    assert native_session_updates == [
+        "11111111-1111-1111-1111-111111111111"
+    ]
     assert observed["trace_secrets"] == (
         previous_temporary_secret,
         *identity_temporary_secrets,
