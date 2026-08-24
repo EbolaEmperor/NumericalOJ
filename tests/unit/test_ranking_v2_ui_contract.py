@@ -264,6 +264,7 @@ def test_elo_admin_rebuild_control_stays_inline_and_keeps_its_hover_icon():
 def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family():
     detail = _read(TEMPLATES / "detail.html")
     matches = _read(TEMPLATES / "tabs" / "matches.html")
+    content_styles = _read(STATIC / "content-v2.css")
     detail_script = _read(STATIC / "detail-v2.js")
     trajectory_script = _read(STATIC / "elo-trajectories.js")
     trajectory_styles = _read(STATIC / "elo-trajectories.css")
@@ -273,6 +274,7 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     rebuild_index = matches.index('class="matches-rebuild-form"', admin_guard_index)
     assert observe_index < admin_guard_index < rebuild_index
     assert 'data-bs-target="#eloTrajectoryModal"' in matches
+    assert '<div class="modal-dialog">' in matches
     assert 'data-elo-search-input' in matches
     assert 'placeholder="按用户名筛选…"' in matches
     assert 'data-elo-selected-list' in matches
@@ -304,6 +306,9 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     assert "clearButton" not in trajectory_script
     assert "selectionCount" not in trajectory_script
     assert "body: JSON.stringify({submission_ids: Array.from(selected.keys())})" in trajectory_script
+    assert "modal.classList.add('is-expanded')" in trajectory_script
+    assert "modal.classList.remove('is-expanded')" in trajectory_script
+    assert "analysisController.abort()" in trajectory_script
     assert "document.createElementNS(SVG_NS, tag)" in trajectory_script
     assert "hsl(207 42%" in trajectory_script
     assert "document.activeElement === searchInput" in trajectory_script
@@ -328,12 +333,26 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     assert ".elo-trajectory-legend-copy" in trajectory_styles
     assert "font: 700 10px/1 var(--rkv2-mono)" in trajectory_styles
     assert ".elo-trajectory-line" in trajectory_styles
-    assert "color: var(--rkv2-orange)" in trajectory_styles
     assert "--elo-accent: var(--rkv2-orange)" in trajectory_styles
     assert "--elo-accent-soft: var(--rkv2-orange-soft)" in trajectory_styles
     assert "--elo-surface-soft: var(--rkv2-line-soft)" in trajectory_styles
     assert "background: var(--elo-surface-soft)" in trajectory_styles
     assert "--elo-blue" not in trajectory_styles
+    assert ".matches-observe-btn i" not in trajectory_styles
+    assert "min-height: 30px" in re.search(
+        r"\.ranking-v2-detail \.matches-meta\s*\{(?P<body>[^{}]+)\}",
+        content_styles,
+    ).group("body")
+    assert "font: 9px/1 var(--rkv2-mono)" in content_styles
+    assert "line-height: 1" in re.search(
+        r"\.ranking-v2-detail \.matches-rebuild-btn\s*\{(?P<body>[^{}]+)\}",
+        content_styles,
+    ).group("body")
+    assert "width: min(414px, calc(100vw - 28px))" in trajectory_styles
+    assert ".elo-trajectory-modal.is-expanded .modal-dialog" in trajectory_styles
+    assert "width: 67vw" in trajectory_styles
+    assert ".elo-trajectory-modal.is-expanded .modal-dialog {\n    width: calc(100vw - 16px)" in trajectory_styles
+    assert "overflow: visible" in trajectory_styles
     assert "grid-template-columns: minmax(0, 1fr)" in trajectory_styles
     assert "flex-wrap: wrap" in trajectory_styles
     assert "overflow-x: auto" not in trajectory_styles

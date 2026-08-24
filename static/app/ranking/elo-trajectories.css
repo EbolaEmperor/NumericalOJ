@@ -1,7 +1,3 @@
-.ranking-v2-detail .matches-observe-btn i {
-  color: var(--rkv2-orange);
-}
-
 .ranking-v2-detail .elo-trajectory-modal {
   --elo-strong: var(--rkv2-ink);
   --elo-strong-muted: var(--rkv2-ink-2);
@@ -14,12 +10,17 @@
 }
 
 .ranking-v2-detail .elo-trajectory-modal .modal-dialog {
-  width: min(1180px, calc(100vw - 28px));
+  width: min(414px, calc(100vw - 28px));
   max-width: none;
+  transition: width 180ms ease-out, transform 300ms ease-out;
+}
+
+.ranking-v2-detail .elo-trajectory-modal.is-expanded .modal-dialog {
+  width: 67vw;
 }
 
 .ranking-v2-detail .elo-trajectory-modal .modal-content {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--elo-line);
   border-radius: 9px;
   background: #fff;
@@ -28,7 +29,7 @@
 
 .ranking-v2-detail .elo-trajectory-modal .modal-body {
   padding: 24px;
-  overflow-x: hidden;
+  overflow: visible;
   background: #fff;
 }
 
@@ -412,7 +413,8 @@
 }
 
 @media (max-width: 760px) {
-  .ranking-v2-detail .elo-trajectory-modal .modal-dialog {
+  .ranking-v2-detail .elo-trajectory-modal .modal-dialog,
+  .ranking-v2-detail .elo-trajectory-modal.is-expanded .modal-dialog {
     width: calc(100vw - 16px);
     margin: 8px auto;
   }
