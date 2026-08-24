@@ -720,6 +720,51 @@ def test_streaming_response_redaction_handles_chunk_boundaries():
     assert secret not in rendered
 
 
+def test_anthropic_empty_sse_content_becomes_retryable_error_across_chunks():
+    transformer = relay._AnthropicEmptyContentTransformer(event_stream=True)
+
+    rendered = b"".join([
+        transformer.feed(
+            b'data: {"type":"message_start","message":{"content":[]}}\n\n'
+            b'data: {"type":"message_delta","delta":{"stop_reason":'
+        ),
+        transformer.feed(b'"end_turn"},"usage":{"output_tokens":0}}\n\n'),
+        transformer.feed(b'data: {"type":"message_stop"}\n\n'),
+        transformer.feed(final=True),
+    ])
+
+    assert b'"stop_reason":"refusal"' in rendered
+    assert b"Provider returned error" in rendered
+    assert b'"stop_reason":"end_turn"' not in rendered
+
+
+def test_anthropic_sse_with_a_content_block_keeps_original_stop_reason():
+    transformer = relay._AnthropicEmptyContentTransformer(event_stream=True)
+    payload = (
+        b'data: {"type":"message_start","message":{"content":[]}}\n\n'
+        b'data: {"type":"content_block_start","content_block":'
+        b'{"type":"text","text":""}}\n\n'
+        b'data: {"type":"message_delta","delta":'
+        b'{"stop_reason":"end_turn"}}\n\n'
+    )
+
+    rendered = transformer.feed(payload, final=True)
+
+    assert rendered == payload
+
+
+def test_anthropic_empty_json_content_becomes_retryable_error():
+    transformer = relay._AnthropicEmptyContentTransformer(event_stream=False)
+
+    assert transformer.feed(
+        b'{"type":"message","content":[],"stop_reason":"end_turn"}'
+    ) == b""
+    rendered = json.loads(transformer.feed(final=True))
+
+    assert rendered["stop_reason"] == "refusal"
+    assert "Provider returned error" in rendered["stop_details"]["explanation"]
+
+
 def test_response_headers_are_sanitized_and_sensitive_headers_removed():
     headers = _headers(
         X_Upstream_Debug="key=long-lived-secret",
@@ -1184,10 +1229,87 @@ def test_direct_endpoint_requests_are_accounted_by_relay_and_reopen_gate(
     )
 
 
+def test_anthropic_empty_content_is_forwarded_as_error_and_billed_as_zero(
+    monkeypatch,
+):
+    charged = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": True,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class EmptyResponse:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def __init__(self):
+            self.chunks = [
+                b'data: {"type":"message_start","message":{"content":[],"usage":'
+                b'{"input_tokens":null,"output_tokens":null}}}\n\n',
+                b'data: {"type":"message_delta","delta":'
+                b'{"stop_reason":"end_turn"},"usage":{"output_tokens":null}}\n\n'
+                b'data: {"type":"message_stop"}\n\n',
+            ]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class EmptyConnection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return EmptyResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: EmptyConnection(),
+    )
+    request = (
+        b"POST /v1/messages HTTP/1.0\r\nX-Api-Key: "
+        + instance.temporary_secret.encode("ascii")
+        + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    status, _head, payload = _send(instance, request)
+
+    assert status == 200
+    assert b'"stop_reason":"refusal"' in payload
+    assert b"Provider returned error" in payload
+    assert charged[0]["usage"] == {
+        "input_uncached_tokens": 0,
+        "input_cached_tokens": 0,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+    }
+    instance.raise_if_usage_failed()
+    assert not instance._stop_event.is_set()
+
+
 @pytest.mark.parametrize(
     ("payload", "callback_result", "error_type", "message"),
     [
-        (b'{"choices":[]}', None, relay.AgentSecretRelayUsageError, "缺少 usage"),
         (
             b'{"usage":{"prompt_tokens":1,"completion_tokens":1}}',
             {"applied": False, "hard_stop": False},
@@ -1265,7 +1387,7 @@ def test_usage_failure_replay_or_hard_stop_closes_relay(
         instance.raise_if_usage_failed()
     assert instance._stop_event.is_set()
     assert _send(instance, request)[0] == 404
-    assert len(callback_calls) == (0 if callback_result is None else 1)
+    assert len(callback_calls) == 1
 
 
 def test_client_disconnect_still_drains_and_accounts_upstream(monkeypatch):

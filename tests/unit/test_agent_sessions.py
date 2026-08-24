@@ -832,6 +832,31 @@ def test_late_worker_state_cannot_replace_committed_terminal_session(
     assert connection.closed is True
 
 
+def test_late_terminal_snapshot_can_only_fill_native_recovery_point(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{"status": "Canceled"}])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    changed = sessions.sync_agent_session_state({
+        "session_id": "session-terminal",
+        "task_id": "turn-current",
+        "status": "Running",
+        "message": "不得覆盖取消终态",
+        "native_session_id": "native-recoverable",
+    })
+
+    assert changed is True
+    assert len(connection.cursor_instance.calls) == 2
+    update_query, update_params = connection.cursor_instance.calls[1]
+    assert "native_session_id=COALESCE" in update_query
+    assert "fresh_native_session_pending=0" in update_query
+    assert update_params == (
+        "native-recoverable",
+        "session-terminal",
+        "turn-current",
+    )
+    assert connection.commits == 1
+
+
 def test_cleanup_failure_can_escalate_a_canceled_session(monkeypatch):
     connection = _ScriptedConnection(one_values=[{"status": "Canceled"}])
     monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)

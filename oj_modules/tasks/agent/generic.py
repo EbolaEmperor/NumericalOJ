@@ -38,6 +38,7 @@ from oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
     AgentUsageHardStopError,
     normalize_native_session_id,
+    read_agent_native_session_id,
     run_agent_harness,
 )
 from oj_modules.tasks.agent.shared import (
@@ -172,6 +173,25 @@ def _local_terminal_result(state):
 
 def _finalize_unhandled_generic_failure(state, exc):
     """尽最大努力收束入口早期异常，同时尊重已经提交的终态。"""
+
+    try:
+        recovered_native_session_id = read_agent_native_session_id(
+            state.get("session_id"),
+            state.get("harness"),
+        )
+    except Exception:
+        recovered_native_session_id = ""
+    if recovered_native_session_id:
+        state["native_session_id"] = recovered_native_session_id
+        try:
+            # 即使取消/失败终态已经先提交，会话投影仍允许同一 current task
+            # 只补齐原生恢复点，不会重开或改写终态。
+            _update_agent_state(
+                state,
+                native_session_id=recovered_native_session_id,
+            )
+        except Exception:
+            pass
 
     terminal_result = _terminal_result_with_session(state)
     if terminal_result is not None:
@@ -397,6 +417,11 @@ def register_agent_run_turn_task(celery_app):
             return _generic_failure(state, "普通用户不能使用管理员身份运行 Agent")
         if not str(prompt or "").strip():
             return _generic_failure(state, "Agent 消息不能为空")
+        if start_fresh_native_session is True:
+            return _generic_failure(
+                state,
+                "续聊不允许丢弃上一轮原生会话后重新开始",
+            )
 
         try:
             session = get_agent_session(normalized_session_id)
@@ -409,7 +434,7 @@ def register_agent_run_turn_task(celery_app):
                 resume_session_id=normalized_resume_session_id,
                 allow_empty_resume=bool(
                     str(restore_runtime_checkpoint_id or "").strip()
-                ) or start_fresh_native_session is True,
+                ),
             )
             normalized_role = normalize_agent_access_role(
                 normalized_role,
@@ -577,6 +602,26 @@ def register_agent_run_turn_task(celery_app):
                 }
 
             usage_callback = charge_usage
+
+        def preserve_native_session(native_session_id):
+            normalized_native_session_id = normalize_native_session_id(
+                native_session_id,
+                normalized_harness,
+            )
+            if (
+                not normalized_native_session_id
+                or normalized_native_session_id
+                == state.get("native_session_id")
+            ):
+                return
+            # 先更新内存 state；即使这次 MySQL 写入失败，随后异常收束也会
+            # 携带同一恢复点再次持久化，而不是回退为空 session。
+            state["native_session_id"] = normalized_native_session_id
+            _update_agent_state(
+                state,
+                native_session_id=normalized_native_session_id,
+            )
+
         try:
             run_result = run_agent_harness(
                 task_id=task_id,
@@ -608,6 +653,7 @@ def register_agent_run_turn_task(celery_app):
                 control_callback=control_callback,
                 control_target_task_id=task_id,
                 usage_callback=usage_callback,
+                native_session_callback=preserve_native_session,
                 reset_trace=False,
             )
         except AgentUsageHardStopError:

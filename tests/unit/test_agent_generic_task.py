@@ -54,6 +54,11 @@ def _patch_generic(monkeypatch, session):
     monkeypatch.setattr(generic, "agent_run_is_canceled", lambda _task_id: False)
     monkeypatch.setattr(
         generic,
+        "read_agent_native_session_id",
+        lambda _session_id, _harness: "",
+    )
+    monkeypatch.setattr(
+        generic,
         "get_user_by_username",
         lambda _username: {"id": 1, "is_admin": 1},
     )
@@ -107,6 +112,44 @@ def test_generic_outer_boundary_finalizes_trace_prepare_failure(monkeypatch):
     assert snapshots[-1]["status"] == "Failed"
     assert snapshots[-1]["stage"] == "finished"
     assert snapshots[-1]["session_id"] == "trace-session"
+
+
+def test_generic_outer_boundary_recovers_workspace_native_snapshot(monkeypatch):
+    native_session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    snapshots = _patch_generic(monkeypatch, None)
+    monkeypatch.setattr(
+        generic,
+        "read_agent_native_session_id",
+        lambda session_id, harness: (
+            native_session_id
+            if (session_id, harness) == ("snapshot-session", "codex")
+            else ""
+        ),
+    )
+    monkeypatch.setattr(
+        generic,
+        "prepare_agent_trace_dir",
+        lambda _task_id: (_ for _ in ()).throw(RuntimeError("late worker error")),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self("snapshot-fallback"),
+        "snapshot-session",
+        "admin",
+        "admin",
+        "codex",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is False
+    assert result["native_session_id"] == native_session_id
+    assert any(
+        snapshot.get("native_session_id") == native_session_id
+        for snapshot in snapshots
+    )
 
 
 def test_generic_outer_boundary_retries_failed_initial_state_write(monkeypatch):
@@ -609,7 +652,7 @@ def test_generic_retry_can_restore_first_turn_without_native_session(monkeypatch
     )
 
 
-def test_generic_explicit_continue_can_start_fresh_without_native_session(
+def test_generic_rejects_legacy_fresh_continue_without_native_session(
     monkeypatch,
 ):
     task_id = "fresh-native-turn"
@@ -632,26 +675,8 @@ def test_generic_explicit_continue_can_start_fresh_without_native_session(
     monkeypatch.setattr(
         generic,
         "resolve_launch_endpoint",
-        lambda *_args, **_kwargs: _endpoint(),
-    )
-    monkeypatch.setattr(
-        generic,
-        "extract_agent_conclusion",
-        lambda _task_id: "已在原 workspace 中重新开始。",
-    )
-    harness_calls = []
-    monkeypatch.setattr(
-        generic,
-        "run_agent_harness",
-        lambda **kwargs: (
-            harness_calls.append(kwargs)
-            or HarnessRunResult(
-                0,
-                False,
-                "",
-                "",
-                native_session_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            )
+        lambda *_args, **_kwargs: pytest.fail(
+            "fresh 续聊必须在解析端点前拒绝"
         ),
     )
 
@@ -672,9 +697,58 @@ def test_generic_explicit_continue_can_start_fresh_without_native_session(
         True,
     )
 
-    assert result["success"] is True
-    assert harness_calls[0]["resume_session_id"] == ""
-    assert harness_calls[0]["restore_runtime_checkpoint_id"] == ""
+    assert result["success"] is False
+    assert "不允许丢弃上一轮原生会话" in result["message"]
+
+
+def test_generic_persists_native_snapshot_before_harness_failure(monkeypatch):
+    task_id = "snapshot-before-failure"
+    native_session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    session = {
+        "session_id": "snapshot-session",
+        "current_task_id": task_id,
+        "title": "异常恢复",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "codex",
+        "endpoint_id": 8,
+        "endpoint_revision": 4,
+        "native_session_id": "",
+        "turn_count": 1,
+        "is_legacy": False,
+    }
+    snapshots = _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: _endpoint(),
+    )
+    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _task_id: "")
+
+    def fail_after_snapshot(**kwargs):
+        kwargs["native_session_callback"](native_session_id)
+        raise RuntimeError("usage parsing failed after harness exit")
+
+    monkeypatch.setattr(generic, "run_agent_harness", fail_after_snapshot)
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "snapshot-session",
+        "admin",
+        "admin",
+        "codex",
+        8,
+        "session-cookie",
+        "执行任务",
+    )
+
+    assert result["success"] is False
+    assert result["native_session_id"] == native_session_id
+    assert snapshots[-1]["status"] == "Failed"
+    assert snapshots[-1]["native_session_id"] == native_session_id
 
 
 def test_generic_cleanup_failure_stays_nonterminal(monkeypatch):

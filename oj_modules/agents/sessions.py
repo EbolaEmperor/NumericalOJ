@@ -949,6 +949,22 @@ def sync_agent_session_state_in_transaction(cursor, state):
             and incoming_status not in {"cleanupfailed", "cleanup_failed"}
         )
     ):
+        if native_session_id:
+            # 终态本身保持 sticky，但容器退出边界可能比取消/失败事务更晚
+            # 才观察到原生 session 摘要。只允许同一 current task 补齐空恢复
+            # 点，不能借迟到 worker 改写状态或替换已有会话。
+            cursor.execute(
+                """
+                UPDATE agent_sessions
+                SET native_session_id=COALESCE(
+                        NULLIF(native_session_id, ''), %s
+                    ),
+                    fresh_native_session_pending=0
+                WHERE session_id=%s AND current_task_id=%s
+                """,
+                (native_session_id, raw_session_id, raw_task_id),
+            )
+            return cursor.rowcount > 0
         return False
     should_check_queue = incoming_status in {"canceled", "cancelled"} or (
         incoming_status == "failed" and message == AGENT_EMPTY_CONCLUSION_MESSAGE

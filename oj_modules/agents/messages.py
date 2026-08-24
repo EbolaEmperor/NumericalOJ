@@ -963,12 +963,7 @@ def pause_agent_session_queue(session_id, reason="队列已暂停"):
 
 
 def continue_agent_session_queue(session_id):
-    """显式继续已暂停的 FIFO；必要时让队首从空原生会话启动。
-
-    首轮在原生 session id 落盘前被停止时，持久 workspace 仍然可用，但
-    无法恢复模型上下文。只有这条显式操作会在会话行上写入一次性授权；
-    实际领取时再把授权绑定到当时的队首，因此中间的重排或删除不会丢失授权。
-    """
+    """显式继续已暂停的 FIFO，但绝不从空原生会话重新开始。"""
 
     session_id = _normalize_session_id(session_id)
     conn = get_db_connection()
@@ -998,36 +993,19 @@ def continue_agent_session_queue(session_id):
                     "当前 Agent 任务尚未结束，不能继续队列"
                 )
 
-            start_fresh_native_session = not str(
-                session.get("native_session_id") or ""
-            ).strip()
-            if start_fresh_native_session:
-                cursor.execute(
-                    """
-                    SELECT message_id
-                    FROM agent_session_messages
-                    WHERE session_id=%s AND delivery_mode='queue'
-                      AND status='queued'
-                    ORDER BY queue_position ASC, id ASC
-                    LIMIT 1
-                    FOR UPDATE
-                    """,
-                    (session_id,),
+            if not str(session.get("native_session_id") or "").strip():
+                raise AgentSessionMessageConflictError(
+                    "上一轮没有可恢复的原生会话快照，不能继续队列"
                 )
-                head = cursor.fetchone()
-                if not head:
-                    raise AgentSessionMessageConflictError(
-                        "当前没有可继续的排队消息"
-                    )
 
             cursor.execute(
                 """
                 UPDATE agent_sessions
                 SET queue_paused=0, queue_pause_reason=NULL,
-                    fresh_native_session_pending=%s
+                    fresh_native_session_pending=0
                 WHERE session_id=%s
                 """,
-                (1 if start_fresh_native_session else 0, session_id),
+                (session_id,),
             )
         conn.commit()
         return True
@@ -1040,6 +1018,10 @@ def continue_agent_session_queue(session_id):
 
 def _claim_payload(session, message, turn_index, *, newly_promoted=False):
     result = _message_from_row(message)
+    dispatch_payload = _dispatch_payload_from_row(message)
+    # 兼容读取升级前已经写入的 outbox，但绝不把“丢弃上下文后 fresh”授权
+    # 继续转发给 worker。
+    dispatch_payload.pop(_START_FRESH_NATIVE_SESSION_KEY, None)
     result.update({
         "task_id": message.get("final_task_id"),
         "turn_index": int(turn_index),
@@ -1070,7 +1052,7 @@ def _claim_payload(session, message, turn_index, *, newly_promoted=False):
         "dispatch_attempt_id": str(
             message.get("dispatch_attempt_id") or ""
         ).strip(),
-        "dispatch_payload": _dispatch_payload_from_row(message),
+        "dispatch_payload": dispatch_payload,
     })
     return result
 
@@ -1227,8 +1209,7 @@ def claim_next_agent_session_message(
                     # dispatching turn 时便可确信该 checkpoint 已经发布。
                     prepare_runtime_checkpoint(session_id, claimed_task_id)
                 dispatch_payload = _dispatch_payload_from_row(message)
-                if bool(session.get("fresh_native_session_pending")):
-                    dispatch_payload[_START_FRESH_NATIVE_SESSION_KEY] = True
+                dispatch_payload.pop(_START_FRESH_NATIVE_SESSION_KEY, None)
                 dispatch_payload_json = (
                     _json_text(dispatch_payload, {}) if dispatch_payload else None
                 )

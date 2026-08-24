@@ -1512,6 +1512,7 @@ def run_agent_harness(
     control_callback=None,
     control_target_task_id=None,
     usage_callback=None,
+    native_session_callback=None,
     reasoning_effort="default",
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
@@ -1544,6 +1545,31 @@ def run_agent_harness(
     skill_name = skill_for_agent_task(task_kind, access_role)
     normalized_session_id = str(session_id or task_id or "").strip()
     workspace = _ensure_stable_workspace(normalized_session_id)
+    last_published_native_session_id = resume_session_id
+
+    def publish_native_session_snapshot():
+        """尽早发布 workspace 中已经原子落盘的原生恢复点。"""
+
+        nonlocal last_published_native_session_id
+        try:
+            native_session_id = (
+                _read_native_session_id(workspace, harness)
+                or resume_session_id
+            )
+        except (OSError, ValueError):
+            # Harness 可能正在替换 current-session 文件；下一 tick、退出
+            # 边界和最外层 finally 都会再次读取。
+            return last_published_native_session_id
+        if (
+            native_session_id
+            and native_session_id != last_published_native_session_id
+            and callable(native_session_callback)
+        ):
+            native_session_callback(native_session_id)
+        if native_session_id:
+            last_published_native_session_id = native_session_id
+        return native_session_id
+
     restore_runtime_checkpoint_id = str(
         restore_runtime_checkpoint_id or ""
     ).strip()
@@ -1724,6 +1750,7 @@ def run_agent_harness(
                 pending_trace_records = []
 
                 def sync_trace(*, final=False, trace_records=()):
+                    publish_native_session_snapshot()
                     pending_trace_records.extend(trace_records or ())
                     sync_kwargs = {"secrets": trace_secrets}
                     if canonical_enabled:
@@ -1804,27 +1831,30 @@ def run_agent_harness(
                         prompt,
                         **run_kwargs,
                     )
+                    # usage 解析、配额检查或最终轨迹同步都可能失败；原生
+                    # session 必须先于这些旁路被持久化到会话状态。
+                    publish_native_session_snapshot()
                     _check_secret_relay_usage(secret_relay, wait=True)
                     enforce_workspace_quota()
                     sync_trace()
                 finally:
                     try:
-                        _remove_agent_container(container_name)
+                        publish_native_session_snapshot()
                     finally:
                         try:
-                            stdout_trace_path.unlink()
-                        except FileNotFoundError:
-                            pass
-                        if canonical_trace_path is not None:
+                            _remove_agent_container(container_name)
+                        finally:
                             try:
-                                canonical_trace_path.unlink()
+                                stdout_trace_path.unlink()
                             except FileNotFoundError:
                                 pass
+                            if canonical_trace_path is not None:
+                                try:
+                                    canonical_trace_path.unlink()
+                                except FileNotFoundError:
+                                    pass
             artifacts = _read_workspace_artifacts(workspace, artifact_files)
-            native_session_id = (
-                _read_native_session_id(workspace, harness)
-                or resume_session_id
-            )
+            native_session_id = publish_native_session_snapshot()
             result = HarnessRunResult(
                 returncode=result.returncode,
                 timed_out=result.timed_out,
@@ -1836,9 +1866,13 @@ def run_agent_harness(
             )
             return _sanitize_output(result, secrets=trace_secrets)
     finally:
-        # 保留 Agent 工作产物和原生 session，真实 Session 从未落盘；本地 CLI
-        # 占位配置也在每轮结束后删除，避免闲置工作区保留可误用入口。
-        _remove_identity_config(workspace, identity_relative_path)
+        try:
+            # 覆盖身份 relay、模型 relay、清理及结果组装阶段的所有异常。
+            publish_native_session_snapshot()
+        finally:
+            # 保留 Agent 工作产物和原生 session，真实 Session 从未落盘；本地
+            # CLI 占位配置也在每轮结束后删除，避免闲置工作区保留可误用入口。
+            _remove_identity_config(workspace, identity_relative_path)
 
 
 __all__ = [
