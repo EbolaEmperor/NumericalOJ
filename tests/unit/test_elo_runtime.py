@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """ELO 隔离对局运行时（elo_runtime）单测。
 
-覆盖三层：
-  - bot_runner：以真实子进程运行可信运行器 + 伪造 bot，验证握手、回合问答、
-    容器内计时、超时强杀、协议违规处理、exec 与路径越界防护；
-  - elo_host_api：以管道伪造仲裁通道，验证请求/响应帧协议与客户端超时；
+隔离运行时把"如何启动被测代码、用什么协议交互"的决定权交还给评分脚本：
+工作容器内的可信运行器只提供通用原语（spawn/interact/kill/status/exec/fetch），
+不再假定 ``bot.py`` 或 Python。覆盖三层：
+
+  - bot_runner：以真实子进程运行可信运行器，验证 spawn/interact/kill/status、
+    容器内计时、超时强杀、until 条件、exec、fetch 与路径越界防护；
+  - elo_host_api：以管道伪造仲裁通道，验证原语帧协议、客户端超时，以及
+    ``call_bot``/``wait_ready``/``bot_status`` 兼容封装（含缺 bot.py、坏输出）；
   - arbiter（IsolatedEloMatch）：注入本地进程 spawner（不起 docker）验证
-    容器命令隔离参数、RPC 路由、裁决解析、超时与清理语义。
+    容器命令隔离参数、新 RPC 路由、裁决解析、超时与清理语义。
 """
 
 import base64
@@ -43,6 +47,14 @@ def _write_zip(path, files):
     return str(path)
 
 
+def _b64(text):
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _unb64(value):
+    return base64.b64decode(value).decode("utf-8", "replace")
+
+
 # ---------------------------------------------------------------------------
 # 容器命令构造：隔离参数
 # ---------------------------------------------------------------------------
@@ -69,7 +81,7 @@ def test_judge_command_keeps_network_and_mounts_only_script_dir():
 
 
 # ---------------------------------------------------------------------------
-# bot_runner：真实子进程集成
+# bot_runner：真实子进程集成（通用原语）
 # ---------------------------------------------------------------------------
 
 class RunnerProcess:
@@ -84,7 +96,6 @@ class RunnerProcess:
         self._seq = 0
 
     def read_any_frame(self, timeout=15.0):
-        """读取任意一个协议帧（含无 id 的 ready 帧）。"""
         return self._read_frame(timeout, expected_id=None)
 
     def request(self, frame, timeout=15.0):
@@ -94,6 +105,15 @@ class RunnerProcess:
         self.proc.stdin.write((json.dumps(frame) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
         return self._read_frame(timeout, expected_id=self._seq)
+
+    def spawn(self, argv, timeout=15.0):
+        return self.request({"type": "spawn", "argv": argv}, timeout=timeout)
+
+    def interact(self, input_text=None, timeout_ms=1000, until="newline", timeout=15.0):
+        frame = {"type": "interact", "timeout_ms": timeout_ms, "until": until}
+        if input_text is not None:
+            frame["input"] = _b64(input_text)
+        return self.request(frame, timeout=timeout)
 
     def _read_frame(self, timeout, expected_id):
         import select as _select
@@ -129,108 +149,187 @@ class RunnerProcess:
             self.proc.kill()
 
 
-def _make_submission(tmp_path, bot_source):
+def _make_submission(tmp_path, files):
     submission = tmp_path / "submission"
     submission.mkdir(exist_ok=True)
-    (submission / "bot.py").write_text(bot_source, encoding="utf-8")
+    for name, content in files.items():
+        (submission / name).write_text(content, encoding="utf-8")
     return submission
 
 
-ECHO_BOT = (
-    "import json, sys\n"
-    "print(json.dumps({'ready': True}), flush=True)\n"
+ECHO_LINE_BOT = (
+    "import sys\n"
+    "print('HELLO', flush=True)\n"
     "for line in sys.stdin:\n"
-    "    msg = json.loads(line)\n"
-    "    if msg.get('type') == 'end': break\n"
-    "    print(json.dumps({'move': 'U'}), flush=True)\n"
+    "    if line.strip() == 'END': break\n"
+    "    print('echo:' + line.strip(), flush=True)\n"
 )
 
 
-def test_bot_runner_reports_ready_frame(tmp_path):
-    runner = RunnerProcess(_make_submission(tmp_path, ECHO_BOT))
+def test_runner_ready_frame_has_no_bot_handshake(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
     try:
         ready = runner.read_any_frame()
         assert ready["type"] == "ready" and ready["ok"] is True
-        assert ready["handshake_ms"] >= 0
+        assert "handshake_ms" not in ready  # 运行器就绪不含任何 bot 握手
     finally:
         runner.close()
 
 
-def test_bot_runner_ask_round_trip_and_ping(tmp_path):
-    runner = RunnerProcess(_make_submission(tmp_path, ECHO_BOT))
+def test_runner_interact_without_spawn_reports_not_running(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
     try:
-        ready = runner.read_any_frame()
-        assert ready["ok"] is True
-        reply = runner.request({"type": "ask", "timeout_ms": 1000, "payload": {"round": 1}})
-        assert reply["ok"] is True
-        assert reply["response"] == {"move": "U"}
-        assert reply["elapsed_ms"] >= 0
+        runner.read_any_frame()
+        reply = runner.interact(input_text="x\n", timeout_ms=50)
+        assert reply["ok"] is False and reply["error"] == "bot_not_running"
+    finally:
+        runner.close()
+
+
+def test_runner_spawn_interact_round_trip_and_ping(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"my_bot.py": ECHO_LINE_BOT}))
+    try:
+        runner.read_any_frame()
+        sp = runner.spawn([sys.executable, "-u", "my_bot.py"])
+        assert sp["ok"] is True and sp["pid"] > 0
+        first = runner.interact(timeout_ms=2000)
+        assert first["ok"] is True and _unb64(first["output"]) == "HELLO"
+        turn = runner.interact(input_text="ping-1\n", timeout_ms=1000)
+        assert turn["ok"] is True and _unb64(turn["output"]) == "echo:ping-1"
+        assert turn["elapsed_ms"] >= 0
         pong = runner.request({"type": "ping"})
         assert pong["ok"] is True and pong["pong"] is True
     finally:
         runner.close()
 
 
-def test_bot_runner_missing_bot_py_reports_startup_error(tmp_path):
-    submission = tmp_path / "submission"
-    submission.mkdir()
-    runner = RunnerProcess(submission)
+def test_runner_spawn_replaces_running_process(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
     try:
-        ready = runner.read_any_frame()
-        assert ready["type"] == "ready" and ready["ok"] is False
-        assert "bot.py" in ready["error"]
-        reply = runner.request({"type": "ask", "timeout_ms": 100, "payload": {}})
-        assert reply["ok"] is False and reply["error"] == "bot_not_running"
+        runner.read_any_frame()
+        runner.spawn([sys.executable, "-u", "main.py"])
+        first_pid = runner.request({"type": "status"})
+        again = runner.spawn([sys.executable, "-u", "main.py"])
+        assert again["ok"] is True
+        runner.interact(timeout_ms=2000)  # 新进程的 HELLO 行
+        assert runner.request({"type": "status"})["alive"] is True
+        assert first_pid["alive"] is True
     finally:
         runner.close()
 
 
-def test_bot_runner_enforces_turn_timeout_inside_container(tmp_path):
-    sleepy = (
-        "import json, sys, time\n"
-        "print(json.dumps({'ready': True}), flush=True)\n"
-        "for line in sys.stdin:\n"
-        "    msg = json.loads(line)\n"
-        "    if msg.get('type') == 'end': break\n"
-        "    time.sleep(0.5)\n"
-        "    print(json.dumps({'move': 'U'}), flush=True)\n"
-    )
-    runner = RunnerProcess(_make_submission(tmp_path, sleepy))
+def test_runner_spawn_bad_entry_reports_exec_failed(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
     try:
-        runner.proc.stdout.readline()  # ready 帧
+        runner.read_any_frame()
+        reply = runner.spawn(["/nonexistent/binary"])
+        assert reply["ok"] is False and reply["error"] == "exec_failed"
+    finally:
+        runner.close()
+
+
+def test_runner_enforces_interact_timeout_inside_container(tmp_path):
+    sleepy = (
+        "import sys, time\n"
+        "print('R', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    time.sleep(0.5)\n"
+        "    print('done', flush=True)\n"
+    )
+    runner = RunnerProcess(_make_submission(tmp_path, {"slow.py": sleepy}))
+    try:
+        runner.read_any_frame()
+        runner.spawn([sys.executable, "-u", "slow.py"])
+        runner.interact(timeout_ms=2000)  # R 行
         started = time.monotonic()
-        reply = runner.request({"type": "ask", "timeout_ms": 150, "payload": {}}, timeout=10)
+        reply = runner.interact(input_text="go\n", timeout_ms=150, timeout=10)
         assert reply["ok"] is False and reply["error"] == "timeout"
-        # 超时应发生在 ~150ms，而不是等满 bot 的 0.5s
+        # 超时应发生在 ~150ms，而不是等满被测进程的 0.5s。
         assert time.monotonic() - started < 0.45
-        # 超时后 bot 被强杀：后续 ask 直接失败
-        reply2 = runner.request({"type": "ask", "timeout_ms": 100, "payload": {}})
+        # 超时后被测进程被强杀：后续交互直接失败。
+        reply2 = runner.interact(input_text="x\n", timeout_ms=100)
         assert reply2["ok"] is False and reply2["error"] == "bot_not_running"
     finally:
         runner.close()
 
 
-def test_bot_runner_rejects_non_json_bot_output(tmp_path):
-    noisy = (
-        "import json, sys\n"
-        "print(json.dumps({'ready': True}), flush=True)\n"
-        "for line in sys.stdin:\n"
-        "    print('not-json', flush=True)\n"
-    )
-    runner = RunnerProcess(_make_submission(tmp_path, noisy))
+def test_runner_interact_until_eof_returns_exit_code(tmp_path):
+    eof_bot = "import sys\nprint('A')\nprint('B')\nsys.exit(3)\n"
+    runner = RunnerProcess(_make_submission(tmp_path, {"eof.py": eof_bot}))
     try:
-        runner.proc.stdout.readline()  # ready 帧
-        reply = runner.request({"type": "ask", "timeout_ms": 1000, "payload": {}})
-        assert reply["ok"] is False and reply["error"] == "bad_output"
+        runner.read_any_frame()
+        runner.spawn([sys.executable, "-u", "eof.py"])
+        reply = runner.interact(timeout_ms=3000, until="eof", timeout=10)
+        assert reply["ok"] is True
+        assert _unb64(reply["output"]) == "A\nB\n"
+        assert reply["exit_code"] == 3
     finally:
         runner.close()
 
 
-def test_bot_runner_exec_captures_output_and_exports_files(tmp_path):
-    submission = _make_submission(tmp_path, ECHO_BOT)
-    runner = RunnerProcess(submission)
+def test_runner_interact_until_bytes(tmp_path):
+    blob_bot = (
+        "import sys, time\n"
+        "sys.stdout.write('0123456789')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(5)\n"
+    )
+    runner = RunnerProcess(_make_submission(tmp_path, {"b.py": blob_bot}))
     try:
-        runner.proc.stdout.readline()  # ready 帧
+        runner.read_any_frame()
+        runner.spawn([sys.executable, "-u", "b.py"])
+        reply = runner.interact(timeout_ms=3000, until={"bytes": 4}, timeout=10)
+        assert reply["ok"] is True and _unb64(reply["output"]) == "0123"
+    finally:
+        runner.close()
+
+
+def test_runner_oversize_line_kills_process(tmp_path):
+    noisy = "import sys\nsys.stdout.write('x' * 70000)\nsys.stdout.flush()\nimport time\ntime.sleep(5)\n"
+    runner = RunnerProcess(_make_submission(tmp_path, {"noisy.py": noisy}))
+    try:
+        runner.read_any_frame()
+        runner.spawn([sys.executable, "-u", "noisy.py"])
+        reply = runner.interact(timeout_ms=2000, timeout=10)  # newline 模式，单行上限 16KiB
+        assert reply["ok"] is False and reply["error"] == "oversize"
+        status = runner.request({"type": "status"})
+        assert status["alive"] is False
+    finally:
+        runner.close()
+
+
+def test_runner_kill_and_status(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
+    try:
+        runner.read_any_frame()
+        runner.spawn([sys.executable, "-u", "main.py"])
+        status = runner.request({"type": "status"})
+        assert status["ok"] is True and status["alive"] is True
+        kill = runner.request({"type": "kill"})
+        assert kill["ok"] is True and kill["was_running"] is True
+        after = runner.request({"type": "status"})
+        assert after["alive"] is False and "exit_code" in after
+    finally:
+        runner.close()
+
+
+def test_runner_fetch_files_and_skip_missing(tmp_path):
+    runner = RunnerProcess(_make_submission(
+        tmp_path, {"main.py": ECHO_LINE_BOT, "data.txt": "payload"}))
+    try:
+        runner.read_any_frame()
+        reply = runner.request({"type": "fetch", "paths": ["data.txt", "nope.txt"]})
+        assert reply["ok"] is True
+        assert _unb64(reply["files"]["data.txt"]) == "payload"
+        assert "nope.txt" not in reply["files"]
+    finally:
+        runner.close()
+
+
+def test_runner_exec_captures_output_and_exports_files(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
+    try:
+        runner.read_any_frame()
         reply = runner.request({
             "type": "exec",
             "timeout_ms": 10000,
@@ -244,10 +343,10 @@ def test_bot_runner_exec_captures_output_and_exports_files(tmp_path):
         runner.close()
 
 
-def test_bot_runner_exec_timeout_reports_timed_out(tmp_path):
-    runner = RunnerProcess(_make_submission(tmp_path, ECHO_BOT))
+def test_runner_exec_timeout_reports_timed_out(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
     try:
-        runner.proc.stdout.readline()
+        runner.read_any_frame()
         reply = runner.request({
             "type": "exec", "timeout_ms": 200,
             "argv": [sys.executable, "-c", "import time; time.sleep(2)"],
@@ -257,7 +356,21 @@ def test_bot_runner_exec_timeout_reports_timed_out(tmp_path):
         runner.close()
 
 
-def test_bot_runner_path_traversal_is_rejected():
+def test_runner_rejects_workdir_traversal(tmp_path):
+    runner = RunnerProcess(_make_submission(tmp_path, {"main.py": ECHO_LINE_BOT}))
+    try:
+        runner.read_any_frame()
+        bad = runner.request({"type": "exec", "timeout_ms": 100,
+                              "argv": ["true"], "workdir": "../escape"})
+        assert bad["ok"] is False and bad["error"] == "bad_request"
+        bad_spawn = runner.request({"type": "spawn", "argv": ["true"],
+                                    "workdir": "../escape"})
+        assert bad_spawn["ok"] is False and bad_spawn["error"] == "bad_request"
+    finally:
+        runner.close()
+
+
+def test_runner_path_traversal_is_rejected():
     module = _load_bot_runner_module()
     with pytest.raises(ValueError):
         module._resolve_relative("/base", "../escape")
@@ -267,7 +380,7 @@ def test_bot_runner_path_traversal_is_rejected():
 
 
 # ---------------------------------------------------------------------------
-# elo_host_api：帧协议与客户端超时
+# elo_host_api：原语帧协议与客户端超时
 # ---------------------------------------------------------------------------
 
 def _install_fake_channel(monkeypatch):
@@ -278,45 +391,160 @@ def _install_fake_channel(monkeypatch):
     monkeypatch.setattr(elo_host_api, "_stdout_fd_for_rpc", judge_stderr_w)
     monkeypatch.setattr(elo_host_api, "_buffer", b"")
     monkeypatch.setattr(elo_host_api, "DEFAULT_CALL_GRACE_SECONDS", 0.3)
+    _reset_bot_state(monkeypatch)
     return judge_stderr_r, judge_stdin_w
 
 
-def test_host_api_call_bot_round_trip(monkeypatch):
-    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
-    outcome = {}
+def _reset_bot_state(monkeypatch):
+    monkeypatch.setattr(elo_host_api, "_bot_state", {
+        "A": {"phase": "new", "handshake_ms": None, "error": None},
+        "B": {"phase": "new", "handshake_ms": None, "error": None},
+    })
 
-    def fake_arbiter():
-        line = b""
-        while not line.endswith(b"\n"):
-            line += os.read(arbiter_reads, 4096)
-        request = json.loads(line.decode().removeprefix(elo_host_api.RPC_PREFIX))
-        outcome["request"] = request
-        response = {"id": request["id"], "ok": True,
-                    "response": {"move": "D"}, "elapsed_ms": 3.5}
-        os.write(arbiter_writes, (json.dumps(response) + "\n").encode())
 
-    thread = threading.Thread(target=fake_arbiter, daemon=True)
+def _start_scripted_arbiter(arbiter_reads, arbiter_writes, handler):
+    stop = {"flag": False}
+
+    def loop():
+        buffer = b""
+        while not stop["flag"]:
+            try:
+                chunk = os.read(arbiter_reads, 4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                if not raw.strip():
+                    continue
+                request = json.loads(raw.decode().removeprefix(elo_host_api.RPC_PREFIX))
+                response = dict(handler(request))
+                response["id"] = request["id"]
+                os.write(arbiter_writes, (json.dumps(response) + "\n").encode())
+
+    thread = threading.Thread(target=loop, daemon=True)
     thread.start()
-    reply = elo_host_api.call_bot("A", {"round": 7}, timeout_ms=1000)
-    thread.join(timeout=5)
-    assert reply["ok"] is True and reply["response"] == {"move": "D"}
-    assert outcome["request"]["method"] == "call_bot"
-    assert outcome["request"]["side"] == "A"
-    assert outcome["request"]["payload"] == {"round": 7}
+    return thread, stop
+
+
+def test_host_api_interact_round_trip(monkeypatch):
+    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
+    seen = {}
+
+    def handler(request):
+        seen["request"] = request
+        return {"ok": True, "output": _b64("hello-back"), "elapsed_ms": 2.5}
+
+    thread, stop = _start_scripted_arbiter(arbiter_reads, arbiter_writes, handler)
+    reply = elo_host_api.interact("A", data="hi\n", timeout_ms=1000)
+    stop["flag"] = True
+    assert reply["ok"] is True and reply["output"] == "hello-back"
+    assert reply["elapsed_ms"] == 2.5
+    assert seen["request"]["method"] == "interact"
+    assert seen["request"]["side"] == "A"
+    assert base64.b64decode(seen["request"]["input"]).decode() == "hi\n"
+
+
+def test_host_api_spawn_kill_status_primitives(monkeypatch):
+    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
+
+    def handler(request):
+        method = request["method"]
+        if method == "spawn":
+            return {"ok": True, "pid": 42}
+        if method == "kill":
+            return {"ok": True, "was_running": True}
+        if method == "proc_status":
+            return {"ok": True, "alive": False, "exit_code": 0}
+        return {"ok": False, "error": "bad_request"}
+
+    thread, stop = _start_scripted_arbiter(arbiter_reads, arbiter_writes, handler)
+    assert elo_host_api.spawn("A", ["./main"])["pid"] == 42
+    assert elo_host_api.kill("A")["was_running"] is True
+    assert elo_host_api.proc_status("A")["alive"] is False
+    stop["flag"] = True
 
 
 def test_host_api_times_out_when_arbiter_silent(monkeypatch):
     _install_fake_channel(monkeypatch)
     started = time.monotonic()
-    reply = elo_host_api.call_bot("B", {}, timeout_ms=1)
+    reply = elo_host_api.interact("B", data="x", timeout_ms=1)
     assert reply["ok"] is False and reply["error"] == "worker_unresponsive"
     assert time.monotonic() - started < 2.0
 
 
 def test_host_api_rejects_bad_side(monkeypatch):
     _install_fake_channel(monkeypatch)
-    reply = elo_host_api.call_bot("C", {}, timeout_ms=10)
-    assert reply["ok"] is False and reply["error"] == "bad_request"
+    assert elo_host_api.interact("C", data="x")["error"] == "bad_request"
+    assert elo_host_api.spawn("C", ["true"])["error"] == "bad_request"
+
+
+# ---------------------------------------------------------------------------
+# elo_host_api：call_bot / wait_ready / bot_status 兼容封装
+# ---------------------------------------------------------------------------
+
+def _compat_handler_factory(ready_line='{"ready": true}', turn_line='{"move": "D"}',
+                            bot_present=True):
+    state = {"interacts": 0}
+
+    def handler(request):
+        method = request["method"]
+        if method == "fetch_files":
+            files = {"bot.py": _b64("print(1)")} if bot_present else {}
+            return {"ok": True, "files": files}
+        if method == "spawn":
+            return {"ok": True, "pid": 7}
+        if method == "kill":
+            return {"ok": True, "was_running": True}
+        if method == "interact":
+            state["interacts"] += 1
+            line = ready_line if state["interacts"] == 1 else turn_line
+            return {"ok": True, "output": _b64(line), "elapsed_ms": 3.5}
+        return {"ok": False, "error": "bad_request"}
+
+    return handler
+
+
+def test_host_api_call_bot_compat_round_trip(monkeypatch):
+    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
+    thread, stop = _start_scripted_arbiter(
+        arbiter_reads, arbiter_writes, _compat_handler_factory())
+    reply = elo_host_api.call_bot("A", {"round": 7}, timeout_ms=1000)
+    stop["flag"] = True
+    assert reply["ok"] is True and reply["response"] == {"move": "D"}
+    assert reply["elapsed_ms"] == 3.5
+    # 再次调用不会重复握手（状态已 ready）。
+    status = elo_host_api.bot_status("A")
+    assert status["ready"] is True and status["handshake_ms"] >= 0
+
+
+def test_host_api_wait_ready_missing_bot(monkeypatch):
+    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
+    thread, stop = _start_scripted_arbiter(
+        arbiter_reads, arbiter_writes, _compat_handler_factory(bot_present=False))
+    status = elo_host_api.wait_ready("A", timeout_ms=5000)
+    stop["flag"] = True
+    assert status["ok"] is True and status["ready"] is False
+    assert "bot.py" in status["error"]
+    # call_bot 应快速失败并保持错误语义。
+    reply = elo_host_api.call_bot("A", {}, timeout_ms=100)
+    assert reply["ok"] is False and reply["error"] == "bot_not_running"
+    assert "bot.py" in reply["message"]
+
+
+def test_host_api_call_bot_compat_bad_output(monkeypatch):
+    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
+    thread, stop = _start_scripted_arbiter(
+        arbiter_reads, arbiter_writes,
+        _compat_handler_factory(turn_line="not-json"))
+    reply = elo_host_api.call_bot("A", {"round": 0}, timeout_ms=1000)
+    stop["flag"] = True
+    assert reply["ok"] is False and reply["error"] == "bad_output"
+    # 坏输出后 bot 置为死亡，后续调用快速失败。
+    again = elo_host_api.call_bot("A", {}, timeout_ms=100)
+    assert again["ok"] is False and again["error"] == "bot_not_running"
 
 
 # ---------------------------------------------------------------------------
@@ -344,21 +572,18 @@ def _local_spawner():
     return spawner
 
 
-JUDGE_SCRIPT_TEMPLATE = """
-import json
-import elo_host_api
-
-ready_a = elo_host_api.wait_ready("A", timeout_ms=10000)
-ready_b = elo_host_api.wait_ready("B", timeout_ms=10000)
-reply = elo_host_api.call_bot("A", {{"type": "turn", "round": 0}}, timeout_ms=1000)
-{body}
-print(json.dumps({{"winner": {winner}, "details": {{"format": "text",
-      "content": json.dumps({{"ready_a": ready_a, "ready_b": ready_b,
-                              "reply": reply}}, ensure_ascii=False)}}}}))
-"""
+ECHO_JSON_BOT = (
+    "import json, sys\n"
+    "print(json.dumps({'ready': True}), flush=True)\n"
+    "for line in sys.stdin:\n"
+    "    msg = json.loads(line)\n"
+    "    if msg.get('type') == 'end': break\n"
+    "    print(json.dumps({'move': 'U'}), flush=True)\n"
+)
 
 
-def _run_isolated_match(tmp_path, judge_body, winner, timeout_seconds=60):
+def _run_isolated_match(tmp_path, judge_source, timeout_seconds=60,
+                        a_files=None, b_files=None):
     monkey_dir = tmp_path / "wsroot"
     monkey_dir.mkdir()
     old_root = elo_container.AGENT_JUDGE_WORKSPACE_ROOT
@@ -367,11 +592,9 @@ def _run_isolated_match(tmp_path, judge_body, winner, timeout_seconds=60):
         staging = tmp_path / "staging"
         staging.mkdir()
         script = staging / "judge_script.py"
-        script.write_text(
-            JUDGE_SCRIPT_TEMPLATE.format(body=judge_body, winner=winner),
-            encoding="utf-8")
-        archive_a = _write_zip(staging / "a.zip", {"bot.py": ECHO_BOT})
-        archive_b = _write_zip(staging / "b.zip", {"bot.py": ECHO_BOT})
+        script.write_text(judge_source, encoding="utf-8")
+        archive_a = _write_zip(staging / "a.zip", a_files or {"bot.py": ECHO_JSON_BOT})
+        archive_b = _write_zip(staging / "b.zip", b_files or {"bot.py": ECHO_JSON_BOT})
         removed = []
         match = arbiter.IsolatedEloMatch(
             str(script), archive_a, archive_b, timeout_seconds,
@@ -383,9 +606,22 @@ def _run_isolated_match(tmp_path, judge_body, winner, timeout_seconds=60):
         elo_container.AGENT_JUDGE_WORKSPACE_ROOT = old_root
 
 
-def test_arbiter_runs_full_match_and_cleans_up(tmp_path):
-    (winner, details), removed, match = _run_isolated_match(
-        tmp_path, "", 1)
+COMPAT_JUDGE_SCRIPT = """
+import json
+import elo_host_api
+
+ready_a = elo_host_api.wait_ready("A", timeout_ms=10000)
+ready_b = elo_host_api.wait_ready("B", timeout_ms=10000)
+reply = elo_host_api.call_bot("A", {"type": "turn", "round": 0}, timeout_ms=1000)
+print(json.dumps({"winner": 1, "details": {"format": "text",
+      "content": json.dumps({"ready_a": ready_a, "ready_b": ready_b,
+                              "reply": reply}, ensure_ascii=False)}}))
+"""
+
+
+def test_arbiter_runs_full_match_via_compat_wrappers(tmp_path):
+    (winner, details), removed, _ = _run_isolated_match(
+        tmp_path, COMPAT_JUDGE_SCRIPT)
     assert winner == 1
     payload = json.loads(details["content"])
     assert payload["ready_a"]["ready"] is True
@@ -395,39 +631,64 @@ def test_arbiter_runs_full_match_and_cleans_up(tmp_path):
     assert len(removed) == 3  # 两个工作容器 + 裁判容器
 
 
+PRIMITIVE_JUDGE_SCRIPT = """
+import json
+import elo_host_api
+
+# 完全自由的用法：入口文件/语言/协议均由评分脚本决定，不依赖 bot.py 约定。
+# 这里故意用 sh 解释器跑一个 shell 脚本，验证非 Python 入口同样可行。
+spawn_a = elo_host_api.spawn("A", ["sh", "player.sh"])
+first = elo_host_api.interact("A", timeout_ms=5000, until="newline")
+turn = elo_host_api.interact("A", data="go\\n", timeout_ms=5000, until="newline")
+files = elo_host_api.fetch_files("A", ["note.txt"])
+elo_host_api.kill("A")
+print(json.dumps({"winner": 2, "details": {"format": "text",
+      "content": json.dumps({"spawn_a": spawn_a, "first": first,
+                              "turn": turn,
+                              "note": files.get("files", {}).get("note.txt")},
+                             ensure_ascii=False)}}))
+"""
+
+PLAYER_SH = (
+    "#!/bin/sh\n"
+    "echo SHELL-READY\n"
+    "read line\n"
+    "echo got:$line\n"
+)
+
+
+def test_arbiter_runs_free_form_primitives_non_python_entry(tmp_path):
+    (winner, details), removed, _ = _run_isolated_match(
+        tmp_path, PRIMITIVE_JUDGE_SCRIPT,
+        a_files={"player.sh": PLAYER_SH, "note.txt": "hello-note"},
+    )
+    assert winner == 2
+    payload = json.loads(details["content"])
+    assert payload["spawn_a"]["ok"] is True
+    assert payload["first"]["output"].strip() == "SHELL-READY"
+    assert payload["turn"]["output"].strip() == "got:go"
+    assert base64.b64decode(payload["note"]).decode() == "hello-note"
+    assert len(removed) == 3
+
+
 def test_arbiter_startup_fault_reported_to_judge(tmp_path):
-    # B 方作品缺少 bot.py：wait_ready 应报 ready=False
-    monkey_dir = tmp_path / "wsroot"
-    monkey_dir.mkdir()
-    old_root = elo_container.AGENT_JUDGE_WORKSPACE_ROOT
-    elo_container.AGENT_JUDGE_WORKSPACE_ROOT = str(monkey_dir)
-    try:
-        staging = tmp_path / "staging"
-        staging.mkdir()
-        script = staging / "judge_script.py"
-        script.write_text(
-            "import json\nimport elo_host_api\n"
-            "status = elo_host_api.wait_ready('B', timeout_ms=10000)\n"
-            "print(json.dumps({'winner': 1, 'details': {'format': 'text',\n"
-            "      'content': json.dumps(status, ensure_ascii=False)}}))\n",
-            encoding="utf-8")
-        archive_a = _write_zip(staging / "a.zip", {"bot.py": ECHO_BOT})
-        archive_b = _write_zip(staging / "b.zip", {"readme.txt": "no bot"})
-        removed = []
-        match = arbiter.IsolatedEloMatch(
-            str(script), archive_a, archive_b, 60,
-            spawner=_local_spawner(), remover=removed.append,
-        )
-        winner, details = match.run()
-        assert winner == 1
-        status = json.loads(details["content"])
-        assert status["ok"] is True and status["ready"] is False
-        assert "bot.py" in status["error"]
-    finally:
-        elo_container.AGENT_JUDGE_WORKSPACE_ROOT = old_root
+    # B 方作品缺少 bot.py：兼容封装的 wait_ready 应报 ready=False。
+    judge = (
+        "import json\nimport elo_host_api\n"
+        "status = elo_host_api.wait_ready('B', timeout_ms=10000)\n"
+        "print(json.dumps({'winner': 1, 'details': {'format': 'text',\n"
+        "      'content': json.dumps(status, ensure_ascii=False)}}))\n"
+    )
+    (winner, details), removed, _ = _run_isolated_match(
+        tmp_path, judge, b_files={"readme.txt": "no bot"})
+    assert winner == 1
+    status = json.loads(details["content"])
+    assert status["ok"] is True and status["ready"] is False
+    assert "bot.py" in status["error"]
 
 
 def test_arbiter_judge_failure_becomes_runtime_error(tmp_path):
+    judge = "import sys\nsys.stderr.write('boom')\nsys.exit(3)\n"
     monkey_dir = tmp_path / "wsroot"
     monkey_dir.mkdir()
     old_root = elo_container.AGENT_JUDGE_WORKSPACE_ROOT
@@ -436,10 +697,9 @@ def test_arbiter_judge_failure_becomes_runtime_error(tmp_path):
         staging = tmp_path / "staging"
         staging.mkdir()
         script = staging / "judge_script.py"
-        script.write_text("import sys\nsys.stderr.write('boom')\nsys.exit(3)\n",
-                          encoding="utf-8")
-        archive_a = _write_zip(staging / "a.zip", {"bot.py": ECHO_BOT})
-        archive_b = _write_zip(staging / "b.zip", {"bot.py": ECHO_BOT})
+        script.write_text(judge, encoding="utf-8")
+        archive_a = _write_zip(staging / "a.zip", {"bot.py": ECHO_JSON_BOT})
+        archive_b = _write_zip(staging / "b.zip", {"bot.py": ECHO_JSON_BOT})
         removed = []
         match = arbiter.IsolatedEloMatch(
             str(script), archive_a, archive_b, 60,
@@ -463,8 +723,8 @@ def test_arbiter_global_timeout(tmp_path):
         staging.mkdir()
         script = staging / "judge_script.py"
         script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
-        archive_a = _write_zip(staging / "a.zip", {"bot.py": ECHO_BOT})
-        archive_b = _write_zip(staging / "b.zip", {"bot.py": ECHO_BOT})
+        archive_a = _write_zip(staging / "a.zip", {"bot.py": ECHO_JSON_BOT})
+        archive_b = _write_zip(staging / "b.zip", {"bot.py": ECHO_JSON_BOT})
         removed = []
         match = arbiter.IsolatedEloMatch(
             str(script), archive_a, archive_b, 2,

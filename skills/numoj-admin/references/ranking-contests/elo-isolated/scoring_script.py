@@ -4,13 +4,17 @@
 
 运行环境：
     本脚本在裁判容器内运行（保持联网，但看不到任何作品文件）；两份作品的
-    bot.py 各自在独立的断网工作容器中，由可信运行器看管。脚本通过同目录的
-    ``elo_host_api`` 模块，经宿主仲裁者向双方 bot 下发局面、收取决策。
+    被测进程各自在独立的断网工作容器中，由可信运行器看管。脚本通过同目录的
+    ``elo_host_api`` 模块，经宿主仲裁者用通用原语（``spawn``/``interact``）
+    启动并驱动双方 bot。
 
 计时约定：
     每回合 1 秒的思考时限由工作容器内部强制执行（单调时钟只覆盖 bot 本身），
-    宿主↔容器的通信开销不占用该预算；``call_bot`` 返回的 ``elapsed_ms`` 即
+    宿主↔容器的通信开销不占用该预算；``interact`` 返回的 ``elapsed_ms`` 即
     容器内测得的真实思考耗时，直接用于对战详情。
+
+参赛者契约（见 description.md）：作品根目录 ``bot.py``、``{"ready": true}``
+握手、换行 JSON 回合。本脚本用原语显式实现这一约定，不依赖兼容封装。
 
 对局规则、记录结构与详情页回放模板与旧版（单容器）脚本保持一致。
 """
@@ -18,6 +22,7 @@
 import json
 import random
 import secrets
+import time
 
 import elo_host_api
 
@@ -63,28 +68,57 @@ def _fault_text(reply):
 
 
 class RemoteBot:
-    """经仲裁者调用工作容器中 bot 的薄封装。"""
+    """经仲裁者调用工作容器中 bot 的薄封装（通用原语版）。"""
 
     def __init__(self, side):
         self.side = side
         self.handshake_ms = None
+        self._ready = False
 
     def wait_ready(self):
-        status = elo_host_api.wait_ready(self.side, timeout_ms=12000)
-        if status.get("ok") and status.get("ready"):
-            self.handshake_ms = status.get("handshake_ms")
-            return self.handshake_ms
-        if status.get("ok") and status.get("ready") is False:
-            raise BotFault(status.get("error") or "启动握手失败")
-        raise BotFault(status.get("message") or status.get("error") or "工作容器未就绪")
+        check = elo_host_api.fetch_files(self.side, ["bot.py"], timeout_ms=12000)
+        if not check.get("ok"):
+            raise BotFault(check.get("message") or check.get("error") or "工作容器不可用")
+        if "bot.py" not in (check.get("files") or {}):
+            raise BotFault("作品包根目录缺少 bot.py")
+        started = time.monotonic()
+        spawned = elo_host_api.spawn(
+            self.side, ["python3", "-u", "bot.py"], timeout_ms=12000)
+        if not spawned.get("ok"):
+            raise BotFault(spawned.get("message") or "无法启动 bot 进程")
+        reply = elo_host_api.interact(self.side, data=None, timeout_ms=12000,
+                                      until="newline")
+        if not reply.get("ok"):
+            if reply.get("error") == "timeout":
+                raise BotFault("启动握手超时（>12 秒）")
+            raise BotFault(_fault_text(reply))
+        try:
+            payload = json.loads((reply.get("output") or "").strip())
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict) or payload.get("ready") is not True:
+            elo_host_api.kill(self.side)
+            raise BotFault('启动握手必须是 {"ready": true}')
+        self.handshake_ms = round((time.monotonic() - started) * 1000, 3)
+        self._ready = True
+        return self.handshake_ms
 
     def ask(self, state):
-        reply = elo_host_api.call_bot(self.side, state, timeout_ms=TURN_TIMEOUT_MS)
+        if not self._ready:
+            self.wait_ready()
+        line = json.dumps(state, ensure_ascii=False, separators=(",", ":")) + "\n"
+        reply = elo_host_api.interact(
+            self.side, data=line, timeout_ms=TURN_TIMEOUT_MS, until="newline")
         if not reply.get("ok"):
             raise BotFault(_fault_text(reply))
-        response = reply.get("response")
+        try:
+            response = json.loads((reply.get("output") or "").strip())
+        except ValueError:
+            response = None
         if not isinstance(response, dict):
-            raise BotFault("决策输出必须是 JSON 对象")
+            elo_host_api.kill(self.side)
+            self._ready = False
+            raise BotFault("决策输出不是合法 JSON 对象")
         move = response.get("move")
         if not isinstance(move, str) or move not in MOVES:
             raise BotFault("move 必须是 U、D、L、R 之一")
