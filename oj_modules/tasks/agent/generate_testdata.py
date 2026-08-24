@@ -24,6 +24,7 @@ from oj_modules.problems.testdata import (
 )
 from oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
+    extract_harness_failure_detail,
     run_agent_harness,
 )
 from oj_modules.tasks.agent.conversation import extract_agent_conclusion
@@ -145,7 +146,7 @@ def _harness_failure_reason(run_result):
     if run_result.timed_out:
         return "harness 超时"
     if run_result.returncode != 0:
-        detail = (run_result.stderr or run_result.stdout).strip()[-600:]
+        detail = extract_harness_failure_detail(run_result, max_chars=600)
         reason = f"harness 异常退出（{run_result.returncode}）"
         return f"{reason}：{detail}" if detail else reason
     return "harness 未生成预期的测试数据 ZIP"

@@ -468,6 +468,63 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
     assert snapshots[-1]["native_session_id"] == "ses_MixedCase_19-Z"
 
 
+def test_generic_nonzero_exit_shows_provider_error_not_protocol_frames(monkeypatch):
+    task_id = "provider-rate-limited"
+    native_session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    session = {
+        "session_id": "rate-limit-session",
+        "current_task_id": task_id,
+        "title": "错误透传",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "pi",
+        "endpoint_id": 8,
+        "endpoint_revision": 4,
+        "native_session_id": native_session_id,
+        "turn_count": 2,
+        "is_legacy": False,
+    }
+    snapshots = _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(
+        generic,
+        "resolve_launch_endpoint",
+        lambda *_args, **_kwargs: _endpoint(),
+    )
+    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _task_id: "")
+    monkeypatch.setattr(
+        generic,
+        "run_agent_harness",
+        lambda **_kwargs: HarnessRunResult(
+            2,
+            False,
+            '{"type":"numoj_usage","version":1,"id":"","usage":{}}',
+            "模型请求失败：HTTP 429：上游限流，请稍后重试",
+            native_session_id=native_session_id,
+        ),
+    )
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(
+        _task_self(task_id),
+        "rate-limit-session",
+        "admin",
+        "admin",
+        "pi",
+        8,
+        "session-cookie",
+        "继续",
+        "session",
+        native_session_id,
+    )
+
+    assert result["success"] is False
+    assert "HTTP 429：上游限流，请稍后重试" in result["message"]
+    assert "numoj_usage" not in result["message"]
+    assert snapshots[-1]["native_session_id"] == native_session_id
+
+
 def test_generic_resume_preserves_problem_task_scope_and_normalizes_uuid(
         monkeypatch):
     task_id = "solve-second-turn"

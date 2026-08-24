@@ -56,6 +56,9 @@ _TRACE_METADATA_MAX_CHARS = 512
 OPENCODE_SSE_RECONNECT_FAILURE_SECONDS = 15.0
 OPENCODE_DURABLE_RECONCILE_INTERVAL_SECONDS = 0.5
 OPENCODE_PROMPT_PERSISTENCE_SECONDS = 15.0
+_EMPTY_ASSISTANT_CONTENT_ERROR = (
+    "Provider returned error: empty assistant content; retry the request"
+)
 
 
 def _emit_numoj(payload):
@@ -122,11 +125,17 @@ def _emit_trace(
 def _emit_usage(source, usage, record_id=""):
     if not isinstance(usage, dict):
         return
+    record_id = str(record_id or "").strip()
+    if not record_id:
+        # 宿主 journal 要求 usage 有稳定 ID 才能去重。Pi 的失败消息会
+        # 附带全零 usage，却未必有 response id；这类记录既不代表一次
+        # 可计费响应，也不能安全重放，不应写进 adapter stdout。
+        return
     _emit_numoj({
         "type": "numoj_usage",
         "version": 1,
         "source": str(source or ""),
-        "id": str(record_id or ""),
+        "id": record_id,
         "usage": usage,
     })
 
@@ -252,6 +261,135 @@ def _joined_text(value):
     return str(value or "")
 
 
+def _provider_error_summary(value):
+    """从 CLI 错误中提取适合轨迹和任务状态展示的简短摘要。"""
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.match(
+        r"^HTTP\s+(\d{3})\s*:\s*(.*)$",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return text
+    status = match.group(1)
+    payload_text = match.group(2).strip()
+    try:
+        payload = json.loads(payload_text)
+    except (TypeError, ValueError):
+        return text
+    if not isinstance(payload, dict):
+        return text
+    error = payload.get("error")
+    if isinstance(error, dict):
+        detail = error.get("message") or error.get("detail")
+    elif isinstance(error, str):
+        detail = error
+    else:
+        detail = payload.get("message") or payload.get("detail")
+    detail = str(detail or "").strip()
+    return f"HTTP {status}：{detail}" if detail else f"HTTP {status}"
+
+
+def _structured_error_text(value):
+    """从各 CLI 的字符串或嵌套错误对象中提取稳定摘要。"""
+
+    if isinstance(value, str):
+        return _provider_error_summary(value)
+    if not isinstance(value, dict):
+        return str(value or "").strip()
+    for key in ("message", "detail", "error", "result"):
+        candidate = value.get(key)
+        if candidate is value:
+            continue
+        detail = _structured_error_text(candidate)
+        if detail:
+            return detail
+    data = value.get("data")
+    if isinstance(data, dict):
+        detail = _structured_error_text(data)
+        if detail:
+            return detail
+    return str(value.get("name") or value.get("code") or "").strip()
+
+
+def _pi_event_failure_detail(event):
+    """返回 Pi assistant 失败事件中适合用户查看的错误详情。"""
+
+    if not isinstance(event, dict):
+        return ""
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    if str(message.get("role") or "") != "assistant":
+        return ""
+    reason = str(message.get("stopReason") or "").strip().lower()
+    error_message = str(message.get("errorMessage") or "").strip()
+    if reason != "error" and not error_message:
+        event_type = str(event.get("type") or "").strip()
+        if (
+            event_type == "message_end"
+            and reason not in {"aborted", "cancelled", "canceled"}
+            and not _content_blocks(message)
+        ):
+            return _EMPTY_ASSISTANT_CONTENT_ERROR
+        return ""
+    detail = _provider_error_summary(error_message)
+    if detail:
+        return detail
+    raw_reason = str(message.get("rawStopReason") or "").strip()
+    return raw_reason or "模型请求异常终止"
+
+
+def _codex_event_failure_detail(event):
+    if not isinstance(event, dict):
+        return ""
+    typ = str(event.get("type") or event.get("method") or "").strip()
+    if typ != "turn/completed":
+        return ""
+    payload = event.get("params") if isinstance(event.get("params"), dict) else event
+    turn = payload.get("turn") if isinstance(payload.get("turn"), dict) else {}
+    if str(turn.get("status") or "").strip().lower() != "failed":
+        return ""
+    detail = _structured_error_text(
+        turn.get("error") or payload.get("error") or event.get("error")
+    )
+    return detail or "Codex turn 失败"
+
+
+def _claude_event_failure_detail(event):
+    if not isinstance(event, dict) or event.get("type") != "result":
+        return ""
+    if not bool(event.get("is_error")):
+        return ""
+    detail = _structured_error_text(
+        event.get("error") or event.get("result") or event.get("message")
+    )
+    if detail:
+        return detail
+    subtype = str(event.get("subtype") or "").strip()
+    return subtype or "Claude Code 执行失败"
+
+
+def _opencode_event_failure_detail(event):
+    if not isinstance(event, dict):
+        return ""
+    data = event.get("data") if isinstance(event.get("data"), dict) else None
+    if data is None and isinstance(event.get("properties"), dict):
+        data = event["properties"]
+    if data is None:
+        data = event
+    event_type = str(event.get("type") or "")
+    if event_type == "session.error":
+        return _structured_error_text(data.get("error")) or "OpenCode 会话失败"
+    if event_type == "session.next.step.failed":
+        return _structured_error_text(data.get("error")) or "OpenCode 模型调用失败"
+    if event_type == "message.updated":
+        info = data.get("info") if isinstance(data.get("info"), dict) else {}
+        return _structured_error_text(info.get("error"))
+    return ""
+
+
 def _stream_terminal_status(source, event):
     """返回上游稳定终态；非终态返回空字符串。"""
 
@@ -284,7 +422,7 @@ def _pi_event_failure_status(event):
     reason = str(message.get("stopReason") or "").strip().lower()
     if reason in {"aborted", "cancelled", "canceled"}:
         return "interrupted"
-    if reason == "error" or str(message.get("errorMessage") or "").strip():
+    if _pi_event_failure_detail(event):
         return "failed"
     return ""
 
@@ -299,6 +437,23 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
     payload = event.get("params") if isinstance(event.get("params"), dict) else event
 
     if source == "codex":
+        failure_detail = _codex_event_failure_detail(event)
+        if failure_detail:
+            turn = payload.get("turn") if isinstance(payload.get("turn"), dict) else {}
+            fallback_id = "codex:error:" + hashlib.sha256(
+                failure_detail.encode("utf-8", "replace")
+            ).hexdigest()[:20]
+            _emit_trace(
+                "tool_result",
+                failure_detail,
+                title="模型请求失败",
+                meta="codex",
+                is_error=True,
+                event_id=_stable_trace_event_id(
+                    turn.get("id"), event.get("id"), fallback_id,
+                    suffix=":error",
+                ),
+            )
         if typ == "item/completed":
             item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
             item_type = str(item.get("type") or "")
@@ -418,6 +573,27 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
     if source in {"pi", "claude_code"}:
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
         is_assistant_message = str(message.get("role") or "") == "assistant"
+        if source == "claude_code":
+            failure_detail = _claude_event_failure_detail(event)
+            if failure_detail:
+                fallback_id = "claude:error:" + hashlib.sha256(
+                    failure_detail.encode("utf-8", "replace")
+                ).hexdigest()[:20]
+                _emit_trace(
+                    "tool_result",
+                    failure_detail,
+                    title="模型请求失败",
+                    meta="claude_code",
+                    is_error=True,
+                    event_id=_stable_trace_event_id(
+                        event.get("id"),
+                        event.get("uuid"),
+                        event.get("_numoj_usage_record_id"),
+                        event.get("session_id"),
+                        fallback_id,
+                        suffix=":error",
+                    ),
+                )
         if (
             (typ == "message_end" and is_assistant_message)
             or (typ == "assistant" and (is_assistant_message or source == "claude_code"))
@@ -427,6 +603,25 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
                 message.get("id"), message.get("responseId"),
                 event.get("uuid"), event.get("id"),
             )
+            if source == "pi":
+                failure_detail = _pi_event_failure_detail(event)
+                if failure_detail:
+                    fallback_id = "pi:error:" + hashlib.sha256(
+                        failure_detail.encode("utf-8", "replace")
+                    ).hexdigest()[:20]
+                    _emit_trace(
+                        "tool_result",
+                        failure_detail,
+                        title="模型请求失败",
+                        meta="pi",
+                        is_error=True,
+                        event_id=_stable_trace_event_id(
+                            message_id,
+                            message.get("timestamp"),
+                            fallback_id,
+                            suffix=":error",
+                        ),
+                    )
             for block_index, block in enumerate(_content_blocks(message)):
                 block_type = str(block.get("type") or "")
                 block_id = _stable_trace_event_id(
@@ -614,11 +809,10 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
         elif event_type == "session.next.step.failed":
             _emit_trace(
                 "tool_result",
-                json.dumps(data.get("error") or {}, ensure_ascii=False),
+                _opencode_event_failure_detail(event),
                 title="模型调用失败",
                 meta="opencode",
                 is_error=True,
-                fmt="json",
                 event_id=native_event_id,
             )
         elif event_type == "session.next.step.ended":
@@ -698,15 +892,9 @@ def _normalize_stream_event(source, event, *, active_turn_id=""):
                     "reasoning_output_tokens": reasoning,
                 }, str(part.get("id") or event.get("id") or ""))
         elif event_type == "session.error":
-            error = data.get("error")
-            if isinstance(error, dict):
-                error_data = error.get("data") if isinstance(error.get("data"), dict) else {}
-                text = error_data.get("message") or error.get("message") or error.get("name")
-            else:
-                text = error
             _emit_trace(
                 "tool_result",
-                text or "OpenCode 会话失败",
+                _opencode_event_failure_detail(event),
                 title="模型调用失败",
                 meta="opencode",
                 is_error=True,
@@ -1909,6 +2097,12 @@ class _CodexEndpointRelay:
                         "incomplete_upstream_stream",
                     )
                     return
+                if not text_parts and not reasoning_parts and not tool_calls:
+                    emit_failure(
+                        _EMPTY_ASSISTANT_CONTENT_ERROR,
+                        "empty_assistant_content",
+                    )
+                    return
                 if not created:
                     emit({"type": "response.created", "response": {"id": response_id}})
                 if reasoning_parts:
@@ -2114,6 +2308,7 @@ def _run_codex_interactive(prompt, commands, env, resume_session_id, model):
     )
     pending = {}
     start_accepted = False
+    failure_detail = ""
     try:
         _codex_rpc_call(proc, events, "numoj-init", "initialize", {
             "clientInfo": {
@@ -2164,6 +2359,8 @@ def _run_codex_interactive(prompt, commands, env, resume_session_id, model):
         done = False
         terminal_status = ""
         for event in deferred_turn_events:
+            event_failure_detail = _codex_event_failure_detail(event)
+            failure_detail = event_failure_detail or failure_detail
             terminal_status = (
                 _stream_terminal_status("codex", event) or terminal_status
             )
@@ -2236,6 +2433,8 @@ def _run_codex_interactive(prompt, commands, env, resume_session_id, model):
                     str((error or {}).get("message") or ""),
                 )
                 continue
+            event_failure_detail = _codex_event_failure_detail(event)
+            failure_detail = event_failure_detail or failure_detail
             terminal_status = (
                 _stream_terminal_status("codex", event) or terminal_status
             )
@@ -2254,6 +2453,11 @@ def _run_codex_interactive(prompt, commands, env, resume_session_id, model):
             else 130 if terminal_status == "interrupted"
             else 0
         )
+        if returncode == 2:
+            print(
+                f"模型请求失败：{failure_detail or 'Codex turn 失败'}",
+                file=sys.stderr,
+            )
     except Exception as exc:
         if not start_accepted:
             _emit_control("__start__", "rejected", str(exc))
@@ -2689,7 +2893,7 @@ def _run_opencode_interactive(
         def send_prompt(
                 command_id, message, *, deterministic_id=False,
                 require_confirmation=False):
-            nonlocal completion_must_follow_seq, failed
+            nonlocal completion_must_follow_seq, failed, failure_detail
             nonlocal latest_prompt_accepted_at
             nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
             nonlocal previous_prompt_tracking
@@ -2730,10 +2934,11 @@ def _run_opencode_interactive(
                 session_error_seen,
                 latest_prompt_accepted_at,
                 failed,
+                failure_detail,
             )
 
             def commit_tracking():
-                nonlocal completion_must_follow_seq, failed
+                nonlocal completion_must_follow_seq, failed, failure_detail
                 nonlocal latest_prompt_accepted_at
                 nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
                 nonlocal saw_assistant_after_latest_prompt, session_error_seen
@@ -2747,6 +2952,7 @@ def _run_opencode_interactive(
                 session_error_seen = False
                 latest_prompt_accepted_at = time.monotonic()
                 failed = False
+                failure_detail = ""
 
             try:
                 _http_request(
@@ -2775,6 +2981,7 @@ def _run_opencode_interactive(
             raise RuntimeError("OpenCode 事件流连接超时")
         completion_must_follow_seq = received_event_seq["value"]
         failed = False
+        failure_detail = ""
         interrupted = False
         saw_assistant_after_latest_prompt = False
         session_error_seen = False
@@ -2788,7 +2995,8 @@ def _run_opencode_interactive(
 
         def project_v1_event(
                 event, *, from_snapshot=False, snapshot_terminal=False):
-            nonlocal failed, saw_assistant_after_latest_prompt, session_error_seen, settled
+            nonlocal failed, failure_detail
+            nonlocal saw_assistant_after_latest_prompt, session_error_seen, settled
             nonlocal latest_prompt_user_id
             if not isinstance(event, dict):
                 return
@@ -2835,6 +3043,10 @@ def _run_opencode_interactive(
                         and (from_snapshot or belongs_to_latest_prompt)
                     ):
                         failed = True
+                        failure_detail = (
+                            _opencode_event_failure_detail(event)
+                            or failure_detail
+                        )
                 return
             if event_type == "message.part.updated":
                 part = props.get("part") if isinstance(props.get("part"), dict) else {}
@@ -2869,9 +3081,13 @@ def _run_opencode_interactive(
                     return
                 _normalize_stream_event("opencode", event)
                 return
-            if event_type == "session.error":
+            if event_type in {"session.error", "session.next.step.failed"}:
                 session_error_seen = not interrupted
                 if not interrupted:
+                    failure_detail = (
+                        _opencode_event_failure_detail(event)
+                        or failure_detail
+                    )
                     _normalize_stream_event("opencode", event)
                 return
             if event_type == "session.status":
@@ -2892,7 +3108,7 @@ def _run_opencode_interactive(
                     stop_sse.set()
 
         def reconcile_durable_snapshot():
-            nonlocal completion_must_follow_seq, failed
+            nonlocal completion_must_follow_seq, failed, failure_detail
             nonlocal latest_prompt_accepted_at
             nonlocal latest_prompt_baseline_ids, latest_prompt_user_id
             nonlocal previous_prompt_tracking
@@ -2947,6 +3163,7 @@ def _run_opencode_interactive(
                         session_error_seen,
                         latest_prompt_accepted_at,
                         failed,
+                        failure_detail,
                     ) = previous_prompt_tracking
                     previous_prompt_tracking = None
                     for index, message_id, role, _info, _parts in indexed:
@@ -3289,6 +3506,12 @@ def _run_opencode_interactive(
                 continue
             consume_v1_event(event)
         returncode = 130 if interrupted else (2 if failed else 0)
+        if returncode == 2:
+            print(
+                "模型请求失败："
+                + (failure_detail or "OpenCode 未产生可用的 assistant 输出"),
+                file=sys.stderr,
+            )
     except Exception as exc:
         if not locals().get("start_accepted", False):
             _emit_control("__start__", "rejected", str(exc))
@@ -3540,6 +3763,7 @@ def _run_pi_interactive(base_args, env, prompt, commands, resume_session_id):
     }
     session_id = resume_session_id
     failure_status = ""
+    failure_detail = ""
     settled = False
     try:
         # Pi 的普通事件不携带 session ID。RPC get_state 是固定版本公开的
@@ -3627,6 +3851,8 @@ def _run_pi_interactive(base_args, env, prompt, commands, resume_session_id):
                     continue
             event_failure_status = _pi_event_failure_status(event)
             failure_status = event_failure_status or failure_status
+            event_failure_detail = _pi_event_failure_detail(event)
+            failure_detail = event_failure_detail or failure_detail
             terminal = _normalize_stream_event("pi", event)
             if terminal:
                 settled = True
@@ -3641,6 +3867,8 @@ def _run_pi_interactive(base_args, env, prompt, commands, resume_session_id):
             else 130 if failure_status == "interrupted"
             else 0
         )
+        if returncode == 2 and failure_detail:
+            print(f"模型请求失败：{failure_detail}", file=sys.stderr)
     except Exception as exc:
         if "__start__" in pending:
             _emit_control("__start__", "rejected", str(exc))
@@ -3839,6 +4067,7 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
     terminal_waiting_for_control = False
     terminal_failed_while_waiting = False
     control_drain_deadline = None
+    failure_detail = ""
     try:
         _write_json(proc, _claude_user_frame(prompt, "__start__", task_id))
         done = False
@@ -3918,6 +4147,8 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
                     or f"{session_id or resume_session_id or 'claude'}:result:{result_sequence}"
                 )
                 event["_numoj_emit_result_usage"] = not assistant_usage_since_result
+            event_failure_detail = _claude_event_failure_detail(event)
+            failure_detail = event_failure_detail or failure_detail
             replayed_uuid = _claude_replayed_user_uuid(event)
             if replayed_uuid and replayed_uuid in waiting_user_acks:
                 command_id = waiting_user_acks.pop(replayed_uuid)
@@ -4001,6 +4232,11 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             else 130 if terminal_status == "interrupted"
             else 0
         )
+        if returncode == 2:
+            print(
+                f"模型请求失败：{failure_detail or 'Claude Code 执行失败'}",
+                file=sys.stderr,
+            )
     except Exception as exc:
         if start_uuid in waiting_user_acks:
             waiting_user_acks.pop(start_uuid, None)

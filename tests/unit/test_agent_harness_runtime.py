@@ -47,6 +47,41 @@ def _runtime_env(endpoint, harness, task_kind, **kwargs):
     )
 
 
+def test_extract_harness_failure_detail_filters_internal_protocol_stdout():
+    result = runtime.HarnessRunResult(
+        returncode=2,
+        timed_out=False,
+        stderr="",
+        stdout="\n".join((
+            '{"type":"numoj_control","version":1,"id":"__start__",'
+            '"status":"accepted"}',
+            '{"type":"numoj_usage","version":1,"source":"pi",'
+            '"id":"","usage":{}}',
+            "adapter failed cleanly",
+        )),
+    )
+
+    assert runtime.extract_harness_failure_detail(result) == (
+        "adapter failed cleanly"
+    )
+
+
+def test_extract_harness_failure_detail_prefers_sanitized_stderr_and_bounds_it():
+    result = runtime.HarnessRunResult(
+        returncode=2,
+        timed_out=False,
+        stdout="adapter stdout",
+        stderr=(
+            "模型请求失败：HTTP 429：上游限流\n"
+            "Pi child process closed"
+        ),
+    )
+
+    assert runtime.extract_harness_failure_detail(result, max_chars=8) == (
+        "429：上游限流"
+    )
+
+
 def test_docker_args_make_workspace_the_only_writable_filesystem(tmp_path):
     env = _runtime_env(_endpoint(), "codex", "solve")
     args = runtime._docker_args(
