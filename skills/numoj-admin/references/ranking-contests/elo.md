@@ -19,7 +19,7 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competiti
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking upload-script <competition_id> elo_scoring.py
 ```
 
-ELO 提供两种并列的对局运行时，用 `elo_runtime_mode` 按比赛内容选用：
+ELO 提供两种 runtime 模式来运行评分脚本，用 `elo_runtime_mode` 按比赛内容选用：
 
 - `legacy`（默认）：**单容器运行时**。评分脚本与双方作品在同一个可联网的
   Agent Judge 容器中运行，脚本可以直接读取或执行目录中的程序。适合作品本身
@@ -54,43 +54,61 @@ Agent Judge 的资源限制并可访问外网。
 
 每场对战由宿主仲裁者编排三个平级容器（不嵌套）：
 
-- 两个**工作容器**：各挂载一方作品，**断网**（`--network none`），由可信运行器
-  看管被测代码（启动 `bot.py`、按回合收发协议行、在工作容器内强制执行单回合时限、
-  超时强杀）。被测代码看不到对手作品与评分脚本，也没有网络，无法内嵌在线 agent。
+- 两个**工作容器**：各挂载一方作品，**断网**（`--network none`），运行可信的
+  通用运行器。被测代码的**入口文件、语言、解释器与交互协议全部由评分脚本决定**
+  （经 `spawn`/`interact` 原语），运行器只负责看管进程、在工作容器内强制执行时限、
+  超时强杀。被测代码看不到对手作品与评分脚本，也没有网络，无法内嵌在线 agent。
 - 一个**裁判容器**：只挂载评分脚本，保持联网（沿用 Agent Judge 网络），供脚本
   调用 LLM 等外部服务；脚本看不到任何作品文件，只能通过主机 API 间接调用双方。
 
 ### 评分脚本协议（隔离模式）
 
 隔离模式下评分脚本**没有路径参数**（`sys.argv` 不含作品目录），改经同目录自动注入的
-`elo_host_api` 模块调用：
+`elo_host_api` 模块，用一组通用原语驱动每方的受监管进程：
 
 ```python
 import elo_host_api
 
-status = elo_host_api.wait_ready("A", timeout_ms=12000)  # 阻塞等待 A 方启动握手
-reply = elo_host_api.call_bot("A", {"type": "turn", ...}, timeout_ms=1000)
-# 成功：{"ok": True, "response": {...}, "elapsed_ms": x}
-# 失败：{"ok": False, "error": "timeout|bot_exited|bad_output|oversize|
-#        bot_not_running|worker_unavailable|worker_unresponsive", ...}
+# 启动被测进程：入口文件、解释器、参数、环境、工作目录全部自定
+elo_host_api.spawn("A", ["python3", "-u", "solver.py"], env={"SEED": "1"})
+elo_host_api.spawn("B", ["./main", "--mode", "fast"])       # 编译型二进制同样可以
 
-result = elo_host_api.run_worker(          # 静态作品：在隔离容器内执行命令并取回产物
-    "A", ["xelatex", "-interaction=nonstopmode", "main.tex"],
-    timeout_ms=60000, export_files=["main.pdf"])
+# 交互：写入数据（可选）并限时读取输出；计时在工作容器内，只覆盖被测进程
+r = elo_host_api.interact("A", data='{"turn":1}\n', timeout_ms=1000, until="newline")
+# 成功：{"ok": True, "output": "<str>", "elapsed_ms": x}
+# 失败：{"ok": False, "error": "timeout|oversize|bot_exited|bot_not_running|...", ...}
+# until 支持 "newline"（读一行）/ "eof"（读到进程退出）/ {"bytes": K}（读满 K 字节）
+
+elo_host_api.proc_status("A")     # {"ok": True, "alive": bool, "exit_code": ...}
+elo_host_api.kill("A")            # 终止被测进程
+
+# 一次性命令（编译、静态分析等）与产物导出
+result = elo_host_api.run_worker("A", ["xelatex", "-interaction=nonstopmode", "main.tex"],
+                                 timeout_ms=60000, export_files=["main.pdf"])
 # {"ok": True, "exit_code": 0, "stdout": "...", "stderr": "...",
 #  "files": {"main.pdf": "<base64>"}, "timed_out": False}
+
+# 不执行命令，直接读取作品文件（单文件 8MiB、合计 16MiB）
+elo_host_api.fetch_files("A", ["report.txt"])
 ```
 
-- `call_bot(side, payload, timeout_ms)`：向某方下发一行 JSON 局面并限时等待一行
-  JSON 决策。**单回合计时在工作容器内部执行**（单调时钟只覆盖被测代码本身），
-  宿主↔容器的通信开销不占用比赛时限；`elapsed_ms` 为容器内测得的真实思考耗时。
-  实测单回合纯通信开销约 0.3ms（p99 < 1ms），对"每回合 1 秒"级别的时限无影响。
-- `wait_ready(side, timeout_ms)` / `bot_status(side)`：等待/查询启动握手
-  （被测进程需在启动后 10 秒内输出 `{"ready": true}`）。
-- `run_worker(side, argv, timeout_ms, workdir=, export_files=)`：在断网工作容器内
-  执行受信命令（编译、静态分析等）并按白名单导出产物（单文件 8MiB、合计 16MiB）。
+- `spawn(side, argv, env=None, workdir=None)`：在某方断网工作容器内启动被测进程；
+  已有进程会先被终止。**入口与语言不受限**——只要工作容器镜像里有对应解释器/编译器。
+- `interact(side, data=None, timeout_ms=1000, until="newline")`：写入数据并限时读取
+  输出。**计时在工作容器内部执行**（单调时钟只覆盖被测进程本身），宿主↔容器的通信
+  开销不占用比赛时限；`elapsed_ms` 为容器内测得的真实耗时。超时/超限会终止被测进程。
+  实测单次交互纯通信开销约 0.3ms（p99 < 1ms），对"每回合 1 秒"级别的时限无影响。
+- `kill(side)` / `proc_status(side)`：终止 / 查询被测进程。
+- `run_worker(side, argv, timeout_ms, workdir=, export_files=)`：执行受信一次性命令
+  并按白名单导出产物（单文件 8MiB、合计 16MiB）。
+- `fetch_files(side, paths)`：不执行命令，按白名单读取作品文件（base64 返回）。
 - 脚本仍需在 stdout 最后一行输出 `{"winner": 0|1|2, "details": ...}`，输出协议
   与单容器运行时相同。
+
+**兼容封装**：沿用"作品根目录 `bot.py` + `{"ready": true}` 握手 + 换行 JSON 回合"
+这一约定的既有评分脚本，可继续用 `call_bot(side, payload, timeout_ms)`、
+`wait_ready(side, timeout_ms)`、`bot_status(side)`——它们在内部就是用上述原语实现，
+行为与旧版一致（含 `elapsed_ms`、超时强杀与错误码）。新比赛建议直接使用原语。
 
 回合制比赛的完整官方示例见
 [elo-isolated 示例]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo-isolated/)
@@ -102,7 +120,7 @@ result = elo_host_api.run_worker(          # 静态作品：在隔离容器内�
   时限（含容器启动与全部回合）。回合制比赛按最坏情况估算：
   `回合上限 × 2 × 单回合时限 + 启动/清理余量`。例如 20×20 棋盘、每方每回合 1 秒，
   建议配置 900 秒左右；超时会按"评测失败"记录（winner=-1，不调分）。
-- 工作容器启动握手宽限 30 秒、回合看门狗宽限 2 秒，可用环境变量
+- 运行器启动宽限 30 秒、交互看门狗宽限 2 秒、exec 看门狗宽限 5 秒，可用环境变量
   `ELO_ISOLATED_WORKER_STARTUP_GRACE_SECONDS`、`ELO_ISOLATED_CALL_GRACE_MS`、
   `ELO_ISOLATED_EXEC_GRACE_MS` 调整（见 `docs/runtime-configuration.md`）。
 

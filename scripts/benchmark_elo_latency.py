@@ -5,17 +5,21 @@
 用途：验证把评分脚本与被测代码拆进三个平级容器后，宿主↔容器的通信开销
 会不会挤占比赛规定的回合时限（例如线上回合赛的每回合 1 秒）。
 
-关键设计回顾：单回合计时在**工作容器内部**执行（只覆盖 bot 本身的读写），
-宿主↔容器链路只影响整场对局的总时长，不进 1 秒预算。本脚本同时量化两者：
+关键设计回顾：交互计时在**工作容器内部**执行（只覆盖被测进程本身的读写），
+宿主↔容器链路只影响整场对局的总时长，不进回合预算。本脚本同时量化两者：
 
-  - ``ping``：宿主↔工作容器运行器的裸往返（不含 bot）。
-  - ``turn``：一次完整回合（仲裁侧看到的 ask 往返 + 运行器内测得的
-    ``elapsed_ms``），echo bot 立即回复，差值即纯通信/路由开销。
+  - ``ping``：宿主↔工作容器运行器的裸往返（不含被测进程）。
+  - ``turn``：一次完整回合（spawn 起 echo bot 后，``interact`` 的宿主侧总往返
+    + 运行器内测得的 ``elapsed_ms``），echo bot 立即回复，差值即纯通信/路由开销。
   - ``timing``：计时语义校验——0.95 秒的 bot 必须成功、1.05 秒的 bot 必须
     被判超时，且运行器报告的 ``elapsed_ms`` 与实际一致。
   - ``full``：经真实仲裁者跑一场由裁判容器驱动的完整对局（裁判→仲裁者→
-    双工作容器全链路）。
-  - ``startup``：工作容器从启动到 bot 握手就绪的耗时。
+    双工作容器全链路，走 ``elo_host_api`` 兼容封装）。
+  - ``startup``：工作容器从启动到被测进程握手就绪的耗时（容器→运行器→
+    ``spawn``→读到 bot 首行）。
+
+运行器就绪帧只表示可信运行器已启动；被测进程由 ``spawn`` 显式启动，入口与
+协议不再固定为 ``bot.py``。
 
 只依赖本机 Docker；镜像默认 ``python:3.12-slim``，可用 ``--image`` 换成
 ``numericaloj-agent-judge:latest`` 在生产同构环境复测。请勿在生产主机运行。
@@ -24,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import statistics
@@ -91,6 +96,27 @@ class DirectWorker:
         frame = self._read_frame(timeout)
         self.ready_frame = frame
         return frame
+
+    def spawn_bot(self, bot_file="bot.py", timeout=30.0):
+        reply = self.request({"type": "spawn", "argv": ["python3", "-u", bot_file]},
+                             timeout=timeout)
+        if not reply.get("ok"):
+            raise RuntimeError(f"spawn 失败：{reply}")
+        return reply
+
+    def read_line(self, timeout_ms=10000, timeout=30.0):
+        reply = self.request({"type": "interact", "timeout_ms": timeout_ms,
+                              "until": "newline"}, timeout=timeout)
+        if not reply.get("ok"):
+            raise RuntimeError(f"interact 读行失败：{reply}")
+        return base64.b64decode(reply["output"]).decode("utf-8", "replace"), reply
+
+    def turn(self, payload, timeout_ms=1000, timeout=30.0):
+        line = json.dumps(payload, separators=(",", ":")) + "\n"
+        return self.request({"type": "interact", "timeout_ms": timeout_ms,
+                             "until": "newline",
+                             "input": base64.b64encode(line.encode()).decode()},
+                            timeout=timeout)
 
     def startup_elapsed_ms(self):
         return round((time.monotonic() - self.started) * 1000, 1)
@@ -170,7 +196,9 @@ def bench_startup(args):
         with tempfile.TemporaryDirectory(prefix="elo-bench-", dir=BENCH_BASE) as workspace:
             worker = DirectWorker(args.image, ECHO_BOT, workspace)
             try:
-                worker.wait_ready(timeout=90)
+                worker.wait_ready(timeout=90)      # 运行器就绪
+                worker.spawn_bot()                 # 启动被测进程
+                worker.read_line(timeout_ms=10000, timeout=30.0)  # 读到 bot 首行
                 samples.append(worker.startup_elapsed_ms())
             finally:
                 worker.close()
@@ -199,20 +227,21 @@ def bench_turn(args):
         worker = DirectWorker(args.image, ECHO_BOT, workspace)
         try:
             worker.wait_ready(timeout=90)
+            worker.spawn_bot()
+            worker.read_line(timeout_ms=10000, timeout=30.0)  # bot ready 行
             host_rtts, inner = [], []
             for round_index in range(args.samples):
-                response = worker.request({
-                    "type": "ask", "timeout_ms": 1000,
-                    "payload": {"type": "turn", "round": round_index,
-                                "legal_moves": [{"move": "U", "to": [0, 0]}]},
-                })
+                response = worker.turn(
+                    {"type": "turn", "round": round_index,
+                     "legal_moves": [{"move": "U", "to": [0, 0]}]},
+                    timeout_ms=1000)
                 if not response.get("ok"):
-                    raise RuntimeError(f"ask 失败：{response}")
+                    raise RuntimeError(f"interact 失败：{response}")
                 host_rtts.append(response["_host_ms"])
                 inner.append(float(response.get("elapsed_ms") or 0.0))
             overhead = [host - bot for host, bot in zip(host_rtts, inner)]
             print(f"回合（echo bot，仲裁侧总往返）：{_summary_ms(host_rtts)}")
-            print(f"回合（运行器内测得，≈bot 思考）：{_summary_ms(inner)}")
+            print(f"回合（运行器内测得，≈思考耗时）：{_summary_ms(inner)}")
             print(f"纯通信开销 = 总往返 - 内部计时：{_summary_ms(overhead)}")
         finally:
             worker.close()
@@ -229,8 +258,9 @@ def bench_timing(args):
             worker = DirectWorker(args.image, bot_source, workspace)
             try:
                 worker.wait_ready(timeout=90)
-                response = worker.request({"type": "ask", "timeout_ms": 1000,
-                                           "payload": {"round": 0}}, timeout=10)
+                worker.spawn_bot()
+                worker.read_line(timeout_ms=10000, timeout=30.0)  # bot ready 行
+                response = worker.turn({"round": 0}, timeout_ms=1000, timeout=10)
                 ok = bool(response.get("ok"))
                 elapsed = response.get("elapsed_ms")
                 error = response.get("error")
@@ -240,7 +270,7 @@ def bench_timing(args):
                     raise SystemExit(f"计时语义校验失败：{label}")
             finally:
                 worker.close()
-    print("计时语义：1 秒预算由运行器内部执行，通信开销未计入。")
+    print("计时语义：回合预算由运行器内部执行，通信开销未计入。")
 
 
 JUDGE_BENCH_SCRIPT_TEMPLATE = """
@@ -248,8 +278,8 @@ import json, time
 import elo_host_api
 
 TURNS = {turns}
-status_a = elo_host_api.bot_status("A")
-status_b = elo_host_api.bot_status("B")
+status_a = elo_host_api.wait_ready("A", timeout_ms=15000)
+status_b = elo_host_api.wait_ready("B", timeout_ms=15000)
 host_rtts = []
 inner = []
 fault = None

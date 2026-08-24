@@ -5,13 +5,15 @@
 把一场 ELO 对局拆成三个平级容器（不涉及嵌套容器）：
 
   - 两个工作容器：各挂载一方作品，``--network none``（可配置），运行可信的
-    ``bot_runner.py`` 看管被测代码；被测代码看不到对手作品、评分脚本，也没有网络。
+    ``bot_runner.py``（通用受监管进程运行器）；被测代码看不到对手作品、评分
+    脚本，也没有网络。运行哪个文件、用什么语言与协议，全部由评分脚本通过
+    ``spawn``/``interact`` 等原语决定。
   - 一个裁判容器：挂载评分脚本，保持联网（沿用 Agent Judge 网络），运行管理员
     评分脚本并经 ``elo_host_api`` 通过本仲裁者调用工作容器。
 
 仲裁者是纯消息路由 + 看门狗：
 
-  - 单回合计时在**工作容器内**执行（只覆盖 bot 本身），仲裁者另加外层宽限
+  - 交互计时在**工作容器内**执行（只覆盖被测进程本身），仲裁者另加外层宽限
     防止运行器卡死——因此宿主↔容器通信延迟不会挤占比赛规定的回合时限；
   - 裁决仍按既有协议从裁判容器 stdout 的最后一条合法 JSON 行解析；
   - 全部输出有界 drain，容器清理失败会显式报错。
@@ -94,10 +96,9 @@ class _WorkerState:
         self.proc = proc
         self.buffer = b""
         self.write_queue = bytearray()
+        # 就绪 = 可信运行器已启动并可接受请求；启动哪个被测进程、如何交互
+        # 全部由评分脚本经原语决定，仲裁者不再跟踪任何 bot 握手状态。
         self.ready_determined = False
-        self.ready_ok = False
-        self.handshake_ms = None
-        self.startup_error = None
         self.dead = False
         self.death_reason = None
         self.stderr_tail = _TailBuffer(STREAM_TAIL_BYTES)
@@ -374,15 +375,46 @@ class IsolatedEloMatch:
         if not isinstance(frame, dict):
             return
         if frame.get("type") == "ready" and not worker.ready_determined:
+            # 运行器自身就绪（尚未启动任何被测进程）：可以开始转发请求了。
             worker.ready_determined = True
-            worker.ready_ok = bool(frame.get("ok"))
-            worker.handshake_ms = frame.get("handshake_ms")
-            if not worker.ready_ok:
-                worker.startup_error = str(frame.get("error") or "bot 启动失败")
             self._drain_held(worker)
             return
         if frame.get("type") == "reply":
             self._resolve_pending(worker, frame)
+
+    # judge RPC 方法 → （运行器帧构造、缺省时限）。宽限统一叠加在看门狗上。
+    _METHOD_DEFAULT_TIMEOUT_MS = {
+        "spawn": 10000,
+        "interact": 1000,
+        "kill": 5000,
+        "proc_status": 5000,
+        "fetch_files": 10000,
+        "ping": 1000,
+        "run_worker": 30000,
+    }
+
+    def _build_worker_frame(self, method, request):
+        if method == "spawn":
+            return {"type": "spawn", "argv": request.get("argv"),
+                    "env": request.get("env"), "workdir": request.get("workdir")}
+        if method == "interact":
+            return {"type": "interact", "input": request.get("input"),
+                    "timeout_ms": max(1, int(request.get("timeout_ms") or 1000)),
+                    "until": request.get("until")}
+        if method == "kill":
+            return {"type": "kill"}
+        if method == "proc_status":
+            return {"type": "status"}
+        if method == "run_worker":
+            return {"type": "exec", "timeout_ms": max(1, int(request.get("timeout_ms") or 30000)),
+                    "argv": request.get("argv"), "workdir": request.get("workdir"),
+                    "export_files": request.get("export_files"),
+                    "stream_limit_bytes": request.get("stream_limit_bytes")}
+        if method == "fetch_files":
+            return {"type": "fetch", "paths": request.get("paths")}
+        if method == "ping":
+            return {"type": "ping"}
+        return None
 
     def _handle_judge_request(self, payload_text):
         try:
@@ -394,58 +426,36 @@ class IsolatedEloMatch:
         method = request.get("method")
         request_id = request.get("id")
         side = str(request.get("side") or "").strip().upper()
-        if method == "bot_status":
-            self._answer_judge(request_id, self._bot_status(side))
+        if method not in self._METHOD_DEFAULT_TIMEOUT_MS:
+            self._answer_judge(request_id, {
+                "ok": False, "error": "bad_request", "message": f"未知方法：{method!r}",
+            })
             return
-        if method in ("call_bot", "run_worker", "ping", "wait_ready"):
-            worker = self.workers.get(side)
-            if worker is None:
-                self._answer_judge(request_id, {
-                    "ok": False, "error": "bad_request", "message": "side 必须是 A 或 B",
-                })
-                return
-            grace = EXEC_GRACE_MS if method == "run_worker" else CALL_GRACE_MS
-            timeout_ms = max(1, int(request.get("timeout_ms") or 1000))
-            if method == "call_bot":
-                frame = {"type": "ask", "timeout_ms": timeout_ms,
-                         "payload": request.get("payload")}
-            elif method == "run_worker":
-                frame = {"type": "exec", "timeout_ms": timeout_ms,
-                         "argv": request.get("argv"),
-                         "workdir": request.get("workdir"),
-                         "export_files": request.get("export_files"),
-                         "stream_limit_bytes": request.get("stream_limit_bytes")}
-            elif method == "ping":
-                frame = {"type": "ping"}
-            else:
-                frame = None
-            entry = {
-                "judge_id": request_id,
-                "worker": worker,
-                "kind": "wait_ready" if method == "wait_ready" else "forward",
-                "frame": frame,
-                "timeout_ms": timeout_ms,
-                "grace_ms": grace,
-                "deadline": None,
-            }
-            if worker.ready_determined:
-                self._dispatch(entry)
-            else:
-                worker.held.append(entry)
+        worker = self.workers.get(side)
+        if worker is None:
+            self._answer_judge(request_id, {
+                "ok": False, "error": "bad_request", "message": "side 必须是 A 或 B",
+            })
             return
-        self._answer_judge(request_id, {
-            "ok": False, "error": "bad_request", "message": f"未知方法：{method!r}",
-        })
+        frame = self._build_worker_frame(method, request)
+        entry = {
+            "judge_id": request_id,
+            "worker": worker,
+            "frame": frame,
+            "timeout_ms": max(1, int(
+                request.get("timeout_ms") or self._METHOD_DEFAULT_TIMEOUT_MS[method])),
+            "grace_ms": EXEC_GRACE_MS if method == "run_worker" else CALL_GRACE_MS,
+            "deadline": None,
+        }
+        if worker.ready_determined:
+            self._dispatch(entry)
+        else:
+            worker.held.append(entry)
 
     def _dispatch(self, entry):
-        """就绪判定完成后处理一个请求：转发给运行器或直接应答。
-
-        外层看门狗截止时间从**转发时刻**起算，工作容器的握手/启动耗时不会
-        挤占评分脚本请求的时限。"""
+        """运行器就绪后转发请求；外层看门狗截止时间从**转发时刻**起算，
+        工作容器的启动耗时不会挤占评分脚本请求的时限。"""
         worker = entry["worker"]
-        if entry["kind"] == "wait_ready":
-            self._answer_judge(entry["judge_id"], self._ready_status(worker))
-            return
         if worker.dead:
             self._answer_judge(entry["judge_id"], {
                 "ok": False, "error": "worker_unavailable",
@@ -465,22 +475,6 @@ class IsolatedEloMatch:
         held, worker.held = worker.held, []
         for entry in held:
             self._dispatch(entry)
-
-    def _ready_status(self, worker):
-        if worker.dead:
-            return {"ok": False, "error": "worker_unavailable",
-                    "message": worker.death_reason or "工作容器不可用"}
-        if not worker.ready_determined:
-            return {"ok": False, "error": "starting", "message": "工作容器仍在启动"}
-        if worker.ready_ok:
-            return {"ok": True, "ready": True, "handshake_ms": worker.handshake_ms}
-        return {"ok": True, "ready": False, "error": worker.startup_error or "bot 启动失败"}
-
-    def _bot_status(self, side):
-        worker = self.workers.get(side)
-        if worker is None:
-            return {"ok": False, "error": "bad_request", "message": "side 必须是 A 或 B"}
-        return self._ready_status(worker)
 
     def _resolve_pending(self, worker, frame):
         seq = frame.get("id")
@@ -514,10 +508,8 @@ class IsolatedEloMatch:
                 self._fail_worker(worker, reason)
                 continue
             if not worker.ready_determined and now > startup_deadline:
+                # 运行器未在宽限内就绪：放行暂存请求，让其快速失败。
                 worker.ready_determined = True
-                worker.ready_ok = False
-                worker.startup_error = (
-                    f"工作容器启动超时（>{WORKER_STARTUP_GRACE_SECONDS:.0f} 秒未就绪）")
                 self._drain_held(worker)
 
     def _fail_worker(self, worker, reason):
@@ -525,7 +517,6 @@ class IsolatedEloMatch:
             return
         worker.dead = True
         worker.death_reason = reason
-        worker.startup_error = worker.startup_error or reason
         worker.ready_determined = True
         for pipe in (worker.proc.stdout, worker.proc.stderr):
             self._unregister(pipe)
