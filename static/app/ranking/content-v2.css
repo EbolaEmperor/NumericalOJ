@@ -284,11 +284,12 @@
 
 .ranking-v2-detail .matches-meta {
   display: inline-flex;
+  min-height: 30px;
   align-items: center;
   gap: 6px;
   overflow: hidden;
   color: var(--rkv2-ink-4);
-  font: 9px/1.2 var(--rkv2-mono);
+  font: 9px/1 var(--rkv2-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -324,6 +325,7 @@
   background: #fff;
   color: var(--rkv2-ink-3);
   font-size: 9px;
+  line-height: 1;
 }
 
 .ranking-v2-detail .matches-rebuild-btn:hover {

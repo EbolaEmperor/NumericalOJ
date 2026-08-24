@@ -465,6 +465,7 @@
       if (!selected.size || analysisController) return;
       var controller = new AbortController();
       analysisController = controller;
+      if (modal) modal.classList.add('is-expanded');
       analyzeButton.disabled = true;
       analyzeButton.setAttribute('aria-busy', 'true');
       setStatus('正在从数据库整理所选提交的完整对战轨迹…', false);
@@ -544,6 +545,14 @@
         setSearchOpen(false);
         tooltip.hidden = true;
         if (searchController) searchController.abort();
+        modal.classList.remove('is-expanded');
+        result.hidden = true;
+        renderedSeries = [];
+        chart.replaceChildren();
+        legend.replaceChildren();
+        setStatus('', false);
+      });
+      modal.addEventListener('hide.bs.modal', function () {
         if (analysisController) analysisController.abort();
       });
     }
