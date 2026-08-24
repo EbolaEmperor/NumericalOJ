@@ -47,10 +47,10 @@
   }
 
   function seriesColor(index, count) {
-    var start = 27;
-    var end = count <= 1 ? 42 : 64;
-    var lightness = count <= 1 ? 38 : start + ((end - start) * index / (count - 1));
-    return 'hsl(207 42% ' + lightness.toFixed(1) + '%)';
+    var start = 18;
+    var end = count <= 1 ? 42 : 72;
+    var lightness = count <= 1 ? 36 : start + ((end - start) * index / (count - 1));
+    return 'hsl(207 55% ' + lightness.toFixed(1) + '%)';
   }
 
   function initViewer(viewer) {
@@ -404,7 +404,10 @@
       });
       seriesList.forEach(function (series, seriesIndex) {
         var points = Array.isArray(series.points) ? series.points : [];
-        var pathData = points.map(function (point, pointIndex) {
+        var linePoints = points.filter(function (point, pointIndex) {
+          return pointIndex === 0 || point.participated;
+        });
+        var pathData = linePoints.map(function (point, pointIndex) {
           var pointX = x(point.sequence).toFixed(2);
           var pointY = y(point.rating).toFixed(2);
           return (pointIndex ? 'L' : 'M') + pointX + ' ' + pointY;
@@ -535,12 +538,6 @@
       if (!event.target.closest('.elo-observer-search-panel')) setSearchOpen(false);
     });
     if (modal) {
-      modal.addEventListener('shown.bs.modal', function () {
-        window.setTimeout(function () {
-          searchInput.focus();
-          if (!currentResults.length) search((searchInput.value || '').trim());
-        }, 0);
-      });
       modal.addEventListener('hidden.bs.modal', function () {
         setSearchOpen(false);
         tooltip.hidden = true;

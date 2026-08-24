@@ -309,8 +309,11 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     assert "modal.classList.add('is-expanded')" in trajectory_script
     assert "modal.classList.remove('is-expanded')" in trajectory_script
     assert "analysisController.abort()" in trajectory_script
+    assert "searchInput.focus()" not in trajectory_script
     assert "document.createElementNS(SVG_NS, tag)" in trajectory_script
-    assert "hsl(207 42%" in trajectory_script
+    assert "hsl(207 55%" in trajectory_script
+    assert "var start = 18" in trajectory_script
+    assert "var end = count <= 1 ? 42 : 72" in trajectory_script
     assert "document.activeElement === searchInput" in trajectory_script
     assert "searchInput.addEventListener('blur'" in trajectory_script
     assert "searchResults.addEventListener('pointerdown'" in trajectory_script
@@ -323,6 +326,9 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     assert "showDate ? value.slice(5, 16) : value.slice(11, 16)" in trajectory_script
     assert "tickDay !== lastTickDay" in trajectory_script
     assert "sequence === maxSequence ? 'end' : 'middle'" in trajectory_script
+    assert "var linePoints = points.filter" in trajectory_script
+    assert "return pointIndex === 0 || point.participated" in trajectory_script
+    assert "var pathData = linePoints.map" in trajectory_script
     assert "return (pointIndex ? 'L' : 'M') + pointX + ' ' + pointY" in trajectory_script
     assert "'H' + pointX + ' V'" not in trajectory_script
     assert "if (!point.participated) return;" in trajectory_script
@@ -351,8 +357,12 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     assert "width: min(414px, calc(100vw - 28px))" in trajectory_styles
     assert ".elo-trajectory-modal.is-expanded .modal-dialog" in trajectory_styles
     assert "width: 67vw" in trajectory_styles
+    assert "margin: clamp(72px, 14vh, 132px) auto 28px" in trajectory_styles
+    assert "margin: 28px auto" in trajectory_styles
     assert ".elo-trajectory-modal.is-expanded .modal-dialog {\n    width: calc(100vw - 16px)" in trajectory_styles
     assert "overflow: visible" in trajectory_styles
+    assert "border-radius: 8px 8px 0 0" in trajectory_styles
+    assert "border-radius: 0 0 8px 8px" in trajectory_styles
     assert "grid-template-columns: minmax(0, 1fr)" in trajectory_styles
     assert "flex-wrap: wrap" in trajectory_styles
     assert "overflow-x: auto" not in trajectory_styles
@@ -368,6 +378,13 @@ def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family
     assert "border-top" not in result_rule.group("body")
     assert "margin-top: 6px" in result_rule.group("body")
     assert "padding-top: 0" in result_rule.group("body")
+    footer_rule = re.search(
+        r"\.ranking-v2-detail \.elo-trajectory-footer\s*\{(?P<body>[^{}]+)\}",
+        trajectory_styles,
+    )
+    assert footer_rule is not None
+    assert "border-top: 0" in footer_rule.group("body")
+    assert "background: #fff" in footer_rule.group("body")
     chart_shell = re.search(
         r"\.ranking-v2-detail \.elo-trajectory-chart-shell\s*\{(?P<body>[^{}]+)\}",
         trajectory_styles,

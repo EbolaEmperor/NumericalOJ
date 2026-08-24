@@ -12,11 +12,13 @@
 .ranking-v2-detail .elo-trajectory-modal .modal-dialog {
   width: min(414px, calc(100vw - 28px));
   max-width: none;
-  transition: width 180ms ease-out, transform 300ms ease-out;
+  margin: clamp(72px, 14vh, 132px) auto 28px;
+  transition: width 180ms ease-out, margin 180ms ease-out, transform 300ms ease-out;
 }
 
 .ranking-v2-detail .elo-trajectory-modal.is-expanded .modal-dialog {
   width: 67vw;
+  margin: 28px auto;
 }
 
 .ranking-v2-detail .elo-trajectory-modal .modal-content {
@@ -30,6 +32,7 @@
 .ranking-v2-detail .elo-trajectory-modal .modal-body {
   padding: 24px;
   overflow: visible;
+  border-radius: 8px 8px 0 0;
   background: #fff;
 }
 
@@ -369,8 +372,9 @@
   justify-content: flex-end;
   gap: 16px;
   padding: 13px 24px;
-  border-top: 1px solid var(--elo-line);
-  background: var(--elo-surface-soft);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: #fff;
 }
 
 .ranking-v2-detail .elo-trajectory-footer > div {
