@@ -44,7 +44,7 @@ _ENDPOINT_USAGE_GATE_WAIT_SECONDS = 30
 _ENDPOINT_USAGE_DRAIN_SECONDS = _UPSTREAM_TIMEOUT_SECONDS + 5
 _DEFAULT_CACHED_HIT_RATE_PERCENT = 90
 _REDACTION = b"[REDACTED]"
-_EMPTY_ANTHROPIC_CONTENT_ERROR = (
+_EMPTY_ASSISTANT_CONTENT_ERROR = (
     "Provider returned error: empty assistant content; retry the request"
 )
 _ALLOWED_METHODS = {
@@ -927,12 +927,185 @@ class _StreamingRedactor:
         return bytes(output)
 
 
+class _OpenAIEmptyContentTransformer:
+    """把 Chat Completions 的空成功响应转成标准流式错误。"""
+
+    def __init__(self, *, event_stream):
+        self._event_stream = bool(event_stream)
+        self._pending = b""
+        self._saw_output = False
+        self._saw_error = False
+        self._saw_nonretryable_finish = False
+
+    @staticmethod
+    def _error_document():
+        return {
+            "error": {
+                "message": _EMPTY_ASSISTANT_CONTENT_ERROR,
+                "type": "server_error",
+                "code": "empty_assistant_content",
+            },
+        }
+
+    @staticmethod
+    def _payload_has_output(payload):
+        if not isinstance(payload, dict):
+            return False
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return True
+        if isinstance(content, list) and content:
+            return True
+        for key in (
+            "tool_calls", "function_call", "refusal", "audio",
+            "reasoning", "reasoning_content",
+        ):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+            if isinstance(value, (list, dict)) and value:
+                return True
+        return False
+
+    def _transform_document(self, document):
+        if not isinstance(document, dict):
+            return document
+        if document.get("error"):
+            self._saw_error = True
+            return document
+        choices = document.get("choices")
+        if not isinstance(choices, list):
+            return document
+        finish_reasons = []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            payload = choice.get("delta")
+            if not isinstance(payload, dict):
+                payload = choice.get("message")
+            if self._payload_has_output(payload):
+                self._saw_output = True
+            reason = str(choice.get("finish_reason") or "").strip().lower()
+            if reason:
+                finish_reasons.append(reason)
+                if reason != "stop":
+                    self._saw_nonretryable_finish = True
+        if (
+            finish_reasons
+            and all(reason == "stop" for reason in finish_reasons)
+            and not self._saw_output
+        ):
+            self._saw_error = True
+            return self._error_document()
+        return document
+
+    def _transform_sse_record(self, record):
+        newline = b"\r\n" if b"\r\n" in record else b"\n"
+        lines = record.split(newline)
+        data_indexes = [
+            index
+            for index, line in enumerate(lines)
+            if line == b"data" or line.startswith(b"data:")
+        ]
+        if not data_indexes:
+            return record
+        data_parts = []
+        for index in data_indexes:
+            line = lines[index]
+            value = b"" if line == b"data" else line[5:]
+            if value.startswith(b" "):
+                value = value[1:]
+            data_parts.append(value)
+        raw_data = b"\n".join(data_parts)
+        if raw_data.strip() == b"[DONE]":
+            if (
+                self._saw_output
+                or self._saw_error
+                or self._saw_nonretryable_finish
+            ):
+                return record
+            document = self._error_document()
+            self._saw_error = True
+        else:
+            try:
+                document = json.loads(raw_data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return record
+            transformed = self._transform_document(document)
+            if transformed is document:
+                return record
+            document = transformed
+        first = data_indexes[0]
+        lines[first] = b"data: " + json.dumps(
+            document,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        for index in reversed(data_indexes[1:]):
+            del lines[index]
+        return newline.join(lines)
+
+    def _transform_json(self, payload):
+        try:
+            document = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return payload
+        if not isinstance(document, dict) or document.get("error"):
+            return payload
+        choices = document.get("choices")
+        if not isinstance(choices, list):
+            return payload
+        has_output = any(
+            isinstance(choice, dict)
+            and self._payload_has_output(choice.get("message"))
+            for choice in choices
+        )
+        finish_reasons = [
+            str(choice.get("finish_reason") or "").strip().lower()
+            for choice in choices
+            if isinstance(choice, dict)
+        ]
+        if has_output or any(
+            reason not in {"", "stop"} for reason in finish_reasons
+        ):
+            return payload
+        return json.dumps(
+            self._error_document(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def feed(self, chunk=b"", *, final=False):
+        self._pending += bytes(chunk or b"")
+        if not self._event_stream:
+            if not final:
+                return b""
+            payload, self._pending = self._pending, b""
+            return self._transform_json(payload)
+
+        output = bytearray()
+        while True:
+            separator = re.search(br"\r?\n\r?\n", self._pending)
+            if separator is None:
+                break
+            record = self._pending[:separator.start()]
+            delimiter = self._pending[separator.start():separator.end()]
+            self._pending = self._pending[separator.end():]
+            output.extend(self._transform_sse_record(record))
+            output.extend(delimiter)
+        if final and self._pending:
+            output.extend(self._transform_sse_record(self._pending))
+            self._pending = b""
+        return bytes(output)
+
+
 class _AnthropicEmptyContentTransformer:
     """把协议完整但无 content 的 Anthropic 成功响应转成可重试错误。
 
     Anthropic 协议没有 ``error`` stop_reason；使用合法的 ``refusal`` 并
-    附带瞬时上游错误说明，Pi 会把它规范化为内部 ``stopReason=error``。
-    SSE 只缓存当前 record，非流式 JSON 才缓存完整响应。
+    附带瞬时上游错误说明。支持的 CLI 会把它识别为失败，Pi 还会按
+    瞬时错误执行内建重试。SSE 只缓存当前 record，非流式 JSON 才缓存
+    完整响应。
     """
 
     def __init__(self, *, event_stream):
@@ -946,13 +1119,13 @@ class _AnthropicEmptyContentTransformer:
         if not isinstance(delta, dict) or not delta.get("stop_reason"):
             return False
         if str(delta.get("stop_reason")) in {"refusal", "sensitive"}:
-            # Provider 已经明确返回安全拒绝，Pi 本来就会映射为 error；不能
-            # 把它伪装成瞬时空响应并诱发无意义重试。
+            # Provider 已经明确返回安全拒绝，CLI 本来就会映射为失败；
+            # 不能把它伪装成瞬时空响应并诱发无意义重试。
             return False
         delta["stop_reason"] = "refusal"
         delta["stop_details"] = {
             "type": "refusal",
-            "explanation": _EMPTY_ANTHROPIC_CONTENT_ERROR,
+            "explanation": _EMPTY_ASSISTANT_CONTENT_ERROR,
         }
         return True
 
@@ -1021,7 +1194,7 @@ class _AnthropicEmptyContentTransformer:
         document["stop_reason"] = "refusal"
         document["stop_details"] = {
             "type": "refusal",
-            "explanation": _EMPTY_ANTHROPIC_CONTENT_ERROR,
+            "explanation": _EMPTY_ASSISTANT_CONTENT_ERROR,
         }
         return json.dumps(
             document,
@@ -1586,17 +1759,30 @@ class _AgentSecretRelay:
                     response_payload = bytearray()
                     redactor = _StreamingRedactor(secret_values)
                     response_transformer = None
-                    if endpoint_response_accepted and relay.mode == "anthropic":
+                    if endpoint_response_accepted:
                         response_content_type = _single_header(
                             response.headers,
                             "Content-Type",
                         ).partition(";")[0].strip().lower()
+                        event_stream = (
+                            response_content_type == "text/event-stream"
+                        )
+                    if endpoint_response_accepted and relay.mode == "anthropic":
                         response_transformer = (
                             _AnthropicEmptyContentTransformer(
-                                event_stream=(
-                                    response_content_type
-                                    == "text/event-stream"
-                                ),
+                                event_stream=event_stream,
+                            )
+                        )
+                    elif (
+                        endpoint_response_accepted
+                        and relay.mode == "openai"
+                        and relative_route.rstrip("/").endswith(
+                            "/chat/completions"
+                        )
+                    ):
+                        response_transformer = (
+                            _OpenAIEmptyContentTransformer(
+                                event_stream=event_stream,
                             )
                         )
                     while True:

@@ -765,6 +765,59 @@ def test_anthropic_empty_json_content_becomes_retryable_error():
     assert "Provider returned error" in rendered["stop_details"]["explanation"]
 
 
+def test_openai_empty_sse_content_becomes_standard_error_across_chunks():
+    transformer = relay._OpenAIEmptyContentTransformer(event_stream=True)
+
+    rendered = b"".join([
+        transformer.feed(
+            b'data: {"choices":[{"delta":{"role":"assistant"},'
+            b'"finish_reason":null}]}\n\n'
+            b'data: {"choices":[{"delta":{},"finish_reason":',
+        ),
+        transformer.feed(b'"stop"}],"usage":{"completion_tokens":0}}\n\n'),
+        transformer.feed(b"data: [DONE]\n\n"),
+        transformer.feed(final=True),
+    ])
+
+    assert b'"code":"empty_assistant_content"' in rendered
+    assert b"Provider returned error" in rendered
+    assert b'"finish_reason":"stop"' not in rendered
+
+
+def test_openai_sse_with_text_or_tool_output_keeps_success_records():
+    for delta in (
+        {"content": "完成"},
+        {"tool_calls": [{"id": "call-1"}]},
+    ):
+        transformer = relay._OpenAIEmptyContentTransformer(event_stream=True)
+        payload = (
+            b"data: "
+            + json.dumps({
+                "choices": [{"delta": delta, "finish_reason": None}],
+            }).encode("utf-8")
+            + b"\n\n"
+            + b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            + b"data: [DONE]\n\n"
+        )
+
+        assert transformer.feed(payload, final=True) == payload
+
+
+def test_openai_empty_json_content_becomes_standard_error():
+    transformer = relay._OpenAIEmptyContentTransformer(event_stream=False)
+
+    assert transformer.feed(json.dumps({
+        "choices": [{
+            "message": {"role": "assistant", "content": ""},
+            "finish_reason": "stop",
+        }],
+    }).encode("utf-8")) == b""
+    rendered = json.loads(transformer.feed(final=True))
+
+    assert rendered["error"]["code"] == "empty_assistant_content"
+    assert "Provider returned error" in rendered["error"]["message"]
+
+
 def test_response_headers_are_sanitized_and_sensitive_headers_removed():
     headers = _headers(
         X_Upstream_Debug="key=long-lived-secret",
@@ -1296,6 +1349,86 @@ def test_anthropic_empty_content_is_forwarded_as_error_and_billed_as_zero(
     assert status == 200
     assert b'"stop_reason":"refusal"' in payload
     assert b"Provider returned error" in payload
+    assert charged[0]["usage"] == {
+        "input_uncached_tokens": 0,
+        "input_cached_tokens": 0,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+    }
+    instance.raise_if_usage_failed()
+    assert not instance._stop_event.is_set()
+
+
+def test_openai_empty_content_is_forwarded_as_error_and_billed_as_zero(
+    monkeypatch,
+):
+    charged = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": True,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class EmptyResponse:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def __init__(self):
+            self.chunks = [
+                b'data: {"choices":[{"delta":{"role":"assistant"},'
+                b'"finish_reason":null}]}\n\n',
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                b'"usage":{"prompt_tokens":null,"completion_tokens":null}}\n\n'
+                b'data: [DONE]\n\n',
+            ]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class EmptyConnection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return EmptyResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: EmptyConnection(),
+    )
+    request = (
+        b"POST /v1/chat/completions HTTP/1.0\r\nAuthorization: Bearer "
+        + instance.temporary_secret.encode("ascii")
+        + b"\r\nContent-Type: application/json\r\n"
+        b"Content-Length: 2\r\n\r\n{}"
+    )
+
+    status, _head, payload = _send(instance, request)
+
+    assert status == 200
+    assert b'"code":"empty_assistant_content"' in payload
+    assert b"Provider returned error" in payload
+    assert b'"finish_reason":"stop"' not in payload
     assert charged[0]["usage"] == {
         "input_uncached_tokens": 0,
         "input_cached_tokens": 0,
