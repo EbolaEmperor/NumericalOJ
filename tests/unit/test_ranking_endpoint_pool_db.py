@@ -1010,6 +1010,20 @@ def test_submission_endpoint_sql_never_falls_back_to_quality_gate(monkeypatch):
         assert "ep.pool_kind = 'primary'" in endpoint_sql
 
 
+def test_elo_leaderboard_only_uses_active_pool_submissions(monkeypatch):
+    cursor = _FakeCursor()
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(ranking_db, 'get_db_connection', lambda: conn)
+
+    ranking_db.get_leaderboard(17)
+
+    leaderboard_sql = cursor.calls[0][0]
+    normalized_sql = ' '.join(leaderboard_sql.split())
+    assert 'JOIN ranking_competitions c ON c.id = s.competition_id' in normalized_sql
+    assert "COALESCE(c.scoring_mode, 'absolute') <> 'elo'" in normalized_sql
+    assert "s.status = 'Active' AND s.elo_in_pool = 1" in normalized_sql
+
+
 def test_list_user_submissions_selects_current_attempt_and_returns_labeled_rows(
         monkeypatch):
     row = {

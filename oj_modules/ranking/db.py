@@ -272,6 +272,9 @@ def get_ranking_navigation_state(competition_id, username=None):
                         s.username,
                         s.score,
                         s.source,
+                        t.scoring_mode,
+                        s.status,
+                        s.elo_in_pool,
                         s.created_at,
                         t.quota_window_start,
                         CAST(CRC32(CONCAT_WS(
@@ -293,7 +296,14 @@ def get_ranking_navigation_state(competition_id, username=None):
                 submission_state AS (
                     SELECT
                         COUNT(s.id) AS submission_count,
-                        COUNT(DISTINCT CASE WHEN s.score IS NOT NULL THEN s.username END)
+                        COUNT(DISTINCT CASE
+                            WHEN s.score IS NOT NULL
+                              AND (
+                                  COALESCE(s.scoring_mode, 'absolute') <> 'elo'
+                                  OR (s.status = 'Active' AND s.elo_in_pool = 1)
+                              )
+                            THEN s.username
+                        END)
                             AS leaderboard_count,
                         COALESCE(SUM(s.fingerprint), 0) AS submission_fingerprint_sum,
                         COALESCE(BIT_XOR(s.fingerprint), 0) AS submission_fingerprint_xor,
@@ -2275,6 +2285,7 @@ def get_submission_stats(competition_id):
 def get_leaderboard(competition_id):
     """
     返回按每位用户最高分排序的排行榜。分数相同排名一致（标准竞赛并列排名）。
+    ELO 赛事只统计仍在役且位于 ELO 池中的提交；其他模式统计所有已评分提交。
     每行附带 `best_base_model`：取得最高分那一份提交所填写的基座模型；
     若该用户的多份提交并列最高分，取最近一次。
 
@@ -2290,17 +2301,23 @@ def get_leaderboard(competition_id):
                 """
                 WITH ranked AS (
                     SELECT
-                        username, score, base_model, created_at, id,
-                        agent_endpoint_id, agent_endpoint_harness, agent_endpoint_model,
+                        s.username, s.score, s.base_model, s.created_at, s.id,
+                        s.agent_endpoint_id, s.agent_endpoint_harness, s.agent_endpoint_model,
                         ROW_NUMBER() OVER (
-                            PARTITION BY username
-                            ORDER BY score DESC, created_at DESC, id DESC
+                            PARTITION BY s.username
+                            ORDER BY s.score DESC, s.created_at DESC, s.id DESC
                         ) AS rn,
-                        COUNT(*) OVER (PARTITION BY username) AS user_submission_count,
-                        MIN(created_at) OVER (PARTITION BY username) AS user_first_submitted_at,
-                        MAX(score) OVER (PARTITION BY username) AS user_best_score
-                    FROM ranking_submissions
-                    WHERE competition_id = %s AND score IS NOT NULL
+                        COUNT(*) OVER (PARTITION BY s.username) AS user_submission_count,
+                        MIN(s.created_at) OVER (PARTITION BY s.username) AS user_first_submitted_at,
+                        MAX(s.score) OVER (PARTITION BY s.username) AS user_best_score
+                    FROM ranking_submissions s
+                    JOIN ranking_competitions c ON c.id = s.competition_id
+                    WHERE s.competition_id = %s
+                      AND s.score IS NOT NULL
+                      AND (
+                          COALESCE(c.scoring_mode, 'absolute') <> 'elo'
+                          OR (s.status = 'Active' AND s.elo_in_pool = 1)
+                      )
                 )
                 SELECT
                     r.username,
