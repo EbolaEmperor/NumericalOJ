@@ -2246,7 +2246,8 @@
   }
 
   .ranking-v2-detail .match-vs-draw {
-    display: inline-grid;
+    display: block;
+    position: relative;
     width: 25px;
     height: 25px;
     padding: 0;
@@ -2257,14 +2258,17 @@
   }
 
   /* 平局徽章：与胜者徽章同为 25px 圆形。用两条横线几何绘出"="，
-     由 place-items:center 精确居中——不依赖等宽字体字形度量，
-     避免小字号下因字体基线差异导致的偏移与过小问题。 */
+     再相对圆心绝对定位；不依赖字体基线或 WebKit 对伪元素网格对齐的处理。 */
   .ranking-v2-detail .match-vs-draw::after {
     content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
     width: 10px;
     height: 6px;
     border-top: 1.5px solid currentColor;
     border-bottom: 1.5px solid currentColor;
+    transform: translate(-50%, -50%);
   }
 
   .ranking-v2-detail .match-vs-failed {
