@@ -1,0 +1,446 @@
+.ranking-v2-detail .matches-observe-btn i {
+  color: var(--rkv2-orange);
+}
+
+.ranking-v2-detail .elo-trajectory-modal {
+  --elo-strong: var(--rkv2-ink);
+  --elo-strong-muted: var(--rkv2-ink-2);
+  --elo-accent: var(--rkv2-orange);
+  --elo-accent-soft: var(--rkv2-orange-soft);
+  --elo-surface-soft: var(--rkv2-line-soft);
+  --elo-line: var(--rkv2-line);
+  --elo-muted: var(--rkv2-ink-3);
+  --elo-ink: var(--rkv2-ink);
+}
+
+.ranking-v2-detail .elo-trajectory-modal .modal-dialog {
+  width: min(1180px, calc(100vw - 28px));
+  max-width: none;
+}
+
+.ranking-v2-detail .elo-trajectory-modal .modal-content {
+  overflow: hidden;
+  border: 1px solid var(--elo-line);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 24px 64px rgb(24 24 27 / 18%);
+}
+
+.ranking-v2-detail .elo-trajectory-modal .modal-body {
+  padding: 24px;
+  overflow-x: hidden;
+  background: #fff;
+}
+
+.ranking-v2-detail .elo-observer-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.ranking-v2-detail .elo-observer-search-panel {
+  position: relative;
+  min-width: 0;
+}
+
+.ranking-v2-detail .elo-observer-search-note {
+  color: var(--elo-muted);
+  font: 9px/1.45 var(--rkv2-mono);
+}
+
+.ranking-v2-detail .elo-observer-search {
+  position: relative;
+}
+
+.ranking-v2-detail .elo-observer-search input {
+  width: 100%;
+  height: 34px;
+  padding-right: 12px;
+  border-color: var(--elo-line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--elo-ink);
+  font-size: 11px;
+}
+
+.ranking-v2-detail .elo-observer-dropdown {
+  position: absolute;
+  z-index: 20;
+  top: 39px;
+  right: 0;
+  left: 0;
+  max-height: 270px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--rkv2-ink-4);
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 15px 34px rgb(24 24 27 / 14%);
+}
+
+.ranking-v2-detail .elo-observer-option {
+  display: grid;
+  min-height: 47px;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ranking-v2-detail .elo-observer-option:hover {
+  background: var(--elo-surface-soft);
+}
+
+.ranking-v2-detail .elo-observer-option.is-selected {
+  background: var(--elo-accent-soft);
+}
+
+.ranking-v2-detail .elo-observer-option input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--elo-accent);
+}
+
+.ranking-v2-detail .elo-observer-option-main {
+  min-width: 0;
+}
+
+.ranking-v2-detail .elo-observer-option-main strong {
+  display: block;
+  overflow: hidden;
+  color: var(--elo-ink);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-v2-detail .elo-observer-option-main small,
+.ranking-v2-detail .elo-observer-option-rating {
+  color: var(--elo-muted);
+  font: 9px/1.35 var(--rkv2-mono);
+}
+
+.ranking-v2-detail .elo-observer-option-rating {
+  color: var(--elo-strong-muted);
+  font-weight: 700;
+}
+
+.ranking-v2-detail .elo-observer-dropdown-state {
+  padding: 18px 12px;
+  color: var(--elo-muted);
+  font-size: 10px;
+  text-align: center;
+}
+
+.ranking-v2-detail .elo-observer-search-note {
+  margin-top: 9px;
+}
+
+.ranking-v2-detail .elo-observer-search-note:empty {
+  display: none;
+}
+
+.ranking-v2-detail .elo-observer-search-note.is-error {
+  color: var(--rkv2-red);
+}
+
+.ranking-v2-detail .elo-observer-selected {
+  display: flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  align-content: flex-start;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ranking-v2-detail .elo-observer-selected-empty {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 6px;
+  color: #9aa8b4;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.ranking-v2-detail .elo-observer-selected-empty i {
+  font-size: 12px;
+}
+
+.ranking-v2-detail .elo-observer-chip {
+  display: inline-grid;
+  max-width: min(240px, 100%);
+  min-height: 36px;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 9px;
+  border: 1px solid var(--elo-line);
+  border-radius: 5px;
+  background: #fff;
+}
+
+.ranking-v2-detail .elo-observer-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--elo-ink);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-v2-detail .elo-observer-chip small {
+  margin-left: 5px;
+  color: var(--elo-muted);
+  font: 8px/1 var(--rkv2-mono);
+}
+
+.ranking-v2-detail .elo-observer-chip button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #8998a5;
+  font-size: 9px;
+}
+
+.ranking-v2-detail .elo-observer-chip button:hover {
+  background: var(--elo-accent-soft);
+  color: var(--elo-strong);
+}
+
+.ranking-v2-detail .elo-trajectory-status {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--elo-line);
+  border-radius: 6px;
+  background: var(--elo-surface-soft);
+  color: var(--elo-strong-muted);
+  font-size: 10px;
+}
+
+.ranking-v2-detail .elo-trajectory-status.is-error {
+  border-color: #efcaca;
+  background: #fff8f8;
+  color: var(--rkv2-red);
+}
+
+.ranking-v2-detail .elo-trajectory-result {
+  margin-top: 6px;
+  padding-top: 0;
+}
+
+.ranking-v2-detail .elo-trajectory-chart-shell {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--elo-line);
+  border-radius: 7px;
+  background: #fff;
+}
+
+.ranking-v2-detail .elo-trajectory-chart {
+  min-height: 390px;
+}
+
+.ranking-v2-detail .elo-trajectory-svg {
+  display: block;
+  width: 100%;
+  height: 390px;
+}
+
+.ranking-v2-detail .elo-trajectory-grid-line {
+  stroke: #e5eaee;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.ranking-v2-detail .elo-trajectory-axis-label {
+  fill: #7c8994;
+  font: 9px var(--rkv2-mono);
+}
+
+.ranking-v2-detail .elo-trajectory-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+  vector-effect: non-scaling-stroke;
+}
+
+.ranking-v2-detail .elo-trajectory-point {
+  stroke: #fff;
+  stroke-width: 1.5;
+  cursor: crosshair;
+  vector-effect: non-scaling-stroke;
+}
+
+.ranking-v2-detail .elo-trajectory-point:hover,
+.ranking-v2-detail .elo-trajectory-point:focus {
+  stroke: var(--elo-strong);
+  stroke-width: 2;
+  outline: none;
+}
+
+.ranking-v2-detail .elo-trajectory-tooltip {
+  position: absolute;
+  z-index: 4;
+  width: max-content;
+  max-width: 250px;
+  padding: 9px 10px;
+  border: 1px solid var(--rkv2-ink-4);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 10px 25px rgb(24 24 27 / 12%);
+  color: var(--elo-ink);
+  font-size: 10px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.ranking-v2-detail .elo-trajectory-tooltip strong,
+.ranking-v2-detail .elo-trajectory-tooltip span {
+  display: block;
+}
+
+.ranking-v2-detail .elo-trajectory-tooltip span {
+  color: var(--elo-muted);
+  font: 9px/1.5 var(--rkv2-mono);
+}
+
+.ranking-v2-detail .elo-trajectory-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.ranking-v2-detail .elo-trajectory-legend-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--elo-line);
+  border-radius: 5px;
+  background: #fff;
+}
+
+.ranking-v2-detail .elo-trajectory-legend-swatch {
+  height: 3px;
+  border-radius: 999px;
+}
+
+.ranking-v2-detail .elo-trajectory-legend-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  line-height: 1;
+}
+
+.ranking-v2-detail .elo-trajectory-legend-item strong {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  color: var(--elo-ink);
+  font-size: 10px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-v2-detail .elo-trajectory-legend-item b {
+  display: block;
+  align-self: center;
+  color: var(--elo-strong-muted);
+  font: 700 10px/1 var(--rkv2-mono);
+}
+
+.ranking-v2-detail .elo-trajectory-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  padding: 13px 24px;
+  border-top: 1px solid var(--elo-line);
+  background: var(--elo-surface-soft);
+}
+
+.ranking-v2-detail .elo-trajectory-footer > div {
+  display: flex;
+  gap: 8px;
+}
+
+.ranking-v2-detail .elo-trajectory-primary,
+.ranking-v2-detail .elo-trajectory-secondary {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--elo-strong);
+  border-radius: 5px;
+  font-size: 10px;
+}
+
+.ranking-v2-detail .elo-trajectory-primary {
+  background: var(--elo-strong);
+  color: #fff;
+}
+
+.ranking-v2-detail .elo-trajectory-primary:hover:not(:disabled) {
+  background: var(--elo-strong-muted);
+}
+
+.ranking-v2-detail .elo-trajectory-primary:disabled {
+  border-color: #aeb8c0;
+  background: #aeb8c0;
+  cursor: not-allowed;
+}
+
+.ranking-v2-detail .elo-trajectory-secondary {
+  border-color: #b9c5cf;
+  background: #fff;
+  color: var(--elo-ink);
+}
+
+@media (max-width: 760px) {
+  .ranking-v2-detail .elo-trajectory-modal .modal-dialog {
+    width: calc(100vw - 16px);
+    margin: 8px auto;
+  }
+
+  .ranking-v2-detail .elo-trajectory-modal .modal-body,
+  .ranking-v2-detail .elo-trajectory-footer {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .ranking-v2-detail .elo-observer-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ranking-v2-detail .elo-trajectory-footer {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .ranking-v2-detail .elo-trajectory-footer > div {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 440px) {
+  .ranking-v2-detail .matches-observe-btn span {
+    display: none;
+  }
+
+}

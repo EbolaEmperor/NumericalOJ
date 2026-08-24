@@ -83,6 +83,7 @@ from oj_modules.ranking.db import (
     update_competition_scoring_script,
     update_submission_result,
 )
+from oj_modules.ranking import trajectories as elo_trajectories
 from oj_modules.ranking.agent_judge.db import (
     agent_judge_trace_id,
     apply_rule_overrides,
@@ -1040,6 +1041,7 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
         'matches_total': matches_total,
         'matches_mine': matches_mine,
         'matches_per_page': MATCHES_PER_PAGE,
+        'elo_trajectory_max_selected': elo_trajectories.MAX_SELECTED,
         'judge_rules': judge_rules,
         'aj_endpoints': aj_endpoints,
         'quality_gate_endpoints': quality_gate_endpoints,
@@ -1302,6 +1304,70 @@ def ranking_elo_rebuild_history(competition_id):
 
     _invalidate_competition_match_caches(competition_id)
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='matches'))
+
+
+def _visible_elo_competition_json(competition_id):
+    """校验登录态、比赛可见性和 ELO 模式，供公开只读接口复用。"""
+    user = _current_user()
+    if not user:
+        return None, None, (jsonify(success=False, message='请先登录'), 401)
+    comp = get_competition(competition_id)
+    if not comp:
+        return user, None, (jsonify(success=False, message='比赛不存在或已被删除'), 404)
+    if user.get('is_admin') != 1 and comp.get('is_active') != 1:
+        return user, comp, (jsonify(success=False, message='该比赛未开放'), 403)
+    if _competition_scoring_mode(comp) != 'elo':
+        return user, comp, (jsonify(success=False, message='该比赛不是 ELO 模式'), 400)
+    return user, comp, None
+
+
+@ranking_bp.route('/<int:competition_id>/elo/trajectory/submissions', methods=['GET'])
+def ranking_elo_trajectory_submissions(competition_id):
+    """按用户名搜索普通用户也可观察的在役 ELO 提交。"""
+    _user, _comp, resp = _visible_elo_competition_json(competition_id)
+    if resp is not None:
+        return resp
+
+    q = str(request.args.get('q') or '').strip()[:50]
+    submissions, truncated = elo_trajectories.search_submissions(
+        competition_id, q or None,
+    )
+    return jsonify(
+        success=True,
+        submissions=submissions,
+        truncated=truncated,
+        max_selected=elo_trajectories.MAX_SELECTED,
+    )
+
+
+@ranking_bp.route('/<int:competition_id>/elo/trajectory', methods=['POST'])
+def ranking_elo_trajectory(competition_id):
+    """返回所选在役提交按公共对战时间线排列的连续 ELO 变化轨迹。"""
+    _user, _comp, resp = _visible_elo_competition_json(competition_id)
+    if resp is not None:
+        return resp
+
+    payload = request.get_json(silent=True) or {}
+    submission_ids = _parse_submission_ids(payload.get('submission_ids'))
+    if not submission_ids:
+        return jsonify(success=False, message='请至少选择一条在役提交'), 400
+    if len(submission_ids) > elo_trajectories.MAX_SELECTED:
+        return jsonify(
+            success=False,
+            message=f'单次最多观察 {elo_trajectories.MAX_SELECTED} 条提交',
+        ), 400
+
+    series, missing_ids = elo_trajectories.build_series(
+        competition_id,
+        submission_ids,
+    )
+    if missing_ids:
+        return jsonify(
+            success=False,
+            message='部分提交已退役或不属于当前比赛，请重新选择',
+            missing_submission_ids=missing_ids,
+        ), 409
+    return jsonify(success=True, series=series)
 
 
 # ---------- 所有提交（管理员）异步分页 / 搜索 API ----------

@@ -261,6 +261,102 @@ def test_elo_admin_rebuild_control_stays_inline_and_keeps_its_hover_icon():
     assert "margin-left: auto" in mobile
 
 
+def test_elo_trajectory_viewer_is_public_fragment_safe_and_uses_one_color_family():
+    detail = _read(TEMPLATES / "detail.html")
+    matches = _read(TEMPLATES / "tabs" / "matches.html")
+    detail_script = _read(STATIC / "detail-v2.js")
+    trajectory_script = _read(STATIC / "elo-trajectories.js")
+    trajectory_styles = _read(STATIC / "elo-trajectories.css")
+
+    observe_index = matches.index('class="matches-rebuild-btn matches-observe-btn"')
+    admin_guard_index = matches.index('{% if is_admin and matches %}', observe_index)
+    rebuild_index = matches.index('class="matches-rebuild-form"', admin_guard_index)
+    assert observe_index < admin_guard_index < rebuild_index
+    assert 'data-bs-target="#eloTrajectoryModal"' in matches
+    assert 'data-elo-search-input' in matches
+    assert 'placeholder="按用户名筛选…"' in matches
+    assert 'data-elo-selected-list' in matches
+    assert 'elo-observer-selected-panel' not in matches
+    assert 'data-elo-clear-selection' not in matches
+    assert 'data-elo-selection-count' not in matches
+    assert 'data-elo-analyze' in matches
+    assert 'data-elo-chart' in matches
+    assert "ranking.ranking_elo_trajectory_submissions" in matches
+    assert "ranking.ranking_elo_trajectory" in matches
+    assert "ELO TRAJECTORY" not in matches
+    assert "选择当前仍在役的提交" not in matches
+    assert "支持 username 模糊匹配" not in matches
+    assert ">01<" not in matches
+    assert ">02<" not in matches
+    assert "03 · ANALYSIS" not in matches
+    assert 'id="eloObserverSearchLabel"' not in matches
+    assert 'id="eloObserverSelectedLabel"' not in matches
+    assert 'id="eloTrajectoryChartTitle"' not in matches
+    assert ">查找提交<" not in matches
+    assert ">已选提交<" not in matches
+    assert ">得分轨迹<" not in matches
+
+    assert "app/ranking/elo-trajectories.css" in detail
+    assert "app/ranking/elo-trajectories.js" in detail
+    assert "window.EloTrajectoryViewer.init(root)" in detail_script
+    assert "root.querySelectorAll('[data-elo-trajectory-viewer]').forEach(initViewer)" in trajectory_script
+    assert "new Map()" in trajectory_script
+    assert "clearButton" not in trajectory_script
+    assert "selectionCount" not in trajectory_script
+    assert "body: JSON.stringify({submission_ids: Array.from(selected.keys())})" in trajectory_script
+    assert "document.createElementNS(SVG_NS, tag)" in trajectory_script
+    assert "hsl(207 42%" in trajectory_script
+    assert "document.activeElement === searchInput" in trajectory_script
+    assert "searchInput.addEventListener('blur'" in trajectory_script
+    assert "searchResults.addEventListener('pointerdown'" in trajectory_script
+    assert "Math.floor(chartShell.clientWidth || viewer.clientWidth || 760)" in trajectory_script
+    assert "svg.style.width = '100%'" in trajectory_script
+    assert "new ResizeObserver(scheduleChartResize).observe(chartShell)" in trajectory_script
+    assert "result.hidden = false;\n        renderChart(seriesList);" in trajectory_script
+    assert "function axisDayKey(point)" in trajectory_script
+    assert "function axisTimeText(point, showDate)" in trajectory_script
+    assert "showDate ? value.slice(5, 16) : value.slice(11, 16)" in trajectory_script
+    assert "tickDay !== lastTickDay" in trajectory_script
+    assert "sequence === maxSequence ? 'end' : 'middle'" in trajectory_script
+    assert "return (pointIndex ? 'L' : 'M') + pointX + ' ' + pointY" in trajectory_script
+    assert "'H' + pointX + ' V'" not in trajectory_script
+    assert "if (!point.participated) return;" in trajectory_script
+    assert "条对战记录 · 当前" not in trajectory_script
+    assert "setSearchNote('', false)" in trajectory_script
+    assert "找到 ' + currentResults.length" not in trajectory_script
+    assert "elo-trajectory-legend-copy" in trajectory_script
+    assert ".elo-trajectory-legend-copy" in trajectory_styles
+    assert "font: 700 10px/1 var(--rkv2-mono)" in trajectory_styles
+    assert ".elo-trajectory-line" in trajectory_styles
+    assert "color: var(--rkv2-orange)" in trajectory_styles
+    assert "--elo-accent: var(--rkv2-orange)" in trajectory_styles
+    assert "--elo-accent-soft: var(--rkv2-orange-soft)" in trajectory_styles
+    assert "--elo-surface-soft: var(--rkv2-line-soft)" in trajectory_styles
+    assert "background: var(--elo-surface-soft)" in trajectory_styles
+    assert "--elo-blue" not in trajectory_styles
+    assert "grid-template-columns: minmax(0, 1fr)" in trajectory_styles
+    assert "flex-wrap: wrap" in trajectory_styles
+    assert "overflow-x: auto" not in trajectory_styles
+    assert "max-width: min(240px, 100%)" in trajectory_styles
+    assert ".elo-observer-strip-actions" not in trajectory_styles
+    assert ".elo-observer-selection-count" not in trajectory_styles
+    assert ".elo-observer-selected-panel" not in trajectory_styles
+    result_rule = re.search(
+        r"\.ranking-v2-detail \.elo-trajectory-result\s*\{(?P<body>[^{}]+)\}",
+        trajectory_styles,
+    )
+    assert result_rule is not None
+    assert "border-top" not in result_rule.group("body")
+    assert "margin-top: 6px" in result_rule.group("body")
+    assert "padding-top: 0" in result_rule.group("body")
+    chart_shell = re.search(
+        r"\.ranking-v2-detail \.elo-trajectory-chart-shell\s*\{(?P<body>[^{}]+)\}",
+        trajectory_styles,
+    )
+    assert chart_shell is not None
+    assert "overflow: hidden" in chart_shell.group("body")
+
+
 def test_harness_logos_follow_selected_endpoints_across_ranking_surfaces():
     detail = _read(TEMPLATES / "detail.html")
     submit = _read(TEMPLATES / "tabs" / "submit.html")
