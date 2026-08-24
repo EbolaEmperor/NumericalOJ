@@ -97,7 +97,7 @@ class _WorkerState:
         self.buffer = b""
         self.write_queue = bytearray()
         # 就绪 = 可信运行器已启动并可接受请求；启动哪个被测进程、如何交互
-        # 全部由评分脚本经原语决定，仲裁者不再跟踪任何 bot 握手状态。
+        # 全部由评分脚本经原语决定，仲裁者不跟踪任何被测进程的握手状态。
         self.ready_determined = False
         self.dead = False
         self.death_reason = None

@@ -20,16 +20,9 @@
   - ``fetch_files(side, paths)``：不执行命令，直接按白名单读取作品文件
     （单文件 8MiB、合计 16MiB，base64 返回）。
 
-兼容封装（"作品根目录 ``bot.py`` + ready 握手 + 换行 JSON 回合"这一种
-约定，供沿用该约定的既有评分脚本使用；新比赛建议直接用原语）：
-
-  - ``wait_ready(side, timeout_ms)`` / ``call_bot(side, payload, timeout_ms)``
-    / ``bot_status(side)``。
-
 请求经 stderr 上的前缀帧发给仲裁者，响应经 stdin 收回；因此隔离模式下评分
 脚本不得自行读取 stdin。所有调用线程安全（内部串行化），但同一时刻只有一个
-请求在途。每一方同一时刻只有一个受监管进程，兼容封装与原语不要在同一方
-混用。
+请求在途。每一方同一时刻只有一个受监管进程。
 
 本文件会被复制进裁判容器，与评分脚本同目录；只使用 Python 标准库。
 """
@@ -49,21 +42,11 @@ RPC_PREFIX = "__NUMOJ_ELO_RPC_V1__"
 DEFAULT_CALL_GRACE_SECONDS = 8.0    # 客户端侧宽限：仲裁者路由 + 外层看门的余量
 MAX_RESPONSE_LINE_BYTES = 96 * 1024 * 1024
 
-BOT_ENTRY_FILE = "bot.py"           # 兼容封装使用的入口文件约定
-BOT_ENTRY_ARGV = ["python3", "-u", BOT_ENTRY_FILE]
-HANDSHAKE_TIMEOUT_MS = 10000
-
 _id_counter = itertools.count(1)
 _lock = threading.Lock()
 _stdin_fd = int(os.environ.get("NUMOJ_ELO_STDIN_FD", "0"))
 _stdout_fd_for_rpc = int(os.environ.get("NUMOJ_ELO_STDERR_FD", "2"))
 _buffer = b""
-
-# 兼容封装的每方状态：new -> ready / failed；被测进程死亡后转为 dead。
-_bot_state = {
-    "A": {"phase": "new", "handshake_ms": None, "error": None},
-    "B": {"phase": "new", "handshake_ms": None, "error": None},
-}
 
 
 class EloHostApiError(RuntimeError):
@@ -252,144 +235,3 @@ def fetch_files(side, paths, timeout_ms=10000):
                     timeout_ms=int(timeout_ms))
     except EloHostApiError as exc:
         return _channel_error(exc)
-
-
-# ---------------------------------------------------------------------------
-# 兼容封装：作品根目录 bot.py + ready 握手 + 换行 JSON 回合
-# ---------------------------------------------------------------------------
-
-def _start_bot(side, timeout_ms):
-    """按既有约定启动 bot.py 并完成握手；结果写入 _bot_state。"""
-    state = _bot_state[side]
-    check = fetch_files(side, [BOT_ENTRY_FILE], timeout_ms=timeout_ms)
-    if not check.get("ok"):
-        return {"ok": False, "error": check.get("error") or "worker_unresponsive",
-                "message": check.get("message") or "工作容器不可用"}
-    if BOT_ENTRY_FILE not in (check.get("files") or {}):
-        state["phase"] = "failed"
-        state["error"] = "作品包根目录缺少 bot.py"
-        return {"ok": True, "ready": False, "error": state["error"]}
-
-    started = time.monotonic()
-    sp = spawn(side, BOT_ENTRY_ARGV, timeout_ms=timeout_ms)
-    if not sp.get("ok"):
-        state["phase"] = "failed"
-        state["error"] = f"无法启动 bot 进程：{sp.get('message') or sp.get('error')}"
-        return {"ok": True, "ready": False, "error": state["error"]}
-
-    remaining_ms = max(1, int(timeout_ms) - int((time.monotonic() - started) * 1000))
-    reply = interact(side, data=None, timeout_ms=min(remaining_ms, HANDSHAKE_TIMEOUT_MS),
-                     until="newline")
-    if not reply.get("ok"):
-        error = reply.get("error") or "启动握手失败"
-        if error not in ("timeout", "oversize", "bot_exited", "bot_not_running"):
-            # 通道层错误（仲裁/工作容器不可用等）：不缓存失败状态，允许重试。
-            return reply
-        state["phase"] = "failed"
-        if error == "timeout":
-            state["error"] = f"启动握手超时（>{timeout_ms} 毫秒）"
-        elif error == "bot_exited":
-            exit_code = reply.get("exit_code")
-            state["error"] = (
-                f"启动握手失败：bot 进程提前退出（退出码 {exit_code}）"
-                if exit_code is not None else "启动握手失败：bot 进程提前退出")
-        else:
-            state["error"] = f"启动握手失败：{reply.get('message') or error}"
-        return {"ok": True, "ready": False, "error": state["error"]}
-
-    line = (reply.get("output") or "").strip()
-    try:
-        payload = json.loads(line)
-    except (ValueError, TypeError):
-        payload = None
-    if not isinstance(payload, dict) or payload.get("ready") is not True:
-        kill(side)
-        state["phase"] = "failed"
-        state["error"] = '启动握手必须是 {"ready": true}'
-        return {"ok": True, "ready": False, "error": state["error"]}
-
-    state["phase"] = "ready"
-    state["handshake_ms"] = round((time.monotonic() - started) * 1000, 3)
-    return {"ok": True, "ready": True, "handshake_ms": state["handshake_ms"]}
-
-
-def wait_ready(side, timeout_ms=15000):
-    """阻塞等待某方按"根目录 bot.py + ready 握手"约定完成启动（兼容封装）。
-
-    返回：就绪时 ``{"ok": True, "ready": True, "handshake_ms": x}``；握手失败
-    时 ``{"ok": True, "ready": False, "error": ...}``；通道异常时 ``ok`` 为
-    False。新比赛建议直接使用 ``spawn`` + ``interact``。
-    """
-    side = _normalize_side(side)
-    if side not in ("A", "B"):
-        return {"ok": False, "error": "bad_request", "message": "side 必须是 A 或 B"}
-    state = _bot_state[side]
-    if state["phase"] == "ready":
-        return {"ok": True, "ready": True, "handshake_ms": state["handshake_ms"]}
-    if state["phase"] == "failed":
-        return {"ok": True, "ready": False, "error": state["error"]}
-    if state["phase"] == "dead":
-        return {"ok": True, "ready": False, "error": "bot 进程已终止"}
-    return _start_bot(side, max(1, int(timeout_ms)))
-
-
-def call_bot(side, payload, timeout_ms=1000):
-    """兼容封装：按"根目录 bot.py + 换行 JSON"约定下发局面并等待一行决策。
-
-    返回 dict：
-      成功：{"ok": True, "response": {...}, "elapsed_ms": x}
-      失败：{"ok": False, "error": "timeout|bad_output|oversize|bot_exited|
-             bot_not_running|worker_unavailable|worker_unresponsive", ...}
-    其中 ``elapsed_ms`` 由工作容器内测得，只包含被测进程的思考时间。
-    """
-    side = _normalize_side(side)
-    if side not in ("A", "B"):
-        return {"ok": False, "error": "bad_request", "message": "side 必须是 A 或 B"}
-    state = _bot_state[side]
-    if state["phase"] == "new":
-        ready = wait_ready(side, timeout_ms=15000)
-        if not (ready.get("ok") and ready.get("ready")):
-            if ready.get("ok"):
-                return {"ok": False, "error": "bot_not_running",
-                        "message": ready.get("error") or "bot 未在运行"}
-            return ready
-    elif state["phase"] == "failed":
-        return {"ok": False, "error": "bot_not_running",
-                "message": state["error"] or "bot 未在运行"}
-    elif state["phase"] == "dead":
-        return {"ok": False, "error": "bot_not_running",
-                "message": "bot 进程已终止"}
-    try:
-        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
-    except (TypeError, ValueError) as exc:
-        return {"ok": False, "error": "bad_payload", "message": f"局面无法序列化：{exc}"}
-    reply = interact(side, data=line, timeout_ms=timeout_ms, until="newline")
-    if not reply.get("ok"):
-        if reply.get("error") in ("timeout", "oversize", "bot_exited", "bot_not_running"):
-            state["phase"] = "dead"
-        return reply
-    output = (reply.get("output") or "").strip()
-    try:
-        response = json.loads(output)
-    except (ValueError, TypeError):
-        response = None
-    if not isinstance(response, dict):
-        kill(side)
-        state["phase"] = "dead"
-        return {"ok": False, "error": "bad_output", "elapsed_ms": reply.get("elapsed_ms")}
-    return {"ok": True, "response": response, "elapsed_ms": reply.get("elapsed_ms")}
-
-
-def bot_status(side):
-    """兼容封装：查询某方 bot 的启动状态（基于本模块记录的握手结果）。"""
-    side = _normalize_side(side)
-    if side not in ("A", "B"):
-        return {"ok": False, "error": "bad_request", "message": "side 必须是 A 或 B"}
-    state = _bot_state[side]
-    if state["phase"] == "ready":
-        return {"ok": True, "ready": True, "handshake_ms": state["handshake_ms"]}
-    if state["phase"] == "failed":
-        return {"ok": True, "ready": False, "error": state["error"]}
-    if state["phase"] == "dead":
-        return {"ok": True, "ready": False, "error": "bot 进程已终止"}
-    return {"ok": True, "ready": False, "error": "bot 尚未启动"}
