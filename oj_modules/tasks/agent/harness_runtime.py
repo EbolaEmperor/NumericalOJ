@@ -98,6 +98,43 @@ class AgentUsageHardStopError(RuntimeError):
     """本次 usage 扣费已经触发 Agent 额度硬停。"""
 
 
+_NUMOJ_STDOUT_EVENT_TYPES = frozenset({
+    "numoj_control", "numoj_steer", "numoj_trace", "numoj_usage",
+})
+
+
+def extract_harness_failure_detail(result, *, max_chars=800):
+    """提取用户可见的 harness 错误，忽略 stdout 中的内部协议帧。"""
+
+    try:
+        limit = max(1, int(max_chars))
+    except (TypeError, ValueError):
+        limit = 800
+    stderr = str(getattr(result, "stderr", "") or "").strip()
+    if stderr:
+        for line in reversed(stderr.splitlines()):
+            summary = line.strip()
+            if summary.startswith("模型请求失败："):
+                return summary[-limit:]
+        return stderr[-limit:]
+    visible_lines = []
+    for raw_line in str(getattr(result, "stdout", "") or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError):
+            payload = None
+        if (
+            isinstance(payload, dict)
+            and str(payload.get("type") or "") in _NUMOJ_STDOUT_EVENT_TYPES
+        ):
+            continue
+        visible_lines.append(line)
+    return "\n".join(visible_lines).strip()[-limit:]
+
+
 def _containerize_url(value):
     """让容器内的 localhost 端点显式回到宿主机。"""
 
@@ -1879,6 +1916,7 @@ __all__ = [
     "AgentHarnessCleanupError",
     "AgentUsageHardStopError",
     "HarnessRunResult",
+    "extract_harness_failure_detail",
     "normalize_native_session_id",
     "read_agent_native_session_id",
     "read_agent_steer_capability",

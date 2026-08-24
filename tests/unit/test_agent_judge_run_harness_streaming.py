@@ -965,6 +965,17 @@ def test_codex_relay_does_not_turn_invalid_upstream_stream_into_success():
                 )
                 content_type = "text/event-stream"
                 content_encoding = ""
+            elif "case=empty" in self.path:
+                body = (
+                    b'data: {"id":"chatcmpl-empty","choices":['
+                    b'{"index":0,"delta":{"role":"assistant"},'
+                    b'"finish_reason":null}]}\n\n'
+                    b'data: {"id":"chatcmpl-empty","choices":['
+                    b'{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+                    b'data: [DONE]\n\n'
+                )
+                content_type = "text/event-stream"
+                content_encoding = ""
             else:
                 body = b'data: {"error":{"code":"quota","message":"quota exceeded"}}\n\n'
                 content_type = "text/event-stream"
@@ -1029,6 +1040,12 @@ def test_codex_relay_does_not_turn_invalid_upstream_stream_into_success():
         assert "response.failed" in length_error
         assert "finish_reason=length" in length_error
         assert "response.completed" not in length_error
+
+        with request("empty") as response:
+            empty_error = response.read().decode("utf-8")
+        assert "response.failed" in empty_error
+        assert "empty assistant content" in empty_error
+        assert "response.completed" not in empty_error
     finally:
         relay.stop()
         upstream.shutdown()
@@ -2002,6 +2019,149 @@ def test_pi_usage_uses_response_id_when_message_has_no_id(monkeypatch):
     assert usage["usage"]["input_cached_tokens"] == 4
 
 
+def test_pi_rpc_projects_retry_errors_and_omits_orphan_zero_usage(
+        monkeypatch, capsys, tmp_path):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["pi"])
+    session_id = "33333333-3333-3333-3333-333333333333"
+
+    def error_event(timestamp, detail):
+        return {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "HTTP 429: " + json.dumps({
+                    "error": {"message": detail},
+                    "user_id": "internal-user-id",
+                }),
+                "timestamp": timestamp,
+                "usage": {
+                    "input": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "output": 0,
+                    "reasoning": 0,
+                },
+            },
+        }
+
+    events = _event_queue(
+        {
+            "type": "response",
+            "id": "__numoj-state__",
+            "command": "get_state",
+            "success": True,
+            "data": {"sessionId": session_id},
+        },
+        {"type": "response", "id": "__start__", "success": True},
+        error_event(101, "第一次请求限流"),
+        error_event(102, "上游仍在限流，请稍后重试"),
+        {"type": "agent_settled"},
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_json_process",
+        lambda *_args, **_kwargs: (proc, events),
+    )
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+
+    completed = module._run_pi_interactive(
+        ["pi", "--mode", "json"], {}, "开始", _Commands(), "",
+    )
+
+    assert completed.returncode == 2
+    error_traces = [
+        item for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("is_error") is True
+    ]
+    assert [item["event"]["id"] for item in error_traces] == [
+        "101:error", "102:error",
+    ]
+    assert [item["event"]["text"] for item in error_traces] == [
+        "HTTP 429：第一次请求限流",
+        "HTTP 429：上游仍在限流，请稍后重试",
+    ]
+    assert all(item["event"]["title"] == "模型请求失败" for item in error_traces)
+    assert not any(item.get("type") == "numoj_usage" for item in emitted)
+    stderr = capsys.readouterr().err
+    assert stderr.strip() == "模型请求失败：HTTP 429：上游仍在限流，请稍后重试"
+    assert "internal-user-id" not in stderr
+
+    from oj_modules.tasks.agent import harness_runtime as runtime
+
+    journal = tmp_path / "canonical.jsonl"
+    observer = runtime._CanonicalJournalObserver(journal)
+    for item in emitted:
+        observer.feed(
+            (json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8")
+        )
+    observer.close()
+    records = [
+        json.loads(line)
+        for line in journal.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [item["type"] for item in records] == [
+        "numoj_trace", "numoj_trace",
+    ]
+    assert all(item["event"]["is_error"] is True for item in records)
+
+
+def test_pi_rpc_rejects_empty_success_if_protocol_proxy_misses_it(
+        monkeypatch, capsys):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["pi"])
+    events = _event_queue(
+        {
+            "type": "response",
+            "id": "__numoj-state__",
+            "command": "get_state",
+            "success": True,
+            "data": {
+                "sessionId": "33333333-3333-3333-3333-333333333333",
+            },
+        },
+        {"type": "response", "id": "__start__", "success": True},
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [],
+                "stopReason": "stop",
+                "timestamp": 103,
+                "usage": {"input": 0, "output": 0},
+            },
+        },
+        {"type": "agent_settled"},
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_json_process",
+        lambda *_args, **_kwargs: (proc, events),
+    )
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+
+    completed = module._run_pi_interactive(
+        ["pi", "--mode", "json"], {}, "开始", _Commands(), "",
+    )
+
+    assert completed.returncode == 2
+    error = next(
+        item["event"] for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("is_error") is True
+    )
+    assert error["id"] == "103:error"
+    assert "empty assistant content" in error["text"]
+    assert capsys.readouterr().err.strip().startswith("模型请求失败：")
+
+
 def test_pi_rpc_rejects_start_without_waiting_for_settled(monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["pi"])
@@ -2172,6 +2332,51 @@ def test_codex_app_server_adapter_uses_expected_turn_for_steer(monkeypatch):
     }
 
 
+def test_codex_failed_turn_projects_error_and_stderr_summary(monkeypatch, capsys):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["codex"])
+    thread_id = "11111111-1111-1111-1111-111111111111"
+    events = _event_queue(
+        {"id": "numoj-init", "result": {}},
+        {"id": "numoj-thread", "result": {"thread": {"id": thread_id}}},
+        {"id": "numoj-turn", "result": {"turn": {"id": "turn-failed"}}},
+        {
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "turn-failed",
+                    "status": "failed",
+                    "error": {"message": "HTTP 429：Codex 上游限流"},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_json_process",
+        lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_codex_interactive(
+        "开始", _Commands(), {}, "", "model-a",
+    )
+
+    assert completed.returncode == 2
+    error = next(
+        item["event"] for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("is_error") is True
+    )
+    assert error["id"] == "turn-failed:error"
+    assert error["text"] == "HTTP 429：Codex 上游限流"
+    assert capsys.readouterr().err.strip() == (
+        "模型请求失败：HTTP 429：Codex 上游限流"
+    )
+
+
 def test_claude_stream_json_adapter_acks_steer_only_after_user_replay(monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
@@ -2314,6 +2519,51 @@ def test_claude_stream_json_accepted_interrupt_returns_130(monkeypatch):
         and item.get("id") == "stop-1"
         and item.get("status") == "accepted"
         for item in emitted
+    )
+
+
+def test_claude_failed_result_projects_error_and_stderr_summary(
+        monkeypatch, capsys):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    session_id = "22222222-2222-2222-2222-222222222222"
+    events = _event_queue(
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": "HTTP 503：Claude 上游不可用",
+            "session_id": session_id,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_start_json_process",
+        lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands(),
+        "",
+    )
+
+    assert completed.returncode == 2
+    error = next(
+        item["event"] for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item["event"].get("is_error") is True
+    )
+    assert error["id"] == f"{session_id}:result:1:error"
+    assert error["text"] == "HTTP 503：Claude 上游不可用"
+    assert capsys.readouterr().err.strip() == (
+        "模型请求失败：HTTP 503：Claude 上游不可用"
     )
 
 
@@ -2957,7 +3207,7 @@ def test_opencode_v1_resume_uses_server_generated_ordered_message_id(
     ],
 )
 def test_opencode_v1_reconciles_terminal_message_lost_during_sse_gap(
-        monkeypatch, assistant_error, expected_returncode):
+        monkeypatch, capsys, assistant_error, expected_returncode):
     module = _load_run_harness()
     prompt_payloads = []
     durable_messages = []
@@ -3097,6 +3347,9 @@ def test_opencode_v1_reconciles_terminal_message_lost_during_sse_gap(
             and item["event"].get("is_error") is True
             for item in emitted
         )
+        assert capsys.readouterr().err.strip() == (
+            "模型请求失败：模型失败"
+        )
 
 
 def test_opencode_v1_bounds_persistent_sse_reconnect_failures(monkeypatch):
@@ -3177,7 +3430,7 @@ def test_opencode_v1_bounds_persistent_sse_reconnect_failures(monkeypatch):
 
 @pytest.mark.parametrize("persist_user", [False, True])
 def test_opencode_v1_fails_if_accepted_prompt_never_creates_assistant(
-        monkeypatch, persist_user):
+        monkeypatch, capsys, persist_user):
     module = _load_run_harness()
     prompt_sent = threading.Event()
     durable_messages = [
@@ -3224,7 +3477,18 @@ def test_opencode_v1_fails_if_accepted_prompt_never_creates_assistant(
             yield b'data: {"type":"server.connected","properties":{}}\n\n'
             if self.attempt == 1:
                 assert prompt_sent.wait(2)
-                if not persist_user:
+                if persist_user:
+                    yield (
+                        b'data: {"type":"session.next.step.failed",'
+                        b'"properties":{"sessionID":"ses_missing_assistant",'
+                        b'"error":{"message":"provider failed"}}}\n\n'
+                    )
+                    yield (
+                        b'data: {"type":"session.status","properties":'
+                        b'{"sessionID":"ses_missing_assistant","status":'
+                        b'{"type":"idle"}}}\n\n'
+                    )
+                else:
                     # 新 prompt 后仍可能收到原轮 active assistant 的更新；
                     # 其 parent 位于 baseline，不能冒充新 prompt 的回复。
                     yield (
@@ -3277,6 +3541,8 @@ def test_opencode_v1_fails_if_accepted_prompt_never_creates_assistant(
         ),
     )
     monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
     monkeypatch.setattr(module, "OPENCODE_PROMPT_PERSISTENCE_SECONDS", 0.04)
     monkeypatch.setattr(module, "OPENCODE_DURABLE_RECONCILE_INTERVAL_SECONDS", 0.01)
 
@@ -3291,6 +3557,16 @@ def test_opencode_v1_fails_if_accepted_prompt_never_creates_assistant(
 
     assert completed.returncode == 2
     assert prompt_sent.is_set()
+    if persist_user:
+        assert any(
+            item.get("type") == "numoj_trace"
+            and item["event"].get("is_error") is True
+            and item["event"].get("text") == "provider failed"
+            for item in emitted
+        )
+        assert capsys.readouterr().err.strip() == (
+            "模型请求失败：provider failed"
+        )
 
 
 def test_opencode_v1_reconciles_interrupt_without_assistant_after_sse_gap(
