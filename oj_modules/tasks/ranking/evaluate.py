@@ -4,14 +4,14 @@
 打榜赛评测 Celery 任务。
 
 标准答案评分任务只评测用户上传的答案文件，不处理代码压缩包。
-答案格式只影响上传约束；评分一律以子进程运行管理员配置的脚本，不存在兜底评分路径。
+答案格式只影响上传约束；评分一律在 Agent Judge 容器内运行管理员配置的脚本，
+不存在兜底评分路径。
 """
 
 import json
 import math
 import os
 import subprocess
-import sys
 import traceback
 
 import pymysql
@@ -21,6 +21,9 @@ from oj_modules.ranking.db import (
     get_competition,
     get_ranking_submission,
     update_standard_ranking_result_for_task,
+)
+from oj_modules.tasks.ranking.standard_container import (
+    run_standard_scoring_container,
 )
 
 
@@ -42,11 +45,12 @@ def _run_scoring_script(script_path, user_answer_path, reference_answer_path, ma
     """
     timeout_s = int(timeout_seconds) if timeout_seconds else DEFAULT_SCORING_SCRIPT_TIMEOUT_SECONDS
     try:
-        proc = subprocess.run(
-            [sys.executable, script_path, user_answer_path, reference_answer_path, str(max_score)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
+        proc = run_standard_scoring_container(
+            script_path,
+            user_answer_path,
+            reference_answer_path,
+            max_score,
+            timeout_s,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f'评测脚本执行超时（>{timeout_s}s）')

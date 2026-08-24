@@ -360,7 +360,20 @@ def test_ranking_plagiarism_extended_submission_flows(cli, unique_suffix, tmp_pa
     score_script = tmp_path / "absolute_score.py"
     score_script.write_text(
         "import json\n"
-        "print(json.dumps({'score': 100, 'details': {'ok': True}}))\n",
+        "import os\n"
+        "import sys\n"
+        "script_path = os.path.realpath(__file__)\n"
+        "user_path = os.path.realpath(sys.argv[1])\n"
+        "reference_path = os.path.realpath(sys.argv[2])\n"
+        "assert script_path.startswith('/workspace/scoring/')\n"
+        "assert user_path.startswith('/workspace/submission/')\n"
+        "assert reference_path.startswith('/workspace/reference/')\n"
+        "assert sys.argv[3] == '100'\n"
+        "with open(user_path, encoding='utf-8') as user_file:\n"
+        "    json.load(user_file)\n"
+        "with open(reference_path, encoding='utf-8') as reference_file:\n"
+        "    json.load(reference_file)\n"
+        "print(json.dumps({'score': 100, 'details': {'inside_agent_judge': True}}))\n",
         encoding="utf-8",
     )
     assert cli.admin_json("ranking", "upload-reference", str(absolute_id), str(reference))["success"] is True

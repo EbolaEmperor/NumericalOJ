@@ -118,7 +118,22 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     script = tmp_path / "score.py"
     script.write_text(
         "import json\n"
-        "print(json.dumps({'score': 100, 'details': {'ok': True}}))\n",
+        "import os\n"
+        "import sys\n"
+        "script_path = os.path.realpath(__file__)\n"
+        "user_path = os.path.realpath(sys.argv[1])\n"
+        "reference_path = os.path.realpath(sys.argv[2])\n"
+        "max_score = sys.argv[3]\n"
+        "assert script_path.startswith('/workspace/scoring/')\n"
+        "assert user_path.startswith('/workspace/submission/')\n"
+        "assert reference_path.startswith('/workspace/reference/')\n"
+        "assert max_score == '100'\n"
+        "with open(user_path, encoding='utf-8') as user_file:\n"
+        "    user_answer = json.load(user_file)\n"
+        "with open(reference_path, encoding='utf-8') as reference_file:\n"
+        "    reference_answer = json.load(reference_file)\n"
+        "print(json.dumps({'score': 100 if user_answer == reference_answer else 0, "
+        "'details': {'inside_agent_judge': True}}))\n",
         encoding="utf-8",
     )
     assert cli.admin_json("ranking", "upload-reference", str(ranking_id), str(reference))["success"] is True
@@ -169,6 +184,9 @@ def test_ranking_absolute_zip_submission_appeal_and_admin_files(cli, unique_suff
     submission_ids = _ranking_submission_ids(mine)
     assert len(submission_ids) == 1
     sid = submission_ids[0]
+    finished = _wait_for_ranking_submission(cli, ranking_id, sid)
+    assert finished["status"] == "Accepted"
+    assert float(finished["score"]) == 100.0
     assert cli.admin_json("ranking", "submissions", str(ranking_id), "--username", username)["count"] == 1
     assert cli.admin_json("ranking", "bulk-filter", str(ranking_id), "--username", username)["success"] is True
     assert cli.admin_json("ranking", "bulk-start", str(ranking_id), "--submission-ids", str(sid))["success"] is True
