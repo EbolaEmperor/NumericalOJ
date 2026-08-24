@@ -2795,6 +2795,103 @@ def list_elo_matches_for_submission(submission_id, limit=20):
         conn.close()
 
 
+def search_active_elo_submissions(competition_id, username_q=None, *, limit=50):
+    """按用户名模糊查找当前仍在 ELO 池中的在役提交。"""
+    q = str(username_q or '').strip()
+    limit = max(1, min(int(limit or 50), 200))
+    where_sql = """
+        WHERE competition_id = %s
+          AND status = 'Active'
+          AND elo_in_pool = 1
+          AND elo_rating IS NOT NULL
+    """
+    params = [int(competition_id)]
+    if q:
+        where_sql += " AND username LIKE %s"
+        params.append(f"%{q}%")
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, username, elo_rating, elo_match_count, created_at
+                FROM ranking_submissions
+                {where_sql}
+                ORDER BY username ASC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params) + (limit,),
+            )
+            return cursor.fetchall() or []
+    finally:
+        conn.close()
+
+
+def get_active_elo_trajectory_rows(competition_id, submission_ids):
+    """返回所选在役提交及其全部 ELO 对战快照，供轨迹分析使用。
+
+    元数据只接受当前 ``Active + elo_in_pool`` 的提交；对战行按时间正序返回，
+    包含失败占位行，让调用方可以完整表达每一次被记录的对战。
+    """
+    ids = []
+    seen = set()
+    for raw_id in submission_ids or []:
+        submission_id = int(raw_id)
+        if submission_id > 0 and submission_id not in seen:
+            seen.add(submission_id)
+            ids.append(submission_id)
+    if not ids:
+        return [], []
+
+    placeholders = ','.join(['%s'] * len(ids))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, username, elo_rating, elo_match_count, created_at
+                FROM ranking_submissions
+                WHERE competition_id = %s
+                  AND status = 'Active'
+                  AND elo_in_pool = 1
+                  AND elo_rating IS NOT NULL
+                  AND id IN ({placeholders})
+                """,
+                (int(competition_id),) + tuple(ids),
+            )
+            submissions = cursor.fetchall() or []
+            active_ids = {int(row['id']) for row in submissions}
+            if not active_ids:
+                return [], []
+
+            active_placeholders = ','.join(['%s'] * len(active_ids))
+            active_params = tuple(sorted(active_ids))
+            cursor.execute(
+                f"""
+                SELECT m.id, m.submission_a_id, m.submission_b_id, m.winner,
+                       m.rating_a_before, m.rating_a_after,
+                       m.rating_b_before, m.rating_b_after,
+                       m.created_at,
+                       sa.username AS username_a,
+                       sb.username AS username_b
+                FROM ranking_elo_matches m
+                LEFT JOIN ranking_submissions sa ON sa.id = m.submission_a_id
+                LEFT JOIN ranking_submissions sb ON sb.id = m.submission_b_id
+                WHERE m.competition_id = %s
+                  AND (
+                    m.submission_a_id IN ({active_placeholders})
+                    OR m.submission_b_id IN ({active_placeholders})
+                  )
+                ORDER BY m.created_at ASC, m.id ASC
+                """,
+                (int(competition_id),) + active_params + active_params,
+            )
+            return submissions, cursor.fetchall() or []
+    finally:
+        conn.close()
+
+
 def rebuild_elo_history(competition_id):
     """重放该赛事现存的所有 ranking_elo_matches，按 (created_at ASC, id ASC) 顺序
     重新计算每场的 rating_a_before / after / rating_b_before / after，并把每份

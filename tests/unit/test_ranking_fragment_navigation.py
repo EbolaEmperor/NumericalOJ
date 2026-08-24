@@ -372,8 +372,141 @@ def test_matches_fragment_bypasses_stale_list_cache(monkeypatch):
     response = client.get('/ranking/24/?tab=matches&fragment=1')
 
     assert response.status_code == 200
-    assert response.get_json()['tab'] == 'matches'
+    payload = response.get_json()
+    assert payload['tab'] == 'matches'
+    assert '观察变化' in payload['html']
+    assert 'data-elo-trajectory-viewer' in payload['html']
+    assert '重构历史轨迹' not in payload['html']
     assert calls == [(24, 1, ranking_routes.MATCHES_PER_PAGE, None)]
+
+
+def test_elo_trajectory_search_is_available_to_normal_user(monkeypatch):
+    app = _app(monkeypatch)
+    client = _logged_in_client(app)
+    calls = []
+
+    def search(competition_id, username_q, limit):
+        calls.append((competition_id, username_q, limit))
+        return [{
+            'id': 71,
+            'username': 'alice',
+            'elo_rating': 1524.5,
+            'elo_match_count': 6,
+            'created_at': '2026-08-24 10:00:00',
+        }]
+
+    monkeypatch.setattr(
+        ranking_routes.elo_trajectories,
+        'search_active_elo_submissions',
+        search,
+    )
+
+    response = client.get('/ranking/24/elo/trajectory/submissions?q=ali')
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['success'] is True
+    assert payload['submissions'] == [{
+        'id': 71,
+        'username': 'alice',
+        'rating': 1524.5,
+        'match_count': 6,
+        'created_at': '2026-08-24 10:00:00',
+    }]
+    assert payload['max_selected'] == ranking_routes.elo_trajectories.MAX_SELECTED
+    assert calls == [(24, 'ali', ranking_routes.elo_trajectories.SEARCH_LIMIT + 1)]
+
+
+def test_elo_trajectory_analysis_returns_initial_and_every_recorded_match(monkeypatch):
+    app = _app(monkeypatch)
+    client = _logged_in_client(app)
+    monkeypatch.setattr(
+        ranking_routes.elo_trajectories,
+        'get_active_elo_trajectory_rows',
+        lambda competition_id, submission_ids: (
+            [{
+                'id': 71,
+                'username': 'alice',
+                'elo_rating': 1516.0,
+                'elo_match_count': 1,
+                'created_at': '2026-08-24 09:00:00',
+            }],
+            [
+                {
+                    'id': 81,
+                    'submission_a_id': 71,
+                    'submission_b_id': 72,
+                    'winner': 1,
+                    'rating_a_before': 1500.0,
+                    'rating_a_after': 1516.0,
+                    'rating_b_before': 1500.0,
+                    'rating_b_after': 1484.0,
+                    'username_a': 'alice',
+                    'username_b': 'bob',
+                    'created_at': '2026-08-24 10:00:00',
+                },
+                {
+                    'id': 82,
+                    'submission_a_id': 73,
+                    'submission_b_id': 71,
+                    'winner': -1,
+                    'rating_a_before': 1490.0,
+                    'rating_a_after': 1490.0,
+                    'rating_b_before': 1516.0,
+                    'rating_b_after': 1516.0,
+                    'username_a': 'carol',
+                    'username_b': 'alice',
+                    'created_at': '2026-08-24 11:00:00',
+                },
+            ],
+        ),
+    )
+
+    response = client.post(
+        '/ranking/24/elo/trajectory',
+        json={'submission_ids': [71]},
+    )
+
+    assert response.status_code == 200
+    series = response.get_json()['series'][0]
+    assert series['submission_id'] == 71
+    assert series['match_count'] == 1
+    assert series['recorded_match_count'] == 2
+    assert [point['sequence'] for point in series['points']] == [0, 1, 2]
+    assert [point['rating'] for point in series['points']] == [1500.0, 1516.0, 1516.0]
+    assert [point['participated'] for point in series['points']] == [False, True, True]
+    assert series['points'][1]['opponent'] == 'bob'
+    assert series['points'][1]['result'] == 'win'
+    assert series['points'][2]['opponent'] == 'carol'
+    assert series['points'][2]['result'] == 'failed'
+
+
+def test_elo_trajectory_analysis_rejects_submission_retired_after_selection(monkeypatch):
+    app = _app(monkeypatch)
+    client = _logged_in_client(app)
+    monkeypatch.setattr(
+        ranking_routes.elo_trajectories,
+        'get_active_elo_trajectory_rows',
+        lambda competition_id, submission_ids: ([], []),
+    )
+
+    response = client.post(
+        '/ranking/24/elo/trajectory',
+        json={'submission_ids': [71]},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()['missing_submission_ids'] == [71]
+
+
+def test_elo_trajectory_endpoints_follow_competition_visibility(monkeypatch):
+    app = _app(monkeypatch, competition=_competition(is_active=0))
+    client = _logged_in_client(app)
+
+    response = client.get('/ranking/24/elo/trajectory/submissions')
+
+    assert response.status_code == 403
+    assert response.get_json()['message'] == '该比赛未开放'
 
 
 def test_navigation_cache_coalesces_global_snapshot_but_keeps_user_quota(monkeypatch):

@@ -194,6 +194,7 @@
     if (!root) return;
     if (window.MathCurveLoader) window.MathCurveLoader.hydrate(root);
     if (window.ChoicePicker) window.ChoicePicker.init(root);
+    if (window.EloTrajectoryViewer) window.EloTrajectoryViewer.init(root);
     paintIdenticons(root);
     observeControls(root);
     var markdownRoot = root.matches && root.matches('[data-numoj-markdown]') ?

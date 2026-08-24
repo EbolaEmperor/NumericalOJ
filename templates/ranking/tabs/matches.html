@@ -30,6 +30,14 @@
                 匹配引擎已暂停
               {% endif %}
             </span>
+            <button type="button"
+                    class="matches-rebuild-btn matches-observe-btn"
+                    data-bs-toggle="modal"
+                    data-bs-target="#eloTrajectoryModal"
+                    title="选择在役提交并观察每场对战后的 ELO 变化">
+              <i class="fas fa-chart-line" aria-hidden="true"></i>
+              <span>观察变化</span>
+            </button>
             {% if is_admin and matches %}
               <form method="POST" class="matches-rebuild-form"
                     action="{{ url_for('ranking.ranking_elo_rebuild_history', competition_id=competition.id) }}"
@@ -47,6 +55,61 @@
         <div class="matches-scroll">
           <div id="matchesDynamic">
             {% include 'ranking/components/matches.html' %}
+          </div>
+        </div>
+      </div>
+
+      <div class="modal fade elo-trajectory-modal" id="eloTrajectoryModal" tabindex="-1"
+           aria-label="观察得分变化" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content"
+               data-elo-trajectory-viewer
+               data-search-url="{{ url_for('ranking.ranking_elo_trajectory_submissions', competition_id=competition.id) }}"
+               data-trajectory-url="{{ url_for('ranking.ranking_elo_trajectory', competition_id=competition.id) }}"
+               data-max-selected="{{ elo_trajectory_max_selected }}">
+            <div class="modal-body">
+              <div class="elo-observer-picker">
+                <section class="elo-observer-search-panel" aria-label="查找提交">
+                  <div class="submissions-search elo-observer-search">
+                    <i class="fas fa-search" aria-hidden="true"></i>
+                    <input type="search" class="form-control form-control-sm"
+                           data-elo-search-input
+                           placeholder="按用户名筛选…" autocomplete="off"
+                           aria-controls="eloTrajectoryOptions"
+                           aria-expanded="false">
+                  </div>
+                  <div class="elo-observer-dropdown" id="eloTrajectoryOptions"
+                       data-elo-search-results role="listbox" aria-multiselectable="true" hidden></div>
+                  <div class="elo-observer-search-note" data-elo-search-note aria-live="polite"></div>
+                </section>
+
+                <div class="elo-observer-selected" data-elo-selected-list
+                     aria-label="已选提交" aria-live="polite">
+                  <div class="elo-observer-selected-empty">
+                    <i class="fas fa-wave-square" aria-hidden="true"></i>
+                    <span>尚未选择提交</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="elo-trajectory-status" data-elo-analysis-status role="status" hidden></div>
+              <section class="elo-trajectory-result" data-elo-result aria-label="得分轨迹" hidden>
+                <div class="elo-trajectory-chart-shell" data-elo-chart-shell>
+                  <div class="elo-trajectory-chart" data-elo-chart></div>
+                  <div class="elo-trajectory-tooltip" data-elo-tooltip hidden></div>
+                </div>
+                <div class="elo-trajectory-legend" data-elo-legend></div>
+              </section>
+            </div>
+            <div class="modal-footer elo-trajectory-footer">
+              <div>
+                <button type="button" class="elo-trajectory-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="elo-trajectory-primary" data-elo-analyze disabled>
+                  <i class="fas fa-play" aria-hidden="true"></i>
+                  <span>开始分析</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

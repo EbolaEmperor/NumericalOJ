@@ -1824,6 +1824,7 @@
 {# V2 覆盖层必须在旧 tab 样式之后加载；编辑比赛内部仍沿用原版样式。 #}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/detail-v2.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/content-v2.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/elo-trajectories.css') }}">
 {% include 'ranking/modals/media_preview.html' %}
 {% endblock %}
 
@@ -1832,5 +1833,6 @@
 <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
 <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
+<script src="{{ url_for('static', filename='app/ranking/elo-trajectories.js') }}"></script>
 <script src="{{ url_for('static', filename='app/ranking/detail-v2.js') }}"></script>
 {% endblock %}
