@@ -37,6 +37,7 @@ from oj_modules.tasks.agent.conversation import extract_agent_conclusion
 from oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
     AgentUsageHardStopError,
+    extract_harness_failure_detail,
     normalize_native_session_id,
     read_agent_native_session_id,
     run_agent_harness,
@@ -703,7 +704,7 @@ def register_agent_run_turn_task(celery_app):
                 conclusion=conclusion,
             )
         if run_result.returncode != 0:
-            detail = (run_result.stderr or run_result.stdout).strip()[-800:]
+            detail = extract_harness_failure_detail(run_result, max_chars=800)
             message = f"Agent harness 异常退出（{run_result.returncode}）"
             if detail:
                 message += f"：{detail}"
