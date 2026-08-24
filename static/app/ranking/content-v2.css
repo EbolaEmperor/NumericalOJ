@@ -2256,9 +2256,15 @@
     place-items: center;
   }
 
+  /* 平局徽章：与胜者徽章同为 25px 圆形。用两条横线几何绘出"="，
+     由 place-items:center 精确居中——不依赖等宽字体字形度量，
+     避免小字号下因字体基线差异导致的偏移与过小问题。 */
   .ranking-v2-detail .match-vs-draw::after {
-    content: "=";
-    font: 700 7px/1 var(--rkv2-mono);
+    content: "";
+    width: 10px;
+    height: 6px;
+    border-top: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
   }
 
   .ranking-v2-detail .match-vs-failed {
