@@ -2,13 +2,12 @@
 """ELO 隔离对局运行时（elo_runtime）单测。
 
 隔离运行时把"如何启动被测代码、用什么协议交互"的决定权交还给评分脚本：
-工作容器内的可信运行器只提供通用原语（spawn/interact/kill/status/exec/fetch），
-不再假定 ``bot.py`` 或 Python。覆盖三层：
+工作容器内的可信运行器只提供通用原语（spawn/interact/kill/status/exec/fetch）。
+覆盖三层：
 
   - bot_runner：以真实子进程运行可信运行器，验证 spawn/interact/kill/status、
     容器内计时、超时强杀、until 条件、exec、fetch 与路径越界防护；
-  - elo_host_api：以管道伪造仲裁通道，验证原语帧协议、客户端超时，以及
-    ``call_bot``/``wait_ready``/``bot_status`` 兼容封装（含缺 bot.py、坏输出）；
+  - elo_host_api：以管道伪造仲裁通道，验证原语帧协议与客户端超时；
   - arbiter（IsolatedEloMatch）：注入本地进程 spawner（不起 docker）验证
     容器命令隔离参数、新 RPC 路由、裁决解析、超时与清理语义。
 """
@@ -391,15 +390,7 @@ def _install_fake_channel(monkeypatch):
     monkeypatch.setattr(elo_host_api, "_stdout_fd_for_rpc", judge_stderr_w)
     monkeypatch.setattr(elo_host_api, "_buffer", b"")
     monkeypatch.setattr(elo_host_api, "DEFAULT_CALL_GRACE_SECONDS", 0.3)
-    _reset_bot_state(monkeypatch)
     return judge_stderr_r, judge_stdin_w
-
-
-def _reset_bot_state(monkeypatch):
-    monkeypatch.setattr(elo_host_api, "_bot_state", {
-        "A": {"phase": "new", "handshake_ms": None, "error": None},
-        "B": {"phase": "new", "handshake_ms": None, "error": None},
-    })
 
 
 def _start_scripted_arbiter(arbiter_reads, arbiter_writes, handler):
@@ -482,72 +473,6 @@ def test_host_api_rejects_bad_side(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# elo_host_api：call_bot / wait_ready / bot_status 兼容封装
-# ---------------------------------------------------------------------------
-
-def _compat_handler_factory(ready_line='{"ready": true}', turn_line='{"move": "D"}',
-                            bot_present=True):
-    state = {"interacts": 0}
-
-    def handler(request):
-        method = request["method"]
-        if method == "fetch_files":
-            files = {"bot.py": _b64("print(1)")} if bot_present else {}
-            return {"ok": True, "files": files}
-        if method == "spawn":
-            return {"ok": True, "pid": 7}
-        if method == "kill":
-            return {"ok": True, "was_running": True}
-        if method == "interact":
-            state["interacts"] += 1
-            line = ready_line if state["interacts"] == 1 else turn_line
-            return {"ok": True, "output": _b64(line), "elapsed_ms": 3.5}
-        return {"ok": False, "error": "bad_request"}
-
-    return handler
-
-
-def test_host_api_call_bot_compat_round_trip(monkeypatch):
-    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
-    thread, stop = _start_scripted_arbiter(
-        arbiter_reads, arbiter_writes, _compat_handler_factory())
-    reply = elo_host_api.call_bot("A", {"round": 7}, timeout_ms=1000)
-    stop["flag"] = True
-    assert reply["ok"] is True and reply["response"] == {"move": "D"}
-    assert reply["elapsed_ms"] == 3.5
-    # 再次调用不会重复握手（状态已 ready）。
-    status = elo_host_api.bot_status("A")
-    assert status["ready"] is True and status["handshake_ms"] >= 0
-
-
-def test_host_api_wait_ready_missing_bot(monkeypatch):
-    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
-    thread, stop = _start_scripted_arbiter(
-        arbiter_reads, arbiter_writes, _compat_handler_factory(bot_present=False))
-    status = elo_host_api.wait_ready("A", timeout_ms=5000)
-    stop["flag"] = True
-    assert status["ok"] is True and status["ready"] is False
-    assert "bot.py" in status["error"]
-    # call_bot 应快速失败并保持错误语义。
-    reply = elo_host_api.call_bot("A", {}, timeout_ms=100)
-    assert reply["ok"] is False and reply["error"] == "bot_not_running"
-    assert "bot.py" in reply["message"]
-
-
-def test_host_api_call_bot_compat_bad_output(monkeypatch):
-    arbiter_reads, arbiter_writes = _install_fake_channel(monkeypatch)
-    thread, stop = _start_scripted_arbiter(
-        arbiter_reads, arbiter_writes,
-        _compat_handler_factory(turn_line="not-json"))
-    reply = elo_host_api.call_bot("A", {"round": 0}, timeout_ms=1000)
-    stop["flag"] = True
-    assert reply["ok"] is False and reply["error"] == "bad_output"
-    # 坏输出后 bot 置为死亡，后续调用快速失败。
-    again = elo_host_api.call_bot("A", {}, timeout_ms=100)
-    assert again["ok"] is False and again["error"] == "bot_not_running"
-
-
-# ---------------------------------------------------------------------------
 # 仲裁者：本地进程注入（不依赖 docker）
 # ---------------------------------------------------------------------------
 
@@ -606,28 +531,41 @@ def _run_isolated_match(tmp_path, judge_source, timeout_seconds=60,
         elo_container.AGENT_JUDGE_WORKSPACE_ROOT = old_root
 
 
-COMPAT_JUDGE_SCRIPT = """
+BOT_PROTOCOL_JUDGE_SCRIPT = """
 import json
 import elo_host_api
 
-ready_a = elo_host_api.wait_ready("A", timeout_ms=10000)
-ready_b = elo_host_api.wait_ready("B", timeout_ms=10000)
-reply = elo_host_api.call_bot("A", {"type": "turn", "round": 0}, timeout_ms=1000)
+# 用原语显式驱动"ready 握手 + 换行 JSON 回合"协议（入口/协议均由脚本自定）。
+def run_side(side):
+    check = elo_host_api.fetch_files(side, ["bot.py"], timeout_ms=10000)
+    spawn = elo_host_api.spawn(side, ["python3", "-u", "bot.py"], timeout_ms=10000)
+    ready = elo_host_api.interact(side, timeout_ms=10000, until="newline")
+    turn = elo_host_api.interact(
+        side, data='{"type": "turn", "round": 0}\\n', timeout_ms=1000,
+        until="newline")
+    elo_host_api.kill(side)
+    return check, spawn, ready, turn
+
+check_a, spawn_a, ready_a, turn_a = run_side("A")
+check_b, spawn_b, ready_b, turn_b = run_side("B")
 print(json.dumps({"winner": 1, "details": {"format": "text",
       "content": json.dumps({"ready_a": ready_a, "ready_b": ready_b,
-                              "reply": reply}, ensure_ascii=False)}}))
+                              "turn_a": turn_a, "turn_b": turn_b},
+                             ensure_ascii=False)}}))
 """
 
 
-def test_arbiter_runs_full_match_via_compat_wrappers(tmp_path):
+def test_arbiter_runs_full_match_with_primitives(tmp_path):
     (winner, details), removed, _ = _run_isolated_match(
-        tmp_path, COMPAT_JUDGE_SCRIPT)
+        tmp_path, BOT_PROTOCOL_JUDGE_SCRIPT)
     assert winner == 1
     payload = json.loads(details["content"])
-    assert payload["ready_a"]["ready"] is True
-    assert payload["ready_b"]["ready"] is True
-    assert payload["reply"]["ok"] is True
-    assert payload["reply"]["response"] == {"move": "U"}
+    assert payload["ready_a"]["ok"] is True
+    assert payload["ready_b"]["ok"] is True
+    assert json.loads(payload["ready_a"]["output"]) == {"ready": True}
+    assert json.loads(payload["ready_b"]["output"]) == {"ready": True}
+    assert json.loads(payload["turn_a"]["output"]) == {"move": "U"}
+    assert json.loads(payload["turn_b"]["output"]) == {"move": "U"}
     assert len(removed) == 3  # 两个工作容器 + 裁判容器
 
 
@@ -672,10 +610,10 @@ def test_arbiter_runs_free_form_primitives_non_python_entry(tmp_path):
 
 
 def test_arbiter_startup_fault_reported_to_judge(tmp_path):
-    # B 方作品缺少 bot.py：兼容封装的 wait_ready 应报 ready=False。
+    # B 方入口不存在：原语层 spawn 应报 exec_failed，评分脚本据此裁决。
     judge = (
         "import json\nimport elo_host_api\n"
-        "status = elo_host_api.wait_ready('B', timeout_ms=10000)\n"
+        "status = elo_host_api.spawn('B', ['./no_such_entry'], timeout_ms=10000)\n"
         "print(json.dumps({'winner': 1, 'details': {'format': 'text',\n"
         "      'content': json.dumps(status, ensure_ascii=False)}}))\n"
     )
@@ -683,8 +621,7 @@ def test_arbiter_startup_fault_reported_to_judge(tmp_path):
         tmp_path, judge, b_files={"readme.txt": "no bot"})
     assert winner == 1
     status = json.loads(details["content"])
-    assert status["ok"] is True and status["ready"] is False
-    assert "bot.py" in status["error"]
+    assert status["ok"] is False and status["error"] == "exec_failed"
 
 
 def test_arbiter_judge_failure_becomes_runtime_error(tmp_path):

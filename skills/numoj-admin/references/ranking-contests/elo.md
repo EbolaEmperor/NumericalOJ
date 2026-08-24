@@ -105,16 +105,11 @@ elo_host_api.fetch_files("A", ["report.txt"])
 - 脚本仍需在 stdout 最后一行输出 `{"winner": 0|1|2, "details": ...}`，输出协议
   与单容器运行时相同。
 
-**兼容封装**：沿用"作品根目录 `bot.py` + `{"ready": true}` 握手 + 换行 JSON 回合"
-这一约定的既有评分脚本，可继续用 `call_bot(side, payload, timeout_ms)`、
-`wait_ready(side, timeout_ms)`、`bot_status(side)`——它们在内部就是用上述原语实现，
-行为与旧版一致（含 `elapsed_ms`、超时强杀与错误码）。新比赛建议直接使用原语。
-
 回合制比赛的完整官方示例见
 [elo-isolated 示例]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests/elo-isolated/)
 （含比赛参数快照、题目描述与完整评分脚本）。
 
-### 时限与超时配置
+## 时限与超时配置
 
 - 比赛级 `--script-timeout`（`scoring_script_timeout_seconds`）是**整场对战**的总
   时限（含容器启动与全部回合）。回合制比赛按最坏情况估算：
@@ -124,7 +119,7 @@ elo_host_api.fetch_files("A", ["report.txt"])
   `ELO_ISOLATED_WORKER_STARTUP_GRACE_SECONDS`、`ELO_ISOLATED_CALL_GRACE_MS`、
   `ELO_ISOLATED_EXEC_GRACE_MS` 调整（见 `docs/runtime-configuration.md`）。
 
-### 运行时切换
+## 运行时切换
 
 ```bash
 # 两种运行时可按比赛内容互切；评分脚本需与所选运行时的协议匹配
@@ -136,9 +131,17 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competiti
 
 运行时切换不影响历史对战记录与 ELO 分数；新对战立即按所选运行时执行。
 
+## 评分脚本的结果输出格式
+
+评分脚本需要以 json 的格式输出对战结果，将 json 直接输出到标准输出流中。格式如下：
+
+```json
+{"winner": 1, "details": {"format": "text/html", "content": "..."}}
+```
+
 ### 文本详情
 
-使用 `format: "text"` 时，`content` 是原样展示的纯文本：
+使用 `format: "text"` 时，`content` 是原样展示的纯文本，例如：
 
 ```json
 {"winner": 1, "details": {"format": "text", "content": "A 的方案更优"}}
@@ -161,9 +164,11 @@ print(json.dumps({
 
 ### HTML 详情
 
+如果对战题目是一个对抗式游戏，或者是其它适合可视化展示的场景，建议优先考虑使用 HTML 格式输出详情。
+
 使用 `format: "html"` 时，`content` 会作为 HTML 片段放入独立沙箱。片段可以包含
 `<style>`、`<script>`、图表、复杂布局和交互控件，并可用可选的 `height` 指定
-240–1200px 的展示高度：
+240–1200px 的展示高度。下面是一个以 HTML 格式输出的评分脚本示例：
 
 ```python
 import json
@@ -192,6 +197,8 @@ print(json.dumps({
 HTML 允许加载任意 HTTP(S) 外部脚本、样式、图片和媒体，也允许发起 HTTP(S) 与 WebSocket
 请求。它不具备主站同源权限，不能访问 NumericalOJ 的 DOM、Cookie 或本地存储；表单、弹窗、
 顶层页面控制、对象和嵌套页面仍被禁止。
+
+## ELO 对战匹配的启动与停止
 
 上传评分脚本后才可启动匹配。停止、重置、删除对战记录或重建 rating 均会影响所有参赛者，
 操作前先检查对战列表。

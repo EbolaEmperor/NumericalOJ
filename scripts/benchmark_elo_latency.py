@@ -14,12 +14,12 @@
   - ``timing``：计时语义校验——0.95 秒的 bot 必须成功、1.05 秒的 bot 必须
     被判超时，且运行器报告的 ``elapsed_ms`` 与实际一致。
   - ``full``：经真实仲裁者跑一场由裁判容器驱动的完整对局（裁判→仲裁者→
-    双工作容器全链路，走 ``elo_host_api`` 兼容封装）。
+    双工作容器全链路，走 ``elo_host_api`` 原语）。
   - ``startup``：工作容器从启动到被测进程握手就绪的耗时（容器→运行器→
     ``spawn``→读到 bot 首行）。
 
 运行器就绪帧只表示可信运行器已启动；被测进程由 ``spawn`` 显式启动，入口与
-协议不再固定为 ``bot.py``。
+协议由评分脚本自由决定（本基准的示例作品采用 bot.py + 换行 JSON）。
 
 只依赖本机 Docker；镜像默认 ``python:3.12-slim``，可用 ``--image`` 换成
 ``numericaloj-agent-judge:latest`` 在生产同构环境复测。请勿在生产主机运行。
@@ -278,15 +278,24 @@ import json, time
 import elo_host_api
 
 TURNS = {turns}
-status_a = elo_host_api.wait_ready("A", timeout_ms=15000)
-status_b = elo_host_api.wait_ready("B", timeout_ms=15000)
+
+def start(side):
+    spawn = elo_host_api.spawn(side, ["python3", "-u", "bot.py"], timeout_ms=15000)
+    if not spawn.get("ok"):
+        return spawn
+    return elo_host_api.interact(side, timeout_ms=15000, until="newline")
+
+status_a = start("A")
+status_b = start("B")
 host_rtts = []
 inner = []
 fault = None
 for round_index in range(TURNS):
     started = time.monotonic()
-    reply = elo_host_api.call_bot(
-        "A", {{"type": "turn", "round": round_index}}, timeout_ms=1000)
+    payload = json.dumps({{"type": "turn", "round": round_index}},
+                         separators=(",", ":")) + "\\n"
+    reply = elo_host_api.interact("A", data=payload, timeout_ms=1000,
+                                  until="newline")
     host_ms = (time.monotonic() - started) * 1000
     if not reply.get("ok"):
         fault = reply
