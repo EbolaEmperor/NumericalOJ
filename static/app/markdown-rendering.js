@@ -27,25 +27,17 @@
     "language-ksh",
     "language-openrc",
   ]);
-  const SHIKI_DARK_PLUS_COLORS = new Set([
-    "000080",
-    "4ec9b0",
-    "4fc1ff",
-    "569cd6",
-    "646695",
-    "6796e6",
-    "6a9955",
-    "808080",
-    "9cdcfe",
-    "b5cea8",
-    "c586c0",
-    "c8c8c8",
-    "ce9178",
-    "d16969",
-    "d4d4d4",
-    "d7ba7d",
-    "dcdcaa",
-    "f44747",
+  const SHIKI_GITHUB_LIGHT_COLORS = new Set([
+    "0550ae",
+    "0a3069",
+    "116329",
+    "1f2328",
+    "57606a",
+    "6e7781",
+    "82071e",
+    "8250df",
+    "953800",
+    "cf222e",
   ]);
   const STRUCTURED_LANGUAGE_BY_CLASS = new Map([
     ["language-c", "c"],
@@ -243,7 +235,11 @@
     button.classList.toggle("is-copied", copied);
     button.classList.toggle("is-error", failed);
     button.setAttribute("aria-label", label);
-    button.title = label;
+    if (state === "idle") {
+      button.title = label;
+    } else {
+      button.removeAttribute("title");
+    }
     if (icon) icon.className = `numoj-code-copy-icon fas ${
       copied ? "fa-check" : "fa-copy"
     }`;
@@ -362,7 +358,7 @@
 
   function shikiColorClass(value) {
     const color = String(value || "").trim().replace(/^#/, "").toLowerCase();
-    return SHIKI_DARK_PLUS_COLORS.has(color)
+    return SHIKI_GITHUB_LIGHT_COLORS.has(color)
       ? `numoj-shiki-color-${color}`
       : "";
   }
@@ -547,7 +543,7 @@
         block.dataset.numojStructuredTextmateState = "fallback";
         if (!textMateWarningShown) {
           console.warn(
-            "文章代码块 Dark+ 词法高亮失败，已保留 Pygments 着色。",
+            "文章代码块 GitHub Light 词法高亮失败，已保留 Pygments 着色。",
             error,
           );
           textMateWarningShown = true;

@@ -59,7 +59,7 @@ _MARKDOWN_LANGUAGE_PREAMBLES = {
     "matlab": "",
 }
 _MARKDOWN_CACHE_KEY_VERSION = (
-    b"markdown-editor-dark-plus-v4-tokens-12000-inactive-regions\0"
+    b"markdown-github-light-default-v5-tokens-12000-inactive-regions\0"
 )
 _MARKDOWN_SOURCE_MAX_BYTES = 512 * 1024
 _MARKDOWN_MAX_TOKENS = 12_000

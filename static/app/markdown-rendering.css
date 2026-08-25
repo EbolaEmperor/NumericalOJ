@@ -8,6 +8,10 @@
   --numoj-markdown-accent-soft: #fff7ed;
   --numoj-markdown-danger: #b91c1c;
   --numoj-markdown-danger-soft: #fff7f7;
+  --numoj-code-canvas: #f6f8fa;
+  --numoj-code-ink: #1f2328;
+  --numoj-code-border: #d0d7de;
+  --numoj-code-muted: #57606a;
 }
 
 /*
@@ -25,10 +29,10 @@
 .numoj-problem-code-rendering pre {
   overflow-x: auto;
   padding: 0.75rem 1rem;
-  border: 0;
+  border: 1px solid var(--numoj-code-border);
   border-radius: 9px;
-  background: #18181b;
-  color: #f4f4f5;
+  background: var(--numoj-code-canvas);
+  color: var(--numoj-code-ink);
   font-size: 0.84rem;
   line-height: 1.65;
 }
@@ -55,15 +59,16 @@
   overflow: hidden;
   margin: 0 0 1em;
   border-radius: 9px;
-  background: #0d1117;
-  color: #e6edf3;
+  border: 1px solid var(--numoj-code-border);
+  background: var(--numoj-code-canvas);
+  color: var(--numoj-code-ink);
 }
 
 .numoj-markdown .codehilite pre {
   margin: 0;
-  border-color: #30363d;
-  background: #0d1117;
-  color: #e6edf3;
+  border: 0;
+  background: var(--numoj-code-canvas);
+  color: var(--numoj-code-ink);
   font-family: var(--numoj-markdown-mono);
 }
 
@@ -74,8 +79,8 @@
 }
 
 /*
- * 编辑器支持的文章语言切到与 Monaco Dark+ 完全相同的画布；
- * 其他语言继续沿用既有 GitHub Dark Pygments 主题。
+ * 编辑器支持的文章语言仍使用同一套 TextMate grammar，但 Markdown 画布
+ * 统一切到 GitHub Light。语言服务的 semantic token 会在词法层之后叠加。
  */
 .numoj-markdown
   .codehilite:is(
@@ -94,8 +99,8 @@
     .language-lean,
     .language-lean4
   ) {
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--numoj-code-canvas);
+  color: var(--numoj-code-ink);
 }
 
 .numoj-markdown
@@ -116,9 +121,9 @@
     .language-lean4
   )
   pre {
-  border-color: #3e3e42;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  border: 0;
+  background: var(--numoj-code-canvas);
+  color: var(--numoj-code-ink);
 }
 
 .numoj-markdown .numoj-code-frame {
@@ -143,15 +148,15 @@
   height: 34px;
   padding: 0;
   place-items: center;
-  border: 1px solid #3d444d;
+  border: 1px solid transparent;
   border-radius: 8px;
-  opacity: 0;
-  background: rgb(22 27 34 / 94%);
-  box-shadow: 0 5px 18px rgb(0 0 0 / 28%);
-  color: #b1bac4;
+  opacity: 0.72;
+  background: transparent;
+  box-shadow: none;
+  color: var(--numoj-code-muted);
   cursor: pointer;
-  pointer-events: none;
-  transform: translateY(-3px);
+  pointer-events: auto;
+  transform: none;
   transition:
     opacity 140ms ease,
     transform 140ms ease,
@@ -170,27 +175,27 @@
 }
 
 .numoj-markdown .numoj-code-copy:hover {
-  border-color: #6e7681;
-  background: #21262d;
-  color: #f0f6fc;
+  border-color: #252524;
+  background: #252524;
+  color: #fff;
 }
 
 .numoj-markdown .numoj-code-copy:focus-visible {
-  border-color: #f97316;
-  outline: 2px solid #fb923c;
+  border-color: #0969da;
+  outline: 2px solid #54aeff;
   outline-offset: 2px;
 }
 
 .numoj-markdown .numoj-code-copy.is-copied {
-  border-color: rgb(63 185 80 / 58%);
-  background: #16351f;
-  color: #7ee787;
+  border-color: transparent;
+  background: transparent;
+  color: #116329;
 }
 
 .numoj-markdown .numoj-code-copy.is-error {
-  border-color: rgb(248 81 73 / 62%);
-  background: #3b1718;
-  color: #ff7b72;
+  border-color: transparent;
+  background: transparent;
+  color: #cf222e;
 }
 
 .numoj-markdown .numoj-code-copy[aria-busy="true"] {
@@ -215,35 +220,35 @@
   white-space: nowrap;
 }
 
-/* Pygments 2.20 class theme：覆盖全部 lexer 共用的 token 层级。 */
+/* GitHub Light 风格的 Pygments class 主题：覆盖全部 lexer 共用 token 层级。 */
 .numoj-markdown .codehilite .hll {
-  background-color: #30363d;
+  background-color: #fff8c5;
 }
 
 .numoj-markdown .codehilite .c,
 .numoj-markdown .codehilite .ch,
 .numoj-markdown .codehilite .cm,
 .numoj-markdown .codehilite .c1 {
-  color: #8b949e;
+  color: #6e7781;
   font-style: italic;
 }
 
 .numoj-markdown .codehilite .cp,
 .numoj-markdown .codehilite .cs {
-  color: #8b949e;
+  color: #6e7781;
   font-weight: 700;
   font-style: italic;
 }
 
 .numoj-markdown .codehilite .cpf {
-  color: #8b949e;
+  color: #6e7781;
   font-style: italic;
 }
 
 .numoj-markdown .codehilite .err,
 .numoj-markdown .codehilite .gr,
 .numoj-markdown .codehilite .gt {
-  color: #ff7b72;
+  color: #82071e;
 }
 
 .numoj-markdown .codehilite .esc,
@@ -252,7 +257,7 @@
 .numoj-markdown .codehilite .p,
 .numoj-markdown .codehilite .pm,
 .numoj-markdown .codehilite .x {
-  color: #e6edf3;
+  color: #1f2328;
 }
 
 .numoj-markdown .codehilite .k,
@@ -261,7 +266,7 @@
 .numoj-markdown .codehilite .kr,
 .numoj-markdown .codehilite .kt,
 .numoj-markdown .codehilite .nn {
-  color: #ff7b72;
+  color: #cf222e;
 }
 
 .numoj-markdown .codehilite .kc,
@@ -275,12 +280,12 @@
 .numoj-markdown .codehilite .vg,
 .numoj-markdown .codehilite .vi,
 .numoj-markdown .codehilite .vm {
-  color: #79c0ff;
+  color: #0550ae;
 }
 
 .numoj-markdown .codehilite .o,
 .numoj-markdown .codehilite .ow {
-  color: #ff7b72;
+  color: #cf222e;
   font-weight: 700;
 }
 
@@ -302,56 +307,56 @@
 .numoj-markdown .codehilite .si,
 .numoj-markdown .codehilite .ss,
 .numoj-markdown .codehilite .sx {
-  color: #a5d6ff;
+  color: #0a3069;
 }
 
 .numoj-markdown .codehilite .dl,
 .numoj-markdown .codehilite .sa,
 .numoj-markdown .codehilite .se,
 .numoj-markdown .codehilite .sr {
-  color: #79c0ff;
+  color: #0550ae;
 }
 
 .numoj-markdown .codehilite .na,
 .numoj-markdown .codehilite .nb,
 .numoj-markdown .codehilite .bp,
 .numoj-markdown .codehilite .nx {
-  color: #e6edf3;
+  color: #1f2328;
 }
 
 .numoj-markdown .codehilite .nc,
 .numoj-markdown .codehilite .ne {
-  color: #f0883e;
+  color: #8250df;
   font-weight: 700;
 }
 
 .numoj-markdown .codehilite .nd,
 .numoj-markdown .codehilite .nf,
 .numoj-markdown .codehilite .fm {
-  color: #d2a8ff;
+  color: #8250df;
   font-weight: 700;
 }
 
 .numoj-markdown .codehilite .ni {
-  color: #ffa657;
+  color: #953800;
 }
 
 .numoj-markdown .codehilite .nt {
-  color: #7ee787;
+  color: #116329;
 }
 
 .numoj-markdown .codehilite .w {
-  color: #6e7681;
+  color: #6e7781;
 }
 
 .numoj-markdown .codehilite .gd {
-  background-color: #490202;
-  color: #ffa198;
+  background-color: #ffebe9;
+  color: #82071e;
 }
 
 .numoj-markdown .codehilite .gi {
-  background-color: #0f5323;
-  color: #56d364;
+  background-color: #dafbe1;
+  color: #116329;
 }
 
 .numoj-markdown .codehilite .ge {
@@ -365,13 +370,13 @@
 
 .numoj-markdown .codehilite .gh,
 .numoj-markdown .codehilite .gu {
-  color: #79c0ff;
+  color: #0550ae;
   font-weight: 700;
 }
 
 .numoj-markdown .codehilite .go,
 .numoj-markdown .codehilite .gp {
-  color: #8b949e;
+  color: #6e7781;
 }
 
 .numoj-markdown .codehilite .gs {
@@ -384,7 +389,7 @@
 
 /*
  * Bash 同步首屏与 Shiki 异常时继续使用 Pygments；这里把 BashLexer 已经
- * 区分出的 shell token 拉开层次，避免增强器加载前出现一片白色。
+ * 区分出的 shell token 拉开层次，避免增强器加载前退化为单色文本。
  */
 .numoj-markdown
   .codehilite:is(
@@ -397,7 +402,7 @@
     .language-openrc
   )
   :is(.c, .ch, .cm, .c1) {
-  color: #6a9955;
+  color: #6e7781;
 }
 
 .numoj-markdown
@@ -411,7 +416,7 @@
     .language-openrc
   )
   :is(.k, .kp) {
-  color: #c586c0;
+  color: #cf222e;
 }
 
 .numoj-markdown
@@ -425,7 +430,7 @@
     .language-openrc
   )
   .nb {
-  color: #dcdcaa;
+  color: #8250df;
   font-weight: 600;
 }
 
@@ -440,7 +445,7 @@
     .language-openrc
   )
   :is(.nv, .vc, .vg, .vi) {
-  color: #9cdcfe;
+  color: #953800;
 }
 
 .numoj-markdown
@@ -454,7 +459,7 @@
     .language-openrc
   )
   :is(.s, .s1, .s2, .sh) {
-  color: #ce9178;
+  color: #0a3069;
 }
 
 .numoj-markdown
@@ -468,7 +473,7 @@
     .language-openrc
   )
   .si {
-  color: #c586c0;
+  color: #0550ae;
 }
 
 .numoj-markdown
@@ -482,7 +487,7 @@
     .language-openrc
   )
   .se {
-  color: #d7ba7d;
+  color: #116329;
 }
 
 .numoj-markdown
@@ -496,28 +501,20 @@
     .language-openrc
   )
   :is(.o, .ow) {
-  color: #d4d4d4;
+  color: #1f2328;
 }
 
-/* Shiki Dark+ 的有限调色板映射为静态类，兼容严格的 style-src CSP。 */
-.numoj-markdown .numoj-shiki-color-000080 { color: #000080; }
-.numoj-markdown .numoj-shiki-color-4ec9b0 { color: #4ec9b0; }
-.numoj-markdown .numoj-shiki-color-4fc1ff { color: #4fc1ff; }
-.numoj-markdown .numoj-shiki-color-569cd6 { color: #569cd6; }
-.numoj-markdown .numoj-shiki-color-646695 { color: #646695; }
-.numoj-markdown .numoj-shiki-color-6796e6 { color: #6796e6; }
-.numoj-markdown .numoj-shiki-color-6a9955 { color: #6a9955; }
-.numoj-markdown .numoj-shiki-color-808080 { color: #808080; }
-.numoj-markdown .numoj-shiki-color-9cdcfe { color: #9cdcfe; }
-.numoj-markdown .numoj-shiki-color-b5cea8 { color: #b5cea8; }
-.numoj-markdown .numoj-shiki-color-c586c0 { color: #c586c0; }
-.numoj-markdown .numoj-shiki-color-c8c8c8 { color: #c8c8c8; }
-.numoj-markdown .numoj-shiki-color-ce9178 { color: #ce9178; }
-.numoj-markdown .numoj-shiki-color-d16969 { color: #d16969; }
-.numoj-markdown .numoj-shiki-color-d4d4d4 { color: #d4d4d4; }
-.numoj-markdown .numoj-shiki-color-d7ba7d { color: #d7ba7d; }
-.numoj-markdown .numoj-shiki-color-dcdcaa { color: #dcdcaa; }
-.numoj-markdown .numoj-shiki-color-f44747 { color: #f44747; }
+/* Shiki GitHub Light 的有限调色板映射为静态类，兼容严格的 style-src CSP。 */
+.numoj-markdown .numoj-shiki-color-0550ae { color: #0550ae; }
+.numoj-markdown .numoj-shiki-color-0a3069 { color: #0a3069; }
+.numoj-markdown .numoj-shiki-color-116329 { color: #116329; }
+.numoj-markdown .numoj-shiki-color-1f2328 { color: #1f2328; }
+.numoj-markdown .numoj-shiki-color-57606a { color: #57606a; }
+.numoj-markdown .numoj-shiki-color-6e7781 { color: #6e7781; }
+.numoj-markdown .numoj-shiki-color-82071e { color: #82071e; }
+.numoj-markdown .numoj-shiki-color-8250df { color: #8250df; }
+.numoj-markdown .numoj-shiki-color-953800 { color: #953800; }
+.numoj-markdown .numoj-shiki-color-cf222e { color: #cf222e; }
 
 .numoj-markdown .numoj-shiki-token.is-italic { font-style: italic; }
 .numoj-markdown .numoj-shiki-token.is-bold { font-weight: 700; }
@@ -526,9 +523,9 @@
 }
 
 /*
- * C/C++、Python、MATLAB/Octave 的语言服务语义层复用编辑器的 Dark+
- * 配色，只覆盖服务端明确识别的标识符；其余词法 token 来自同一套 Shiki
- * grammar，解析失败时才保留服务端 Pygments 结果。
+ * C/C++、Python、MATLAB/Octave 的语言服务语义层使用 GitHub Light 配色，
+ * 只覆盖服务端明确识别的标识符；其余词法 token 来自 Shiki grammar，
+ * 解析失败时才保留服务端 Pygments 结果。
  */
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-namespace,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-type,
@@ -538,20 +535,20 @@
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-typeparameter,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-dependenttype,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-concept {
-  color: #4ec9b0;
+  color: #0550ae;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-enummember,
 .numoj-markdown
   .codehilite
   .numoj-semantic-token.numoj-semantic-variable.numoj-semantic-readonly {
-  color: #4fc1ff;
+  color: #0550ae;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-function,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-method,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-decorator {
-  color: #dcdcaa;
+  color: #8250df;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-variable,
@@ -559,24 +556,24 @@
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-selfparameter,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-clsparameter,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-property {
-  color: #9cdcfe;
+  color: #953800;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-keyword,
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-modifier {
-  color: #569cd6;
+  color: #cf222e;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-macro {
-  color: #c586c0;
+  color: #8250df;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-label {
-  color: #c8c8c8;
+  color: #1f2328;
 }
 
 .numoj-markdown .codehilite .numoj-semantic-token.numoj-semantic-comment {
-  color: #6a9955;
+  color: #6e7781;
 }
 
 .numoj-markdown .codehilite .numoj-clangd-inactive-code {
