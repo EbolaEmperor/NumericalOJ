@@ -639,6 +639,14 @@ def test_agent_markdown_code_stays_compact_and_scrollable_in_narrow_panes():
     ):
         assert declaration in pre_rule
 
+    plain_pre_rule = _css_rule(
+        styles,
+        ".agent-session .numoj-markdown > pre {",
+    )
+    assert "border: 1px solid #d0d7de;" in plain_pre_rule
+    assert "background: #f6f8fa;" in plain_pre_rule
+    assert "color: #1f2328;" in plain_pre_rule
+
     inline_code_rule = _css_rule(styles, ".agent-session .numoj-markdown code {")
     assert "border-radius: 3px;" in inline_code_rule
     assert "overflow-wrap: anywhere;" in inline_code_rule
