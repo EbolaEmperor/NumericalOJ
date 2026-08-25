@@ -7,10 +7,12 @@
   - 正常退出 / 超时两条路径最终都回收容器。
 做法：把模块里的 subprocess 换成假对象，记录所有 docker 调用并模拟其行为。
 """
+from contextlib import contextmanager
 import os
 import tempfile
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +82,131 @@ def test_resolve_endpoints_preserves_model_capabilities(monkeypatch):
         "thinking_format": "none",
         "concurrency_limit": 3,
     }]
+
+
+@pytest.mark.parametrize(
+    ("orchestration_mode", "harness", "expected_protocol", "runner_name"),
+    [
+        ("single", m.HARNESS_CODEX, "openai", "_run_container_and_tail"),
+        (
+            m.aj.ORCH_TOPOLOGICAL,
+            m.HARNESS_CLAUDE_CODE,
+            "anthropic",
+            "_run_container_topological",
+        ),
+    ],
+)
+def test_judge_container_only_receives_secret_relay_credential(
+        monkeypatch, tmp_path, orchestration_mode, harness, expected_protocol,
+        runner_name):
+    real_key = "LONG_LIVED_PROVIDER_KEY"
+    temporary_key = "attempt-scoped-relay-token"
+    relay_url = "http://host.docker.internal:43123/provider/v1"
+    events = []
+    captured = {}
+    endpoint = {
+        "id": 9,
+        "harness": harness,
+        # 覆盖旧端点 protocol 为 NULL 时按 harness 推断协议的兼容路径。
+        "protocol": None,
+        "base_url": "https://provider.example/provider/v1",
+        "api_key": real_key,
+        "model": "configured-model",
+    }
+    competition = {
+        "id": 3,
+        "title": "relay security test",
+        "agent_judge_orchestration_mode": orchestration_mode,
+    }
+    rules = [{
+        "rule_id": 1,
+        "rule_text": "rule",
+        "value": 10,
+        "dependencies": [],
+    }]
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    @contextmanager
+    def fake_secret_relays(host_endpoint):
+        assert host_endpoint["api_key"] == real_key
+        assert host_endpoint["base_url"] == endpoint["base_url"]
+        assert host_endpoint["protocol"] == expected_protocol
+        events.append("relay-start")
+        try:
+            yield SimpleNamespace(
+                endpoint_base_url=relay_url,
+                endpoint_api_key=temporary_key,
+            )
+        finally:
+            events.append("relay-close")
+
+    def fake_runner(
+            submission_id, ws, result_name, competition_arg, rules_arg,
+            timeout_s, endpoint_arg=None, attempt_id=None, trace_dir=None):
+        events.append(f"run:{runner_name}")
+        captured["endpoint"] = endpoint_arg
+        docker_args = m._docker_container_args(
+            "aj-relay-test", ws, endpoint_arg["harness"],
+            endpoint_arg["base_url"], endpoint_arg["api_key"],
+            endpoint_arg["model"], result_name, endpoint=endpoint_arg,
+        )
+        rendered = "\0".join(docker_args)
+        assert real_key not in rendered
+        assert "host.docker.internal:host-gateway" in docker_args
+        assert f"AJ_ENDPOINT_API_KEY={temporary_key}" in docker_args
+        assert f"AJ_ENDPOINT_BASE_URL={relay_url}" in docker_args
+        return False, True
+
+    monkeypatch.setattr(m, "run_agent_secret_relays", fake_secret_relays)
+    monkeypatch.setattr(m, "get_ranking_submission", lambda _sid: {
+        "id": 7,
+        "competition_id": 3,
+        "status": "Queued",
+    })
+    monkeypatch.setattr(m, "_task_should_skip", lambda *_a, **_k: (False, ""))
+    monkeypatch.setattr(m, "set_submission_status_for_attempt", lambda *_a, **_k: 1)
+    monkeypatch.setattr(m, "get_competition", lambda _cid: competition)
+    monkeypatch.setattr(m, "list_competition_rules", lambda _cid: rules)
+    monkeypatch.setattr(m, "clear_judge_results_for_attempt", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_publish_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_remove_stale_agent_containers", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        m, "_prepare_workspace",
+        lambda *_a, **_k: (str(workspace), "result.jsonl"),
+    )
+    monkeypatch.setattr(m, "_prune_stale_attempt_workspaces", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        m, "_prepare_agent_trace_attempt",
+        lambda *_a, **_k: str(tmp_path / "trace"),
+    )
+    monkeypatch.setattr(m, runner_name, fake_runner)
+    other_runner = (
+        "_run_container_and_tail"
+        if runner_name == "_run_container_topological"
+        else "_run_container_topological"
+    )
+    monkeypatch.setattr(
+        m, other_runner,
+        lambda *_a, **_k: pytest.fail("不应调用另一种编排 runner"),
+    )
+    monkeypatch.setattr(
+        m, "_finalize",
+        lambda *_a, **_k: events.append("finalize"),
+    )
+
+    assert m._judge(7, endpoint=endpoint, attempt_id="attempt-1") == {
+        "success": True,
+    }
+    assert captured["endpoint"]["protocol"] == expected_protocol
+    assert captured["endpoint"]["api_key"] == temporary_key
+    assert endpoint["api_key"] == real_key
+    assert events == [
+        "relay-start",
+        f"run:{runner_name}",
+        "relay-close",
+        "finalize",
+    ]
 
 
 def _run(monkeypatch, running_seq, timeout_s, endpoint=None):
