@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PREVIEW = (ROOT / "forum-ui-preview.html").read_text(encoding="utf-8")
 TEMPLATE = (ROOT / "templates" / "forum" / "index.html").read_text(
     encoding="utf-8"
 )
@@ -13,6 +14,9 @@ PROBLEM_TEMPLATE = (ROOT / "templates" / "problems" / "detail.html").read_text(
     encoding="utf-8"
 )
 CSS = (ROOT / "static" / "app" / "forum.css").read_text(encoding="utf-8")
+AGENT_CONVERSATION_CSS = (
+    ROOT / "static" / "app" / "agents" / "conversation.css"
+).read_text(encoding="utf-8")
 MARKDOWN_CSS = (
     ROOT / "static" / "app" / "markdown-rendering.css"
 ).read_text(encoding="utf-8")
@@ -68,6 +72,278 @@ def test_forum_uses_one_master_detail_workbench_and_canonical_thread_route():
     assert '@forum_bp.route("/forum/thread/<int:thread_id>", methods=["GET"])' in ROUTES
 
 
+def test_forum_workbench_is_full_bleed_without_the_decorative_page_heading():
+    workspace_rules = CSS[
+        CSS.index(".forum-workspace {") : CSS.index(".forum-list-pane {")
+    ]
+
+    assert "forum-command-bar" not in TEMPLATE
+    assert ".forum-command-bar" not in CSS
+    assert "COMMUNITY WORKBENCH · GLOBAL" not in TEMPLATE
+    assert "<h1>讨论区</h1>" not in TEMPLATE
+    assert "forumHeaderCount" not in TEMPLATE
+    assert "forumHeaderCount" not in JAVASCRIPT
+    assert "updateHeaderCount" not in JAVASCRIPT
+    assert ".numoj-content.forum-content-container {\n  padding: 0;" in CSS
+    assert "flex: 1 1 auto;" in workspace_rules
+    assert "border: 0;" in workspace_rules
+    assert "border-radius: 0;" in workspace_rules
+    assert "box-shadow: none;" in workspace_rules
+
+
+def test_forum_preview_reuses_the_real_template_assets_and_component_classes():
+    for asset in (
+        "./static/bootstrap/bootstrap.min.css",
+        "./static/vendor/fontawesome/css/all.min.css",
+        "./static/app/layout.css",
+        "./static/app/markdown-rendering.css",
+        "./static/app/forum.css",
+        "./static/app/layout.js",
+        "./static/app/editor-semantic-tokens.js",
+        "./static/app/markdown-rendering.js",
+        "./static/app/forum.js",
+    ):
+        assert asset in PREVIEW
+
+    assert "<style>" not in PREVIEW
+    assert 'class="numoj-site-shell numoj-site-shell-authenticated"' in PREVIEW
+    assert 'class="numoj-sidebar d-none d-lg-flex"' in PREVIEW
+    assert 'class="forum-workspace"' in PREVIEW
+    assert 'data-initial-thread-id="42"' in PREVIEW
+    assert "codehilite language-cpp" in PREVIEW
+    assert 'url.pathname === "/api/editor/semantic-tokens"' in PREVIEW
+    assert 'class="shell"' not in PREVIEW
+    assert 'class="sidebar"' not in PREVIEW
+    assert "code-head" not in PREVIEW
+    assert "code-language" not in PREVIEW
+    assert 'class="ln"' not in PREVIEW
+
+
+def test_reply_composer_matches_the_agent_conversation_input_surface():
+    forum_surface_rules = CSS[
+        CSS.index(".forum-reply-surface {") : CSS.index(
+            ".forum-reply-surface:focus-within {"
+        )
+    ]
+    forum_send_rules = CSS[
+        CSS.index(".forum-reply-send {") : CSS.index(
+            ".forum-reply-send:hover:not(:disabled) {"
+        )
+    ]
+    agent_send_start = AGENT_CONVERSATION_CSS.index(".agent-resume-send {")
+    agent_send_end = AGENT_CONVERSATION_CSS.index(
+        ".agent-resume-send.is-queue-mode {"
+    )
+    agent_send_rules = AGENT_CONVERSATION_CSS[agent_send_start:agent_send_end]
+
+    assert 'class="forum-reply-surface"' in TEMPLATE
+    assert 'class="forum-reply-send"' in TEMPLATE
+    assert 'aria-label="发送回复"' in TEMPLATE
+    assert 'class="fas fa-arrow-up"' in TEMPLATE
+    assert (
+        '将以\n                <span class="forum-identicon '
+        'forum-identicon-xs"'
+    ) not in TEMPLATE
+    assert "MD / CODE / TEX / MERMAID" not in TEMPLATE
+    assert "forum-reply-meta" not in TEMPLATE
+    assert "forum-composer-identity" not in TEMPLATE
+    assert "forum-format-hint" not in TEMPLATE
+    assert "setReplyPostingIdentity" not in JAVASCRIPT
+    assert "previewReplyButton" not in TEMPLATE
+    assert "previewReplyButton" not in JAVASCRIPT
+    assert "replyPreview" not in TEMPLATE
+    assert "replyPreview" not in JAVASCRIPT
+    assert "width: min(100%, 700px);" in forum_surface_rules
+    assert "border-radius: 14px;" in forum_surface_rules
+    assert "function resizeReplyInput()" in JAVASCRIPT
+    assert "elements.replyInput.scrollHeight" in JAVASCRIPT
+    for declaration in (
+        "border: 1px solid #252524;",
+        "background: #252524;",
+        "color: #fff;",
+    ):
+        assert declaration in forum_send_rules
+        assert declaration in agent_send_rules
+
+
+def test_reply_composer_floats_over_a_scrollable_extended_conversation():
+    detail_rules = CSS[
+        CSS.index(".forum-detail-pane {") : CSS.index(".forum-detail-header {")
+    ]
+    conversation_rules = CSS[
+        CSS.index(".forum-conversation {") : CSS.index(".forum-load-earlier {")
+    ]
+    composer_rules = CSS[
+        CSS.index(".forum-reply-composer {") : CSS.index(
+            ".forum-reply-composer[hidden] {"
+        )
+    ]
+    surface_rules = CSS[
+        CSS.index(".forum-reply-surface {") : CSS.index(
+            ".forum-reply-surface:focus-within {"
+        )
+    ]
+
+    assert "--forum-reply-overlay-height: 0px;" in detail_rules
+    assert "position: relative;" in detail_rules
+    assert "grid-template-rows: auto minmax(0, 1fr);" in detail_rules
+    assert "overflow: hidden;" in detail_rules
+    assert (
+        "padding: 22px 24px calc(32px + "
+        "var(--forum-reply-overlay-height));"
+    ) in conversation_rules
+    for declaration in (
+        "position: absolute;",
+        "bottom: 0;",
+        "background: transparent;",
+        "pointer-events: none;",
+    ):
+        assert declaration in composer_rules
+    assert "pointer-events: auto;" in surface_rules
+    assert ".forum-reply-surface > .forum-field-error:empty {" in CSS
+    assert "display: none;" in CSS[
+        CSS.index(".forum-reply-surface > .forum-field-error:empty {") :
+        CSS.index(".forum-dialog {")
+    ]
+    assert "function syncReplyComposerClearance()" in JAVASCRIPT
+    assert "function setReplyComposerVisible(visible)" in JAVASCRIPT
+    assert "state.replyComposerObserver = new window.ResizeObserver(" in JAVASCRIPT
+    assert "state.replyComposerObserver.observe(elements.replyForm);" in JAVASCRIPT
+
+
+def test_forum_markdown_uses_a_lighter_balanced_reading_font_stack():
+    markdown_rules = CSS[
+        CSS.index(".forum-markdown {") : CSS.index(
+            ".forum-markdown > :first-child {"
+        )
+    ]
+
+    assert '--forum-reading-sans: "Helvetica Neue", "PingFang SC"' in CSS
+    assert "font-family: var(--forum-reading-sans);" in markdown_rules
+    assert "font-synthesis: none;" in markdown_rules
+    assert "font-weight: 400;" in markdown_rules
+
+
+def test_forum_titles_balance_latin_and_chinese_stroke_weight():
+    thread_title_rules = CSS[
+        CSS.index(".forum-thread-title {") : CSS.index(".forum-thread-preview {")
+    ]
+    detail_title_rules = CSS[
+        CSS.index(".forum-detail-header h2 {") : CSS.index(
+            ".forum-detail-actions {"
+        )
+    ]
+
+    assert (
+        '--forum-title-sans: "PingFang SC", "Hiragino Sans GB", '
+        '"Microsoft YaHei", "Helvetica Neue", sans-serif;'
+    ) in CSS
+    for rules in (thread_title_rules, detail_title_rules):
+        assert "font-family: var(--forum-title-sans);" in rules
+        assert "font-synthesis: none;" in rules
+        assert "font-weight: 600;" in rules
+
+
+def test_thread_list_titles_do_not_show_thread_numbers():
+    assert 'title.textContent = thread.title;' in JAVASCRIPT
+    assert 'class="forum-thread-id"' not in JAVASCRIPT
+    assert ".forum-thread-id {" not in CSS
+
+
+def test_thread_search_does_not_show_a_manual_refresh_button():
+    pane_tool_rules = CSS[
+        CSS.index(".forum-pane-tools {") : CSS.index(".forum-search {")
+    ]
+    search_rules = CSS[
+        CSS.index(".forum-search {") : CSS.index(".forum-search i {")
+    ]
+
+    assert 'id="refreshListButton"' not in TEMPLATE
+    assert 'id="refreshListButton"' not in PREVIEW
+    assert "refreshListButton" not in JAVASCRIPT
+    assert "刷新讨论列表" not in TEMPLATE
+    assert "刷新讨论列表" not in PREVIEW
+    assert "display: block;" in pane_tool_rules
+    assert "display: block;" in search_rules
+
+
+def test_identity_dialog_omits_the_explanatory_note():
+    for source in (TEMPLATE, PREVIEW):
+        assert "可使用中文、英文字母、数字、下划线和连字符" not in source
+        assert "保存后，本次身份会永久保留在已经发布的内容上" not in source
+        assert 'class="forum-identity-note"' not in source
+    assert ".forum-identity-note {" not in CSS
+
+
+def test_identity_refresh_uses_the_edit_action_icon_color():
+    identity_refresh_rules = CSS[
+        CSS.index(".forum-identity-refresh {") : CSS.index(
+            ".forum-identity-refresh:hover {"
+        )
+    ]
+    identity_refresh_hover_rules = CSS[
+        CSS.index(".forum-identity-refresh:hover {") : CSS.index(
+            ".forum-identity-refresh:disabled {"
+        )
+    ]
+    quiet_button_start = CSS.index(".forum-button-quiet {")
+    quiet_button_rules = CSS[
+        quiet_button_start : CSS.index(".forum-icon-button {", quiet_button_start)
+    ]
+
+    assert "color: var(--forum-ink-3);" in identity_refresh_rules
+    assert "color: var(--forum-ink-3);" in quiet_button_rules
+    assert "var(--forum-accent-ink)" not in identity_refresh_rules
+    assert "var(--forum-accent-soft)" not in identity_refresh_hover_rules
+
+
+def test_editor_identity_is_compact_and_lives_in_the_dialog_header():
+    for source in (TEMPLATE, PREVIEW):
+        editor_start = source.index('<dialog class="forum-dialog forum-editor-dialog"')
+        header_start = source.index(
+            '<header class="forum-dialog-header forum-editor-dialog-header">',
+            editor_start,
+        )
+        identity_start = source.index('id="editorIdentityRow"', header_start)
+        header_end = source.index("</header>", header_start)
+        body_start = source.index('<div class="forum-dialog-body">', header_end)
+
+        assert header_start < identity_start < header_end < body_start
+        assert 'class="forum-identicon forum-identicon-sm" data-posting-avatar' in source
+        assert "安全预览" not in source
+        assert "MARKDOWN + CODE + LATEX + MERMAID" not in source
+        assert "草稿已保存在当前标签页" not in source
+        assert "草稿仅保存在当前标签页" not in source
+        assert '>预览</button>' in source
+
+    posting_identity_rules = CSS[
+        CSS.index(".forum-editor-posting-identity {") : CSS.index(
+            ".forum-editor-posting-copy {"
+        )
+    ]
+    assert "grid-template-columns: 32px minmax(0, 1fr);" in posting_identity_rules
+    assert ".forum-editor-tabs > span {" not in CSS
+    assert '"草稿已保存在当前标签页"' not in JAVASCRIPT
+    assert '"草稿仅保存在当前标签页"' not in JAVASCRIPT
+
+
+def test_editor_textarea_hides_the_native_resize_handle():
+    textarea_rules = CSS[
+        CSS.index(".forum-field textarea {") : CSS.index(".forum-editor-tabs {")
+    ]
+
+    assert "resize: none;" in textarea_rules
+    assert "resize: vertical;" not in textarea_rules
+
+
+def test_editor_placeholders_are_open_ended_and_playful():
+    for source in (TEMPLATE, PREVIEW):
+        assert 'placeholder="今天讨论点什么呢……？"' in source
+        assert 'placeholder="啊哒哒……啊哒哒……啊哒啊哒……喵喵喵喵喵！"' in source
+        assert "一句话说明你想讨论的问题" not in source
+        assert "补充你的思路、代码，或者已经尝试过的方法" not in source
+
+
 def test_list_column_is_seventy_percent_of_the_selected_mockup_width():
     assert "0.82fr / 1.18fr" in CSS
     assert "grid-template-columns: minmax(300px, 0.402fr) minmax(0, 1fr);" in CSS
@@ -79,14 +355,57 @@ def test_forum_has_only_the_confirmed_filters_and_no_role_labels():
     assert TEMPLATE.count('data-scope="mine"') == 1
 
 
+def test_identity_sits_below_the_thread_list_and_compose_replaces_sort_copy():
+    new_thread_rules = CSS[
+        CSS.index(".forum-new-thread-button {") : CSS.index(
+            ".forum-new-thread-button:hover:not(:disabled) {"
+        )
+    ]
+    anonymous_control_rules = CSS[
+        CSS.index(".forum-switch-label {") : CSS.index(
+            ".forum-switch-label input {"
+        )
+    ]
+
+    assert TEMPLATE.index('id="threadList"') < TEMPLATE.index('id="identityControl"')
+    assert 'class="forum-list-footer"' in TEMPLATE
+    assert "LAST ACTIVE" not in TEMPLATE
+    assert "forum-sort-note" not in TEMPLATE
+    assert 'class="forum-new-thread-button"' in TEMPLATE
+    assert 'id="openComposeButton"' in TEMPLATE
+    assert "margin-left: auto;" in new_thread_rules
+    assert "font-size: 8.5px;" in new_thread_rules
+    assert "font-weight: 620;" in new_thread_rules
+    assert "margin-left: auto;" in anonymous_control_rules
+
+
 def test_forum_scope_filters_use_compact_rounded_rectangles():
     chip_rules = CSS[
         CSS.index(".forum-chip {") : CSS.index(".forum-chip:hover {")
     ]
+    quiet_button_start = CSS.index(".forum-button {")
+    quiet_button_rules = CSS[
+        quiet_button_start : CSS.index(
+            ".forum-button:hover:not(:disabled)", quiet_button_start
+        )
+    ]
 
-    assert "padding: 5px 8px;" in chip_rules
+    assert "padding: 4px 7px;" in chip_rules
     assert "border-radius: 5px;" in chip_rules
-    assert "font-size: 9.5px;" in chip_rules
+    assert "font-size: 8.5px;" in chip_rules
+    assert "font-weight: 620;" in chip_rules
+    assert "font-size: 11.5px;" in quiet_button_rules
+    assert "font-weight: 700;" in quiet_button_rules
+    assert ".forum-page :where(button, input, textarea) {" in CSS
+    assert ".forum-page button,\n.forum-page input" not in CSS
+
+
+def test_thread_uses_the_header_edit_action_without_a_duplicate_post_icon():
+    assert 'id="editThreadButton"' in TEMPLATE
+    assert 'if (item.is_owner && kind === "reply") {' in JAVASCRIPT
+    assert 'edit.dataset.editKind = "reply";' in JAVASCRIPT
+    assert 'edit.setAttribute("aria-label", "编辑回复");' in JAVASCRIPT
+    assert 'kind === "thread" ? "编辑主题" : "编辑回复"' not in JAVASCRIPT
 
 
 def test_browser_writes_use_json_apis_without_html_form_fallback():
@@ -267,9 +586,25 @@ def test_shared_markdown_code_blocks_have_accessible_copy_controls():
     assert '"fa-check" : "fa-copy"' in MARKDOWN_JAVASCRIPT
     assert 'announcement.setAttribute("aria-live", "polite");' in MARKDOWN_JAVASCRIPT
     assert "Mermaid 会重组容器并移动源码节点" in MARKDOWN_JAVASCRIPT
+    assert 'button.removeAttribute("title");' in MARKDOWN_JAVASCRIPT
     assert ".numoj-code-frame:hover > .numoj-code-copy" in MARKDOWN_CSS
     assert ".numoj-code-frame:focus-within > .numoj-code-copy" in MARKDOWN_CSS
     assert ".numoj-code-copy:focus-visible" in MARKDOWN_CSS
+    copy_rule = MARKDOWN_CSS[
+        MARKDOWN_CSS.index(".numoj-markdown .numoj-code-copy {") :
+        MARKDOWN_CSS.index(
+            ".numoj-markdown .numoj-code-frame:hover > .numoj-code-copy"
+        )
+    ]
+    assert "border: 1px solid transparent;" in copy_rule
+    assert "background: transparent;" in copy_rule
+    assert "box-shadow: none;" in copy_rule
+    copy_hover_rule = MARKDOWN_CSS[
+        MARKDOWN_CSS.index(".numoj-markdown .numoj-code-copy:hover {") :
+        MARKDOWN_CSS.index(".numoj-markdown .numoj-code-copy:focus-visible {")
+    ]
+    assert "background: #252524;" in copy_hover_rule
+    assert "color: #fff;" in copy_hover_rule
     assert "@media (hover: none), (pointer: coarse)" in MARKDOWN_CSS
     assert "@media (prefers-reduced-motion: reduce)" in MARKDOWN_CSS
 
