@@ -563,14 +563,14 @@
   white-space: pre;
   overflow-wrap: normal;
   word-break: normal;
-  scrollbar-color: #52525b transparent;
+  scrollbar-color: #afb8c1 transparent;
   scrollbar-width: thin;
 }
 
 .agent-session .numoj-markdown > pre {
-  border: 0;
-  background: #18181b;
-  color: #f4f4f5;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  color: #1f2328;
 }
 
 .agent-session .numoj-markdown .codehilite pre {

@@ -926,10 +926,10 @@
   max-width: 100%;
   overflow-x: auto;
   padding: 14px 16px;
-  border: 1px solid #303036;
+  border: 1px solid #d0d7de;
   border-radius: 9px;
-  background: #1f1f22;
-  color: #e4e4e7;
+  background: #f6f8fa;
+  color: #1f2328;
   font: 11px/1.67 var(--forum-mono);
   tab-size: 2;
 }

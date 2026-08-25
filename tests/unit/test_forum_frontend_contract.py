@@ -45,6 +45,9 @@ MERMAID_ASSET_BUILD = (
 CODE_HIGHLIGHTER_ENTRY = (
     ROOT / "frontend" / "markdown" / "code-highlighter.js"
 ).read_text(encoding="utf-8")
+CODE_HIGHLIGHTER_THEME = (
+    ROOT / "frontend" / "markdown" / "github-light-theme.js"
+).read_text(encoding="utf-8")
 CODE_HIGHLIGHTER_BUILD = (
     ROOT / "scripts" / "build_markdown_code_highlighter.mjs"
 ).read_text(encoding="utf-8")
@@ -271,7 +274,7 @@ def test_shared_markdown_code_blocks_have_accessible_copy_controls():
     assert "@media (prefers-reduced-motion: reduce)" in MARKDOWN_CSS
 
 
-def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
+def test_editor_languages_use_one_csp_safe_github_light_markdown_bundle():
     for contract in (
         'from "shiki/core"',
         'from "shiki/engine/javascript"',
@@ -281,17 +284,17 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
         'from "@shikijs/langs/python"',
         'from "@shikijs/langs/matlab"',
         'from "../lean4-grammar.js"',
-        'from "../lean4-theme.js"',
+        'from "./github-light-theme.js"',
         "let highlighterPromise;",
         "highlighter.codeToTokens",
         "LANGUAGE_ALIASES",
+        'theme: "github-light-default"',
     ):
         assert contract in CODE_HIGHLIGHTER_ENTRY
 
-    lean_theme = (ROOT / "frontend" / "lean4-theme.js").read_text(
-        encoding="utf-8"
-    )
-    assert 'from "@shikijs/themes/dark-plus"' in lean_theme
+    assert 'from "@shikijs/themes/github-light-default"' in CODE_HIGHLIGHTER_THEME
+    assert 'settings: { foreground: "#0550AE" }' in CODE_HIGHLIGHTER_THEME
+    assert 'settings: { foreground: "#8250DF" }' in CODE_HIGHLIGHTER_THEME
 
     for language_class in (
         "language-bash",
@@ -334,23 +337,20 @@ def test_editor_languages_use_one_csp_safe_dark_plus_bundle():
         'block.dataset.numojBashState = "fallback";',
         'block.dataset.numojStructuredTextmateState = "fallback";',
         "已保留 Pygments 着色",
-        "SHIKI_DARK_PLUS_COLORS",
+        "SHIKI_GITHUB_LIGHT_COLORS",
         'block.dataset.numojBashState = "skipped-total-size";',
         'block.dataset.numojStructuredTextmateState = "skipped-total-size";',
         "await new Promise((resolve) => window.setTimeout(resolve, 0));",
     ):
         assert contract in MARKDOWN_JAVASCRIPT
 
-    target_canvas = MARKDOWN_CSS.split(
-        "编辑器支持的文章语言",
-        1,
-    )[1].split(".numoj-markdown .numoj-code-frame", 1)[0]
-    assert "background: #1e1e1e;" in target_canvas
-    assert "color: #d4d4d4;" in target_canvas
-    assert "background: #0d1117;" in MARKDOWN_CSS
-    assert ".numoj-shiki-color-dcdcaa" in MARKDOWN_CSS
-    assert ".numoj-shiki-color-9cdcfe" in MARKDOWN_CSS
-    assert ".numoj-shiki-color-c586c0" in MARKDOWN_CSS
+    assert "--numoj-code-canvas: #f6f8fa;" in MARKDOWN_CSS
+    assert "--numoj-code-ink: #1f2328;" in MARKDOWN_CSS
+    assert "--numoj-code-border: #d0d7de;" in MARKDOWN_CSS
+    assert "background: var(--numoj-code-canvas);" in MARKDOWN_CSS
+    assert ".numoj-shiki-color-0550ae" in MARKDOWN_CSS
+    assert ".numoj-shiki-color-8250df" in MARKDOWN_CSS
+    assert ".numoj-shiki-color-cf222e" in MARKDOWN_CSS
     assert ".numoj-shiki-token.is-italic" in MARKDOWN_CSS
 
 
@@ -367,6 +367,30 @@ def test_markdown_cpp_inactive_regions_keep_token_colors_and_only_dim():
         1,
     )[1].split("}", 1)[0]
     assert "opacity: 0.55;" in declaration
+
+
+def test_markdown_github_light_keeps_the_backend_semantic_color_layer():
+    assert 'context: "markdown"' in MARKDOWN_JAVASCRIPT
+    assert "await client.requestTokens({" in MARKDOWN_JAVASCRIPT
+    assert "applySemanticRanges(code, ranges);" in MARKDOWN_JAVASCRIPT
+
+    semantic_theme = MARKDOWN_CSS.split(
+        "C/C++、Python、MATLAB/Octave 的语言服务语义层使用 GitHub Light",
+        1,
+    )[1].split(
+        ".numoj-markdown .codehilite .numoj-clangd-inactive-code {",
+        1,
+    )[0]
+    for token_class in (
+        "numoj-semantic-class",
+        "numoj-semantic-method",
+        "numoj-semantic-variable",
+        "numoj-semantic-keyword",
+        "numoj-semantic-comment",
+    ):
+        assert token_class in semantic_theme
+    for color in ("#0550ae", "#8250df", "#953800", "#cf222e", "#6e7781"):
+        assert f"color: {color};" in semantic_theme
 
 
 def test_shared_markdown_renderer_is_safe_idempotent_and_handles_dynamic_html():
