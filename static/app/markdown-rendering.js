@@ -235,7 +235,11 @@
     button.classList.toggle("is-copied", copied);
     button.classList.toggle("is-error", failed);
     button.setAttribute("aria-label", label);
-    button.title = label;
+    if (state === "idle") {
+      button.title = label;
+    } else {
+      button.removeAttribute("title");
+    }
     if (icon) icon.className = `numoj-code-copy-icon fas ${
       copied ? "fa-check" : "fa-copy"
     }`;

@@ -148,15 +148,15 @@
   height: 34px;
   padding: 0;
   place-items: center;
-  border: 1px solid var(--numoj-code-border);
+  border: 1px solid transparent;
   border-radius: 8px;
-  opacity: 0;
-  background: rgb(246 248 250 / 96%);
-  box-shadow: 0 3px 12px rgb(31 35 40 / 12%);
+  opacity: 0.72;
+  background: transparent;
+  box-shadow: none;
   color: var(--numoj-code-muted);
   cursor: pointer;
-  pointer-events: none;
-  transform: translateY(-3px);
+  pointer-events: auto;
+  transform: none;
   transition:
     opacity 140ms ease,
     transform 140ms ease,
@@ -175,9 +175,9 @@
 }
 
 .numoj-markdown .numoj-code-copy:hover {
-  border-color: #afb8c1;
-  background: #fff;
-  color: #1f2328;
+  border-color: #252524;
+  background: #252524;
+  color: #fff;
 }
 
 .numoj-markdown .numoj-code-copy:focus-visible {
@@ -187,14 +187,14 @@
 }
 
 .numoj-markdown .numoj-code-copy.is-copied {
-  border-color: rgb(26 127 55 / 45%);
-  background: #dafbe1;
+  border-color: transparent;
+  background: transparent;
   color: #116329;
 }
 
 .numoj-markdown .numoj-code-copy.is-error {
-  border-color: rgb(207 34 46 / 45%);
-  background: #ffebe9;
+  border-color: transparent;
+  background: transparent;
   color: #cf222e;
 }
 
