@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """打榜赛 Agent-as-Judge 评测任务：起 Docker 容器跑所选 harness，tail result.jsonl 实时回传。"""
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ from oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
 )
+from oj_modules.tasks.agent.secret_relay import run_agent_secret_relays
 from oj_modules.ranking.db import (
     get_competition, get_ranking_submission, list_competition_files,
     set_agent_judge_task_id, set_submission_status_for_attempt,
@@ -797,6 +799,23 @@ def _resolve_harness_config(endpoint):
     return harness, base_url, api_key, model
 
 
+@contextmanager
+def _agent_judge_endpoint_relay(endpoint):
+    """仅向评测容器提供本轮临时凭据，长期模型密钥只留在宿主代理内存。"""
+    host_endpoint = dict(endpoint or {})
+    harness = host_endpoint.get('harness') or HARNESS_CLAUDE_CODE
+    host_endpoint['protocol'] = infer_agent_endpoint_protocol(
+        harness, host_endpoint.get('protocol'),
+    )
+    with run_agent_secret_relays(host_endpoint) as relay:
+        container_endpoint = dict(host_endpoint)
+        container_endpoint.update({
+            'base_url': relay.endpoint_base_url,
+            'api_key': relay.endpoint_api_key,
+        })
+        yield container_endpoint
+
+
 def _agent_env_args(
         harness, base_url, api_key, model, result_name, include_prompt=False,
         endpoint=None):
@@ -850,6 +869,9 @@ def _docker_container_args(
         '--log-opt', 'max-size=16m', '--log-opt', 'max-file=1',
         '--pids-limit', JUDGE_PIDS_LIMIT,
         '--memory', JUDGE_MEM_LIMIT, '--cpus', JUDGE_CPU_LIMIT,
+        # 与通用 Agent 的宿主 relay 契约一致；Linux Docker 不会默认解析
+        # host.docker.internal，必须显式映射到本机 bridge 网关。
+        '--add-host', 'host.docker.internal:host-gateway',
         '-v', f'{ws}:/workspace', '-w', '/workspace',
     ] + _agent_env_args(
         harness, base_url, api_key, model, result_name,
@@ -2107,14 +2129,17 @@ def _judge(submission_id, endpoint=None, attempt_id=None):
     orchestration_mode = aj.normalize_orchestration_mode(
         competition.get('agent_judge_orchestration_mode')
     )
-    if orchestration_mode == aj.ORCH_TOPOLOGICAL:
-        timed_out, container_ok = _run_container_topological(
-            submission_id, ws, result_name, competition, rules, timeout_s,
-            endpoint, attempt_id, trace_dir)
-    else:
-        timed_out, container_ok = _run_container_and_tail(
-            submission_id, ws, result_name, competition, rules, timeout_s,
-            endpoint, attempt_id, trace_dir)
+    # 端点预检仍在宿主侧使用真实配置；从这里进入参赛执行域后，单阶段和
+    # 拓扑阶段统一只接收本 attempt 的短生命周期 relay 地址与临时凭据。
+    with _agent_judge_endpoint_relay(endpoint) as container_endpoint:
+        if orchestration_mode == aj.ORCH_TOPOLOGICAL:
+            timed_out, container_ok = _run_container_topological(
+                submission_id, ws, result_name, competition, rules, timeout_s,
+                container_endpoint, attempt_id, trace_dir)
+        else:
+            timed_out, container_ok = _run_container_and_tail(
+                submission_id, ws, result_name, competition, rules, timeout_s,
+                container_endpoint, attempt_id, trace_dir)
     _finalize(submission_id, rules, timed_out, container_ok, attempt_id)
     return {'success': True}
 
