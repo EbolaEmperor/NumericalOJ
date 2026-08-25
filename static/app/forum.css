@@ -309,10 +309,10 @@
   min-height: 0;
   flex: 1 1 auto;
   /*
-   * 方案一原稿为 0.82fr / 1.18fr；左栏缩至原比例约 70% 后，
-   * 等价为约 28.7% / 71.3%，把主要宽度还给长正文和代码。
+   * 在此前约 28.7% / 71.3% 的基础上，再把左栏缩至 80%，
+   * 等价为约 23% / 77%，释放出的宽度全部交给正文和代码。
    */
-  grid-template-columns: minmax(300px, 0.402fr) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 0.298fr) minmax(0, 1fr);
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -456,7 +456,7 @@
   position: relative;
   display: grid;
   width: 100%;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 15px 12px 14px 15px;
   border: 0;
@@ -491,10 +491,6 @@
   transform: scaleY(1);
 }
 
-.forum-thread-main {
-  min-width: 0;
-}
-
 .forum-thread-title {
   margin: 0;
   overflow: hidden;
@@ -509,32 +505,27 @@
   white-space: nowrap;
 }
 
-.forum-thread-preview {
-  display: -webkit-box;
-  margin: 6px 0 9px;
-  overflow: hidden;
-  color: var(--forum-ink-3);
-  font-size: 10.75px;
-  line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
 .forum-thread-meta {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   color: var(--forum-ink-4);
   font-size: 9px;
 }
 
-.forum-thread-meta .forum-identicon {
-  margin-right: 1px;
+.forum-thread-identity {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 5px;
 }
 
 .forum-thread-author {
+  min-width: 0;
   max-width: 90px;
+  flex: 0 1 auto;
   overflow: hidden;
   color: var(--forum-ink-3);
   font-weight: 650;
@@ -543,33 +534,26 @@
 }
 
 .forum-anonymous-mark {
+  flex: 0 0 auto;
   color: var(--forum-accent-ink);
-  font-family: var(--forum-mono);
-  font-size: 7px;
-  letter-spacing: 0.05em;
+  font-size: 7.5px;
+  white-space: nowrap;
 }
 
-.forum-thread-aside {
-  display: grid;
-  min-width: 34px;
-  align-content: space-between;
-  justify-items: end;
-  padding-top: 1px;
+.forum-thread-active-time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .forum-reply-count {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
   color: var(--forum-ink-3);
   font-family: var(--forum-mono);
   font-size: 9px;
-}
-
-.forum-row-arrow {
-  color: var(--forum-ink-4);
-  font-size: 19px;
-  line-height: 1;
 }
 
 .forum-load-more {
@@ -1488,7 +1472,7 @@
 
 @media (max-width: 1180px) and (min-width: 941px) {
   .forum-workspace {
-    grid-template-columns: minmax(280px, 0.402fr) minmax(0, 1fr);
+    grid-template-columns: minmax(224px, 0.298fr) minmax(0, 1fr);
   }
 
   .forum-identity-copy {

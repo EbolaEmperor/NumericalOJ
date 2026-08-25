@@ -566,18 +566,14 @@
       row.setAttribute("role", "option");
       row.setAttribute("aria-selected", thread.id === state.selectedId ? "true" : "false");
 
-      const main = document.createElement("span");
-      main.className = "forum-thread-main";
       const title = document.createElement("h3");
       title.className = "forum-thread-title";
       title.textContent = thread.title;
 
-      const preview = document.createElement("span");
-      preview.className = "forum-thread-preview";
-      preview.textContent = thread.excerpt || "暂无摘要";
-
       const meta = document.createElement("span");
       meta.className = "forum-thread-meta";
+      const identity = document.createElement("span");
+      identity.className = "forum-thread-identity";
       const avatar = document.createElement("span");
       avatar.className = "forum-identicon forum-identicon-xs";
       avatar.setAttribute("aria-hidden", "true");
@@ -585,30 +581,23 @@
       const author = document.createElement("span");
       author.className = "forum-thread-author";
       author.textContent = thread.display_name;
-      meta.append(avatar, author);
+      identity.append(avatar, author);
       if (thread.is_anonymous) {
         const anonymous = document.createElement("span");
         anonymous.className = "forum-anonymous-mark";
-        anonymous.textContent = "ANON";
-        meta.append(anonymous);
+        anonymous.textContent = "匿名";
+        identity.append(anonymous);
       }
-      const created = document.createElement("span");
-      created.textContent = `· 创建 ${formatRelativeTime(thread.created_at)}`;
-      created.title = formatAbsoluteTime(thread.created_at);
       const active = document.createElement("span");
-      active.textContent = `· 活跃 ${formatRelativeTime(thread.last_activity_at || thread.updated_at || thread.created_at)}`;
+      active.className = "forum-thread-active-time";
+      active.textContent = formatRelativeTime(thread.last_activity_at || thread.updated_at || thread.created_at);
       active.title = formatAbsoluteTime(thread.last_activity_at || thread.updated_at || thread.created_at);
-      meta.append(created, active);
+      const replyCount = document.createElement("span");
+      replyCount.className = "forum-reply-count";
+      replyCount.innerHTML = `<i class="far fa-comment" aria-hidden="true"></i>${thread.reply_count}`;
+      meta.append(identity, active, replyCount);
 
-      main.append(title, preview, meta);
-
-      const aside = document.createElement("span");
-      aside.className = "forum-thread-aside";
-      aside.innerHTML = `
-        <span class="forum-reply-count"><i class="far fa-comment" aria-hidden="true"></i>${thread.reply_count}</span>
-        <span class="forum-row-arrow" aria-hidden="true">›</span>
-      `;
-      row.append(main, aside);
+      row.append(title, meta);
       fragment.appendChild(row);
     });
     elements.threadList.replaceChildren(fragment);

@@ -226,7 +226,7 @@ def test_forum_markdown_uses_a_lighter_balanced_reading_font_stack():
 
 def test_forum_titles_balance_latin_and_chinese_stroke_weight():
     thread_title_rules = CSS[
-        CSS.index(".forum-thread-title {") : CSS.index(".forum-thread-preview {")
+        CSS.index(".forum-thread-title {") : CSS.index(".forum-thread-meta {")
     ]
     detail_title_rules = CSS[
         CSS.index(".forum-detail-header h2 {") : CSS.index(
@@ -344,10 +344,89 @@ def test_editor_placeholders_are_open_ended_and_playful():
         assert "补充你的思路、代码，或者已经尝试过的方法" not in source
 
 
-def test_list_column_is_seventy_percent_of_the_selected_mockup_width():
-    assert "0.82fr / 1.18fr" in CSS
-    assert "grid-template-columns: minmax(300px, 0.402fr) minmax(0, 1fr);" in CSS
-    assert "约 28.7% / 71.3%" in CSS
+def test_list_column_is_eighty_percent_of_its_previous_width():
+    assert "此前约 28.7% / 71.3%" in CSS
+    assert "grid-template-columns: minmax(240px, 0.298fr) minmax(0, 1fr);" in CSS
+    assert "grid-template-columns: minmax(224px, 0.298fr) minmax(0, 1fr);" in CSS
+    assert "约 23% / 77%" in CSS
+
+
+def test_thread_list_only_shows_an_unlabelled_right_aligned_activity_time():
+    active_time_rules = CSS[
+        CSS.index(".forum-thread-active-time {") : CSS.index(
+            ".forum-reply-count {"
+        )
+    ]
+
+    assert 'active.className = "forum-thread-active-time";' in JAVASCRIPT
+    assert "active.textContent = formatRelativeTime(" in JAVASCRIPT
+    assert "meta.append(identity, active, replyCount);" in JAVASCRIPT
+    assert "· 创建" not in JAVASCRIPT
+    assert "· 活跃" not in JAVASCRIPT
+    assert "meta.append(created, active);" not in JAVASCRIPT
+    assert "margin-left: auto;" in active_time_rules
+    assert "white-space: nowrap;" in active_time_rules
+
+
+def test_thread_list_does_not_render_body_excerpts():
+    meta_rules = CSS[
+        CSS.index(".forum-thread-meta {") : CSS.index(
+            ".forum-thread-identity {"
+        )
+    ]
+
+    assert 'preview.className = "forum-thread-preview";' not in JAVASCRIPT
+    assert 'preview.textContent = thread.excerpt || "暂无摘要";' not in JAVASCRIPT
+    assert "row.append(title, meta);" in JAVASCRIPT
+    assert ".forum-thread-preview {" not in CSS
+    assert "gap: 6px;" in meta_rules
+
+
+def test_thread_list_stacks_the_title_above_identity_and_actions():
+    row_rules = CSS[
+        CSS.index(".forum-thread-row {") : CSS.index(".forum-thread-row::before {")
+    ]
+    identity_rules = CSS[
+        CSS.index(".forum-thread-identity {") : CSS.index(".forum-thread-author {")
+    ]
+
+    assert "grid-template-columns: minmax(0, 1fr);" in row_rules
+    assert "gap: 9px;" in row_rules
+    assert 'identity.className = "forum-thread-identity";' in JAVASCRIPT
+    assert "meta.append(identity, active, replyCount);" in JAVASCRIPT
+    assert "row.append(title, meta);" in JAVASCRIPT
+    assert "flex: 1 1 auto;" in identity_rules
+    assert "min-width: 0;" in identity_rules
+    assert "forum-thread-main" not in JAVASCRIPT
+    assert "forum-thread-aside" not in JAVASCRIPT
+    assert ".forum-thread-main {" not in CSS
+    assert ".forum-thread-aside {" not in CSS
+    assert "forum-row-arrow" not in JAVASCRIPT
+    assert ".forum-row-arrow {" not in CSS
+
+
+def test_thread_list_places_a_chinese_anonymous_mark_beside_the_author():
+    list_renderer = JAVASCRIPT[
+        JAVASCRIPT.index("function renderThreadList()") : JAVASCRIPT.index(
+            "async function loadThreads"
+        )
+    ]
+    author_rules = CSS[
+        CSS.index(".forum-thread-author {") : CSS.index(".forum-anonymous-mark {")
+    ]
+    anonymous_rules = CSS[
+        CSS.index(".forum-anonymous-mark {") : CSS.index(
+            ".forum-thread-active-time {"
+        )
+    ]
+
+    assert 'anonymous.textContent = "匿名";' in list_renderer
+    assert 'anonymous.textContent = "ANON";' not in list_renderer
+    assert "identity.append(anonymous);" in list_renderer
+    assert "flex: 0 1 auto;" in author_rules
+    assert "flex: 0 1 90px;" not in author_rules
+    assert "flex: 0 0 auto;" in anonymous_rules
+    assert "font-family: var(--forum-mono);" not in anonymous_rules
 
 
 def test_forum_has_only_the_confirmed_filters_and_no_role_labels():
