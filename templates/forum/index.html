@@ -21,52 +21,6 @@
   data-initial-thread-id="{{ initial_thread_id|default('', true) }}"
   data-open-composer="{{ 'true' if open_composer|default(false) else 'false' }}"
 >
-  <header class="forum-page-header">
-    <div class="forum-heading">
-      <p class="forum-eyebrow">COMMUNITY WORKBENCH · GLOBAL</p>
-      <div class="forum-title-line">
-        <h1>讨论区</h1>
-        <span class="forum-header-count" id="forumHeaderCount">正在连接讨论…</span>
-      </div>
-    </div>
-
-    <div class="forum-header-actions">
-      <div class="forum-identity-control" id="identityControl" aria-busy="true">
-        <span class="forum-identicon forum-identicon-sm" id="currentIdentityAvatar" aria-hidden="true"></span>
-        <span class="forum-identity-copy">
-          <small>CURRENT IDENTITY</small>
-          <strong id="currentIdentityName">读取中…</strong>
-        </span>
-        <label class="forum-switch-label" title="打开后使用匿名身份">
-          <input type="checkbox" id="anonymousToggle" aria-label="匿名身份开关" disabled>
-          <span class="forum-switch" aria-hidden="true"></span>
-          <span>匿名</span>
-        </label>
-        <button
-          class="forum-identity-refresh"
-          id="refreshIdentityButton"
-          type="button"
-          title="更换匿名身份"
-          aria-label="更换匿名身份"
-          disabled
-        >
-          <i class="fas fa-rotate" aria-hidden="true"></i>
-        </button>
-      </div>
-
-      <button
-        class="forum-button forum-button-primary"
-        id="openComposeButton"
-        type="button"
-        aria-label="发起讨论"
-        disabled
-      >
-        <i class="fas fa-plus" aria-hidden="true"></i>
-        <span>发起讨论</span>
-      </button>
-    </div>
-  </header>
-
   <section class="forum-workspace" aria-label="讨论区工作台">
     <aside class="forum-list-pane" id="forumListPane">
       <div class="forum-pane-tools">
@@ -80,15 +34,23 @@
             placeholder="搜索公开讨论内容"
           >
         </label>
-        <button class="forum-icon-button" id="refreshListButton" type="button" aria-label="刷新讨论列表" title="刷新">
-          <i class="fas fa-rotate" aria-hidden="true"></i>
-        </button>
       </div>
 
-      <div class="forum-filter-strip" role="tablist" aria-label="讨论筛选">
-        <button class="forum-chip is-active" type="button" data-scope="all" role="tab" aria-selected="true">全部讨论</button>
-        <button class="forum-chip" type="button" data-scope="mine" role="tab" aria-selected="false">我的讨论</button>
-        <span class="forum-sort-note">LAST ACTIVE ↓</span>
+      <div class="forum-filter-strip">
+        <div class="forum-filter-tabs" role="tablist" aria-label="讨论筛选">
+          <button class="forum-chip is-active" type="button" data-scope="all" role="tab" aria-selected="true">全部讨论</button>
+          <button class="forum-chip" type="button" data-scope="mine" role="tab" aria-selected="false">我的讨论</button>
+        </div>
+        <button
+          class="forum-new-thread-button"
+          id="openComposeButton"
+          type="button"
+          aria-label="发起讨论"
+          disabled
+        >
+          <i class="fas fa-plus" aria-hidden="true"></i>
+          <span>发起讨论</span>
+        </button>
       </div>
 
       <div class="forum-thread-list" id="threadList" role="listbox" aria-label="讨论列表">
@@ -97,9 +59,33 @@
         </div>
       </div>
 
-      <button class="forum-load-more" id="loadMoreThreadsButton" type="button" hidden>
-        加载更多讨论
-      </button>
+      <footer class="forum-list-footer">
+        <button class="forum-load-more" id="loadMoreThreadsButton" type="button" hidden>
+          加载更多讨论
+        </button>
+        <div class="forum-identity-control" id="identityControl" aria-busy="true">
+          <span class="forum-identicon forum-identicon-sm" id="currentIdentityAvatar" aria-hidden="true"></span>
+          <span class="forum-identity-copy">
+            <small>CURRENT IDENTITY</small>
+            <strong id="currentIdentityName">读取中…</strong>
+          </span>
+          <label class="forum-switch-label" title="打开后使用匿名身份">
+            <input type="checkbox" id="anonymousToggle" aria-label="匿名身份开关" disabled>
+            <span class="forum-switch" aria-hidden="true"></span>
+            <span>匿名</span>
+          </label>
+          <button
+            class="forum-identity-refresh"
+            id="refreshIdentityButton"
+            type="button"
+            title="更换匿名身份"
+            aria-label="更换匿名身份"
+            disabled
+          >
+            <i class="fas fa-rotate" aria-hidden="true"></i>
+          </button>
+        </div>
+      </footer>
     </aside>
 
     <article class="forum-detail-pane" id="detailPane" aria-live="polite">
@@ -131,13 +117,8 @@
       </div>
 
       <form class="forum-reply-composer" id="replyForm" novalidate hidden>
-        <div class="forum-composer-main">
-          <div class="forum-composer-identity">
-            将以
-            <span class="forum-identicon forum-identicon-xs" data-posting-avatar aria-hidden="true"></span>
-            <strong data-posting-name>当前身份</strong>
-            回复
-          </div>
+        <div class="forum-reply-surface">
+          <label class="visually-hidden" for="replyInput">写下回复</label>
           <textarea
             id="replyInput"
             name="content"
@@ -145,16 +126,18 @@
             placeholder="写下你的回复… 支持 Markdown、代码、LaTeX 与 Mermaid"
             required
           ></textarea>
-          <div class="forum-inline-preview" id="replyPreview" hidden></div>
+          <div class="forum-reply-footer">
+            <button
+              class="forum-reply-send"
+              id="submitReplyButton"
+              type="submit"
+              aria-label="发送回复"
+              title="发送回复"
+            >
+              <i class="fas fa-arrow-up" aria-hidden="true"></i>
+            </button>
+          </div>
           <p class="forum-field-error" id="replyError" role="alert"></p>
-        </div>
-        <div class="forum-composer-actions">
-          <span class="forum-format-hint">MD / CODE / TEX / MERMAID</span>
-          <button class="forum-button forum-button-quiet" id="previewReplyButton" type="button">预览</button>
-          <button class="forum-button forum-button-dark" id="submitReplyButton" type="submit">
-            提交回复
-            <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
-          </button>
         </div>
       </form>
     </article>
@@ -162,34 +145,34 @@
 
   <dialog class="forum-dialog forum-editor-dialog" id="editorDialog">
     <form id="editorForm" novalidate>
-      <header class="forum-dialog-header">
-        <div>
-          <span id="editorEyebrow">NEW THREAD</span>
+      <header class="forum-dialog-header forum-editor-dialog-header">
+        <div class="forum-dialog-heading">
+          <span class="forum-dialog-kicker" id="editorEyebrow">NEW THREAD</span>
           <h2 id="editorDialogTitle">发起讨论</h2>
         </div>
-        <button class="forum-icon-button" id="closeEditorButton" type="button" aria-label="关闭编辑器">
-          <i class="fas fa-xmark" aria-hidden="true"></i>
-        </button>
+        <div class="forum-editor-header-actions">
+          <div class="forum-editor-posting-identity" id="editorIdentityRow">
+            <span class="forum-identicon forum-identicon-sm" data-posting-avatar aria-hidden="true"></span>
+            <span class="forum-editor-posting-copy">
+              <strong data-posting-name>当前身份</strong>
+              <small id="editorIdentityHint">讨论将以当前身份发布</small>
+            </span>
+          </div>
+          <button class="forum-icon-button" id="closeEditorButton" type="button" aria-label="关闭编辑器">
+            <i class="fas fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
       </header>
 
       <div class="forum-dialog-body">
-        <div class="forum-editor-identity" id="editorIdentityRow">
-          <span class="forum-identicon forum-identicon-lg" data-posting-avatar aria-hidden="true"></span>
-          <span>
-            <strong data-posting-name>当前身份</strong>
-            <small id="editorIdentityHint">讨论将以当前身份发布</small>
-          </span>
-        </div>
-
         <div class="forum-field" id="editorTitleField">
           <label for="editorTitleInput">标题</label>
-          <input id="editorTitleInput" name="title" maxlength="255" placeholder="一句话说明你想讨论的问题">
+          <input id="editorTitleInput" name="title" maxlength="255" placeholder="今天讨论点什么呢……？">
         </div>
 
         <div class="forum-editor-tabs" role="tablist" aria-label="编辑与预览">
           <button class="is-active" type="button" data-editor-tab="write" role="tab" aria-selected="true">编写</button>
-          <button type="button" data-editor-tab="preview" role="tab" aria-selected="false">安全预览</button>
-          <span>MARKDOWN + CODE + LATEX + MERMAID</span>
+          <button type="button" data-editor-tab="preview" role="tab" aria-selected="false">预览</button>
         </div>
 
         <div class="forum-field forum-editor-write" id="editorWritePanel">
@@ -198,7 +181,7 @@
             id="editorContentInput"
             name="content"
             rows="12"
-            placeholder="补充你的思路、代码，或者已经尝试过的方法…"
+            placeholder="啊哒哒……啊哒哒……啊哒啊哒……喵喵喵喵喵！"
           ></textarea>
         </div>
         <div class="forum-editor-preview forum-markdown numoj-markdown" id="editorPreviewPanel" hidden>
@@ -208,7 +191,7 @@
       </div>
 
       <footer class="forum-dialog-footer">
-        <small id="editorDraftStatus">草稿仅保存在当前标签页</small>
+        <small id="editorDraftStatus"></small>
         <div class="forum-dialog-actions">
           <button class="forum-button forum-button-quiet" id="rebaseEditorDraftButton" type="button" hidden>
             以此草稿重建编辑
@@ -224,7 +207,7 @@
     <form id="identityForm" novalidate>
       <header class="forum-dialog-header">
         <div>
-          <span>ANONYMOUS IDENTITY</span>
+          <span class="forum-dialog-kicker">ANONYMOUS IDENTITY</span>
           <h2 id="identityDialogTitle">设置匿名身份</h2>
         </div>
         <button class="forum-icon-button" id="closeIdentityButton" type="button" aria-label="关闭匿名身份设置">
@@ -255,10 +238,6 @@
           >
         </div>
         <p class="forum-field-error" id="aliasError" role="alert"></p>
-        <p class="forum-identity-note">
-          可使用中文、英文字母、数字、下划线和连字符。中文计 2，其余计 1，总长度不超过 10。
-          保存后，本次身份会永久保留在已经发布的内容上。
-        </p>
       </div>
 
       <footer class="forum-dialog-footer">

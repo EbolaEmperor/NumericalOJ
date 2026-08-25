@@ -81,7 +81,9 @@ _RICH_MARKDOWN_EXTENSION_CONFIGS = {
         "linenums": False,
         "noclasses": False,
         "pygments_formatter": _LanguageClassHtmlFormatter,
-        "pygments_style": "github-dark",
+        # 最终颜色由共享 GitHub Light CSS 统一提供；这里也选择浅色 formatter
+        # 默认值，避免未来启用内联样式时意外回到深色画布。
+        "pygments_style": "default",
         "use_pygments": True,
     },
 }

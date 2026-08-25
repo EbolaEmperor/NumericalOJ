@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 JAVASCRIPT_ASSETS = (
     "frontend/markdown/code-highlighter.js",
+    "frontend/markdown/github-light-theme.js",
     "frontend/lean4-grammar.js",
     "frontend/lean4-theme.js",
     "frontend/lean4-unicode-input.js",
@@ -54,7 +55,7 @@ def test_frontend_javascript_has_valid_syntax(relative_path):
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
-def test_markdown_highlighter_bundle_matches_editor_dark_plus_languages():
+def test_markdown_highlighter_bundle_uses_github_light_for_rich_languages():
     asset = ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
     script = f"""
 const fs = require("fs");
@@ -62,26 +63,26 @@ const vm = require("vm");
 vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
 (async function() {{
   const samples = [
-    ["bash", 'curl -fsSL "$URL"', ["#DCDCAA", "#569CD6", "#9CDCFE"]],
-    ["c", "struct Widget {{ int value; }};", ["#569CD6"]],
-    ["cpp", "std::vector<int> values;", ["#4EC9B0"]],
+    ["bash", 'curl -fsSL "$URL"', ["#953800", "#0550AE", "#0A3069"]],
+    ["c", "struct Widget {{ int value; }};", ["#CF222E", "#1F2328"]],
+    ["cpp", "std::vector<int> values;", ["#953800", "#CF222E"]],
     [
       "python",
       "def solve(value: int) -> int:\\n    return value + 1",
-      ["#569CD6", "#DCDCAA", "#9CDCFE", "#4EC9B0", "#B5CEA8"],
+      ["#CF222E", "#8250DF", "#0550AE", "#1F2328"],
     ],
     [
       "matlab",
       "function y = solve(x)\\n  y = zeros(size(x));\\nend",
-      ["#569CD6", "#DCDCAA", "#9CDCFE", "#C586C0"],
+      ["#CF222E", "#8250DF", "#953800", "#1F2328"],
     ],
-    ["octave", "function y = solve(x)\\n  y = x;\\nend", ["#569CD6"]],
+    ["octave", "function y = solve(x)\\n  y = x;\\nend", ["#CF222E"]],
     [
       "lean4",
       "theorem answer (n : Nat) : n + 0 = n := by\\n  simpa -- done\\n\\nsorry",
       [
-        "#DCDCAA", "#9CDCFE", "#4EC9B0", "#D7BA7D", "#B5CEA8",
-        "#C586C0", "#6A9955", "#F44747",
+        "#CF222E", "#8250DF", "#953800", "#0550AE", "#1F2328",
+        "#6E7781", "#82071E",
       ],
     ],
   ];
@@ -357,22 +358,22 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
         Number(token.fontStyle || 0) === style;
     }});
   }}
-  if (!has("/-! Fibonacci docs -/", "#6A9955", 1)) process.exit(1);
-  if (!has("Point", "#4EC9B0", 2)) process.exit(2);
-  if (!has("Box", "#4EC9B0", 2)) process.exit(11);
-  if (!has("Mathlib.Data.Nat", "#4EC9B0", 2)) process.exit(12);
-  if (!has("Mathlib.Data.Nat.Basic", "#4EC9B0", 0)) process.exit(13);
-  if (!has("x", "#9CDCFE", 0) || !has("n", "#9CDCFE", 0)) process.exit(3);
-  if (!has("Nat", "#4EC9B0", 0) || !has("ℕ", "#4EC9B0", 0)) process.exit(4);
-  if (!has("Nat.", "#4EC9B0", 0) || !has("fib", "#DCDCAA", 0)) process.exit(5);
-  if (!has("fib_add", "#DCDCAA", 2)) process.exit(6);
-  if (!has("by", "#C586C0", 0) || !has("simpa", "#C586C0", 0)) process.exit(7);
-  if (!has("import", "#C586C0", 0) || !has("namespace", "#C586C0", 0)) process.exit(16);
-  if (!has("=", "#D7BA7D", 0)) process.exit(8);
+  if (!has("/-! Fibonacci docs -/", "#6E7781", 1)) process.exit(1);
+  if (!has("Point", "#0550AE", 2)) process.exit(2);
+  if (!has("Box", "#0550AE", 2)) process.exit(11);
+  if (!has("Mathlib.Data.Nat", "#0550AE", 2)) process.exit(12);
+  if (!has("Mathlib.Data.Nat.Basic", "#0550AE", 0)) process.exit(13);
+  if (!has("x", "#953800", 0) || !has("n", "#953800", 0)) process.exit(3);
+  if (!has("Nat", "#0550AE", 0) || !has("ℕ", "#0550AE", 0)) process.exit(4);
+  if (!has("Nat.", "#0550AE", 0) || !has("fib", "#8250DF", 0)) process.exit(5);
+  if (!has("fib_add", "#8250DF", 2)) process.exit(6);
+  if (!has("by", "#CF222E", 0) || !has("simpa", "#CF222E", 0)) process.exit(7);
+  if (!has("import", "#CF222E", 0) || !has("namespace", "#CF222E", 0)) process.exit(16);
+  if (!has("=", "#0550AE", 0)) process.exit(8);
   for (const operator of ["<;>", "-", "×", "^", "%", "·"]) {{
-    if (!has(operator, "#D7BA7D", 0)) process.exit(14);
+    if (!has(operator, "#0550AE", 0)) process.exit(14);
   }}
-  if (!has("sorry", "#F44747", 4)) process.exit(9);
+  if (!has("sorry", "#82071E", 4)) process.exit(9);
 }})().catch(function() {{ process.exit(15); }});
 """
     subprocess.run(

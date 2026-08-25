@@ -25,7 +25,6 @@
   }
 
   const elements = {
-    headerCount: document.getElementById("forumHeaderCount"),
     identityControl: document.getElementById("identityControl"),
     currentIdentityAvatar: document.getElementById("currentIdentityAvatar"),
     currentIdentityName: document.getElementById("currentIdentityName"),
@@ -33,7 +32,6 @@
     refreshIdentityButton: document.getElementById("refreshIdentityButton"),
     openComposeButton: document.getElementById("openComposeButton"),
     searchInput: document.getElementById("threadSearchInput"),
-    refreshListButton: document.getElementById("refreshListButton"),
     filterStrip: document.querySelector(".forum-filter-strip"),
     threadList: document.getElementById("threadList"),
     loadMoreThreadsButton: document.getElementById("loadMoreThreadsButton"),
@@ -42,12 +40,11 @@
     editThreadButton: document.getElementById("editThreadButton"),
     copyThreadLinkButton: document.getElementById("copyThreadLinkButton"),
     mobileBackButton: document.getElementById("mobileBackButton"),
+    detailPane: document.getElementById("detailPane"),
     conversation: document.getElementById("conversation"),
     replyForm: document.getElementById("replyForm"),
     replyInput: document.getElementById("replyInput"),
-    replyPreview: document.getElementById("replyPreview"),
     replyError: document.getElementById("replyError"),
-    previewReplyButton: document.getElementById("previewReplyButton"),
     submitReplyButton: document.getElementById("submitReplyButton"),
     editorDialog: document.getElementById("editorDialog"),
     editorForm: document.getElementById("editorForm"),
@@ -91,8 +88,6 @@
     threads: [],
     page: 1,
     totalPages: 0,
-    totalThreads: 0,
-    totalReplies: null,
     scope: "all",
     query: "",
     selectedId: null,
@@ -111,6 +106,8 @@
     toastTimer: null,
     searchTimer: null,
     identityRefreshTimer: null,
+    replyComposerFrame: null,
+    replyComposerObserver: null,
   };
 
   function sleep(ms) {
@@ -573,7 +570,7 @@
       main.className = "forum-thread-main";
       const title = document.createElement("h3");
       title.className = "forum-thread-title";
-      title.innerHTML = `<span class="forum-thread-id">${threadCode(thread.id)}</span>${escapeHtml(thread.title)}`;
+      title.textContent = thread.title;
 
       const preview = document.createElement("span");
       preview.className = "forum-thread-preview";
@@ -618,20 +615,11 @@
     elements.loadMoreThreadsButton.hidden = state.page >= state.totalPages;
   }
 
-  function updateHeaderCount() {
-    const threadPart = `${state.totalThreads} THREADS`;
-    const replyPart = Number.isFinite(Number(state.totalReplies))
-      ? ` / ${Number(state.totalReplies)} REPLIES`
-      : "";
-    elements.headerCount.textContent = `${threadPart}${replyPart}`;
-  }
-
   async function loadThreads(options) {
     const config = Object.assign({ append: false, autoSelect: false }, options || {});
     const requestSequence = ++state.listRequestSequence;
     const page = config.append ? state.page + 1 : 1;
     if (!config.append) setThreadListLoading();
-    setLoading(elements.refreshListButton, true);
 
     const params = new URLSearchParams({
       scope: state.scope,
@@ -647,10 +635,7 @@
       state.threads = config.append ? state.threads.concat(incoming) : incoming;
       state.page = Number(payload.page || page);
       state.totalPages = Number(payload.total_pages || (incoming.length === THREAD_PAGE_SIZE ? page + 1 : page));
-      state.totalThreads = Number(payload.total != null ? payload.total : state.threads.length);
-      state.totalReplies = payload.total_replies != null ? Number(payload.total_replies) : state.totalReplies;
       renderThreadList();
-      updateHeaderCount();
 
       if (config.autoSelect && !state.selectedId && state.threads.length) {
         await selectThread(state.threads[0].id, {
@@ -664,12 +649,10 @@
         <div class="forum-list-empty">
           <span class="forum-empty-mark"><i class="fas fa-triangle-exclamation" aria-hidden="true"></i></span>
           <strong>讨论列表加载失败</strong>
-          <p>${escapeHtml(error.message)}。点击右上角刷新按钮重试。</p>
+          <p>${escapeHtml(error.message)}。请稍后重试。</p>
         </div>
       `;
       showToast(error.message, "error");
-    } finally {
-      if (requestSequence === state.listRequestSequence) setLoading(elements.refreshListButton, false);
     }
   }
 
@@ -721,14 +704,14 @@
     time.title = formatAbsoluteTime(item.created_at);
     header.appendChild(time);
 
-    if (item.is_owner) {
+    if (item.is_owner && kind === "reply") {
       const edit = document.createElement("button");
       edit.type = "button";
       edit.className = "forum-icon-button forum-post-edit";
-      edit.dataset.editKind = kind;
+      edit.dataset.editKind = "reply";
       edit.dataset.editId = String(item.id);
-      edit.setAttribute("aria-label", kind === "thread" ? "编辑主题" : "编辑回复");
-      edit.title = kind === "thread" ? "编辑主题" : "编辑回复";
+      edit.setAttribute("aria-label", "编辑回复");
+      edit.title = "编辑回复";
       edit.innerHTML = '<i class="fas fa-pen" aria-hidden="true"></i>';
       header.appendChild(edit);
     }
@@ -806,7 +789,7 @@
     elements.detailTitle.textContent = "正在读取讨论…";
     elements.editThreadButton.hidden = true;
     elements.copyThreadLinkButton.disabled = true;
-    elements.replyForm.hidden = true;
+    setReplyComposerVisible(false);
     clearRenderedMarkdown(elements.conversation);
     elements.conversation.innerHTML = `
       <div class="forum-list-skeleton" aria-hidden="true">
@@ -826,7 +809,7 @@
         <p>${escapeHtml(error.message)}。重新选择该讨论即可重试。</p>
       </div>
     `;
-    elements.replyForm.hidden = true;
+    setReplyComposerVisible(false);
   }
 
   function applyThreadPayload(payload) {
@@ -846,7 +829,7 @@
     elements.detailTitle.textContent = state.thread.title;
     elements.editThreadButton.hidden = !state.thread.is_owner;
     elements.copyThreadLinkButton.disabled = false;
-    elements.replyForm.hidden = false;
+    setReplyComposerVisible(true);
     restoreReplyDraft();
     renderConversation();
   }
@@ -956,17 +939,51 @@
     };
   }
 
-  function setReplyAttemptPending(isPending) {
-    elements.replyInput.readOnly = Boolean(isPending);
-    elements.previewReplyButton.disabled = Boolean(isPending);
-    elements.replyForm.classList.toggle("has-pending-attempt", Boolean(isPending));
+  function resizeReplyInput() {
+    elements.replyInput.style.height = "auto";
+    elements.replyInput.style.height = `${Math.min(180, Math.max(48, elements.replyInput.scrollHeight))}px`;
+    scheduleReplyComposerClearance();
   }
 
-  function setReplyPostingIdentity(name, avatar) {
-    const nameElement = elements.replyForm.querySelector("[data-posting-name]");
-    const avatarElement = elements.replyForm.querySelector("[data-posting-avatar]");
-    nameElement.textContent = name || "当前身份";
-    paintAvatar(avatarElement, avatar, name);
+  function syncReplyComposerClearance() {
+    state.replyComposerFrame = null;
+    const height = elements.replyForm.hidden
+      ? 0
+      : Math.ceil(elements.replyForm.getBoundingClientRect().height);
+    elements.detailPane.style.setProperty(
+      "--forum-reply-overlay-height",
+      `${height}px`,
+    );
+  }
+
+  function scheduleReplyComposerClearance() {
+    if (state.replyComposerFrame !== null) {
+      window.cancelAnimationFrame(state.replyComposerFrame);
+    }
+    state.replyComposerFrame = window.requestAnimationFrame(
+      syncReplyComposerClearance,
+    );
+  }
+
+  function setReplyComposerVisible(visible) {
+    elements.replyForm.hidden = !visible;
+    scheduleReplyComposerClearance();
+  }
+
+  function observeReplyComposerSize() {
+    if (typeof window.ResizeObserver === "function") {
+      state.replyComposerObserver = new window.ResizeObserver(
+        scheduleReplyComposerClearance,
+      );
+      state.replyComposerObserver.observe(elements.replyForm);
+    }
+    window.addEventListener("resize", scheduleReplyComposerClearance);
+    scheduleReplyComposerClearance();
+  }
+
+  function setReplyAttemptPending(isPending) {
+    elements.replyInput.readOnly = Boolean(isPending);
+    elements.replyForm.classList.toggle("has-pending-attempt", Boolean(isPending));
   }
 
   function saveReplyDraft() {
@@ -979,28 +996,18 @@
   }
 
   function restoreReplyDraft() {
-    state.previewRequestSequence += 1;
     // 回复提交可以在用户切换讨论后继续完成；按钮本身由所有讨论复用，
     // 因此每次恢复当前讨论时先清理旧讨论留下的 loading 外观。
     setLoading(elements.submitReplyButton, false);
-    elements.replyPreview.hidden = true;
-    clearRenderedMarkdown(elements.replyPreview);
-    elements.replyPreview.innerHTML = "";
     elements.replyError.textContent = "";
     const draft = readDraft(replyDraftKey());
     const pending = pendingAttempt(draft);
     const restoredContent = pending ? pending.body.content : (draft && draft.content);
     elements.replyInput.value = typeof restoredContent === "string" ? restoredContent : "";
+    resizeReplyInput();
     setReplyAttemptPending(Boolean(pending));
     if (pending) {
-      const attemptedIdentity = pending.posting_identity || {};
-      setReplyPostingIdentity(
-        attemptedIdentity.name || postingName(),
-        attemptedIdentity.avatar || postingAvatar(),
-      );
       elements.replyError.textContent = "上次提交结果尚未确认。内容已冻结，只会使用同一请求标识原样重试。";
-    } else {
-      setReplyPostingIdentity(postingName(), postingAvatar());
     }
   }
 
@@ -1047,7 +1054,8 @@
     if (!writeDraft(submittedDraftKey, draft)) return;
     setReplyAttemptPending(true);
     elements.replyError.textContent = "";
-    setLoading(elements.submitReplyButton, true, "提交中");
+    setLoading(elements.submitReplyButton, true);
+    elements.submitReplyButton.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>';
 
     try {
       const payload = await requestJson(`${API_ROOT}/threads/${submittedThreadId}/replies`, {
@@ -1059,11 +1067,8 @@
 
       if (state.thread && state.thread.id === submittedThreadId) {
         setReplyAttemptPending(false);
-        setReplyPostingIdentity(postingName(), postingAvatar());
         elements.replyInput.value = "";
-        elements.replyPreview.hidden = true;
-        clearRenderedMarkdown(elements.replyPreview);
-        elements.replyPreview.innerHTML = "";
+        resizeReplyInput();
       }
 
       if (
@@ -1101,7 +1106,6 @@
         });
         if (state.thread && state.thread.id === submittedThreadId) {
           setReplyAttemptPending(false);
-          setReplyPostingIdentity(postingName(), postingAvatar());
           elements.replyError.textContent = "发布身份已在其他页面更改。请确认当前身份后再次提交。";
         }
         showToast("发布身份已变化，请重新确认", "error");
@@ -1190,7 +1194,7 @@
     writeDraft(editorDraftKey(), value);
     elements.editorDraftStatus.textContent = state.editorDraftIsStale
       ? `旧草稿仍基于版本 ${value.base_version}`
-      : "草稿已保存在当前标签页";
+      : "";
   }
 
   function setEditorDraftControls({ pending, stale }) {
@@ -1276,7 +1280,7 @@
       elements.editorContentInput.value = restored.content || "";
       elements.editorDraftStatus.textContent = restored.content || restored.title
         ? "已恢复当前标签页中的草稿"
-        : "草稿仅保存在当前标签页";
+        : "";
       const attemptedIdentity = pending && pending.posting_identity;
       setEditorIdentity(
         attemptedIdentity ? attemptedIdentity.name : postingName(),
@@ -1913,7 +1917,6 @@
       }, 280);
     });
 
-    elements.refreshListButton.addEventListener("click", () => loadThreads({ append: false }));
     elements.loadMoreThreadsButton.addEventListener("click", () => loadThreads({ append: true }));
     elements.openComposeButton.addEventListener("click", () => openEditor("new"));
     elements.editThreadButton.addEventListener("click", () => {
@@ -1925,16 +1928,10 @@
 
     elements.replyInput.addEventListener("input", () => {
       elements.replyError.textContent = "";
+      resizeReplyInput();
       saveReplyDraft();
     });
     elements.replyForm.addEventListener("submit", submitReply);
-    elements.previewReplyButton.addEventListener("click", () => {
-      if (!elements.replyPreview.hidden) {
-        elements.replyPreview.hidden = true;
-        return;
-      }
-      previewMarkdown(elements.replyInput.value, elements.replyPreview, elements.previewReplyButton);
-    });
 
     elements.editorForm.addEventListener("submit", submitEditor);
     elements.editorContentInput.addEventListener("input", saveEditorDraft);
@@ -1979,6 +1976,7 @@
 
   async function initialize() {
     testSessionStorage();
+    observeReplyComposerSize();
     bindEvents();
 
     const requestedThreadId = Number(app.dataset.initialThreadId || currentPathThreadId() || 0);
