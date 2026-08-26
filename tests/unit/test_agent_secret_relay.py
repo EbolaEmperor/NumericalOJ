@@ -112,7 +112,7 @@ def test_local_container_alias_is_only_rewritten_for_host_upstream():
     assert upstream.connect_host == ""
 
 
-def test_personal_upstream_allows_private_target():
+def test_upstream_parser_keeps_private_target_for_trusted_global_callers():
     upstream = relay._normalize_upstream_base_url(
         "http://127.0.0.1:9000/v1"
     )
@@ -121,7 +121,7 @@ def test_personal_upstream_allows_private_target():
     assert upstream.connect_host == ""
 
 
-def test_personal_upstream_keeps_hostname_for_runtime_resolution():
+def test_upstream_parser_keeps_hostname_until_source_policy_is_applied():
     upstream = relay._normalize_upstream_base_url(
         "https://API.Example.Test:8443/tenant/v1",
     )
@@ -162,7 +162,64 @@ def test_pinned_https_connection_dials_ip_but_keeps_hostname_for_sni():
     assert any(call[:2] == ("sni", "api.example.test") for call in calls)
 
 
-def test_personal_endpoint_source_allows_private_runtime_target(monkeypatch):
+def test_personal_endpoint_source_rejects_private_runtime_target(monkeypatch):
+    started = []
+
+    def fake_start(instance):
+        started.append(instance)
+        with instance._state_lock:
+            instance._active = True
+        instance.container_base_url = "http://host.docker.internal:43100/v1"
+        return instance.container_base_url
+
+    monkeypatch.setattr(relay._AgentSecretRelay, "start", fake_start)
+
+    with pytest.raises(relay.AgentSecretRelayError, match="公开可路由"):
+        with relay.run_agent_secret_relays({
+            "source": "user",
+            "protocol": "openai",
+            "base_url": "http://127.0.0.1:9000/v1",
+            "api_key": "private-key",
+        }):
+            pass
+
+    assert started == []
+
+
+def test_personal_endpoint_source_pins_validated_public_runtime_target(
+        monkeypatch):
+    started = []
+    resolved = []
+
+    def fake_start(instance):
+        started.append(instance)
+        with instance._state_lock:
+            instance._active = True
+        instance.container_base_url = "http://host.docker.internal:43100/v1"
+        return instance.container_base_url
+
+    def fake_resolve(url):
+        resolved.append(url)
+        return SimpleNamespace(connect_host="93.184.216.34")
+
+    monkeypatch.setattr(relay._AgentSecretRelay, "start", fake_start)
+    monkeypatch.setattr(relay, "resolve_public_http_target", fake_resolve)
+
+    with relay.run_agent_secret_relays({
+        "source": "user",
+        "protocol": "openai",
+        "base_url": "https://api.example.test/v1",
+        "api_key": "private-key",
+    }):
+        pass
+
+    assert resolved == ["https://api.example.test"]
+    assert started[0].upstream.host == "api.example.test"
+    assert started[0].upstream.connect_host == "93.184.216.34"
+
+
+def test_global_endpoint_source_preserves_trusted_private_runtime_target(
+        monkeypatch):
     started = []
 
     def fake_start(instance):
@@ -175,15 +232,57 @@ def test_personal_endpoint_source_allows_private_runtime_target(monkeypatch):
     monkeypatch.setattr(relay._AgentSecretRelay, "start", fake_start)
 
     with relay.run_agent_secret_relays({
-        "source": "user",
+        "source": "global",
         "protocol": "openai",
         "base_url": "http://127.0.0.1:9000/v1",
-        "api_key": "private-key",
+        "api_key": "trusted-admin-key",
     }):
         pass
 
     assert started[0].upstream.host == "127.0.0.1"
     assert started[0].upstream.connect_host == ""
+
+
+def test_personal_endpoint_policy_preserves_trusted_private_web_search_mcp(
+        monkeypatch):
+    started = []
+    resolved = []
+
+    def fake_start(instance):
+        started.append(instance)
+        with instance._state_lock:
+            instance._active = True
+        instance.container_base_url = (
+            f"http://host.docker.internal:{43100 + len(started)}"
+            f"{instance.upstream.container_base_path}"
+        )
+        return instance.container_base_url
+
+    def fake_resolve(url):
+        resolved.append(url)
+        return SimpleNamespace(connect_host="93.184.216.34")
+
+    monkeypatch.setattr(relay._AgentSecretRelay, "start", fake_start)
+    monkeypatch.setattr(relay, "resolve_public_http_target", fake_resolve)
+
+    with relay.run_agent_secret_relays(
+        {
+            "source": "user",
+            "protocol": "openai",
+            "base_url": "https://api.example.test/v1",
+            "api_key": "private-key",
+        },
+        {
+            "base_url": "http://127.0.0.1:9001/mcp",
+            "authorization": "Bearer trusted-search-key",
+        },
+    ):
+        pass
+
+    assert resolved == ["https://api.example.test"]
+    assert [instance.mode for instance in started] == ["openai", "mcp"]
+    assert started[1].upstream.host == "127.0.0.1"
+    assert started[1].upstream.connect_host == ""
 
 
 def test_each_relay_has_an_independent_high_entropy_temporary_credential():

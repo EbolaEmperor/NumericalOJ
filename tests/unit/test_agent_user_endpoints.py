@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from oj_modules.agents import user_endpoints
 
 
@@ -136,7 +138,7 @@ def test_personal_endpoint_test_issues_scoped_one_time_grant(monkeypatch):
         {
             "protocol": "openai",
             "category": "text",
-            "base_url": "http://127.0.0.1:9000/v1",
+            "base_url": "https://93.184.216.34/v1",
             "api_key": "secret",
             "model": "private-model",
             "thinking_enabled": False,
@@ -169,12 +171,100 @@ def test_personal_endpoint_test_issues_scoped_one_time_grant(monkeypatch):
     assert executed[0][1][4] == user_endpoints._candidate_fingerprint(expected)
 
 
+def test_personal_endpoint_test_rejects_private_target_before_custom_tester():
+    called = []
+
+    with pytest.raises(
+        user_endpoints.config_service.DynamicConfigValidationError,
+        match="公开可路由",
+    ):
+        user_endpoints.test_user_agent_endpoint_payload(
+            {
+                "protocol": "openai",
+                "category": "text",
+                "base_url": "http://127.0.0.1:9000/v1",
+                "api_key": "secret",
+                "model": "private-model",
+                "thinking_enabled": False,
+                "thinking_format": "none",
+            },
+            user_id=7,
+            tester=lambda *_args, **_kwargs: called.append(True),
+        )
+
+    assert called == []
+
+
+def test_default_personal_endpoint_tester_pins_target_and_refuses_redirects(
+        monkeypatch):
+    from oj_modules.ai import endpoints as ai_endpoints
+    from oj_modules.security import outbound
+
+    target = outbound.ResolvedPublicTarget(
+        scheme="https",
+        hostname="api.example.test",
+        port=443,
+        connect_host="93.184.216.34",
+        authority="api.example.test",
+    )
+    events = []
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, **kwargs):
+            events.append(("post", url, kwargs))
+            return object()
+
+        def get(self, url, **kwargs):
+            events.append(("get", url, kwargs))
+            return object()
+
+    monkeypatch.setattr(
+        user_endpoints,
+        "resolve_public_http_target",
+        lambda _url: target,
+    )
+    monkeypatch.setattr(user_endpoints.requests, "Session", Session)
+    monkeypatch.setattr(
+        user_endpoints,
+        "pinned_public_session",
+        lambda session, resolved: (
+            events.append(("pin", resolved.connect_host)) or session
+        ),
+    )
+
+    def fake_test(candidate, *, request_post, request_get, **_kwargs):
+        request_post("https://api.example.test/v1/chat/completions", json={})
+        request_get("https://api.example.test/v1/models")
+        return {"passed": True, "message": "ok", "latency_ms": 1}
+
+    monkeypatch.setattr(ai_endpoints, "test_endpoint_candidate", fake_test)
+
+    result = user_endpoints.test_user_agent_endpoint({
+        "protocol": "openai",
+        "category": "text",
+        "base_url": "https://api.example.test/v1",
+        "api_key": "secret",
+        "model": "model",
+    })
+
+    assert result["passed"] is True
+    assert events[0] == ("pin", "93.184.216.34")
+    assert events[1][2]["allow_redirects"] is False
+    assert events[2][2]["allow_redirects"] is False
+
+
 def test_personal_endpoint_create_persists_category_without_prices(monkeypatch):
     executed = []
     payload = {
         "protocol": "openai",
         "category": "omni",
-        "base_url": "https://example.test/v1",
+        "base_url": "https://93.184.216.34/v1",
         "api_key": "secret",
         "model": "private-model",
         "thinking_enabled": False,
@@ -244,3 +334,30 @@ def test_personal_endpoint_create_persists_category_without_prices(monkeypatch):
     assert params[3] == "omni"
     assert "UPDATE dynamic_config_test_grants SET consumed_at" in executed[2][0]
     assert saved == {"id": 19, "user_id": 7}
+
+
+def test_personal_endpoint_save_rechecks_target_before_consuming_old_grant(
+        monkeypatch):
+    monkeypatch.setattr(
+        user_endpoints,
+        "get_db_connection",
+        lambda: pytest.fail("私网目标不得进入 grant 消费事务"),
+    )
+
+    with pytest.raises(
+        user_endpoints.config_service.DynamicConfigValidationError,
+        match="公开可路由",
+    ):
+        user_endpoints.save_user_agent_endpoint(
+            {
+                "protocol": "openai",
+                "category": "text",
+                "base_url": "http://169.254.169.254/v1",
+                "api_key": "secret",
+                "model": "private-model",
+                "thinking_enabled": False,
+                "thinking_format": "none",
+            },
+            user_id=7,
+            test_token="pre-upgrade-grant",
+        )
