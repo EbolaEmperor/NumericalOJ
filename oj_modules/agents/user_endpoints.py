@@ -12,6 +12,11 @@ import secrets
 from datetime import datetime, timedelta
 
 from oj_modules.infrastructure.mysql import get_db_connection
+from oj_modules.security.outbound import (
+    PublicOutboundTargetError,
+    pinned_public_session,
+    resolve_public_http_target,
+)
 from oj_modules.site_config import services as config_service
 
 
@@ -88,19 +93,37 @@ def normalize_user_agent_endpoint_payload(payload, *, existing=None):
     }
 
 
+def _require_public_endpoint_target(candidate):
+    try:
+        return resolve_public_http_target((candidate or {}).get("base_url"))
+    except PublicOutboundTargetError as exc:
+        raise config_service.DynamicConfigValidationError(str(exc)) from None
+
+
 def test_user_agent_endpoint(candidate, *, timeout_seconds=30):
-    """测试普通用户自有端点，不附加公网地址策略。"""
+    """通过解析后固定的公网地址测试普通用户自有端点。"""
 
     from oj_modules.ai.endpoints import test_endpoint_candidate
 
+    target = _require_public_endpoint_target(candidate)
     with requests.Session() as session:
-        # 不让环境变量中的代理改写自有端点的实际连接目标。
-        session.trust_env = False
+        pinned_public_session(session, target)
+
+        def request_post(url, **kwargs):
+            # requests 默认跟随 POST 的 301/302/303；个人端点测试不能让
+            # Location 绕过已经固定的 origin 与公网地址校验。
+            kwargs["allow_redirects"] = False
+            return session.post(url, **kwargs)
+
+        def request_get(url, **kwargs):
+            kwargs["allow_redirects"] = False
+            return session.get(url, **kwargs)
+
         return test_endpoint_candidate(
             candidate,
             timeout=timeout_seconds,
-            request_get=session.get,
-            request_post=session.post,
+            request_get=request_get,
+            request_post=request_post,
         )
 
 
@@ -217,6 +240,10 @@ def test_user_agent_endpoint_payload(
         else None
     )
     candidate = normalize_user_agent_endpoint_payload(payload, existing=existing)
+    # 安全边界位于可注入 tester 之前：即使测试适配器被替换，也不能
+    # 为私网/混合 DNS 目标签发可保存的一次性凭证。默认 tester 会再次
+    # 解析并固定连接，关闭校验到 connect 之间的 DNS rebinding 窗口。
+    _require_public_endpoint_target(candidate)
     result = _test_candidate(candidate, tester)
     effective_candidate = config_service.apply_llm_endpoint_test_limits(
         candidate,
@@ -369,6 +396,9 @@ def save_user_agent_endpoint(
         existing = _owned_endpoint_row(endpoint_id, user_id)
 
     candidate = normalize_user_agent_endpoint_payload(payload, existing=existing)
+    # 测试凭证可能在服务升级前签发，或域名在测试后已经改变解析结果；
+    # 保存边界必须独立复核，不能只信任历史 grant。
+    _require_public_endpoint_target(candidate)
     fingerprint = _candidate_fingerprint(candidate)
     base_revision = int((existing or {}).get("revision") or 0)
     conn = get_db_connection()

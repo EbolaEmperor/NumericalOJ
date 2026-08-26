@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hmac
 import http.client
 import http.server
@@ -22,6 +22,10 @@ import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+from oj_modules.security.outbound import (
+    PublicOutboundTargetError,
+    resolve_public_http_target,
+)
 from oj_modules.tasks.agent.identity_relay import (
     _BoundedIdentityRelayServer,
     _RequestRejected,
@@ -1341,6 +1345,7 @@ class _AgentSecretRelay:
         stop_event=None,
         require_usage_ack=False,
         usage_callback=None,
+        require_public_target=False,
     ):
         normalized_mode = str(mode or "").strip().lower()
         if normalized_mode not in {"openai", "anthropic", "mcp"}:
@@ -1350,6 +1355,18 @@ class _AgentSecretRelay:
             upstream_base_url,
             preserve_trailing_slash=self.mode == "mcp",
         )
+        if require_public_target:
+            try:
+                target = resolve_public_http_target(self.upstream.origin_url)
+            except PublicOutboundTargetError as exc:
+                raise AgentSecretRelayError(str(exc)) from None
+            # HTTPConnection 保留 self.host 生成 Host；HTTPSConnection 也继续
+            # 用该 hostname 完成 SNI 与证书校验，仅底层 TCP 连接固定到本次
+            # 已校验的公网 IP，避免保存后 DNS rebinding。
+            self.upstream = replace(
+                self.upstream,
+                connect_host=target.connect_host,
+            )
         self.real_credential = _validate_header_value(
             real_credential,
             "外部服务长期凭据",
@@ -2064,6 +2081,10 @@ def run_agent_secret_relays(
     """启动一轮模型端点及可选 WebSearch MCP 密钥代理。"""
 
     endpoint_protocol = str(endpoint.get("protocol") or "").strip().lower()
+    endpoint_source = str(endpoint.get("source") or "").strip().lower()
+    require_public_target = (
+        endpoint_source == "user" or endpoint.get("is_personal") is True
+    )
     endpoint_relay = _AgentSecretRelay(
         upstream_base_url=endpoint.get("base_url"),
         mode=endpoint_protocol,
@@ -2071,6 +2092,7 @@ def run_agent_secret_relays(
         stop_event=endpoint_stop_event,
         require_usage_ack=require_endpoint_usage_ack,
         usage_callback=endpoint_usage_callback,
+        require_public_target=require_public_target,
     )
     web_search_relay = None
     if web_search_settings:
