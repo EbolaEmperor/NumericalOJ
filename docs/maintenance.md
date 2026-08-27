@@ -168,10 +168,11 @@ DB/E2E 命令只有在 `oj_modules/config.py` 加载后的有效配置明确指�
 python3 scripts/repository_storage_admin.py doctor
 python3 scripts/repository_storage_admin.py recover-journal
 python3 scripts/repository_storage_admin.py cleanup-expired-uploads
+python3 scripts/repository_storage_admin.py quarantine-orphan-snapshots
 python3 scripts/repository_storage_admin.py quarantine-orphans
 ```
 
-`doctor` 核对 state/entry 数量、父子路径、大小与 SHA-256、UTF-8/LF 规范、符号链接、上传暂存、journal 和提交快照的孤儿/缺失关系。上传会话从最后活动起 24 小时过期，现有 5 分钟 watchdog 会幂等自动回收；部署停服窗口也会在 `doctor` 前补做一次清理。单用户同时最多保留 4 个活跃上传会话，活跃 staging 中原始文件与规范化副本合计不得超过仓库配额的 5 倍。手工清理需要 `--apply --confirm-expired-staging-delete`。journal 恢复和孤儿隔离都需要 `--apply --confirm-app-writers-stopped`；隔离使用同一文件系统内的原子 rename，把内容移到 `REPOSITORY_STORAGE_ROOT/quarantine/<batch>/items/`，绝不删除，并在同批 `manifest.json` 记录原路径、inode 与目标。恢复隔离项前保持应用停止，先解决导致 metadata 不一致的根因，再按 manifest 将单个 numbered item 原子移回 `source_relative`；目标已存在、inode/类型无法核对或 metadata 仍冲突时必须停止，不得覆盖猜测。
+`doctor` 核对 state/entry 数量、父子路径、大小与 SHA-256、UTF-8/LF 规范、符号链接、上传暂存、journal 和提交快照的孤儿/缺失关系。上传会话从最后活动起 24 小时过期，现有 5 分钟 watchdog 会幂等自动回收；部署停服窗口也会在 `doctor` 前补做一次清理。提交事务回滚或提交记录被删除后，已经完整落盘但不再有 metadata 的快照会被保留；部署在确认全部应用写入者停止后，只把这类 `snapshot_orphan` 自动隔离，再由 `doctor` 严格检查其余异常。单用户同时最多保留 4 个活跃上传会话，活跃 staging 中原始文件与规范化副本合计不得超过仓库配额的 5 倍。手工清理需要 `--apply --confirm-expired-staging-delete`。journal 恢复和孤儿隔离都需要 `--apply --confirm-app-writers-stopped`；隔离使用同一文件系统内的原子 rename，把内容移到 `REPOSITORY_STORAGE_ROOT/quarantine/<batch>/items/`，绝不删除，并在同批 `manifest.json` 记录原路径、inode 与目标。恢复隔离项前保持应用停止，先解决导致 metadata 不一致的根因，再按 manifest 将单个 numbered item 原子移回 `source_relative`；目标已存在、inode/类型无法核对或 metadata 仍冲突时必须停止，不得覆盖猜测。
 
 ### 版本化迁移前置要求
 

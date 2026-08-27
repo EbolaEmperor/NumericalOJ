@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""代码仓库存储 doctor、journal 恢复与过期上传清理入口。
+"""代码仓库存储 doctor、journal 恢复、过期上传清理与孤儿隔离入口。
 
-``doctor`` 与另外两个命令的默认模式均只读。恢复/清理必须显式传入 ``--apply`` 和
+除 ``doctor`` 外的命令默认也只读。恢复、清理或隔离必须显式传入 ``--apply`` 和
 对应确认参数；本脚本不会在导入时连接数据库或修改文件系统。
 """
 
@@ -23,6 +23,7 @@ from oj_modules.db_services import get_db_connection  # noqa: E402
 from oj_modules.repository.admin import (  # noqa: E402
     doctor_repository_storage,
     quarantine_repository_orphans,
+    quarantine_repository_snapshot_orphans,
 )
 from oj_modules.repository.tree import (  # noqa: E402
     cleanup_expired_repository_upload_sessions,
@@ -121,6 +122,16 @@ def main():
         action="store_true",
         help="确认 Web/Celery 等全部应用写入者已停止",
     )
+    snapshot_quarantine = subparsers.add_parser(
+        "quarantine-orphan-snapshots",
+        help="审计或隔离没有 metadata 的提交快照（不删除）",
+    )
+    snapshot_quarantine.add_argument("--apply", action="store_true")
+    snapshot_quarantine.add_argument(
+        "--confirm-app-writers-stopped",
+        action="store_true",
+        help="确认 Web/Celery 等全部应用写入者已停止",
+    )
 
     args = parser.parse_args()
     if args.command == "doctor":
@@ -136,6 +147,13 @@ def main():
         return 0
     if args.command == "quarantine-orphans":
         report = quarantine_repository_orphans(
+            apply=args.apply,
+            writers_stopped_confirmed=args.confirm_app_writers_stopped,
+        )
+        _print(report)
+        return 0
+    if args.command == "quarantine-orphan-snapshots":
+        report = quarantine_repository_snapshot_orphans(
             apply=args.apply,
             writers_stopped_confirmed=args.confirm_app_writers_stopped,
         )

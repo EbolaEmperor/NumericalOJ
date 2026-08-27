@@ -876,8 +876,11 @@ phase='种入 VibeHub 示例作品'
   --upload-root "$ROOT_DIR/uploads/vibehub" \
   --arc-set "$ARC_CURRENT_SET"
 
+phase='维护代码仓库存储'
 "$CANDIDATE_PYTHON" scripts/repository_storage_admin.py \
   cleanup-expired-uploads --apply --confirm-expired-staging-delete
+"$CANDIDATE_PYTHON" scripts/repository_storage_admin.py \
+  quarantine-orphan-snapshots --apply --confirm-app-writers-stopped
 "$CANDIDATE_PYTHON" scripts/repository_storage_admin.py doctor
 "$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py --confirm-celery-stopped
 
