@@ -60,6 +60,24 @@ def test_repository_check_loader_uses_an_explicit_nonduplicated_label():
     assert 'data-loader-label="正在检查仓库…"' in submit
 
 
+def test_reverse_submit_endpoint_shows_harness_and_model_as_separate_identity_parts():
+    submit = _read(TEMPLATES / "tabs" / "submit.html")
+    stylesheet = _read(STYLESHEET)
+
+    assert "rj_harness_label(ep)" in submit
+    assert "rj-endpoint-harness-name" in submit
+    assert "rj-endpoint-plus" in submit
+    assert "rj-endpoint-model-name" in submit
+    assert "data-endpoint-harness-name" in submit
+    assert "data-endpoint-model" in submit
+    assert submit.index("rj-endpoint-harness-name") < submit.index(
+        "rj-endpoint-plus"
+    ) < submit.index("rj-endpoint-model-logo") < submit.index(
+        "data-rj-endpoint-model-name"
+    )
+    assert ".ranking-v2-detail .rj-endpoint-plus" in stylesheet
+
+
 def test_reverse_zip_submit_survives_missing_git_repository_controls():
     submit = _read(TEMPLATES / "tabs" / "submit.html")
 

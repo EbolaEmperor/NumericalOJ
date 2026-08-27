@@ -249,25 +249,6 @@
   white-space: nowrap;
 }
 
-.agent-endpoint-paid-badge {
-  display: inline-flex;
-  min-width: max-content;
-  flex: 0 0 auto;
-  align-items: center;
-  padding: 1px 5px;
-  border: 1px solid #d6b884;
-  border-radius: 999px;
-  background: #f8ead2;
-  color: #7f471b;
-  font-family: inherit;
-  font-size: 8px;
-  font-weight: 750;
-  line-height: 1.35;
-  letter-spacing: .02em;
-}
-
-.agent-endpoint-paid-badge[hidden] { display: none; }
-
 .agent-endpoint-pricing-period {
   display: inline-flex;
   min-width: max-content;
@@ -289,19 +270,6 @@
 
 .agent-endpoint-pricing-period[data-pricing-period="peak"] > i { background: #c94b46; }
 .agent-endpoint-pricing-period[hidden] { display: none; }
-
-.agent-choice--endpoint .agent-endpoint-option-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.agent-choice--endpoint .agent-endpoint-paid-badge--trigger {
-  min-width: max-content;
-  overflow: visible;
-  font-weight: 750;
-}
 
 .agent-choice--endpoint .rk-choice-option.is-personal-endpoint {
   background: #fffaf1;
@@ -739,6 +707,37 @@
     right: 0;
     left: auto;
     width: min(220px, calc(100vw - 32px));
+  }
+
+  /*
+   * 移动端弹窗脱离底部工具栏定位，由选择器脚本按触发按钮和视口尺寸
+   * 计算最终位置，避免居中或右对齐时贴到屏幕外侧，也避免顶部空间不足。
+   */
+  .agent-home[data-choice-menu-viewport-boundary]
+    .rk-choice-menu.is-viewport-positioned {
+    position: fixed;
+    top: 0;
+    right: auto;
+    bottom: auto;
+    left: 0;
+    width: min(230px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    transform: none;
+  }
+
+  .agent-home[data-choice-menu-viewport-boundary]
+    .agent-choice--endpoint .rk-choice-menu.is-viewport-positioned {
+    width: min(290px, calc(100vw - 24px));
+  }
+
+  .agent-home[data-choice-menu-viewport-boundary]
+    .agent-choice--effort .rk-choice-menu.is-viewport-positioned {
+    width: min(184px, calc(100vw - 24px));
+  }
+
+  .agent-home[data-choice-menu-viewport-boundary]
+    .agent-choice--role .rk-choice-menu.is-viewport-positioned {
+    width: min(220px, calc(100vw - 24px));
   }
 
   .agent-composer-actions {

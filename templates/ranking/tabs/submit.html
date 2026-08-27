@@ -34,10 +34,12 @@
       {% if (is_agent_judge and submission_method == 'git') or is_reverse_judge %}
         {# ===== Git 提交方式（扁平 / 无阴影 / 克制配色） ===== #}
         {% if is_reverse_judge %}
-        {% macro rj_endpoint_label(ep) -%}
+        {% macro rj_harness_label(ep) -%}
           {%- set _h = ep.harness or 'claude_code' -%}
-          {%- set _hn = 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -%}
-          {{- _hn ~ ' (' ~ (ep.model or ('节点 #' ~ ep.id)) ~ ')' -}}
+          {{- 'Claude Code' if _h == 'claude_code' else ('Codex' if _h == 'codex' else ('OpenCode' if _h == 'opencode' else ('Pi' if _h == 'pi' else _h))) -}}
+        {%- endmacro %}
+        {% macro rj_endpoint_label(ep) -%}
+          {{- rj_harness_label(ep) ~ ' + ' ~ (ep.model or ('节点 #' ~ ep.id)) -}}
         {%- endmacro %}
         {% set rj_ep = namespace(default='', default_harness='claude_code', default_model='', count=0) %}
         {% for ep in aj_endpoints %}
@@ -83,15 +85,22 @@
                    form="rankingSubmitForm" value="{{ rj_ep.default }}">
             <div class="rk-choice rk-choice-sm" data-rk-choice data-rk-choice-input="reverseAgentEndpointId">
               <button type="button" class="rk-choice-trigger" id="reverseAgentEndpointTrigger"
-                      aria-haspopup="listbox" aria-expanded="false">
-                <span class="rk-choice-trigger-main">
+                      aria-haspopup="listbox" aria-expanded="false"
+                      aria-label="{% if rj_ep.default %}{% for ep in aj_endpoints %}{% if ep.id|string == rj_ep.default %}AI 节点：{{ rj_endpoint_label(ep) }}{% endif %}{% endfor %}{% else %}AI 节点：无可用节点{% endif %}">
+                <span class="rk-choice-trigger-main rj-endpoint-trigger-main">
                   {% if rj_ep.default %}
                     <i class="{{ harness_logo_class(rj_ep.default_harness) }}" data-rk-choice-icon aria-hidden="true"></i>
-                    {{ model_logo(rj_ep.default_model, 'rj-endpoint-model-logo') }}
+                    <span class="rj-endpoint-harness-name" data-rj-endpoint-harness-name>
+                      {% for ep in aj_endpoints %}{% if ep.id|string == rj_ep.default %}{{ rj_harness_label(ep) }}{% endif %}{% endfor %}
+                    </span>
+                    <span class="rj-endpoint-plus" aria-hidden="true">+</span>
+                    {{ model_logo(rj_ep.default_model or ('节点 #' ~ rj_ep.default), 'rj-endpoint-model-logo') }}
+                    <span class="rj-endpoint-model-name" data-rj-endpoint-model-name>{{ rj_ep.default_model or ('节点 #' ~ rj_ep.default) }}</span>
                   {% else %}
                     <i class="fas fa-robot" data-rk-choice-icon aria-hidden="true"></i>
+                    <span class="rj-endpoint-empty-name">无可用节点</span>
                   {% endif %}
-                  <span data-rk-choice-label>
+                  <span class="visually-hidden" data-rk-choice-label aria-hidden="true">
                     {% if rj_ep.default %}
                       {% for ep in aj_endpoints %}{% if ep.id|string == rj_ep.default %}{{ rj_endpoint_label(ep) }}{% endif %}{% endfor %}
                     {% else %}无可用节点{% endif %}
@@ -108,13 +117,15 @@
                           data-choice-value="{{ ep.id }}"
                           data-choice-label="{{ rj_endpoint_label(ep) }}"
                           data-choice-icon="{{ harness_logo_class(ep.harness) }}"
-                          data-endpoint-model="{{ ep.model or '' }}">
-                    <span class="rk-choice-option-main">
+                          data-endpoint-label="{{ rj_endpoint_label(ep) }}"
+                          data-endpoint-harness-name="{{ rj_harness_label(ep) }}"
+                          data-endpoint-model="{{ ep.model or ('节点 #' ~ ep.id) }}">
+                    <span class="rk-choice-option-main rj-endpoint-option-main">
                       {{ harness_logo(ep.harness) }}
-                      {{ model_logo(ep.model or '') }}
-                      <span>
-                        <span class="rk-choice-option-name">{{ rj_endpoint_label(ep) }}</span>
-                      </span>
+                      <span class="rj-endpoint-harness-name">{{ rj_harness_label(ep) }}</span>
+                      <span class="rj-endpoint-plus" aria-hidden="true">+</span>
+                      {{ model_logo(ep.model or ('节点 #' ~ ep.id)) }}
+                      <span class="rj-endpoint-model-name">{{ ep.model or ('节点 #' ~ ep.id) }}</span>
                     </span>
                     <i class="fas fa-check rk-choice-option-check"></i>
                   </button>
@@ -240,19 +251,28 @@
             if (!endpointInput) return;
             var picker = endpointInput.closest('.rj-node-switch') || tabRoot;
             var icon = picker && picker.querySelector('.rk-choice-trigger .rj-endpoint-model-logo');
-            if (!icon) return;
             var selected = Array.prototype.slice.call(
               picker.querySelectorAll('.rk-choice-option[data-choice-value]')
             ).find(function(option){
               return option.getAttribute('data-choice-value') === endpointInput.value;
             });
             var model = selected ? selected.getAttribute('data-endpoint-model') || '' : '';
+            var harnessName = selected ? selected.getAttribute('data-endpoint-harness-name') || '' : '';
+            var label = selected ? selected.getAttribute('data-endpoint-label') || '' : '无可用节点';
             var helper = window.NumojModelFamily;
             var iconClass = helper && typeof helper.iconClass === 'function'
               ? helper.iconClass(model)
               : 'fas fa-microchip';
-            icon.className = 'rj-endpoint-model-logo ' + (iconClass || 'fas fa-microchip');
-            icon.setAttribute('data-model-name', model);
+            if (icon) {
+              icon.className = 'rj-endpoint-model-logo ' + (iconClass || 'fas fa-microchip');
+              icon.setAttribute('data-model-name', model);
+            }
+            var harnessNameNode = picker && picker.querySelector('[data-rj-endpoint-harness-name]');
+            var modelNameNode = picker && picker.querySelector('[data-rj-endpoint-model-name]');
+            var trigger = picker && picker.querySelector('.rk-choice-trigger');
+            if (harnessNameNode) harnessNameNode.textContent = harnessName || '无可用节点';
+            if (modelNameNode) modelNameNode.textContent = model;
+            if (trigger) trigger.setAttribute('aria-label', 'AI 节点：' + label);
           }
           if (endpointInput) endpointInput.addEventListener('change', syncEndpointModelLogo);
           syncEndpointModelLogo();
