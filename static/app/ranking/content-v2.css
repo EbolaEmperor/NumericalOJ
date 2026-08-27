@@ -1308,6 +1308,48 @@
   width: min(390px, calc(100vw - 2rem));
 }
 
+.ranking-v2-detail .rj-endpoint-trigger-main,
+.ranking-v2-detail .rj-endpoint-option-main {
+  gap: .4rem;
+}
+
+.ranking-v2-detail .rj-endpoint-trigger-main .rj-endpoint-harness-name,
+.ranking-v2-detail .rj-endpoint-trigger-main .rj-endpoint-model-name,
+.ranking-v2-detail .rj-endpoint-option-main .rj-endpoint-harness-name,
+.ranking-v2-detail .rj-endpoint-option-main .rj-endpoint-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-v2-detail .rj-endpoint-trigger-main .rj-endpoint-harness-name,
+.ranking-v2-detail .rj-endpoint-trigger-main .rj-endpoint-model-name {
+  font-weight: 650;
+}
+
+.ranking-v2-detail .rj-endpoint-option-main .rj-endpoint-harness-name,
+.ranking-v2-detail .rj-endpoint-option-main .rj-endpoint-model-name {
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.ranking-v2-detail .rj-endpoint-plus {
+  flex: 0 0 auto;
+  color: var(--rkv2-ink-3);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ranking-v2-detail .rj-endpoint-empty-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ranking-v2-detail .gitsub {
   --gs-ink: var(--rkv2-ink);
   --gs-muted: var(--rkv2-ink-3);

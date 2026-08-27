@@ -39,6 +39,7 @@ def test_agent_home_uses_a_dedicated_conversation_composer_and_history():
     assert "choice_picker(" in template
     assert "data-agent-harnesses-json" in template
     assert "data-agent-endpoints-json" in template
+    assert "data-choice-menu-viewport-boundary" in template
     assert "data-agent-launch-options-url" in template
     assert "data-agent-reasoning-efforts-json" in template
     assert "data-agent-preference-json" in template
@@ -111,6 +112,9 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     assert "flex-wrap: nowrap;" in actions_mobile
     assert "white-space: nowrap;" in actions_mobile
     assert "max-width: calc(100vw - 32px);" in compact
+    assert ".agent-home[data-choice-menu-viewport-boundary]" in compact
+    assert "position: fixed;" in compact
+    assert "is-viewport-positioned" in compact
 
     endpoint_mobile_menu = _css_rule(
         compact,
@@ -136,17 +140,29 @@ def test_agent_home_runtime_choices_fit_content_and_share_one_mobile_row():
     assert ".agent-choice .rk-choice-caret { display: none; }" in mobile
 
 
-def test_agent_home_prioritizes_personal_endpoints_and_marks_them_as_self_paid():
+def test_agent_home_mobile_choice_menus_are_clamped_to_the_viewport():
+    picker = _read("static/app/choice-picker.js")
+
+    assert "usesViewportBoundary" in picker
+    assert "positionWithinViewport" in picker
+    assert "clearViewportPosition" in picker
+    assert "menu.classList.add('is-viewport-positioned')" in picker
+    assert "Math.min(Math.max(gutter, left), maxLeft)" in picker
+    assert "Math.min(Math.max(gutter, top), maxTop)" in picker
+    assert "global.addEventListener('scroll', positionWithinViewport, true)" in picker
+
+
+def test_agent_home_model_options_only_show_model_identity_and_peak_state():
     controller = _read("static/app/agents/task-list.js")
     styles = _read("static/app/agents/task-list.css")
 
     assert "Number(right.isPersonal) - Number(left.isPersonal)" in controller
-    assert "endpointPaidBadge.textContent = '自费'" in controller
-    assert "badge.textContent = '自费'" in controller
     assert "option.classList.add('is-personal-endpoint')" in controller
     assert "endpointChoice.classList.toggle('is-personal-endpoint', isPersonal)" in controller
-    assert "endpoint.model + (isPersonal ? '，自费' : '')" in controller
-    assert ".agent-endpoint-paid-badge" in styles
+    assert "meta: endpointMeta(endpoint)" not in controller
+    assert "rk-choice-option-meta" not in controller
+    assert ".agent-endpoint-paid-badge" not in styles
+    assert ".agent-endpoint-option-meta" not in styles
     assert ".agent-choice--endpoint .rk-choice-option.is-personal-endpoint" in styles
 
 

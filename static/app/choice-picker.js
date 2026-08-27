@@ -116,6 +116,7 @@
     var required = input.getAttribute('data-choice-required') === 'true';
     var typeahead = '';
     var typeaheadTimer = null;
+    var viewportPlacement = null;
 
     if (!menu.id) menu.id = 'choice-picker-menu-' + nextId++;
     trigger.setAttribute('role', 'combobox');
@@ -194,6 +195,70 @@
       trigger.focus();
     }
 
+    function usesViewportBoundary() {
+      if (!picker.closest('[data-choice-menu-viewport-boundary]')) return false;
+      return global.matchMedia
+        ? global.matchMedia('(max-width: 640px)').matches
+        : global.innerWidth <= 640;
+    }
+
+    function clearViewportPosition() {
+      viewportPlacement = null;
+      menu.classList.remove('is-viewport-positioned');
+      menu.style.removeProperty('top');
+      menu.style.removeProperty('right');
+      menu.style.removeProperty('bottom');
+      menu.style.removeProperty('left');
+      menu.style.removeProperty('transform');
+    }
+
+    function positionWithinViewport() {
+      if (!picker.classList.contains('open') || !usesViewportBoundary()) {
+        clearViewportPosition();
+        return;
+      }
+
+      if (!viewportPlacement) {
+        var originalStyle = global.getComputedStyle(menu);
+        viewportPlacement = {
+          alignRight: originalStyle.left === 'auto' && originalStyle.right !== 'auto',
+          alignCenter: originalStyle.transform && originalStyle.transform !== 'none',
+          preferAbove: originalStyle.bottom !== 'auto' && originalStyle.top === 'auto'
+        };
+      }
+      var gutter = 12;
+      var gap = 7;
+
+      menu.classList.add('is-viewport-positioned');
+      var triggerRect = trigger.getBoundingClientRect();
+      var menuRect = menu.getBoundingClientRect();
+      var viewportWidth = global.innerWidth || document.documentElement.clientWidth;
+      var viewportHeight = global.innerHeight || document.documentElement.clientHeight;
+      var menuWidth = menuRect.width;
+      var menuHeight = menuRect.height;
+      var left = viewportPlacement.alignRight
+        ? triggerRect.right - menuWidth
+        : (viewportPlacement.alignCenter
+          ? triggerRect.left + (triggerRect.width - menuWidth) / 2
+          : triggerRect.left);
+      var maxLeft = Math.max(gutter, viewportWidth - menuWidth - gutter);
+      left = Math.min(Math.max(gutter, left), maxLeft);
+
+      var aboveTop = triggerRect.top - menuHeight - gap;
+      var belowTop = triggerRect.bottom + gap;
+      var maxTop = Math.max(gutter, viewportHeight - menuHeight - gutter);
+      var top = viewportPlacement.preferAbove ? aboveTop : belowTop;
+      if (viewportPlacement.preferAbove && aboveTop < gutter && belowTop <= maxTop) top = belowTop;
+      else if (!viewportPlacement.preferAbove && belowTop > maxTop && aboveTop >= gutter) top = aboveTop;
+      top = Math.min(Math.max(gutter, top), maxTop);
+
+      menu.style.left = Math.round(left) + 'px';
+      menu.style.top = Math.round(top) + 'px';
+      menu.style.right = 'auto';
+      menu.style.bottom = 'auto';
+      menu.style.transform = 'none';
+    }
+
     function openWithIndex(index) {
       if (disabled) return;
       if (!picker.classList.contains('open')) {
@@ -266,7 +331,11 @@
         picker.classList.toggle('open', shouldOpen);
         trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
         menu.hidden = !shouldOpen;
-        if (!shouldOpen) setActive(-1);
+        if (shouldOpen) positionWithinViewport();
+        else {
+          clearViewportPosition();
+          setActive(-1);
+        }
       },
       setDisabled: function (value) {
         disabled = value === true;
@@ -373,6 +442,9 @@
       controller.setOpen(false);
       trigger.focus();
     });
+
+    global.addEventListener('resize', positionWithinViewport);
+    global.addEventListener('scroll', positionWithinViewport, true);
 
     var form = input.form || input.closest('form');
     if (form && required) {

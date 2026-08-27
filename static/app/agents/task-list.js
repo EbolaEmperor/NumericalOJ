@@ -22,16 +22,6 @@
     opencode: 'opencode',
     pi: 'pi'
   };
-  var PROTOCOL_LABELS = {
-    openai: 'OpenAI 兼容',
-    anthropic: 'Anthropic 兼容'
-  };
-  var CATEGORY_LABELS = {
-    text: '纯文本',
-    vision: '视觉理解',
-    omni: '全模态',
-    embedding: '向量'
-  };
   function asText(value) {
     return value == null ? '' : String(value).trim();
   }
@@ -82,14 +72,8 @@
     if (!id) return null;
     return {
       id: id,
-      displayId: rawId || id.replace(/^(?:global|user):/, ''),
       model: asText(item.model || item.label || item.name) || '节点 #' + id,
-      protocol: asText(item.protocol).toLowerCase(),
-      category: asText(item.category).toLowerCase(),
       isPersonal: personal || id.indexOf('user:') === 0,
-      inputPrice: item.input_price_per_million,
-      cachedInputPrice: item.cached_input_price_per_million,
-      outputPrice: item.output_price_per_million,
       peakPricingEnabled: item.peak_pricing_enabled === true,
       pricingPeriod: asText(item.pricing_period)
     };
@@ -108,21 +92,6 @@
       label: asText(item.label || item.name) || value,
       meta: asText(item.meta || item.description)
     };
-  }
-
-  function endpointMeta(endpoint) {
-    var parts = [
-      '节点 #' + endpoint.displayId,
-      PROTOCOL_LABELS[endpoint.protocol] || endpoint.protocol,
-      CATEGORY_LABELS[endpoint.category] || endpoint.category
-    ].filter(Boolean);
-    if (endpoint.isPersonal) {
-      parts.push('自有端点 · 不计额度');
-    } else if (global.NumOJAgentAccess) {
-      parts.push('输入 ' + (global.NumOJAgentAccess.decimalText(endpoint.inputPrice) || '—')
-        + ' / 输出 ' + (global.NumOJAgentAccess.decimalText(endpoint.outputPrice) || '—') + ' 元');
-    }
-    return parts.join(' · ');
   }
 
   function formatBytes(value) {
@@ -156,7 +125,6 @@
     var endpointChoice = root.querySelector('[data-agent-endpoint-choice] [data-rk-choice]');
     var endpointTrigger = endpointChoice && endpointChoice.querySelector('.rk-choice-trigger');
     var endpointTriggerMain = endpointChoice && endpointChoice.querySelector('.rk-choice-trigger-main');
-    var endpointPaidBadge = null;
     var endpointPricingPeriod = null;
     var reasoningEffortWrapper = root.querySelector('[data-agent-reasoning-effort-choice]');
     var reasoningEffortChoice = reasoningEffortWrapper && reasoningEffortWrapper.querySelector('[data-rk-choice]');
@@ -183,11 +151,6 @@
     var reasoningSelections = Object.create(null);
 
     if (endpointTriggerMain) {
-      endpointPaidBadge = document.createElement('span');
-      endpointPaidBadge.className = 'agent-endpoint-paid-badge agent-endpoint-paid-badge--trigger';
-      endpointPaidBadge.textContent = '自费';
-      endpointPaidBadge.hidden = true;
-      endpointTriggerMain.appendChild(endpointPaidBadge);
       endpointPricingPeriod = document.createElement('span');
       endpointPricingPeriod.className = 'agent-endpoint-pricing-period agent-endpoint-pricing-period--trigger';
       endpointPricingPeriod.hidden = true;
@@ -251,19 +214,13 @@
         var name = option.querySelector('.rk-choice-option-name');
         if (!name) return;
         if (endpoint.isPersonal) option.classList.add('is-personal-endpoint');
-        if (name.querySelector('.agent-endpoint-paid-badge, .agent-endpoint-pricing-period')) return;
+        if (name.querySelector('.agent-endpoint-model-name')) return;
         var modelName = document.createElement('span');
         modelName.className = 'agent-endpoint-model-name';
         modelName.textContent = endpoint.model;
         name.textContent = '';
         name.classList.add('agent-endpoint-option-name');
         name.appendChild(modelName);
-        if (endpoint.isPersonal) {
-          var badge = document.createElement('span');
-          badge.className = 'agent-endpoint-paid-badge';
-          badge.textContent = '自费';
-          name.appendChild(badge);
-        }
         if (endpoint.peakPricingEnabled) {
           var period = document.createElement('span');
           period.className = 'agent-endpoint-pricing-period';
@@ -271,18 +228,6 @@
           period.innerHTML = '<i aria-hidden="true"></i><span></span>';
           period.querySelector('span').textContent = endpoint.pricingPeriod === 'peak' ? '高峰期' : '低谷期';
           name.appendChild(period);
-          var meta = option.querySelector('.rk-choice-option-meta');
-          var metaText = meta && meta.textContent || '';
-          var priceStart = metaText.indexOf('输入 ');
-          if (meta && priceStart >= 0) {
-            var prefix = document.createElement('span');
-            prefix.textContent = metaText.slice(0, priceStart);
-            var price = document.createElement('span');
-            price.textContent = metaText.slice(priceStart);
-            meta.textContent = '';
-            meta.classList.add('agent-endpoint-option-meta');
-            meta.append(prefix, period.cloneNode(true), document.createTextNode(' · '), price);
-          }
         }
       });
     }
@@ -290,7 +235,6 @@
     function renderEndpointPaidState() {
       var endpoint = selectedEndpoint();
       var isPersonal = !!(endpoint && endpoint.isPersonal);
-      if (endpointPaidBadge) endpointPaidBadge.hidden = !isPersonal;
       if (endpointPricingPeriod) {
         var showPeriod = !!(endpoint && endpoint.peakPricingEnabled);
         endpointPricingPeriod.hidden = !showPeriod;
@@ -302,7 +246,7 @@
       if (endpointTrigger) {
         endpointTrigger.setAttribute(
           'aria-label',
-          endpoint ? '模型节点：' + endpoint.model + (isPersonal ? '，自费' : '') : '选择模型节点'
+          endpoint ? '模型节点：' + endpoint.model : '选择模型节点'
         );
       }
     }
@@ -363,8 +307,7 @@
             value: endpoint.id,
             label: endpoint.model,
             icon: 'fa-microchip',
-            model: endpoint.model,
-            meta: endpointMeta(endpoint)
+            model: endpoint.model
           };
         }),
         selected,
