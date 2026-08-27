@@ -645,8 +645,13 @@ def _path_is_within(path, root):
         return False
 
 
-def plan_repository_orphan_quarantine():
+def plan_repository_orphan_quarantine(*, issue_codes=None):
     """从 doctor 结果生成可隔离项；不会创建 quarantine 或改动源路径。"""
+    selected_issue_codes = (
+        {str(code) for code in issue_codes}
+        if issue_codes is not None
+        else None
+    )
     doctor = doctor_repository_storage()
     root = Path(storage.STORAGE_ROOT)
     conn = get_db_connection()
@@ -679,6 +684,8 @@ def plan_repository_orphan_quarantine():
     }
     for issue in doctor["issues"]:
         code = issue["code"]
+        if selected_issue_codes is not None and code not in selected_issue_codes:
+            continue
         source = None
         if code in {"tree_orphan_entry", "tree_entry_unsafe"}:
             user_id = issue.get("user_id")
@@ -800,13 +807,20 @@ def quarantine_repository_orphans(
     *,
     apply=False,
     writers_stopped_confirmed=False,
+    issue_codes=None,
 ):
     """把 doctor 识别的孤儿原子移入同一存储根的 quarantine，绝不删除。"""
     if apply and not writers_stopped_confirmed:
         raise RuntimeError("拒绝隔离：未确认全部应用写入者已经停止")
-    plan = plan_repository_orphan_quarantine()
+    plan = (
+        plan_repository_orphan_quarantine()
+        if issue_codes is None
+        else plan_repository_orphan_quarantine(issue_codes=issue_codes)
+    )
     if not apply:
         return {"apply": False, "batch_id": None, **plan}
+    if not plan["items"]:
+        return {"apply": True, "batch_id": None, **plan}
 
     storage.ensure_repository_storage_ready()
     root = Path(storage.STORAGE_ROOT)
@@ -894,3 +908,16 @@ def quarantine_repository_orphans(
         "items": manifest["items"],
         "blocked": plan["blocked"],
     }
+
+
+def quarantine_repository_snapshot_orphans(
+    *,
+    apply=False,
+    writers_stopped_confirmed=False,
+):
+    """只隔离没有数据库绑定的提交快照，保留其他 doctor 问题供人工处理。"""
+    return quarantine_repository_orphans(
+        apply=apply,
+        writers_stopped_confirmed=writers_stopped_confirmed,
+        issue_codes={"snapshot_orphan"},
+    )

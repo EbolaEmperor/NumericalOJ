@@ -105,6 +105,10 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
         in script
     )
+    assert (
+        "quarantine-orphan-snapshots --apply "
+        "--confirm-app-writers-stopped" in script
+    )
     assert "scripts/repository_storage_admin.py doctor" in script
     assert "scripts/recover_pending_tasks.py --confirm-celery-stopped" in script
     for one_time_entry in (
@@ -178,6 +182,10 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     expired_upload_cleanup = script.index(
         "cleanup-expired-uploads --apply --confirm-expired-staging-delete"
     )
+    snapshot_orphan_quarantine = script.index(
+        "quarantine-orphan-snapshots --apply "
+        "--confirm-app-writers-stopped"
+    )
     repository_doctor = script.index(
         "scripts/repository_storage_admin.py doctor"
     )
@@ -185,6 +193,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     assert (
         schema_sync
         < expired_upload_cleanup
+        < snapshot_orphan_quarantine
         < repository_doctor
         < task_recovery
     )

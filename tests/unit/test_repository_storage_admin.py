@@ -314,3 +314,117 @@ def test_quarantine_default_is_dry_run(monkeypatch):
 
     assert report["apply"] is False
     assert report["batch_id"] is None
+
+
+def test_snapshot_orphan_quarantine_filters_other_doctor_issues(monkeypatch):
+    captured = {}
+
+    def fake_quarantine(**kwargs):
+        captured.update(kwargs)
+        return {"apply": kwargs["apply"], "items": []}
+
+    monkeypatch.setattr(
+        admin_services,
+        "quarantine_repository_orphans",
+        fake_quarantine,
+    )
+
+    report = admin_services.quarantine_repository_snapshot_orphans(
+        apply=True,
+        writers_stopped_confirmed=True,
+    )
+
+    assert report == {"apply": True, "items": []}
+    assert captured == {
+        "apply": True,
+        "writers_stopped_confirmed": True,
+        "issue_codes": {"snapshot_orphan"},
+    }
+
+
+def test_quarantine_plan_selects_only_requested_issue_codes(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "repository-storage"
+    snapshot = root / "snapshots" / ("a" * 32)
+    user_tree = root / "users" / ("b" * 32)
+    snapshot.mkdir(parents=True)
+    user_tree.mkdir(parents=True)
+    monkeypatch.setattr(storage, "STORAGE_ROOT", root)
+    monkeypatch.setattr(
+        admin_services,
+        "doctor_repository_storage",
+        lambda: {
+            "ok": False,
+            "issues": [
+                {
+                    "code": "snapshot_orphan",
+                    "path": str(snapshot),
+                },
+                {
+                    "code": "orphan_user_storage",
+                    "path": str(user_tree),
+                },
+            ],
+        },
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _query):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        admin_services,
+        "get_db_connection",
+        Connection,
+    )
+
+    plan = admin_services.plan_repository_orphan_quarantine(
+        issue_codes={"snapshot_orphan"},
+    )
+
+    assert [item["category"] for item in plan["items"]] == [
+        "snapshot_orphan"
+    ]
+    assert plan["items"][0]["source_relative"] == (
+        f"snapshots/{'a' * 32}"
+    )
+
+
+def test_quarantine_apply_with_no_candidates_creates_no_empty_batch(monkeypatch):
+    monkeypatch.setattr(
+        admin_services,
+        "plan_repository_orphan_quarantine",
+        lambda **_kwargs: {
+            "storage_root": "/managed",
+            "doctor_ok": True,
+            "items": [],
+            "blocked": [],
+        },
+    )
+
+    report = admin_services.quarantine_repository_orphans(
+        apply=True,
+        writers_stopped_confirmed=True,
+        issue_codes={"snapshot_orphan"},
+    )
+
+    assert report["batch_id"] is None
+    assert report["items"] == []
