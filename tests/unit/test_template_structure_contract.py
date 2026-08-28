@@ -253,6 +253,7 @@ def test_problem_dashboard_defers_class_activity_until_after_first_render():
     layout = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
 
     assert "filename='app/problem-dashboard.js'" in problem_list
+    assert "{% if not is_library and user.is_admin == 1 %}" in desktop_list
     assert "data-numoj-class-activity" in desktop_list
     assert "data-numoj-activity-loading" in desktop_list
     assert "正在加载班级活跃度" in desktop_list

@@ -175,6 +175,9 @@ def build_problem_list_context(
     context = _base_problem_list_context()
     context["user"] = user
     context["numoj_cli_resource"] = _numoj_cli_resource(user)
+    include_class_activity = bool(
+        include_class_activity and int(user.get("is_admin") or 0) == 1
+    )
 
     if user['is_admin'] == 1 and not admin_class_view:
         context["problems"] = get_all_problems()

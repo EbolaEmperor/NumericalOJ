@@ -126,16 +126,13 @@
                   <div class="numoj-row-grade">
                     {% if hw.max_score is not none %}
                     <strong>{{ hw.max_score }}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
-                    <span>{% if hw.has_pending_submission %}暂定，另有提交评测中{% else %}{{ '已结算' if hw.ddl and hw.ddl < now else '暂定成绩' }}{% endif %}</span>
+                    <span>{% if hw.has_pending_submission %}暂定，另有提交评测中{% else %}{{ '已结算' if hw.ddl and hw.ddl < now else '最高成绩' }}{% endif %}</span>
                     {% elif hw.has_pending_submission %}
                     <strong>评测中</strong>
                     <span>以提交时间为准</span>
                     {% else %}
-                    <strong>—{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
+                    <strong>{% if hw.ddl and hw.ddl < now %}0{% else %}-{% endif %}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
                     <span>{{ '未按时提交' if hw.ddl and hw.ddl < now else '未提交' }}</span>
-                    {% endif %}
-                    {% if hw.practice_max_score is not none and (hw.max_score is none or hw.practice_max_score > hw.max_score) %}
-                    <small>练习最高 {{ hw.practice_max_score }}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}，逾期不计分</small>
                     {% endif %}
                   </div>
                   <div class="numoj-row-deadline">
@@ -179,7 +176,7 @@
     </div>
 
     <aside class="numoj-dashboard-aside" aria-label="学习辅助信息">
-      {% if not is_library %}
+      {% if not is_library and user.is_admin == 1 %}
       <section
         class="numoj-panel numoj-activity-card"
         data-numoj-class-activity
