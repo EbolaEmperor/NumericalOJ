@@ -125,7 +125,7 @@
                 <div class="numoj-row-result">
                   <div class="numoj-row-grade">
                     {% if hw.max_score is not none %}
-                    <strong>{{ hw.max_score }}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
+                    <strong>{{ ((hw.max_score|float) + 0.5)|round(0, 'floor')|int if hw.kind == 'ranking' else hw.max_score }}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
                     <span>{% if hw.has_pending_submission %}暂定，另有提交评测中{% else %}{{ '已结算' if hw.ddl and hw.ddl < now else '最高成绩' }}{% endif %}</span>
                     {% elif hw.has_pending_submission %}
                     <strong>评测中</strong>
