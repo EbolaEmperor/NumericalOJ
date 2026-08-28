@@ -395,6 +395,8 @@ def get_layout_navigation_context(user, *, selected_class_en=None):
                         (user.get("username"),),
                     )
                     counts["submissions"] = int((cursor.fetchone() or {}).get("total") or 0)
+                    cursor.execute("SELECT COUNT(*) AS total FROM problems")
+                    counts["problems"] = int((cursor.fetchone() or {}).get("total") or 0)
                     cursor.execute(
                         "SELECT 1 AS active FROM agent_task_runs "
                         "WHERE requested_by=%s "

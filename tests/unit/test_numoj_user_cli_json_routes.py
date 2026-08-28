@@ -531,21 +531,32 @@ def test_lean_workspace_submit_uses_generic_snapshot_and_form_redirect_contract(
     }
 
 
-def test_problem_submit_passes_api_error_without_client_side_block_message(
+def test_problem_submit_preserves_server_deadline_warning_after_success(
     monkeypatch, capsys
 ):
     cli = _load_numoj_user_cli_module()
+    warning = {
+        "code": "homework_deadline_passed",
+        "message": "本次提交不计入一班的作业成绩",
+        "homeworks": [{
+            "homework_id": 3,
+            "class_en": "C1",
+            "class_cn": "一班",
+            "ddl": "01-01 00:00",
+        }],
+    }
     client = _SequenceClient([
         _PayloadResponse({
-            "can_submit": False,
-            "submit_block_code": "homework_expired",
-            "submit_block_reason": "作业已过期，你已经无法提交",
+            "can_submit": True,
+            "submit_block_code": "",
+            "submit_block_reason": "",
+            "submit_warning": warning,
             "submit": {"input_kind": "code"},
         }),
-        _StatusPayloadResponse(403, {
-            "success": False,
-            "code": "homework_expired",
-            "message": "作业已过期，你已经无法提交",
+        _StatusPayloadResponse(201, {
+            "success": True,
+            "submission_id": 91,
+            "warning": warning,
         }),
     ])
     monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
@@ -561,9 +572,9 @@ def test_problem_submit_passes_api_error_without_client_side_block_message(
     ))
 
     assert cli.json.loads(capsys.readouterr().out) == {
-        "success": False,
-        "code": "homework_expired",
-        "message": "作业已过期，你已经无法提交",
+        "success": True,
+        "submission_id": 91,
+        "warning": warning,
     }
     assert len(client.requests) == 2
     assert client.requests[1] == (

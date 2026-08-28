@@ -11,6 +11,7 @@
   {% if problem.type == 2 %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-written-submit.css') }}">
   {% endif %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-deadline-warning.css') }}">
   {% if user and user.is_admin == 1 and problem.type == 1 %}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/harness-logos.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app/problem-agent-launch.css') }}">
@@ -45,11 +46,7 @@
 
 <div class="problem-detail-page{% if is_lean4 %} is-lean-workbench{% endif %}">
 <nav class="numoj-breadcrumb d-flex" aria-label="面包屑导航">
-  {% if request.args.get('source') == 'library' and user.is_admin == 1 %}
-    <a href="{{ url_for('problem_core.problem_library') }}">总题库</a>
-  {% else %}
-    <a href="{{ url_for('problem_core.problem_list', class_en=request.args.get('class_en')) }}">{{ '班级作业' if user.is_admin == 1 else '我的作业' }}</a>
-  {% endif %}
+  <a href="{{ url_for('problem_core.problem_library') }}">总题库</a>
   <span aria-hidden="true">›</span><span>P{{ '%04d'|format(problem.id) }}</span>
   <span aria-hidden="true">›</span><strong>{{ problem.title }}</strong>
 </nav>
@@ -64,7 +61,6 @@
           <div class="numoj-problem-kickers d-flex">
             <span>{{ '编程题' if problem.type == 1 else '书面题' }}</span>
             {% if problem.lang %}<span>{{ lang_label }}</span>{% endif %}
-            {% if homework and homework.ddl %}<span class="deadline">DDL {{ homework.ddl.strftime('%m-%d %H:%M') }}</span>{% endif %}
           </div>
           <div class="problem-title-row">
             <h2 class="mb-0 problem-title-singleline" id="problemTitleHeading">
@@ -72,6 +68,25 @@
               <span class="problem-title-text">{{ problem.title }}</span>
             </h2>
           </div>
+          {% if homework_assignments %}
+          <div class="problem-homework-statuses" aria-label="班级作业截止状态">
+            {% for assignment in homework_assignments %}
+            <div class="problem-homework-status{% if assignment.is_expired %} is-expired{% else %} is-active{% endif %}">
+              <span class="problem-homework-status-dot" aria-hidden="true"></span>
+              <strong>{{ assignment.class_cn }}</strong>
+              {% if assignment.ddl %}
+                {% if assignment.is_expired %}
+                <span>已于 {{ assignment.ddl.strftime('%m-%d %H:%M') }} 截止，本次提交不计入作业成绩</span>
+                {% else %}
+                <span>{{ assignment.ddl.strftime('%m-%d %H:%M') }} 截止，本次提交仍计入作业成绩</span>
+                {% endif %}
+              {% else %}
+              <span>无截止时间，本次提交计入作业成绩</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
           {% if user and user.is_admin == 1 %}
           <div class="problem-admin-actions mt-2">
             {% if problem.type == 1 %}
@@ -449,6 +464,41 @@
   </div>
 </div>
 </div>
+
+{% if user and user.is_admin != 1 %}
+<div class="modal fade problem-deadline-modal"
+     id="homeworkDeadlineWarningModal"
+     tabindex="-1"
+     aria-labelledby="homeworkDeadlineWarningModalLabel"
+     aria-hidden="true"
+     data-submit-context-url="{{ url_for('problem_api.submit_context', problem_id=problem.id) }}">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="problem-deadline-modal-heading">
+          <span class="problem-deadline-modal-icon" aria-hidden="true"><i class="fas fa-clock"></i></span>
+          <div>
+            <p>HOMEWORK DEADLINE</p>
+            <h5 class="modal-title" id="homeworkDeadlineWarningModalLabel">部分班级作业已截止</h5>
+          </div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <p class="problem-deadline-modal-lead">提交仍会正常评测，但不会计入以下作业的成绩：</p>
+        <ul class="problem-deadline-modal-list" data-deadline-warning-list></ul>
+        <p class="problem-deadline-modal-error" data-deadline-warning-error role="alert" hidden></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" data-deadline-warning-confirm>
+          我明白了
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {% if user and user.is_admin == 1 %}
 {% if problem.type == 1 %}
@@ -1156,4 +1206,7 @@
   <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
   <script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
   <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
+  {% if user and user.is_admin != 1 %}
+  <script src="{{ url_for('static', filename='app/problem-deadline-warning.js') }}"></script>
+  {% endif %}
 {% endblock %}

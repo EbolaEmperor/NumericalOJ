@@ -1,0 +1,155 @@
+.problem-detail-page .problem-homework-statuses {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.problem-detail-page .problem-homework-status {
+  display: grid;
+  grid-template-columns: 8px auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--numoj-line);
+  border-radius: 7px;
+  background: #fafafa;
+  color: var(--numoj-ink-3);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.problem-detail-page .problem-homework-status strong {
+  color: var(--numoj-ink);
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.problem-detail-page .problem-homework-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--numoj-success);
+}
+
+.problem-detail-page .problem-homework-status.is-expired {
+  border-color: #f0d6d1;
+  background: #fff9f7;
+  color: #8d4539;
+}
+
+.problem-detail-page .problem-homework-status.is-expired .problem-homework-status-dot {
+  background: var(--numoj-danger);
+}
+
+.problem-deadline-modal .modal-content {
+  overflow: hidden;
+  border: 1px solid var(--numoj-line);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(24, 24, 27, 0.16);
+}
+
+.problem-deadline-modal .modal-header,
+.problem-deadline-modal .modal-footer {
+  padding: 18px 20px;
+  border-color: var(--numoj-line);
+}
+
+.problem-deadline-modal .modal-body {
+  padding: 20px;
+}
+
+.problem-deadline-modal-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.problem-deadline-modal-heading p {
+  margin: 0 0 2px;
+  color: var(--numoj-danger);
+  font-family: var(--numoj-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.problem-deadline-modal-heading h5 {
+  color: var(--numoj-ink);
+  font-size: 1rem;
+  font-weight: 720;
+}
+
+.problem-deadline-modal-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  place-items: center;
+  border: 1px solid #f0d6d1;
+  border-radius: 10px;
+  background: #fff6f3;
+  color: var(--numoj-danger);
+}
+
+.problem-deadline-modal-lead {
+  margin: 0 0 12px;
+  color: var(--numoj-ink-2);
+  font-size: 0.86rem;
+}
+
+.problem-deadline-modal-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.problem-deadline-modal-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--numoj-danger);
+  border-radius: 6px;
+  background: var(--numoj-line-soft);
+}
+
+.problem-deadline-modal-list strong {
+  color: var(--numoj-ink);
+  font-size: 0.82rem;
+}
+
+.problem-deadline-modal-list span {
+  color: var(--numoj-ink-3);
+  font-family: var(--numoj-mono);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.problem-deadline-modal-error {
+  margin: 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: #fff6f3;
+  color: #8d4539;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 768px) {
+  .problem-detail-page .problem-homework-status {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+
+  .problem-detail-page .problem-homework-status > span:last-child {
+    grid-column: 2;
+  }
+
+  .problem-deadline-modal-list li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}

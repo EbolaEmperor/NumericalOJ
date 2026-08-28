@@ -22,7 +22,6 @@ from oj_modules.db_services import (
 )
 from oj_modules.problems.catalog import (
     _get_homeworks_for_classes,
-    get_homeworks,
     get_homeworks_and_grades_map,
     get_today_submission_counts,
     get_user_classes_cached,
@@ -31,8 +30,7 @@ from oj_modules.problems.lean_workspace import get_current_lean_workspace
 from oj_modules.shared.markdown import render_rich_markdown
 
 
-HOMEWORK_EXPIRED_CODE = "homework_expired"
-HOMEWORK_EXPIRED_MESSAGE = "作业已过期，你已经无法提交"
+HOMEWORK_DEADLINE_WARNING_CODE = "homework_deadline_passed"
 SUBMISSION_LIMIT_CODE = "submission_limit_reached"
 SUBMISSION_LIMIT_MESSAGE = "提交次数已达到上限，你已经无法提交"
 
@@ -41,10 +39,11 @@ __all__ = (
     "build_problem_detail_context",
     "build_problem_library_context",
     "build_problem_list_context",
-    "HOMEWORK_EXPIRED_CODE",
-    "HOMEWORK_EXPIRED_MESSAGE",
+    "HOMEWORK_DEADLINE_WARNING_CODE",
     "SUBMISSION_LIMIT_CODE",
     "SUBMISSION_LIMIT_MESSAGE",
+    "build_homework_deadline_warning",
+    "get_problem_homework_assignments",
 )
 
 
@@ -71,6 +70,70 @@ def _deadline_is_expired(deadline):
         return False
     now = datetime.now(deadline.tzinfo) if deadline.tzinfo else datetime.now()
     return deadline < now
+
+
+def get_problem_homework_assignments(user, problem_id):
+    """返回当前用户可见班级中包含指定题目的全部作业，不受页面入口影响。"""
+    classes = visible_classes_for_user_cached(user)
+    class_en_list = [item.get("class_en") for item in classes if item.get("class_en")]
+    if not class_en_list:
+        return []
+    class_names = {
+        item.get("class_en"): item.get("class_cn") or item.get("class_en")
+        for item in classes
+    }
+    homeworks_by_class = _get_homeworks_for_classes(
+        user["id"], class_en_list, username=user.get("username")
+    )
+    assignments = []
+    for class_en in class_en_list:
+        for homework in homeworks_by_class.get(class_en, []):
+            if (
+                homework.get("kind") != "problem"
+                or int(homework.get("problem_id") or 0) != int(problem_id)
+            ):
+                continue
+            assignment = dict(homework)
+            assignment.update({
+                "class_en": class_en,
+                "class_cn": class_names.get(class_en) or class_en,
+                "is_expired": _deadline_is_expired(homework.get("ddl")),
+            })
+            assignments.append(assignment)
+    return assignments
+
+
+def build_homework_deadline_warning(assignments):
+    expired = [item for item in assignments or [] if item.get("is_expired")]
+    if not expired:
+        return None
+
+    labels = []
+    warning_homeworks = []
+    for item in expired:
+        deadline = item.get("ddl")
+        deadline_text = (
+            deadline.strftime("%Y-%m-%d %H:%M")
+            if isinstance(deadline, datetime)
+            else str(deadline or "")
+        )
+        class_name = item.get("class_cn") or item.get("class_en") or "未命名班级"
+        labels.append(f"{class_name}（截止 {deadline_text}）")
+        warning_homeworks.append({
+            "homework_id": item.get("id"),
+            "class_en": item.get("class_en"),
+            "class_cn": class_name,
+            "ddl": deadline_text,
+        })
+    return {
+        "code": HOMEWORK_DEADLINE_WARNING_CODE,
+        "message": (
+            "本次提交不会计入以下已截止的班级作业："
+            + "、".join(labels)
+            + "。提交仍会正常评测，并计入题库练习成绩。"
+        ),
+        "homeworks": warning_homeworks,
+    }
 
 
 def _selected_class_context(context, classes, requested_class_en):
@@ -215,7 +278,7 @@ def build_problem_list_context(
 
 
 def build_problem_library_context(user):
-    """构造管理员总题库桌面视图，不混入班级 DDL。"""
+    """构造所有登录用户可见的总题库视图，不混入班级 DDL。"""
     context = _base_problem_list_context()
     problems = [dict(problem) for problem in (get_all_problems() or [])]
     metrics = get_problem_submission_metrics(
@@ -226,31 +289,13 @@ def build_problem_library_context(user):
     context.update({
         "user": user,
         "problems": problems,
-        "view_mode": "admin_library",
+        "view_mode": (
+            "admin_library"
+            if int(user.get("is_admin") or 0) == 1
+            else "student_library"
+        ),
     })
     return context
-
-
-def _get_selected_problem_homework(user, class_en, problem_id):
-    """仅从用户可见的指定班级读取普通题作业。"""
-    if not class_en:
-        return None
-    selected_class = select_visible_class(
-        visible_classes_for_user_cached(user), class_en
-    )
-    if not selected_class or selected_class.get("class_en") != class_en:
-        return None
-    class_homeworks = _get_homeworks_for_classes(
-        user["id"], [class_en], username=user.get("username")
-    ).get(class_en, [])
-    return next(
-        (
-            item for item in class_homeworks
-            if item.get("kind") == "problem"
-            and item.get("problem_id") == problem_id
-        ),
-        None,
-    )
 
 
 def build_problem_detail_context(user, problem_id, selected_class_en=None):
@@ -268,24 +313,16 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
         and int(user.get("agent_problem_id") or 0) == int(problem_id)
     )
 
-    homework = None
-    if user['is_admin'] != 1 and not scoped_agent_access:
-        homeworks = get_homeworks(user)
-        homework = next(
-            (item for item in homeworks if item['problem_id'] == problem_id),
-            None,
-        )
-        if homework is None:
-            return None, "forbidden"
-        selected_homework = _get_selected_problem_homework(
-            user, selected_class_en, problem_id
-        )
-        if selected_homework:
-            homework = selected_homework
-    elif selected_class_en:
-        homework = _get_selected_problem_homework(
-            user, selected_class_en, problem_id
-        )
+    if user.get("agent_access_role") == "user" and not scoped_agent_access:
+        return None, "forbidden"
+
+    homework_assignments = (
+        []
+        if scoped_agent_access
+        else get_problem_homework_assignments(user, problem_id)
+    )
+    homework = homework_assignments[0] if homework_assignments else None
+    submit_warning = build_homework_deadline_warning(homework_assignments)
 
     rendered_content = render_rich_markdown(problem['content'])
 
@@ -323,11 +360,7 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
     submit_block_code = ""
     submit_block_reason = ""
     if user['is_admin'] != 1:
-        deadline = homework.get("ddl") if homework else None
-        if _deadline_is_expired(deadline):
-            submit_block_code = HOMEWORK_EXPIRED_CODE
-            submit_block_reason = HOMEWORK_EXPIRED_MESSAGE
-        elif not can_submit_by_quota:
+        if not can_submit_by_quota:
             submit_block_code = SUBMISSION_LIMIT_CODE
             submit_block_reason = SUBMISSION_LIMIT_MESSAGE
     can_submit_flag = not submit_block_code
@@ -343,5 +376,7 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
         "can_submit": can_submit_flag,
         "submit_block_code": submit_block_code,
         "submit_block_reason": submit_block_reason,
+        "submit_warning": submit_warning,
+        "homework_assignments": homework_assignments,
         "homework": homework,
     }, None

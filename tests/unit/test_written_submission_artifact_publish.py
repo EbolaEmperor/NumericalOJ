@@ -400,7 +400,9 @@ def test_manual_overwrite_route_passes_expected_snapshot_to_cas(monkeypatch):
     overwritten = []
     monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
     monkeypatch.setattr(problem_core_routes, "get_problem", lambda _pid: problem)
-    monkeypatch.setattr(problem_core_routes, "get_homeworks", lambda _user: [])
+    monkeypatch.setattr(
+        problem_core_routes, "get_problem_homework_assignments", lambda *_args: [],
+    )
     monkeypatch.setattr(problem_core_routes, "get_latest_written_submission", lambda *_a: _submission())
     monkeypatch.setattr(problem_core_routes, "get_user_classes_cached", lambda _uid: [])
     monkeypatch.setattr(

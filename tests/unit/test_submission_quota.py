@@ -1,6 +1,7 @@
 from datetime import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
 
 import pytest
 from flask import Flask
@@ -484,7 +485,9 @@ def _install_submit_route_fakes(monkeypatch):
     }
     monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
     monkeypatch.setattr(problem_core_routes, "get_problem", lambda _pid: problem)
-    monkeypatch.setattr(problem_core_routes, "get_homeworks", lambda _user: [])
+    monkeypatch.setattr(
+        problem_core_routes, "get_problem_homework_assignments", lambda *_args: [],
+    )
     monkeypatch.setattr(problem_core_routes, "can_submit", lambda *_args: True)
     monkeypatch.setattr(problem_core_routes, "url_for", lambda endpoint, **values: f"/{endpoint}")
     return user, problem
@@ -515,13 +518,24 @@ def test_submit_route_handles_limit_exception_without_queueing(monkeypatch):
     assert queued == []
 
 
-def test_submit_route_returns_expired_homework_error_to_json_client(monkeypatch):
+def test_submit_route_returns_expired_homework_warning_to_json_client(monkeypatch):
     _install_submit_route_fakes(monkeypatch)
     monkeypatch.setattr(
         problem_core_routes,
-        "get_homeworks",
-        lambda _user: [{"problem_id": 7, "ddl": datetime(2026, 1, 1)}],
+        "get_problem_homework_assignments",
+        lambda *_args: [{
+            "id": 3,
+            "class_en": "C1",
+            "class_cn": "一班",
+            "ddl": datetime(2026, 1, 1),
+            "is_expired": True,
+        }],
     )
+    monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 41)
+    monkeypatch.setattr(
+        problem_core_routes, "archive_submission_by_id", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(problem_core_routes, "_evaluate_submission_task", None)
 
     with _route_app().test_request_context(
         "/submit/7",
@@ -532,12 +546,52 @@ def test_submit_route_returns_expired_homework_error_to_json_client(monkeypatch)
         response = problem_core_routes.submit_solution(7)
 
     response, status = response
-    assert status == 403
+    assert status == 201
     assert response.get_json() == {
-        "success": False,
-        "code": "homework_expired",
-        "message": "作业已过期，你已经无法提交",
+        "success": True,
+        "submission_id": 41,
+        "warning": {
+            "code": "homework_deadline_passed",
+            "message": (
+                "本次提交不会计入以下已截止的班级作业："
+                "一班（截止 2026-01-01 00:00）。提交仍会正常评测，并计入题库练习成绩。"
+            ),
+            "homeworks": [{
+                "homework_id": 3,
+                "class_en": "C1",
+                "class_cn": "一班",
+                "ddl": "2026-01-01 00:00",
+            }],
+        },
     }
+
+
+def test_browser_submit_requires_deadline_warning_acknowledgement(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "get_problem_homework_assignments",
+        lambda *_args: [{
+            "id": 3,
+            "class_en": "C1",
+            "class_cn": "一班",
+            "ddl": datetime(2026, 1, 1),
+            "is_expired": True,
+        }],
+    )
+    create_submission = MagicMock(return_value=41)
+    monkeypatch.setattr(
+        problem_core_routes, "create_submission", create_submission,
+    )
+
+    with _route_app().test_request_context(
+        "/submit/7", method="POST", data={"code": "print(1)"},
+    ):
+        response = problem_core_routes.submit_solution(7)
+
+    assert response.status_code == 302
+    assert response.location.endswith("/problem_core.problem_detail")
+    create_submission.assert_not_called()
 
 
 def test_submit_route_returns_submission_id_to_json_client(monkeypatch):

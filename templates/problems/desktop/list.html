@@ -2,7 +2,7 @@
 {% from 'components/layout/class_logo.html' import class_logo %}
 {% from 'problems/desktop/macros.html' import submission_metric %}
 <section class="numoj-problem-dashboard" aria-labelledby="problem-dashboard-title">
-  {% set is_library = view_mode == 'admin_library' %}
+  {% set is_library = view_mode in ('admin_library', 'student_library') %}
   <header class="numoj-page-header">
     <div>
       <p class="numoj-eyebrow">{{ 'PROBLEM LIBRARY' if is_library else 'CLASS WORKSPACE' }}</p>
@@ -82,7 +82,9 @@
                 </div>
                 {{ submission_metric(p.submission_metrics) }}
                 <div class="numoj-row-actions">
+                  {% if user.is_admin == 1 %}
                   <button type="button" class="numoj-icon-button numoj-delete-button" onclick="deleteProblem({{ p.id }})" aria-label="删除题目 {{ p.title }}" title="删除题目">×</button>
+                  {% endif %}
                   <a class="numoj-row-arrow" href="{{ url_for('problem_core.problem_detail', problem_id=p.id, source='library') }}" aria-label="查看 {{ p.title }}">›</a>
                 </div>
               </article>
@@ -91,7 +93,7 @@
             {% endfor %}
           {% else %}
             {% for hw in selected_homeworks or [] %}
-              <article class="numoj-assignment-row numoj-assignment-row-homework" data-numoj-assignment-kind="homework">
+              <article class="numoj-assignment-row numoj-assignment-row-homework{% if user.is_admin != 1 %} is-student-homework{% endif %}" data-numoj-assignment-kind="homework">
                 {% if user.is_admin != 1 %}
                   {% if hw.plagiarism_notice %}
                     <button type="button" class="numoj-row-state warning" onclick='showPlagiarismNotice({{ hw.plagiarism_notice|tojson }})' aria-label="查看抄袭记录" title="查看抄袭记录">!</button>
@@ -119,6 +121,36 @@
                     {% if hw.problem_lang %}<span>{{ language_label(hw.problem_lang) }}</span>{% endif %}
                   </div>
                 </div>
+                {% if user.is_admin != 1 %}
+                <div class="numoj-row-result">
+                  <div class="numoj-row-grade">
+                    {% if hw.max_score is not none %}
+                    <strong>{{ hw.max_score }}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
+                    <span>{% if hw.has_pending_submission %}暂定，另有提交评测中{% else %}{{ '已结算' if hw.ddl and hw.ddl < now else '暂定成绩' }}{% endif %}</span>
+                    {% elif hw.has_pending_submission %}
+                    <strong>评测中</strong>
+                    <span>以提交时间为准</span>
+                    {% else %}
+                    <strong>—{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}</strong>
+                    <span>{{ '未按时提交' if hw.ddl and hw.ddl < now else '未提交' }}</span>
+                    {% endif %}
+                    {% if hw.practice_max_score is not none and (hw.max_score is none or hw.practice_max_score > hw.max_score) %}
+                    <small>练习最高 {{ hw.practice_max_score }}{% if hw.total_score is not none %}/{{ hw.total_score }}{% endif %}，逾期不计分</small>
+                    {% endif %}
+                  </div>
+                  <div class="numoj-row-deadline">
+                    {% if hw.ddl %}
+                      {% set remaining = (hw.ddl - now).total_seconds() %}
+                      <strong class="numoj-row-deadline-absolute">{{ hw.ddl.strftime('%m-%d %H:%M') }}</strong>
+                      {% if remaining < 0 %}<span class="numoj-row-deadline-relative expired">已截止</span>
+                      {% elif remaining < 86400 %}<span class="numoj-row-deadline-relative urgent">剩 {{ (remaining / 3600)|round(0, 'ceil')|int }} 小时</span>
+                      {% else %}<span class="numoj-row-deadline-relative">剩 {{ (remaining / 86400)|round(0, 'ceil')|int }} 天</span>{% endif %}
+                    {% else %}
+                      <span class="numoj-row-deadline-relative numoj-row-deadline-empty">无截止时间</span>
+                    {% endif %}
+                  </div>
+                </div>
+                {% else %}
                 {{ submission_metric(hw.submission_metrics) }}
                 <div class="numoj-row-deadline">
                   {% if hw.ddl %}
@@ -131,6 +163,7 @@
                     <span class="numoj-row-deadline-relative numoj-row-deadline-empty">无截止时间</span>
                   {% endif %}
                 </div>
+                {% endif %}
                 {% if hw.kind == 'ranking' %}
                   <a class="numoj-row-arrow" href="{{ url_for('ranking.ranking_detail', competition_id=hw.competition_id) }}" aria-label="查看 {{ hw.problem_title }}">›</a>
                 {% else %}

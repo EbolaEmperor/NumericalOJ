@@ -219,7 +219,7 @@ def test_problem_library_attaches_global_metrics_without_deadline(monkeypatch):
     get_metrics.assert_called_once_with([1, 2])
 
 
-def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
+def test_problem_detail_uses_all_visible_class_homeworks_regardless_of_entry(monkeypatch):
     problem = {
         "id": 7,
         "content": "# 题面",
@@ -261,8 +261,8 @@ def test_admin_problem_detail_uses_only_authorized_class_homework(monkeypatch):
         user, 7, selected_class_en="INJECTED"
     )
     assert error is None
-    assert context["homework"] is None
-    load_homeworks.assert_not_called()
+    assert context["homework"]["ddl"] == "correct"
+    load_homeworks.assert_called_once_with(1, ["C1"], username="admin")
 
 
 def test_problem_task_agent_can_read_only_its_scoped_problem(monkeypatch):
@@ -273,8 +273,10 @@ def test_problem_task_agent_can_read_only_its_scoped_problem(monkeypatch):
         "submission_limit": 10,
     }
     monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
-    load_homeworks = MagicMock(return_value=[])
-    monkeypatch.setattr(problem_context, "get_homeworks", load_homeworks)
+    load_assignments = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        problem_context, "get_problem_homework_assignments", load_assignments,
+    )
     monkeypatch.setattr(
         problem_context,
         "get_submission_summaries_by_user_and_problem",
@@ -295,12 +297,12 @@ def test_problem_task_agent_can_read_only_its_scoped_problem(monkeypatch):
 
     assert error is None
     assert context["problem"]["id"] == 104
-    load_homeworks.assert_not_called()
+    load_assignments.assert_not_called()
 
     _context, error = problem_context.build_problem_detail_context(agent_user, 105)
 
     assert error == "forbidden"
-    load_homeworks.assert_called_once_with(agent_user)
+    load_assignments.assert_not_called()
 
 
 def test_problem_detail_context_uses_shared_rich_markdown_renderer(monkeypatch):
@@ -323,6 +325,9 @@ def test_problem_detail_context_uses_shared_rich_markdown_renderer(monkeypatch):
         "get_submission_summaries_by_user_and_problem",
         lambda *_args, **_kwargs: [],
     )
+    monkeypatch.setattr(
+        problem_context, "get_problem_homework_assignments", lambda *_args: [],
+    )
 
     context, error = problem_context.build_problem_detail_context(
         {"id": 1, "username": "admin", "is_admin": 1},
@@ -334,7 +339,7 @@ def test_problem_detail_context_uses_shared_rich_markdown_renderer(monkeypatch):
     renderer.assert_called_once_with(problem["content"])
 
 
-def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
+def test_student_problem_detail_lists_all_class_deadlines_regardless_of_entry(monkeypatch):
     problem = {
         "id": 7,
         "content": "# 题面",
@@ -345,18 +350,17 @@ def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
     monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
     monkeypatch.setattr(
         problem_context,
-        "get_homeworks",
-        lambda _user: [{"problem_id": 7, "ddl": "merged-latest"}],
-    )
-    monkeypatch.setattr(
-        problem_context,
         "visible_classes_for_user_cached",
-        lambda _user: [{"class_en": "C2"}],
+        lambda _user: [
+            {"class_en": "C1", "class_cn": "一班"},
+            {"class_en": "C2", "class_cn": "二班"},
+        ],
     )
     monkeypatch.setattr(
         problem_context,
         "_get_homeworks_for_classes",
         lambda *_args, **_kwargs: {
+            "C1": [{"kind": "problem", "problem_id": 7, "ddl": "first-class"}],
             "C2": [{"kind": "problem", "problem_id": 7, "ddl": "selected-class"}]
         },
     )
@@ -373,10 +377,13 @@ def test_student_problem_detail_prefers_selected_class_deadline(monkeypatch):
     )
 
     assert error is None
-    assert context["homework"]["ddl"] == "selected-class"
+    assert [item["class_cn"] for item in context["homework_assignments"]] == [
+        "一班", "二班",
+    ]
+    assert context["homework"]["ddl"] == "first-class"
 
 
-def test_student_problem_detail_reports_expired_homework_submission_block(monkeypatch):
+def test_student_problem_detail_reports_expired_homework_submission_warning(monkeypatch):
     problem = {
         "id": 7,
         "content": "# 题面",
@@ -387,8 +394,20 @@ def test_student_problem_detail_reports_expired_homework_submission_block(monkey
     monkeypatch.setattr(problem_context, "get_problem", lambda _id: problem)
     monkeypatch.setattr(
         problem_context,
-        "get_homeworks",
-        lambda _user: [{"problem_id": 7, "ddl": datetime(2026, 1, 1)}],
+        "visible_classes_for_user_cached",
+        lambda _user: [{"class_en": "C1", "class_cn": "一班"}],
+    )
+    monkeypatch.setattr(
+        problem_context,
+        "_get_homeworks_for_classes",
+        lambda *_args, **_kwargs: {
+            "C1": [{
+                "id": 3,
+                "kind": "problem",
+                "problem_id": 7,
+                "ddl": datetime(2026, 1, 1),
+            }]
+        },
     )
     monkeypatch.setattr(
         problem_context,
@@ -401,12 +420,14 @@ def test_student_problem_detail_reports_expired_homework_submission_block(monkey
     context, error = problem_context.build_problem_detail_context(user, 7)
 
     assert error is None
-    assert context["can_submit"] is False
-    assert context["submit_block_code"] == "homework_expired"
-    assert context["submit_block_reason"] == "作业已过期，你已经无法提交"
+    assert context["can_submit"] is True
+    assert context["submit_block_code"] == ""
+    assert context["submit_block_reason"] == ""
+    assert context["submit_warning"]["code"] == "homework_deadline_passed"
+    assert context["submit_warning"]["homeworks"][0]["class_cn"] == "一班"
 
 
-def test_problem_routes_forward_class_query_and_protect_total_library(monkeypatch):
+def test_problem_routes_forward_class_query_and_open_total_library(monkeypatch):
     app = Flask(__name__)
     app.secret_key = "test"
     render = MagicMock(return_value="rendered")
@@ -426,11 +447,14 @@ def test_problem_routes_forward_class_query_and_protect_total_library(monkeypatc
     )
 
     monkeypatch.setattr(problem_core_routes, "current_user", lambda: {"id": 8, "is_admin": 0})
-    monkeypatch.setattr(problem_core_routes, "url_for", lambda endpoint, **_kwargs: f"/{endpoint}")
+    build_library = MagicMock(return_value={"marker": "library"})
+    monkeypatch.setattr(
+        problem_core_routes, "build_problem_library_context", build_library,
+    )
     with app.test_request_context("/problems/all"):
         response = problem_core_routes.problem_library()
-    assert response.status_code == 302
-    assert response.location.endswith("/problem_core.problem_list")
+    assert response == "rendered"
+    build_library.assert_called_once_with({"id": 8, "is_admin": 0})
 
 
 def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):

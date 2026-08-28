@@ -28,6 +28,10 @@ from oj_modules.homework.runtime import (
     start_export_codes_task,
     start_plagiarism_mark_task,
 )
+from oj_modules.homework.scores import (
+    NON_TERMINAL_SUBMISSION_STATUSES,
+    homework_score_snapshot,
+)
 from oj_modules.homework.targets import (
     _PLAGIARISM_TARGET_PROBLEM,
     _PLAGIARISM_TARGET_RANKING,
@@ -39,6 +43,68 @@ from oj_modules.security.auth import current_user, is_admin
 
 
 homework_bp = Blueprint('homework', __name__)
+
+
+def _homework_completion_count(cursor, class_en, homework, problem=None):
+    deadline = homework.get('ddl')
+    if homework.get('ranking_competition_id'):
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS completed_count
+            FROM user_class_map m
+            JOIN users u ON u.id = m.user_id
+            WHERE m.class_en = %s
+              AND u.is_admin = 0
+              AND EXISTS (
+                  SELECT 1
+                  FROM ranking_submissions rs
+                  WHERE rs.username=u.username
+                    AND rs.competition_id=%s
+                    AND rs.score IS NOT NULL
+                    AND (%s IS NULL OR rs.created_at <= %s)
+              )
+            """,
+            (
+                class_en,
+                int(homework['ranking_competition_id']),
+                deadline,
+                deadline,
+            ),
+        )
+    else:
+        max_score = (problem or {}).get('max_score')
+        if max_score is None:
+            return 0
+        statuses = sorted(NON_TERMINAL_SUBMISSION_STATUSES)
+        excluded = ','.join(['%s'] * len(statuses))
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) AS completed_count
+            FROM user_class_map m
+            JOIN users u ON u.id = m.user_id
+            WHERE m.class_en = %s
+              AND u.is_admin = 0
+              AND EXISTS (
+                  SELECT 1
+                  FROM submissions s
+                  WHERE s.username=u.username
+                    AND s.problem_id=%s
+                    AND s.status NOT IN ({excluded})
+                    AND s.score >= %s
+                    AND (%s IS NULL OR s.created_at <= %s)
+              )
+            """,
+            tuple([
+                class_en,
+                int(homework['problem_id']),
+                *statuses,
+                max_score,
+                deadline,
+                deadline,
+            ]),
+        )
+    row = cursor.fetchone() or {}
+    return int(row.get('completed_count') or 0)
 
 def _wants_json_response():
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
@@ -138,6 +204,9 @@ def admin_homework():
                                 'target': f'{_PLAGIARISM_TARGET_PROBLEM}:{pid}',
                                 'title': hw['problem_title'],
                             })
+                    hw['complete_cnt'] = _homework_completion_count(
+                        cursor, selected_class, hw, problem if not hw['is_ranking'] else None,
+                    )
         except pymysql.Error as e:
             flash(f'数据库操作失败，请稍后再试', 'danger')
         finally:
@@ -319,6 +388,7 @@ def export_scores():
                 SELECT hw.id,
                        hw.problem_id,
                        hw.ranking_competition_id,
+                       hw.ddl,
                        hw.problem_title,
                        rc.title AS ranking_title
                 FROM {safe_table_name(selected_class)} hw
@@ -342,6 +412,7 @@ def export_scores():
                 'kind': 'problem',
                 'id': int(problem_id),
                 'title': None,
+                'ddl': hw.get('ddl'),
             })
         elif ranking_competition_id is not None:
             title = hw.get('problem_title') or hw.get('ranking_title') or f"打榜赛 {ranking_competition_id}"
@@ -349,6 +420,7 @@ def export_scores():
                 'kind': 'ranking',
                 'id': int(ranking_competition_id),
                 'title': title,
+                'ddl': hw.get('ddl'),
             })
 
     if not score_columns:
@@ -391,34 +463,36 @@ def export_scores():
     if not students:
         return "该班级没有学生", 404
 
-    user_ids = [s['id'] for s in students]
-    max_score_map = {}
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            uid_placeholders = ','.join(['%s'] * len(user_ids))
-            pid_placeholders = ','.join(['%s'] * len(problem_ids))
-            cursor.execute(
-                f"""
-                SELECT userid, problem_id, score
-                FROM max_score
-                WHERE userid IN ({uid_placeholders}) AND problem_id IN ({pid_placeholders})
-                """,
-                tuple(user_ids + problem_ids),
-            )
-            for row in cursor.fetchall():
-                uid = row['userid']
-                if uid not in max_score_map:
-                    max_score_map[uid] = {}
-                max_score_map[uid][row['problem_id']] = row['score']
-    finally:
-        conn.close()
+    problem_submission_map = {}
+    if problem_ids:
+        usernames = [s['username'] for s in students]
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                username_placeholders = ','.join(['%s'] * len(usernames))
+                pid_placeholders = ','.join(['%s'] * len(problem_ids))
+                cursor.execute(
+                    f"""
+                    SELECT id, username, problem_id, score, status, created_at
+                    FROM submissions
+                    WHERE username IN ({username_placeholders})
+                      AND problem_id IN ({pid_placeholders})
+                    ORDER BY id ASC
+                    """,
+                    tuple(usernames + problem_ids),
+                )
+                for submission in cursor.fetchall() or []:
+                    problem_submission_map.setdefault(
+                        (submission['username'], int(submission['problem_id'])), []
+                    ).append(submission)
+        finally:
+            conn.close()
 
     from io import BytesIO
     import codecs
     import csv
 
-    ranking_score_map = {}
+    ranking_submission_map = {}
     if ranking_competition_ids:
         usernames = [s['username'] for s in students]
         conn = get_db_connection()
@@ -428,17 +502,23 @@ def export_scores():
                 cid_placeholders = ','.join(['%s'] * len(ranking_competition_ids))
                 cursor.execute(
                     f"""
-                    SELECT username, competition_id, MAX(score) AS score
+                    SELECT id, username, competition_id, score, status, created_at
                     FROM ranking_submissions
                     WHERE username IN ({username_placeholders})
                       AND competition_id IN ({cid_placeholders})
                       AND score IS NOT NULL
-                    GROUP BY username, competition_id
+                    ORDER BY id ASC
                     """,
                     tuple(usernames + ranking_competition_ids),
                 )
-                for row in cursor.fetchall():
-                    ranking_score_map.setdefault(row['username'], {})[int(row['competition_id'])] = row['score']
+                for submission in cursor.fetchall() or []:
+                    ranking_submission_map.setdefault(
+                        (
+                            submission['username'],
+                            int(submission['competition_id']),
+                        ),
+                        [],
+                    ).append(submission)
         finally:
             conn.close()
 
@@ -456,18 +536,27 @@ def export_scores():
     writer.writerow([h.encode('gbk', 'replace').decode('gbk') for h in headers])
 
     for stu in students:
-        uid = stu['id']
         row = [stu['username']]
         total = 0
 
-        ms = max_score_map.get(uid, {})
-        ranking_scores = ranking_score_map.get(stu['username'], {})
         for col in score_columns:
             if col['kind'] == 'problem':
-                score = ms.get(col['id'], 0) if ms else 0
+                snapshot = homework_score_snapshot(
+                    problem_submission_map.get(
+                        (stu['username'], col['id']), []
+                    ),
+                    col.get('ddl'),
+                )
             else:
-                score = ranking_scores.get(col['id'], 0) if ranking_scores else 0
-            score = score or 0
+                snapshot = homework_score_snapshot(
+                    ranking_submission_map.get(
+                        (stu['username'], col['id']), []
+                    ),
+                    col.get('ddl'),
+                    require_terminal=False,
+                )
+            best = snapshot['best']
+            score = (best or {}).get('score') or 0
             total += score
             row.append(str(score))
         row.append(str(total))

@@ -76,6 +76,20 @@ def test_lean_workspace_export_is_marked_as_a_download_navigation():
     )
 
 
+def test_problem_detail_has_deadline_status_and_non_native_confirmation_modal():
+    detail = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
+    deadline_script = (
+        ROOT / "static" / "app" / "problem-deadline-warning.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'class="problem-homework-statuses"' in detail
+    assert 'id="homeworkDeadlineWarningModal"' in detail
+    assert "我明白了" in detail
+    assert "problem-deadline-warning.js" in detail
+    assert "window.confirm" not in deadline_script
+    assert "window.alert" not in deadline_script
+
+
 def test_dynamic_and_ranking_downloads_opt_out_of_page_navigation_loader():
     ranking_detail = (TEMPLATES / "ranking" / "detail.html").read_text(encoding="utf-8")
     ranking_settings = (TEMPLATES / "ranking" / "tabs" / "settings.html").read_text(
