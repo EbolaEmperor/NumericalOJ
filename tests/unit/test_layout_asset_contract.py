@@ -210,6 +210,10 @@ def test_sidebar_avatar_reuses_the_forum_username_identicon_renderer():
     assert "data-numoj-user-avatar" in NAVIGATION
     assert 'data-avatar-seed="{{ current_user.username }}"' in NAVIGATION
     assert "document.querySelectorAll('[data-numoj-user-avatar]')" in LAYOUT_JS
+    assert "window.NumojUserAvatar = Object.freeze" in LAYOUT_JS
+    assert "window.NumojUserAvatar.render" in ADMIN_USERS_JS
+    assert "window.NumojIdenticon" not in ADMIN_USERS_JS
+    assert ADMIN_USERS.count("data-numoj-user-avatar") == 2
     assert "identicon.cellsForSeed(seed)" in LAYOUT_JS
     assert "identicon.paint(" in LAYOUT_JS
     assert "new TextEncoder()" in IDENTICON_JS

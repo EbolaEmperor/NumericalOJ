@@ -1055,6 +1055,28 @@
   }
 }
 
+.numoj-avatar {
+  --avatar-cell: var(--numoj-ink, #18181b);
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  overflow: hidden;
+  padding: 2px;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 70%);
+  color: var(--avatar-cell);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.numoj-avatar > span { background: transparent; }
+.numoj-avatar > span.is-filled { background: var(--avatar-cell); }
+
 /* 桌面 V2：严格限制在现有 lg 断点以上，移动端继续使用原布局。 */
 @media (min-width: 992px) {
   :root {
@@ -1349,33 +1371,6 @@
     flex: 1 1 auto;
     align-items: center;
     gap: 9px;
-  }
-
-  .numoj-avatar {
-    --avatar-cell: var(--numoj-ink);
-    display: grid;
-    width: 32px;
-    height: 32px;
-    flex: 0 0 32px;
-    grid-template-columns: repeat(8, 1fr);
-    grid-template-rows: repeat(8, 1fr);
-    overflow: hidden;
-    padding: 2px;
-    border: 1px solid #d4d4d8;
-    border-radius: 8px;
-    background: #fff;
-    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 70%);
-    color: var(--avatar-cell);
-    font-size: 10.5px;
-    font-weight: 650;
-  }
-
-  .numoj-avatar > span {
-    background: transparent;
-  }
-
-  .numoj-avatar > span.is-filled {
-    background: var(--avatar-cell);
   }
 
   .numoj-user-copy strong {
@@ -3434,29 +3429,11 @@ html.is-problem-pane-resizing * {
   }
 
   .numoj-mobile-sidebar .numoj-avatar {
-    --avatar-cell: var(--numoj-ink);
-    display: grid;
     width: 28px;
     height: 28px;
     flex: 0 0 28px;
-    grid-template-columns: repeat(8, 1fr);
-    grid-template-rows: repeat(8, 1fr);
-    overflow: hidden;
-    padding: 2px;
-    border: 1px solid #d4d4d8;
     border-radius: 7px;
-    background: #fff;
-    color: var(--avatar-cell);
     font-size: 0.55rem;
-    font-weight: 650;
-  }
-
-  .numoj-mobile-sidebar .numoj-avatar > span {
-    background: transparent;
-  }
-
-  .numoj-mobile-sidebar .numoj-avatar > span.is-filled {
-    background: var(--avatar-cell);
   }
 
   .numoj-mobile-sidebar .numoj-guest-avatar {
