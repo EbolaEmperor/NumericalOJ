@@ -59,6 +59,7 @@ from oj_modules.routes.problem_core_routes import (
     problem_core_bp,
 )
 from oj_modules.problems.catalog import invalidate_problem_list_cache_for_class
+from oj_modules.classroom.dashboard import init_class_activity_cache
 from oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from oj_modules.routes.game_routes import game_bp
 from oj_modules.routes.vibehub_routes import vibehub_bp
@@ -98,6 +99,8 @@ from oj_modules.tasks.registry import (
     register_rejudge_task,
     register_written_homework_task,
     register_ai_detection_tasks,
+    register_class_activity_refresh_task,
+    seed_class_activity_refresh,
     subscribe_agent_run_events,
     register_ranking_evaluate_task,
     register_ranking_elo_match_task,
@@ -401,6 +404,7 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
     reverse_judge_task=evaluate_ranking_reverse_judge,
     agent_session_recovery_task=agent_queue_recovery,
 )
+class_activity_refresh = register_class_activity_refresh_task(celery, rds)
 
 # 初始化重测模块（依赖 Redis 与已注册的分派任务）
 init_rejudge_module(rds, rejudge_submission_and_update)
@@ -464,6 +468,8 @@ init_reverse_judge_progress_cache(rds, blocking_client=rds_blocking)
 init_batch_progress_cache(rds)
 # 初始化打榜赛「批量重测」进度缓存（Redis）
 init_bulk_rejudge_progress_cache(rds)
+# 初始化班级活跃度快照读取（Redis）
+init_class_activity_cache(rds)
 
 ###############################################################################
 #  班级管理
@@ -472,6 +478,14 @@ init_bulk_rejudge_progress_cache(rds)
 
 def ensure_background_schedulers():
     """幂等确保后台自调度链存在；Web worker 重建时重复调用也安全。"""
+    # 立即预热，并在任务内部每 20 分钟续排一次全班级快照刷新。
+    seed_class_activity_refresh(
+        rds,
+        class_activity_refresh,
+        reset_owner=False,
+        countdown=0,
+    )
+
     # 启动 ELO 匹配 tick 链路（自调度，全局单链）。
     seed_elo_matchmaker_tick(
         rds,
@@ -515,6 +529,12 @@ def recover_pending_after_all_workers_stopped():
         rds,
         ranking_elo_matchmaker_tick,
         reset_owner=True,
+    )
+    seed_class_activity_refresh(
+        rds,
+        class_activity_refresh,
+        reset_owner=True,
+        countdown=0,
     )
     # 完整 worker 停机后，旧链已经死亡；换新 owner，让残留 ETA 消息醒来后 no-op。
     seed_pending_requeue_watchdog(

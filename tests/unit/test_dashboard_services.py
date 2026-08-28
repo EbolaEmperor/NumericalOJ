@@ -10,8 +10,10 @@ from oj_modules.classroom import dashboard as dashboard_services
 @pytest.fixture(autouse=True)
 def _reset_dashboard_cache():
     dashboard_services.clear_dashboard_cache()
+    dashboard_services.init_class_activity_cache(None)
     yield
     dashboard_services.clear_dashboard_cache()
+    dashboard_services.init_class_activity_cache(None)
 
 
 class _Cursor:
@@ -51,6 +53,54 @@ class _Connection:
 
     def close(self):
         self.closed = True
+
+
+class _HashRedis:
+    def __init__(self):
+        self.hashes = {}
+        self.expirations = {}
+
+    def hset(self, key, *, mapping):
+        self.hashes[key] = dict(mapping)
+
+    def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
+
+    def expire(self, key, seconds):
+        self.expirations[key] = seconds
+
+    def pipeline(self, *, transaction=True):
+        assert transaction is True
+        return _HashRedisPipeline(self)
+
+    def rename(self, source, destination):
+        self.hashes[destination] = self.hashes.pop(source)
+        self.expirations.pop(source, None)
+
+    def delete(self, key):
+        self.hashes.pop(key, None)
+        self.expirations.pop(key, None)
+
+
+class _HashRedisPipeline:
+    def __init__(self, redis_client):
+        self.redis_client = redis_client
+        self.operations = []
+
+    def rename(self, source, destination):
+        self.operations.append(("rename", source, destination))
+        return self
+
+    def persist(self, key):
+        self.operations.append(("persist", key))
+        return self
+
+    def execute(self):
+        for operation in self.operations:
+            if operation[0] == "rename":
+                self.redis_client.rename(operation[1], operation[2])
+            elif operation[0] == "persist":
+                self.redis_client.expirations.pop(operation[1], None)
 
 
 def test_select_visible_class_honors_request_then_stable_class_code_fallback():
@@ -218,39 +268,113 @@ def test_attach_submission_metrics_handles_problem_and_ranking_homeworks(monkeyp
     ranking_metrics.assert_called_once_with([4], class_en="C1")
 
 
-def test_get_class_activity_unifies_normal_and_ranking_submissions_and_caches(monkeypatch):
-    cursor = _Cursor(
-        rows=[
-            {"activity_day": datetime(2026, 7, 21, 0, 0), "submission_count": 3},
-            {"activity_day": date(2026, 7, 22), "submission_count": 2},
-        ]
-    )
+def test_load_all_class_activity_batches_normal_and_ranking_submissions(monkeypatch):
+    class _ActivityCursor(_Cursor):
+        def fetchall(self):
+            if "FROM class_table" in self.current_sql:
+                return [{"class_en": "C1"}, {"class_en": "C2"}]
+            return [
+                {
+                    "class_en": "C1",
+                    "activity_day": datetime(2026, 7, 21, 0, 0),
+                    "submission_count": 3,
+                },
+                {
+                    "class_en": "C1",
+                    "activity_day": date(2026, 7, 22),
+                    "submission_count": 2,
+                },
+            ]
+
+    cursor = _ActivityCursor()
     connection = _Connection(cursor)
     factory = MagicMock(return_value=connection)
     monkeypatch.setattr(dashboard_services, "get_db_connection", factory)
 
-    result = dashboard_services.get_class_activity(
-        "C1", today=date(2026, 7, 22), days=14
-    )
-    cached = dashboard_services.get_class_activity(
-        "C1", today=date(2026, 7, 22), days=14
+    result = dashboard_services.load_all_class_activity(
+        today=date(2026, 7, 22), days=14
     )
 
-    assert result == cached
     assert factory.call_count == 1
     assert connection.closed is True
-    aggregate_sql, params = cursor.executions[1]
+    aggregate_sql, params = cursor.executions[2]
     assert cursor.executions[0] == ("SET time_zone = '+08:00'", None)
+    assert "FROM class_table" in cursor.executions[1][0]
     assert "FROM submissions s" in aggregate_sql
     assert "UNION ALL" in aggregate_sql
     assert "FROM ranking_submissions rs" in aggregate_sql
     assert "rs.source = 'self'" in aggregate_sql
-    assert params[2] == "C1"
-    assert params[5] == "C1"
-    assert len(params) == 6
-    by_day = {item["day"]: item for item in result}
+    assert len(params) == 4
+    by_day = {item["day"]: item for item in result["C1"]}
     assert by_day[date(2026, 7, 21)]["count"] == 3
     assert by_day[date(2026, 7, 22)]["count"] == 2
+    assert all(item["count"] == 0 for item in result["C2"])
+
+
+def test_get_class_activity_only_reads_atomically_published_redis_snapshot(monkeypatch):
+    redis_client = _HashRedis()
+    snapshot = {
+        "C1": dashboard_services.build_activity_calendar(
+            {date(2026, 7, 22): 5},
+            today=date(2026, 7, 22),
+            days=14,
+        ),
+    }
+    dashboard_services.publish_class_activity_snapshot(redis_client, snapshot)
+    dashboard_services.init_class_activity_cache(redis_client)
+    monkeypatch.setattr(
+        dashboard_services,
+        "get_db_connection",
+        MagicMock(side_effect=AssertionError("请求路径不应查询 MySQL")),
+    )
+
+    result = dashboard_services.get_class_activity("C1")
+
+    assert result[-5]["day"] == date(2026, 7, 22)
+    assert result[-5]["count"] == 5
+    assert dashboard_services.get_class_activity("new-class") == []
+    assert dashboard_services.CLASS_ACTIVITY_CACHE_KEY in redis_client.hashes
+    assert not any("staging" in key for key in redis_client.hashes)
+
+
+def test_failed_snapshot_publish_preserves_previous_redis_snapshot(monkeypatch):
+    redis_client = _HashRedis()
+    old_snapshot = {
+        "C1": dashboard_services.build_activity_calendar(
+            {date(2026, 7, 21): 2},
+            today=date(2026, 7, 22),
+            days=14,
+        ),
+    }
+    dashboard_services.publish_class_activity_snapshot(redis_client, old_snapshot)
+    previous = dict(
+        redis_client.hashes[dashboard_services.CLASS_ACTIVITY_CACHE_KEY]
+    )
+
+    class _FailedPipeline:
+        def rename(self, _source, _destination):
+            return self
+
+        def persist(self, _key):
+            return self
+
+        def execute(self):
+            raise OSError("redis transaction failed")
+
+    monkeypatch.setattr(
+        redis_client,
+        "pipeline",
+        lambda *, transaction=True: _FailedPipeline(),
+    )
+
+    with pytest.raises(OSError, match="transaction failed"):
+        dashboard_services.publish_class_activity_snapshot(
+            redis_client,
+            {"C1": []},
+        )
+
+    assert redis_client.hashes[dashboard_services.CLASS_ACTIVITY_CACHE_KEY] == previous
+    assert not any("staging" in key for key in redis_client.hashes)
 
 
 def test_get_layout_navigation_context_returns_real_admin_counts(monkeypatch):

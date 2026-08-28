@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
+import uuid
 from datetime import date, datetime, time as datetime_time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,10 @@ from oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
 
 ACTIVITY_DAYS = 12 * 7
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+CLASS_ACTIVITY_CACHE_KEY = "numoj:class-activity:v1"
+CLASS_ACTIVITY_CACHE_STAGING_PREFIX = f"{CLASS_ACTIVITY_CACHE_KEY}:staging"
+CLASS_ACTIVITY_CACHE_META_FIELD = "__meta__"
+_class_activity_redis = None
 _CACHE_TTL_SECONDS = 30
 _CACHE_MAX_ENTRIES = 512
 _cache_lock = threading.RLock()
@@ -45,6 +51,12 @@ def clear_dashboard_cache():
     with _cache_lock:
         _cache.clear()
         _cache_generation += 1
+
+
+def init_class_activity_cache(redis_client):
+    """注入班级活跃度 Redis 客户端；组合根负责调用。"""
+    global _class_activity_redis
+    _class_activity_redis = redis_client
 
 
 def _cached(key, loader, *, now_monotonic=None):
@@ -172,65 +184,171 @@ def build_activity_calendar(counts_by_day, *, today=None, days=ACTIVITY_DAYS):
     ]
 
 
-def get_class_activity(class_en, *, today=None, days=ACTIVITY_DAYS):
-    """统计当前班级成员最近 ``days`` 天的普通与打榜提交总数。"""
+def load_all_class_activity(*, today=None, days=ACTIVITY_DAYS):
+    """从 MySQL 批量生成所有班级活跃度快照，仅供后台刷新任务调用。"""
+    end_day = today or datetime.now(SHANGHAI_TZ).date()
+    weeks = max(1, math.ceil(days / 7))
+    start_day = end_day - timedelta(
+        days=end_day.weekday() + (weeks - 1) * 7
+    )
+    start_at = datetime.combine(start_day, datetime_time.min)
+    end_at = datetime.combine(end_day + timedelta(days=1), datetime_time.min)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SET time_zone = '+08:00'")
+            cursor.execute("SELECT class_en FROM class_table ORDER BY class_en ASC")
+            class_codes = [
+                str(row.get("class_en") or "")
+                for row in (cursor.fetchall() or [])
+                if row.get("class_en")
+            ]
+            cursor.execute(
+                """
+                SELECT activity.class_en,
+                       activity.activity_day,
+                       SUM(activity.submission_count) AS submission_count
+                FROM (
+                    SELECT ucm.class_en,
+                           DATE(s.created_at) AS activity_day,
+                           COUNT(*) AS submission_count
+                    FROM submissions s
+                    JOIN users u
+                      ON u.username = s.username AND u.is_admin = 0
+                    JOIN user_class_map ucm ON ucm.user_id = u.id
+                    WHERE s.created_at >= %s AND s.created_at < %s
+                    GROUP BY ucm.class_en, DATE(s.created_at)
+                    UNION ALL
+                    SELECT ucm.class_en,
+                           DATE(rs.created_at) AS activity_day,
+                           COUNT(*) AS submission_count
+                    FROM ranking_submissions rs
+                    JOIN users u
+                      ON u.username = rs.username AND u.is_admin = 0
+                    JOIN user_class_map ucm ON ucm.user_id = u.id
+                    WHERE rs.created_at >= %s AND rs.created_at < %s
+                      AND rs.source = 'self'
+                    GROUP BY ucm.class_en, DATE(rs.created_at)
+                ) activity
+                GROUP BY activity.class_en, activity.activity_day
+                ORDER BY activity.class_en ASC, activity.activity_day ASC
+                """,
+                (start_at, end_at, start_at, end_at),
+            )
+            counts_by_class = {class_en: {} for class_en in class_codes}
+            for row in cursor.fetchall() or []:
+                class_en = str(row.get("class_en") or "")
+                if not class_en:
+                    continue
+                raw_day = row.get("activity_day")
+                if isinstance(raw_day, datetime):
+                    raw_day = raw_day.date()
+                if isinstance(raw_day, date):
+                    counts_by_class.setdefault(class_en, {})[raw_day] = int(
+                        row.get("submission_count") or 0
+                    )
+            return {
+                class_en: build_activity_calendar(
+                    counts,
+                    today=end_day,
+                    days=days,
+                )
+                for class_en, counts in counts_by_class.items()
+            }
+    finally:
+        conn.close()
+
+
+def _serialize_activity(activity):
+    return json.dumps(
+        [
+            {
+                **item,
+                "day": item["day"].isoformat(),
+            }
+            for item in activity
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _deserialize_activity(payload):
+    if not payload:
+        return []
+    decoded = json.loads(payload)
+    if not isinstance(decoded, list):
+        raise ValueError("班级活跃度缓存格式错误")
+    activity = []
+    for item in decoded:
+        if not isinstance(item, dict):
+            raise ValueError("班级活跃度缓存条目格式错误")
+        restored = dict(item)
+        restored["day"] = date.fromisoformat(str(item.get("day") or ""))
+        activity.append(restored)
+    return activity
+
+
+def publish_class_activity_snapshot(
+    redis_client,
+    snapshot,
+    *,
+    generated_at=None,
+    days=ACTIVITY_DAYS,
+):
+    """写入临时 hash 后原子替换正式快照，失败时保留上一版。"""
+    generated_at = generated_at or datetime.now(SHANGHAI_TZ)
+    staging_key = f"{CLASS_ACTIVITY_CACHE_STAGING_PREFIX}:{uuid.uuid4().hex}"
+    mapping = {
+        str(class_en): _serialize_activity(activity)
+        for class_en, activity in snapshot.items()
+    }
+    mapping[CLASS_ACTIVITY_CACHE_META_FIELD] = json.dumps(
+        {
+            "generated_at": generated_at.isoformat(),
+            "class_count": len(snapshot),
+            "days": int(days),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        redis_client.hset(staging_key, mapping=mapping)
+        # 临时键异常残留时自动回收；RENAME 后正式快照不设置过期时间，刷新失败
+        # 也能持续提供最后一次成功数据。
+        redis_client.expire(staging_key, 60 * 60)
+        pipe = redis_client.pipeline(transaction=True)
+        pipe.rename(staging_key, CLASS_ACTIVITY_CACHE_KEY)
+        pipe.persist(CLASS_ACTIVITY_CACHE_KEY)
+        pipe.execute()
+    except Exception:
+        try:
+            redis_client.delete(staging_key)
+        except Exception:
+            pass
+        raise
+    return {
+        "class_count": len(snapshot),
+        "generated_at": generated_at.isoformat(),
+    }
+
+
+def refresh_class_activity_snapshot(redis_client, *, today=None, days=ACTIVITY_DAYS):
+    """刷新全部班级快照；数据库查询与 Redis 发布不在用户请求路径。"""
+    snapshot = load_all_class_activity(today=today, days=days)
+    return publish_class_activity_snapshot(redis_client, snapshot, days=days)
+
+
+def get_class_activity(class_en, *, redis_client=None):
+    """只从 Redis 快照读取班级活跃度，不在请求路径回退查询 MySQL。"""
     if not class_en:
         return []
-    end_day = today or datetime.now(SHANGHAI_TZ).date()
-    cache_key = ("class-activity", class_en, end_day.isoformat(), int(days))
-
-    def load():
-        weeks = max(1, math.ceil(days / 7))
-        start_day = end_day - timedelta(
-            days=end_day.weekday() + (weeks - 1) * 7
-        )
-        start_at = datetime.combine(start_day, datetime_time.min)
-        end_at = datetime.combine(end_day + timedelta(days=1), datetime_time.min)
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SET time_zone = '+08:00'")
-                cursor.execute(
-                    f"""
-                    SELECT activity_day, SUM(submission_count) AS submission_count
-                    FROM (
-                        SELECT DATE(s.created_at) AS activity_day, COUNT(*) AS submission_count
-                        FROM submissions s
-                        WHERE s.created_at >= %s AND s.created_at < %s
-                          AND {_membership_predicate('s')}
-                        GROUP BY DATE(s.created_at)
-                        UNION ALL
-                        SELECT DATE(rs.created_at) AS activity_day, COUNT(*) AS submission_count
-                        FROM ranking_submissions rs
-                        WHERE rs.created_at >= %s AND rs.created_at < %s
-                          AND rs.source = 'self'
-                          AND {_membership_predicate('rs')}
-                        GROUP BY DATE(rs.created_at)
-                    ) activity
-                    GROUP BY activity_day
-                    ORDER BY activity_day ASC
-                    """,
-                    (
-                        start_at,
-                        end_at,
-                        class_en,
-                        start_at,
-                        end_at,
-                        class_en,
-                    ),
-                )
-                counts = {}
-                for row in cursor.fetchall() or []:
-                    raw_day = row.get("activity_day")
-                    if isinstance(raw_day, datetime):
-                        raw_day = raw_day.date()
-                    if isinstance(raw_day, date):
-                        counts[raw_day] = int(row.get("submission_count") or 0)
-                return build_activity_calendar(counts, today=end_day, days=days)
-        finally:
-            conn.close()
-
-    return _cached(cache_key, load)
+    client = redis_client or _class_activity_redis
+    if client is None:
+        raise RuntimeError("班级活跃度 Redis 缓存尚未初始化")
+    payload = client.hget(CLASS_ACTIVITY_CACHE_KEY, str(class_en))
+    # 首次部署任务尚未完成，或班级刚创建尚未进入下一次快照时，短暂展示空图。
+    return _deserialize_activity(payload)
 
 
 def _metric_rows(query, params):

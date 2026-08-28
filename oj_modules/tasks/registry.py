@@ -26,6 +26,10 @@ from oj_modules.tasks.agent.registry import (
 )
 from oj_modules.tasks.repository_index_tasks import register_repository_index_build_task
 from oj_modules.tasks.ai_detection_tasks import register_ai_detection_tasks
+from oj_modules.tasks.class_activity_tasks import (
+    register_class_activity_refresh_task,
+    seed_class_activity_refresh,
+)
 from oj_modules.tasks.ranking.evaluate import register_ranking_evaluate_task
 from oj_modules.tasks.ranking.elo import (
     register_ranking_elo_match_task,
@@ -75,6 +79,8 @@ __all__ = [
     "register_agent_queue_tasks",
     "register_repository_index_build_task",
     "register_ai_detection_tasks",
+    "register_class_activity_refresh_task",
+    "seed_class_activity_refresh",
     "register_ranking_evaluate_task",
     "register_ranking_elo_match_task",
     "register_ranking_elo_initial_burst_task",
