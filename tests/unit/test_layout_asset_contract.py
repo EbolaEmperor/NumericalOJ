@@ -33,6 +33,12 @@ CLASS_MANAGER_MODAL = (
 ADMIN_USERS = (ROOT / "templates" / "admin" / "users.html").read_text(
     encoding="utf-8"
 )
+ADMIN_USERS_JS = (ROOT / "static" / "app" / "admin-users.js").read_text(
+    encoding="utf-8"
+)
+ADMIN_USERS_CSS = (ROOT / "static" / "app" / "admin-users.css").read_text(
+    encoding="utf-8"
+)
 REGISTER = (ROOT / "templates" / "auth" / "register.html").read_text(
     encoding="utf-8"
 )
@@ -303,18 +309,34 @@ def test_class_memberships_have_no_primary_class_frontend_concept():
 
     assert "!isAdmin && model.memberships.length <= 1" in LAYOUT_JS
     assert "u.classes" in ADMIN_USERS
-    assert "renderClassBadge" in ADMIN_USERS
-    assert "removeUserClass" in ADMIN_USERS
+    assert "data-membership-list" in ADMIN_USERS
+    assert "activeUser.memberships" in ADMIN_USERS_JS
+    assert "removeMembership" in ADMIN_USERS_JS
 
 
 def test_admin_role_grant_is_separate_from_class_membership():
     assert "u.is_admin" in ADMIN_USERS
-    assert "授予管理员" in ADMIN_USERS
-    assert "grantUserAdmin" in ADMIN_USERS
+    assert "授予教师权限" in ADMIN_USERS
+    assert "data-grant-admin-confirm-button" in ADMIN_USERS
     assert "admin_user.grant_user_admin_ajax" in ADMIN_USERS
-    assert "form.append('user_id', userId)" in ADMIN_USERS
-    assert "roleBadge.textContent = '教师'" in ADMIN_USERS
-    assert "button.remove()" in ADMIN_USERS
+    assert "root.dataset.grantAdminUrl" in ADMIN_USERS_JS
+    assert "activeUser.isAdmin = true" in ADMIN_USERS_JS
+    assert "data-role-label>教师" in ADMIN_USERS
+    assert "role.hidden = !user.isAdmin" in ADMIN_USERS_JS
+    assert "setText(query('[data-role-label]', role), '教师')" in ADMIN_USERS_JS
+    assert "user-admin-col-role" not in ADMIN_USERS
+    assert ".user-admin-col-class { width: 41%; }" in ADMIN_USERS_CSS
+
+
+def test_admin_users_use_ui_v2_assets_and_no_native_dialogs():
+    assert "filename='app/admin-users.css'" in ADMIN_USERS
+    assert "filename='app/admin-users.js'" in ADMIN_USERS
+    assert "data-set-email-url" in ADMIN_USERS
+    assert "data-reset-password-url" in ADMIN_USERS
+    assert ".user-admin-detail-grid" in ADMIN_USERS_CSS
+    assert ".user-admin-confirm-row" in ADMIN_USERS_CSS
+    for native_dialog in ("alert(", "confirm(", "prompt("):
+        assert native_dialog not in ADMIN_USERS_JS
 
 
 def test_account_modals_keep_the_approved_ui_v2_contract():

@@ -8,6 +8,11 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,49}$")
+_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+"
+    r"[A-Za-z]{2,63}$"
+)
 
 
 def validate_username(username):
@@ -21,6 +26,19 @@ def validate_username(username):
             cleaned,
             "用户名只能包含字母、数字、下划线、点和连字符，长度不超过 50，且必须以字母、数字或下划线开头",
         )
+    return True, cleaned, ""
+
+
+def validate_email(email):
+    """校验可投递的互联网邮箱地址并返回 ``(ok, cleaned, message)``。"""
+    cleaned = str(email or "").strip()
+    if not cleaned:
+        return False, cleaned, "邮箱不能为空"
+    if len(cleaned) > 254 or not _EMAIL_RE.fullmatch(cleaned):
+        return False, cleaned, "请输入有效的邮箱地址"
+    local_part = cleaned.rsplit("@", 1)[0]
+    if len(local_part) > 64 or ".." in cleaned:
+        return False, cleaned, "请输入有效的邮箱地址"
     return True, cleaned, ""
 
 
@@ -45,4 +63,9 @@ def verify_password(stored_hash, password):
     return ok, False
 
 
-__all__ = ["hash_password", "validate_username", "verify_password"]
+__all__ = [
+    "hash_password",
+    "validate_email",
+    "validate_username",
+    "verify_password",
+]

@@ -74,6 +74,163 @@ def test_removed_class_switch_routes_are_not_registered():
     assert '/me/set_primary_class' not in rules
     assert '/admin/edit_user_ajax' not in rules
     assert '/admin/grant_user_admin_ajax' in rules
+    assert '/admin/set_user_email_ajax' in rules
+    assert '/admin/send_password_reset_email_ajax' in rules
+
+
+def test_admin_can_set_unique_user_email(monkeypatch):
+    app = _app()
+    updates = []
+
+    def handler(sql, params):
+        if sql.startswith('SELECT id, username, email FROM users'):
+            return {'id': 7, 'username': 'alice', 'email': 'old@example.com'}, [], 0
+        if sql.startswith('SELECT id FROM users WHERE email='):
+            return None, [], 0
+        if sql.startswith('UPDATE users SET email='):
+            updates.append(params)
+            return None, [], 1
+        raise AssertionError(sql)
+
+    conn = _Connection(_Cursor(handler))
+    monkeypatch.setattr(
+        admin_user_routes,
+        'current_user',
+        lambda: {'id': 1, 'username': 'admin', 'is_admin': 1},
+    )
+    monkeypatch.setattr(admin_user_routes, 'get_db_connection', lambda: conn)
+    monkeypatch.setattr(admin_user_routes, '_audit_user_admin_action', lambda *_args, **_kwargs: None)
+
+    with app.test_request_context(
+        '/admin/set_user_email_ajax',
+        method='POST',
+        data={'user_id': '7', 'email': 'new@example.com'},
+    ):
+        response = admin_user_routes.set_user_email_ajax()
+
+    assert response.get_json() == {
+        'success': True,
+        'message': '邮箱已更新',
+        'user_id': 7,
+        'email': 'new@example.com',
+        'changed': True,
+    }
+    assert updates == [('new@example.com', 7)]
+    assert conn.commits == 1
+
+
+def test_admin_email_update_rejects_duplicate(monkeypatch):
+    app = _app()
+
+    def handler(sql, _params):
+        if sql.startswith('SELECT id, username, email FROM users'):
+            return {'id': 7, 'username': 'alice', 'email': 'old@example.com'}, [], 0
+        if sql.startswith('SELECT id FROM users WHERE email='):
+            return {'id': 8}, [], 0
+        raise AssertionError(sql)
+
+    conn = _Connection(_Cursor(handler))
+    monkeypatch.setattr(admin_user_routes, 'current_user', lambda: {'is_admin': 1})
+    monkeypatch.setattr(admin_user_routes, 'get_db_connection', lambda: conn)
+    with app.test_request_context(
+        '/admin/set_user_email_ajax',
+        method='POST',
+        data={'user_id': '7', 'email': 'used@example.com'},
+    ):
+        response, status = admin_user_routes.set_user_email_ajax()
+
+    assert status == 400
+    assert response.get_json()['message'] == '该邮箱已被其他用户使用'
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+
+
+def test_admin_password_reset_generates_password_and_sends_email_before_commit(monkeypatch):
+    from oj_modules.security.credentials import verify_password
+
+    app = _app()
+    updates = []
+    deliveries = []
+
+    def handler(sql, params):
+        if sql.startswith('SELECT id, username, email FROM users'):
+            return {'id': 7, 'username': 'alice', 'email': 'alice@example.com'}, [], 0
+        if sql.startswith('UPDATE users SET password_hash='):
+            updates.append(params)
+            return None, [], 1
+        raise AssertionError(sql)
+
+    conn = _Connection(_Cursor(handler))
+    monkeypatch.setattr(
+        admin_user_routes,
+        'current_user',
+        lambda: {'id': 1, 'username': 'admin', 'is_admin': 1},
+    )
+    monkeypatch.setattr(admin_user_routes, 'get_db_connection', lambda: conn)
+    monkeypatch.setattr(admin_user_routes, 'get_mail_settings', lambda **_kwargs: {'smtp_server': 'smtp.test'})
+    monkeypatch.setattr(admin_user_routes, '_random_password', lambda: 'SafePass2026Abcd')
+    monkeypatch.setattr(
+        admin_user_routes,
+        'send_plain_text_email',
+        lambda **kwargs: deliveries.append(kwargs),
+    )
+    monkeypatch.setattr(admin_user_routes, '_audit_user_admin_action', lambda *_args, **_kwargs: None)
+
+    with app.test_request_context(
+        '/admin/send_password_reset_email_ajax',
+        method='POST',
+        data={'user_id': '7'},
+    ):
+        response = admin_user_routes.send_password_reset_email_ajax()
+
+    payload = response.get_json()
+    assert payload == {
+        'success': True,
+        'message': '随机密码已生成并发送至用户邮箱',
+        'user_id': 7,
+    }
+    assert 'SafePass2026Abcd' not in str(payload)
+    assert deliveries[0]['recipient'] == 'alice@example.com'
+    assert 'SafePass2026Abcd' in deliveries[0]['body']
+    assert verify_password(updates[0][0], 'SafePass2026Abcd') == (True, False)
+    assert updates[0][1] == 7
+    assert conn.commits == 1
+
+
+def test_admin_password_reset_rolls_back_when_mail_fails(monkeypatch):
+    from oj_modules.integrations.mail import MailDeliveryError
+
+    app = _app()
+
+    def handler(sql, _params):
+        if sql.startswith('SELECT id, username, email FROM users'):
+            return {'id': 7, 'username': 'alice', 'email': 'alice@example.com'}, [], 0
+        if sql.startswith('UPDATE users SET password_hash='):
+            return None, [], 1
+        raise AssertionError(sql)
+
+    conn = _Connection(_Cursor(handler))
+    monkeypatch.setattr(admin_user_routes, 'current_user', lambda: {'id': 1, 'is_admin': 1})
+    monkeypatch.setattr(admin_user_routes, 'get_db_connection', lambda: conn)
+    monkeypatch.setattr(admin_user_routes, 'get_mail_settings', lambda **_kwargs: {'smtp_server': 'smtp.test'})
+    monkeypatch.setattr(
+        admin_user_routes,
+        'send_plain_text_email',
+        lambda **_kwargs: (_ for _ in ()).throw(MailDeliveryError('邮件发送失败')),
+    )
+    monkeypatch.setattr(admin_user_routes, '_audit_user_admin_action', lambda *_args, **_kwargs: None)
+
+    with app.test_request_context(
+        '/admin/send_password_reset_email_ajax',
+        method='POST',
+        data={'user_id': '7'},
+    ):
+        response, status = admin_user_routes.send_password_reset_email_ajax()
+
+    assert status == 502
+    assert response.get_json()['message'] == '邮件发送失败'
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
 
 
 def test_me_classes_returns_only_equal_memberships(monkeypatch):

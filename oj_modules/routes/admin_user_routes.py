@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import re
+import secrets
 
 from flask import Blueprint, current_app, flash, jsonify, render_template, request, session
 
@@ -19,10 +20,19 @@ from oj_modules.db_services import (
     upsert_user_problem_max_score,
 )
 from oj_modules.problems.catalog import invalidate_problem_list_cache_for_user
-from oj_modules.security.credentials import validate_username
+from oj_modules.integrations.mail import MailDeliveryError, send_plain_text_email
+from oj_modules.observability import emit_audit, request_audit_fields
+from oj_modules.security.credentials import hash_password, validate_email, validate_username
+from oj_modules.site_config.services import get_mail_settings
 
 
 admin_user_bp = Blueprint('admin_user', __name__)
+
+_RESET_PASSWORD_ALPHABET = (
+    'ABCDEFGHJKLMNPQRSTUVWXYZ'
+    'abcdefghijkmnopqrstuvwxyz'
+    '23456789'
+)
 
 
 def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
@@ -31,6 +41,43 @@ def _invalidate_problem_list_cache_for_user(user_id=None, username=None):
     except Exception:
         # 缓存失效失败不影响主流程
         current_app.logger.exception('用户题目列表缓存失效失败')
+
+
+def _random_password(length=16):
+    """生成不含易混淆字符、同时包含大小写字母和数字的随机密码。"""
+    while True:
+        password = ''.join(secrets.choice(_RESET_PASSWORD_ALPHABET) for _ in range(length))
+        if (
+            any(char.islower() for char in password)
+            and any(char.isupper() for char in password)
+            and any(char.isdigit() for char in password)
+        ):
+            return password
+
+
+def _audit_user_admin_action(action, outcome, admin, target_user, **details):
+    try:
+        fields = request_audit_fields(request)
+        fields['actor'] = {
+            'id': admin.get('id'),
+            'name': admin.get('username'),
+            'is_admin': True,
+        }
+        fields['target_user'] = {
+            'id': target_user.get('id') if target_user else None,
+            'name': target_user.get('username') if target_user else None,
+        }
+        fields['change'] = details
+        emit_audit(
+            'user_admin',
+            action=action,
+            outcome=outcome,
+            message=f'用户管理事件：{action}',
+            **fields,
+        )
+    except Exception:
+        # 审计写入故障不能反转已经完成的用户管理操作。
+        current_app.logger.exception('用户管理审计事件写入失败')
 
 
 from oj_modules.security.auth import current_user, is_admin
@@ -42,7 +89,7 @@ def user_management():
     if not is_admin(user):
         return "<h3>无权限</h3>"
 
-    page = request.args.get('page', 1, type=int)
+    page = max(1, request.args.get('page', 1, type=int))
     # 保留 `username` 作为旧书签的兼容参数；页面使用中性的 `user_search`，
     # 避免密码管理器把筛选框误判成登录账号字段。
     search_username = (
@@ -57,8 +104,11 @@ def user_management():
     user_where_params = []
 
     if search_username:
-        user_where_clauses.append("u.username LIKE %s")
-        user_where_params.append(f"%{search_username}%")
+        user_where_clauses.append("(u.username LIKE %s OR u.email LIKE %s)")
+        user_where_params.extend([
+            f"%{search_username}%",
+            f"%{search_username}%",
+        ])
 
     if search_class:
         user_where_clauses.append(
@@ -85,6 +135,10 @@ def user_management():
             cursor.execute(count_sql, user_where_params)
             total = cursor.fetchone()['total']
             total_pages = (total + per_page - 1) // per_page
+            if not total_pages:
+                page = 1
+            elif page > total_pages:
+                page = total_pages
 
             data_sql = f"""
                 SELECT u.id, u.username, u.email, u.is_admin
@@ -131,6 +185,11 @@ def user_management():
         conn.close()
 
     classes = get_all_classes()
+    try:
+        mail_service_configured = bool(get_mail_settings())
+    except Exception:
+        current_app.logger.exception('读取邮件服务状态失败')
+        mail_service_configured = False
     return render_template(
         'admin/users.html',
         users=users,
@@ -138,8 +197,10 @@ def user_management():
         user=user,
         current_page=page,
         total_pages=total_pages,
+        total_users=total,
         search_username=search_username,
         search_class=search_class,
+        mail_service_configured=mail_service_configured,
     )
 
 
@@ -164,6 +225,7 @@ def grant_user_admin_ajax():
             )
             target_user = cursor.fetchone()
             if not target_user:
+                conn.rollback()
                 return jsonify({'success': False, 'message': '用户不存在'}), 404
             if int(target_user.get('is_admin') or 0) != 1:
                 cursor.execute(
@@ -229,6 +291,154 @@ def edit_username_ajax():
     _invalidate_problem_list_cache_for_user(username=new_username)
 
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_username': new_username})
+
+
+@admin_user_bp.route('/admin/set_user_email_ajax', methods=['POST'])
+def set_user_email_ajax():
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify({'success': False, 'message': '无权限'}), 403
+
+    user_id = request.form.get('user_id', type=int)
+    email_ok, new_email, email_message = validate_email(request.form.get('email'))
+    if not user_id:
+        return jsonify({'success': False, 'message': '缺少用户ID'}), 400
+    if not email_ok:
+        return jsonify({'success': False, 'message': email_message}), 400
+
+    target_user = None
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'SELECT id, username, email FROM users WHERE id=%s FOR UPDATE',
+                (user_id,),
+            )
+            target_user = cursor.fetchone()
+            if not target_user:
+                conn.rollback()
+                return jsonify({'success': False, 'message': '用户不存在'}), 404
+            cursor.execute(
+                'SELECT id FROM users WHERE email=%s AND id<>%s LIMIT 1 FOR UPDATE',
+                (new_email, user_id),
+            )
+            if cursor.fetchone():
+                conn.rollback()
+                return jsonify({'success': False, 'message': '该邮箱已被其他用户使用'}), 400
+            changed = str(target_user.get('email') or '') != new_email
+            if changed:
+                cursor.execute(
+                    'UPDATE users SET email=%s WHERE id=%s',
+                    (new_email, user_id),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        current_app.logger.exception('设置用户邮箱失败', extra={'user_id': user_id})
+        return jsonify({'success': False, 'message': '数据库操作失败，请稍后再试'}), 500
+    finally:
+        conn.close()
+
+    _audit_user_admin_action(
+        'set_email',
+        'success',
+        admin,
+        target_user,
+        changed=changed,
+    )
+    return jsonify({
+        'success': True,
+        'message': '邮箱已更新' if changed else '邮箱未发生变化',
+        'user_id': user_id,
+        'email': new_email,
+        'changed': changed,
+    })
+
+
+@admin_user_bp.route('/admin/send_password_reset_email_ajax', methods=['POST'])
+def send_password_reset_email_ajax():
+    admin = current_user()
+    if not is_admin(admin):
+        return jsonify({'success': False, 'message': '无权限'}), 403
+
+    user_id = request.form.get('user_id', type=int)
+    if not user_id:
+        return jsonify({'success': False, 'message': '缺少用户ID'}), 400
+
+    try:
+        mail_settings = get_mail_settings(include_secret=True)
+    except Exception:
+        current_app.logger.exception('读取邮件服务配置失败')
+        return jsonify({'success': False, 'message': '读取邮件服务配置失败'}), 500
+    if not mail_settings:
+        return jsonify({'success': False, 'message': '站点尚未配置邮件服务'}), 503
+
+    target_user = None
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'SELECT id, username, email FROM users WHERE id=%s FOR UPDATE',
+                (user_id,),
+            )
+            target_user = cursor.fetchone()
+            if not target_user:
+                conn.rollback()
+                return jsonify({'success': False, 'message': '用户不存在'}), 404
+
+            email_ok, recipient, _ = validate_email(target_user.get('email'))
+            if not email_ok:
+                conn.rollback()
+                return jsonify({
+                    'success': False,
+                    'message': '请先为该用户设置有效邮箱',
+                }), 400
+
+            new_password = _random_password()
+            cursor.execute(
+                'UPDATE users SET password_hash=%s WHERE id=%s',
+                (hash_password(new_password), user_id),
+            )
+            send_plain_text_email(
+                settings=mail_settings,
+                recipient=recipient,
+                subject='NumericalOJ 密码已重置',
+                body=(
+                    f"您好，{target_user['username']}：\n\n"
+                    "管理员已为您的 NumericalOJ 账户重置密码。\n"
+                    f"新密码：{new_password}\n\n"
+                    "请使用新密码登录，并尽快在账户设置中修改密码。"
+                    "\n若您未申请重置，请联系站点管理员。\n"
+                ),
+            )
+        conn.commit()
+    except MailDeliveryError as exc:
+        conn.rollback()
+        _audit_user_admin_action(
+            'reset_password_email', 'failure', admin, target_user,
+            reason='mail_delivery_failed',
+        )
+        return jsonify({'success': False, 'message': str(exc)}), 502
+    except Exception:
+        conn.rollback()
+        current_app.logger.exception('重置用户密码失败', extra={'user_id': user_id})
+        _audit_user_admin_action(
+            'reset_password_email', 'failure', admin, target_user,
+            reason='internal_error',
+        )
+        return jsonify({'success': False, 'message': '重置密码失败，请稍后再试'}), 500
+    finally:
+        conn.close()
+
+    _audit_user_admin_action(
+        'reset_password_email', 'success', admin, target_user,
+        delivery='email',
+    )
+    return jsonify({
+        'success': True,
+        'message': '随机密码已生成并发送至用户邮箱',
+        'user_id': user_id,
+    })
 
 
 @admin_user_bp.route('/admin/get_user_grades', methods=['GET'])
