@@ -129,7 +129,8 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
     )
     attach_metrics = MagicMock(side_effect=lambda rows, **_kwargs: rows)
     monkeypatch.setattr(problem_context, "attach_submission_metrics", attach_metrics)
-    monkeypatch.setattr(problem_context, "get_class_activity", lambda class_en: [class_en])
+    class_activity = MagicMock()
+    monkeypatch.setattr(problem_context, "get_class_activity", class_activity)
 
     context = problem_context.build_problem_list_context(
         {"id": 8, "username": "student", "is_admin": 0},
@@ -142,7 +143,8 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
     assert context["selected_homeworks"] == [{"id": 2, "problem_id": 22}]
     assert [block["class_en"] for block in context["homeworks_by_class"]] == ["C1", "C2"]
     attach_metrics.assert_called_once_with(context["selected_homeworks"], class_en="C2")
-    assert context["class_activity"] == ["C2"]
+    assert context["class_activity"] == []
+    class_activity.assert_not_called()
 
 
 def test_student_api_context_skips_dashboard_aggregation(monkeypatch):
@@ -459,7 +461,7 @@ def test_problem_routes_forward_class_query_and_open_total_library(monkeypatch):
 
 def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):
     app = Flask(__name__)
-    user = {"id": 8, "username": "student", "is_admin": 0}
+    user = {"id": 1, "username": "admin", "is_admin": 1}
     monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
     monkeypatch.setattr(
         problem_core_routes,
@@ -497,12 +499,40 @@ def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):
     load_activity.assert_called_once_with("C1")
 
 
-def test_class_activity_endpoint_rejects_unseen_class(monkeypatch):
+def test_class_activity_endpoint_rejects_student_before_loading_classes(monkeypatch):
     app = Flask(__name__)
     monkeypatch.setattr(
         problem_core_routes,
         "current_user",
         lambda: {"id": 8, "username": "student", "is_admin": 0},
+    )
+    load_classes = MagicMock()
+    load_activity = MagicMock()
+    monkeypatch.setattr(
+        problem_core_routes,
+        "visible_classes_for_user_cached",
+        load_classes,
+    )
+    monkeypatch.setattr(problem_core_routes, "get_class_activity", load_activity)
+
+    with app.test_request_context("/api/class-activity?class_en=C1"):
+        response, status = problem_core_routes.class_activity_data()
+
+    assert status == 403
+    assert response.get_json() == {
+        "success": False,
+        "message": "仅管理员可查看班级活跃度",
+    }
+    load_classes.assert_not_called()
+    load_activity.assert_not_called()
+
+
+def test_class_activity_endpoint_rejects_unseen_class(monkeypatch):
+    app = Flask(__name__)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "current_user",
+        lambda: {"id": 1, "username": "admin", "is_admin": 1},
     )
     monkeypatch.setattr(
         problem_core_routes,

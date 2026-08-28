@@ -1355,6 +1355,8 @@ def class_activity_data():
     user = current_user()
     if not user:
         return jsonify(success=False, message='请先登录'), 401
+    if int(user.get('is_admin') or 0) != 1:
+        return jsonify(success=False, message='仅管理员可查看班级活跃度'), 403
 
     classes = visible_classes_for_user_cached(user)
     requested_class_en = str(request.args.get('class_en') or '').strip()
