@@ -3,17 +3,25 @@
 
   let accountToastTimer;
 
+  function renderUserAvatar(avatar, seedOverride, labelOverride) {
+    const identicon = window.NumojIdenticon;
+    if (!avatar || !identicon) return;
+
+    const seed = seedOverride || avatar.dataset.avatarSeed || 'numericaloj';
+    const label = labelOverride || avatar.dataset.avatarLabel || seed;
+    avatar.dataset.avatarSeed = seed;
+    avatar.dataset.avatarLabel = label;
+    identicon.paint(avatar, identicon.cellsForSeed(seed), label);
+  }
+
   function initUserAvatar() {
     const avatars = document.querySelectorAll('[data-numoj-user-avatar]');
-    const identicon = window.NumojIdenticon;
-    if (!avatars.length || !identicon) return;
+    if (!avatars.length) return;
 
-    avatars.forEach((avatar) => {
-      const seed = avatar.dataset.avatarSeed || 'numericaloj';
-      const label = avatar.dataset.avatarLabel || seed;
-      identicon.paint(avatar, identicon.cellsForSeed(seed), label);
-    });
+    avatars.forEach((avatar) => renderUserAvatar(avatar));
   }
+
+  window.NumojUserAvatar = Object.freeze({render: renderUserAvatar});
 
   function showAccountToast(message) {
     const toast = document.getElementById('accountModalToast');

@@ -83,7 +83,7 @@
                 data-classes="{{ u.classes|tojson|forceescape }}">
               <td>
                 <div class="user-admin-identity">
-                  <span class="numoj-avatar user-admin-avatar" data-avatar-seed="{{ u.username }}"
+                  <span class="numoj-avatar user-admin-avatar" data-numoj-user-avatar data-avatar-seed="{{ u.username }}"
                         data-avatar-label="{{ u.username }}" aria-hidden="true">{{ u.username[:2]|upper }}</span>
                   <span class="user-admin-identity-copy">
                     <span class="user-admin-name-line">
@@ -146,7 +146,9 @@
       <span class="user-admin-modal-accent" aria-hidden="true"></span>
       <header class="modal-header">
         <div class="user-admin-modal-person">
-          <span class="numoj-avatar user-admin-modal-avatar" data-manage-avatar aria-hidden="true">U</span>
+          <span class="numoj-avatar user-admin-modal-avatar" data-numoj-user-avatar
+                data-avatar-seed="numericaloj" data-avatar-label="用户"
+                data-manage-avatar aria-hidden="true">U</span>
           <div><span class="user-admin-kicker">ACCOUNT / <b data-manage-user-id>UID</b></span><h2 class="modal-title" id="manageUserModalLabel" data-manage-title>管理用户</h2><p data-manage-email-summary>账户资料与权限</p></div>
         </div>
         <button type="button" class="user-admin-modal-close" data-bs-dismiss="modal" aria-label="关闭">×</button>

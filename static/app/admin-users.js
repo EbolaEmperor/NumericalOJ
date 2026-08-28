@@ -97,15 +97,9 @@
     };
   }
 
-  function paintAvatar(element, username) {
-    if (!element || !window.NumojIdenticon) return;
-    element.dataset.avatarSeed = username;
-    element.dataset.avatarLabel = username;
-    window.NumojIdenticon.paint(
-      element,
-      window.NumojIdenticon.cellsForSeed(username),
-      username
-    );
+  function renderAvatar(element, username) {
+    if (!element || !window.NumojUserAvatar) return;
+    window.NumojUserAvatar.render(element, username, username);
   }
 
   function renderRowClasses(user) {
@@ -145,7 +139,7 @@
     role.classList.toggle('is-admin', user.isAdmin);
     role.hidden = !user.isAdmin;
     setText(query('[data-role-label]', role), '教师');
-    paintAvatar(query('.user-admin-avatar', user.row), user.username);
+    renderAvatar(query('.user-admin-avatar', user.row), user.username);
     renderRowClasses(user);
   }
 
@@ -232,7 +226,7 @@
     setText(query('[data-manage-email-summary]', manageModalElement), activeUser.email || '尚未设置邮箱');
     query('[data-manage-username]', manageModalElement).value = activeUser.username;
     query('[data-manage-email]', manageModalElement).value = activeUser.email;
-    paintAvatar(query('[data-manage-avatar]', manageModalElement), activeUser.username);
+    renderAvatar(query('[data-manage-avatar]', manageModalElement), activeUser.username);
     queryAll('.user-admin-form-message', manageModalElement).forEach(function (message) {
       setMessage(message, '', '');
     });
@@ -264,7 +258,7 @@
       activeUser.username = data.new_username;
       syncRow(activeUser);
       setText(query('[data-manage-title]', manageModalElement), activeUser.username);
-      paintAvatar(query('[data-manage-avatar]', manageModalElement), activeUser.username);
+      renderAvatar(query('[data-manage-avatar]', manageModalElement), activeUser.username);
       setMessage(message, '用户名已更新', 'success');
       showToast('用户名已更新');
     } catch (error) {
