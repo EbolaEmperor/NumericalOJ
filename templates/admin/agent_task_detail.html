@@ -59,7 +59,7 @@
     {% if attachment.size %}<small>{{ attachment.size }}</small>{% endif %}
     {% if attachment_path %}
       <a href="{{ url_for('problem_core.agent_workspace_file', session_id=session_id, path=attachment_path, download=1) }}"
-         title="下载 {{ attachment_name }}" aria-label="下载 {{ attachment_name }}">
+         download title="下载 {{ attachment_name }}" aria-label="下载 {{ attachment_name }}">
         <i class="fas fa-download" aria-hidden="true"></i>
       </a>
     {% endif %}

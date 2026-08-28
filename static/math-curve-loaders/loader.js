@@ -428,10 +428,18 @@
       let destination;
       try { destination = new URL(link.href, window.location.href); } catch (error) { return; }
       if (destination.origin !== window.location.origin) return;
+      // 服务端附件下载不会发生页面切换，若展示全页遮罩就没有机会自动收起。
+      // 除了显式 download 属性，也识别由脚本动态生成的常见下载 URL，避免遗漏。
+      if (isDownloadDestination(destination)) return;
       window.setTimeout(() => {
         if (!event.defaultPrevented) begin(link.dataset.loaderLabel || '正在加载页面…', { delay: 140 });
       }, 0);
     });
+  }
+
+  function isDownloadDestination(destination) {
+    if (destination.searchParams.get('download') === '1') return true;
+    return /(?:^|\/)(?:download|export)(?:[_\/-]|$)/i.test(destination.pathname);
   }
 
   window.MathCurveLoader = {
