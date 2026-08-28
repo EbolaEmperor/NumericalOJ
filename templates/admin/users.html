@@ -1,706 +1,241 @@
 {% extends "layouts/site.html" %}
 {% from "components/choice_picker.html" import simple_choice %}
+
 {% block title %}用户管理 - {{ super() }}{% endblock %}
-{% block content %}
-<h2><i class="fas fa-users me-2"></i> 用户管理</h2>
 
-<!-- 搜索和过滤表单 -->
-<form method="get" action="{{ url_for('admin_user.user_management') }}" class="mb-4"
-      role="search" autocomplete="off">
-  <div class="row g-3">
-    <div class="col-md-4">
-      <input type="search" id="userSearchQuery" name="user_search" class="form-control"
-             placeholder="搜索用户名" value="{{ search_username }}"
-             aria-label="搜索用户名" autocomplete="off" autocapitalize="off"
-             autocorrect="off" spellcheck="false"
-             data-1p-ignore data-lpignore="true" data-bwignore>
-    </div>
-    <div class="col-md-4">
-      {{ simple_choice(
-        'userClassFilter',
-        'class',
-        classes,
-        search_class,
-        placeholder_label='全部班级',
-        value_key='class_en',
-        label_key='class_cn',
-        default_icon='fa-users',
-        aria_label='筛选班级'
-      ) }}
-    </div>
-    <div class="col-md-4">
-      <button type="submit" class="btn btn-outline-primary"><i class="fas fa-search me-2"></i>搜索</button>
-      <a href="{{ url_for('admin_user.user_management') }}" class="btn btn-outline-secondary"><i class="fas fa-sync me-2"></i>重置</a>
-    </div>
-  </div>
-</form>
-
-<!-- 新增班级按钮（新增班级类型到 class_table） -->
-<button type="button" class="btn btn-outline-success mb-3" data-bs-toggle="modal" data-bs-target="#addClassModal">
-  <i class="fas fa-plus me-2"></i>新增班级
-</button>
-
-<table class="table table-bordered" id="userTable">
-  <thead>
-    <tr>
-      <th><i class="fas fa-id-badge me-2"></i> ID</th>
-      <th><i class="fas fa-user me-2"></i> 用户名</th>
-      <th><i class="fas fa-envelope me-2"></i> 邮箱</th>
-      <th><i class="fas fa-user-shield me-2"></i> 角色</th>
-      <th style="min-width: 360px;"><i class="fas fa-users me-2"></i> 班级</th>
-      <th><i class="fas fa-graduation-cap me-2"></i> 操作</th>
-    </tr>
-</thead>
-<tbody>
-  {% for u in users %}
-  <tr id="userRow-{{ u.id }}">
-    <td>{{ u.id }}</td>
-    <td class="d-flex justify-content-between align-items-center">
-      <div class="user-username">{{ u.username }}</div>
-      <button type="button" class="btn btn-sm btn-outline-warning" onclick='showEditUsernameModal({{ u.id|tojson }}, {{ u.username|tojson }})'>
-        <i class="fas fa-edit"></i>
-      </button>
-    </td>
-    <td>{{ u.email }}</td>
-    <td>
-      <span class="badge user-role-badge {{ 'bg-warning text-dark' if u.is_admin == 1 else 'bg-secondary' }}">
-        {{ '教师' if u.is_admin == 1 else '学生' }}
-      </span>
-    </td>
-
-    <!-- 每个班级都是地位等价的成员关系。 -->
-<td>
-  <div class="user-classes-grid" data-user-id="{{ u.id }}">
-    <div class="user-classes-badges">
-      {% if u.classes %}
-        {% for membership in u.classes %}
-          <span class="badge bg-info text-dark badge-removable d-block mb-1"
-                data-class-en="{{ membership.class_en }}">
-            {{ membership.class_cn }}
-            <button type="button" class="remove-x" title="移除班级"
-                    aria-label="从 {{ membership.class_cn }} 移除 {{ u.username }}"
-                    onclick='removeUserClass({{ u.id|tojson }}, {{ membership.class_en|tojson }}, this)'>×</button>
-          </span>
-        {% endfor %}
-      {% else %}
-        <span class="user-classes-empty text-muted">暂无班级</span>
-      {% endif %}
-    </div>
-
-    <div class="user-classes-actions">
-      <button type="button" class="btn btn-sm btn-outline-success"
-              onclick='showAddUserClassModal({{ u.id|tojson }})'>
-        <i class="fas fa-user-plus me-1"></i>添加班级
-      </button>
-    </div>
-  </div>
-</td>
-    <td>
-      <button type="button" class="btn btn-sm btn-outline-info" 
-              onclick='showGradesModal({{ u.id|tojson }}, {{ u.username|tojson }})'>
-        <i class="fas fa-chart-line me-1"></i>查看成绩
-      </button>
-      {% if u.is_admin != 1 %}
-      <button type="button" class="btn btn-sm btn-outline-warning ms-1 grant-admin-button"
-              onclick='grantUserAdmin({{ u.id|tojson }}, this)'>
-        <i class="fas fa-user-shield me-1"></i>授予管理员
-      </button>
-      {% endif %}
-    </td>
-  </tr>
-  {% endfor %}
-</tbody>
-</table>
-
-<!-- 分页导航 -->
-<nav aria-label="Page navigation">
-  <ul class="pagination">
-    {% if current_page > 1 %}
-      <li class="page-item">
-        <a class="page-link" 
-           href="{{ url_for('admin_user.user_management', page=current_page-1, user_search=search_username, class=search_class) }}">
-          上一页
-        </a>
-      </li>
-    {% endif %}
-
-    {% for p in range(1, total_pages+1) %}
-      <li class="page-item {% if p == current_page %}active{% endif %}">
-        <a class="page-link" 
-           href="{{ url_for('admin_user.user_management', page=p, user_search=search_username, class=search_class) }}">
-          {{ p }}
-        </a>
-      </li>
-    {% endfor %}
-
-    {% if current_page < total_pages %}
-      <li class="page-item">
-        <a class="page-link" 
-           href="{{ url_for('admin_user.user_management', page=current_page+1, user_search=search_username, class=search_class) }}">
-          下一页
-        </a>
-      </li>
-    {% endif %}
-  </ul>
-</nav>
-
-<!-- 添加“班级类型”的模态框（原有） -->
-<div class="modal fade" id="addClassModal" tabindex="-1" aria-labelledby="addClassModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <form id="addClassForm">
-        <div class="modal-header">
-          <h5 class="modal-title" id="addClassModalLabel">添加班级</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-        </div>
-        <div class="modal-body">
-          <div class="mb-3">
-            <label for="classEnInput" class="form-label">班级英文名（由大小写字母、数字、下划线构成）</label>
-            <input type="text" name="class_en" id="classEnInput" class="form-control" required>
-          </div>
-          <div class="mb-3">
-            <label for="classCnInput" class="form-label">班级中文名</label>
-            <input type="text" name="class_cn" id="classCnInput" class="form-control" required>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="btn btn-primary">保存</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- 为用户添加班级成员关系。 -->
-<div class="modal fade" id="addUserClassModal" tabindex="-1" aria-labelledby="addUserClassLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <form id="addUserClassForm">
-        <div class="modal-header">
-          <h5 class="modal-title" id="addUserClassLabel">给用户添加班级</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" name="user_id" id="addUserClassUserId">
-          <div class="mb-3">
-            <label for="addUserClassSelectTrigger" class="form-label">选择班级</label>
-            {{ simple_choice(
-              'addUserClassSelect',
-              'class_en',
-              classes,
-              '',
-              placeholder_label='请选择',
-              value_key='class_en',
-              label_key='class_cn',
-              default_icon='fa-users',
-              required=true,
-              aria_label='选择班级'
-            ) }}
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="btn btn-success">添加</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- 修改用户名的模态框（原有） -->
-<div class="modal fade" id="editUsernameModal" tabindex="-1" aria-labelledby="editUsernameModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <form id="editUsernameForm">
-        <div class="modal-header">
-          <h5 class="modal-title" id="editUsernameModalLabel">修改用户名</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" name="user_id" id="editUsernameUserId">
-          <div class="mb-3">
-            <label class="form-label">新用户名</label>
-            <input type="text" name="new_username" id="editUsernameInput" class="form-control" required>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="btn btn-primary">保存修改</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- 查看/编辑成绩的模态框 -->
-<div class="modal fade" id="gradesModal" tabindex="-1" aria-labelledby="gradesModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="gradesModalLabel">
-          <i class="fas fa-chart-line me-2"></i>
-          查看成绩 - <span id="gradesUsername"></span>
-        </h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-      </div>
-      <div class="modal-body">
-        <input type="hidden" id="gradesUserId">
-        <div id="gradesLoadingIndicator" class="text-center my-3">
-          <span class="math-curve-loader" data-math-curve-loader data-size="md">
-            <span class="math-curve-loader__label">正在加载成绩…</span>
-          </span>
-        </div>
-        <div id="gradesTableContainer" style="display: none;">
-          <div class="mb-3">
-            <input type="text" id="gradeSearchInput" class="form-control" placeholder="搜索题目标题...">
-          </div>
-          <div style="max-height: 500px; overflow-y: auto;">
-            <table class="table table-striped table-hover" id="gradesTable">
-              <thead class="sticky-top bg-white">
-                <tr>
-                  <th>题目ID</th>
-                  <th>题目标题</th>
-                  <th>用户得分</th>
-                  <th>满分</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="gradesTableBody">
-                <!-- 动态加载 -->
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div id="gradesErrorMessage" class="alert alert-danger" style="display: none;"></div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<style>
-  .pagination { margin-top: 20px; }
-  .page-item.active .page-link { background-color: #007bff; border-color: #007bff; }
-  .page-link { color: #007bff; }
-  /* 两列布局：左=徽章列（宽度由内容决定），右=按钮列（撑满单元格剩余宽度） */
-  .user-classes-grid {
-    display: grid;
-    grid-template-columns: max-content 1fr; /* 左列宽度=徽章最长那一行；右列占剩余 */
-    align-items: start;
-    column-gap: 1rem;
-  }
-
-  /* 左列徽章竖排，每个占一行，宽度随文字内容，不拉满 */
-  .user-classes-badges .badge {
-    display: block;          /* 竖排：一行一个 */
-    width: fit-content;      /* 宽度刚好包住文字 */
-    max-width: 100%;         /* 过长时不超出单元格 */
-    white-space: normal;     /* 长名字可以换行 */
-    text-align: left;
-    margin-bottom: .25rem;
-  }
-
-  /* 可移除徽章的小叉样式 */
-  .badge-removable { position: relative; padding-right: 1.5rem; }
-  .badge-removable .remove-x {
-    position: absolute;
-    top: 50%;
-    right: .25rem;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    font-weight: bold;
-    line-height: 1;
-    transform: translateY(-50%);
-  }
-
-  /* 右列按钮横向排列；靠右对齐（占据右侧），并在窄屏时自动换行 */
-  .user-classes-actions {
-    display: flex;
-    flex-wrap: wrap;          /* 按需换行 */
-    gap: .5rem;
-    justify-content: flex-end;/* 靠右 */
-    align-items: flex-start;
-  }
-</style>
-
-<script>
-  function renderClassBadge(userId, classEn, classCn) {
-    const row = document.getElementById('userRow-' + userId);
-    if (!row) return;
-
-    const badgeContainer = row.querySelector('.user-classes-badges');
-    if (!badgeContainer) return;
-
-    // 已存在同班级徽章则不重复渲染
-    if (badgeContainer.querySelector(`.badge[data-class-en="${classEn}"]`)) return;
-    badgeContainer.querySelector('.user-classes-empty')?.remove();
-
-    const badge = document.createElement('span');
-    badge.className = 'badge bg-info text-dark badge-removable mb-1';
-    badge.setAttribute('data-class-en', classEn);
-    badge.appendChild(document.createTextNode(classCn || classEn || ''));
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'remove-x';
-    remove.title = '移除班级';
-    remove.setAttribute('aria-label', `从 ${classCn || classEn} 移除该用户`);
-    remove.textContent = '×';
-    remove.addEventListener('click', function() {
-      removeUserClass(userId, classEn, remove);
-    });
-    badge.appendChild(remove);
-    badgeContainer.appendChild(badge);
-  }
-
-  // === 班级映射：class_en -> class_cn（用于徽章中文名显示） ===
-  const classMap = {
-    {% for c in classes %}
-      {{ c.class_en|tojson }}: {{ c.class_cn|tojson }},
-    {% endfor %}
-  };
-
-  window.showEditUsernameModal = function(userId, currentUsername) {
-    document.getElementById('editUsernameUserId').value = userId;
-    document.getElementById('editUsernameInput').value = currentUsername;
-    var editModal = new bootstrap.Modal(document.getElementById('editUsernameModal'));
-    editModal.show();
-  };
-
-  window.showAddUserClassModal = function(userId) {
-    document.getElementById('addUserClassUserId').value = userId;
-
-    const select = document.getElementById('addUserClassSelect');
-    const picker = select.closest('[data-rk-choice]');
-    const options = Array.from(picker.querySelectorAll('[data-choice-value]'));
-    options.forEach(option => {
-      const unavailable = option.dataset.choiceValue === '';
-      option.toggleAttribute('data-choice-disabled', unavailable);
-      option.setAttribute('aria-disabled', unavailable ? 'true' : 'false');
-    });
-
-    const row = document.getElementById('userRow-' + userId);
-    const owned = new Set();
-    row?.querySelectorAll('.user-classes-badges .badge[data-class-en]').forEach(b => {
-      owned.add(b.getAttribute('data-class-en'));
-    });
-    owned.forEach(en => {
-      const option = options.find(item => item.dataset.choiceValue === en);
-      if (!option) return;
-      option.setAttribute('data-choice-disabled', 'true');
-      option.setAttribute('aria-disabled', 'true');
-    });
-
-    select.value = '';
-    select.dispatchEvent(new Event('change', {bubbles: true}));
-    new bootstrap.Modal(document.getElementById('addUserClassModal')).show();
-  };
-
-  // 添加“班级类型”表单（原有）
-  document.getElementById('addClassForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    var formData = new FormData(this);
-    fetch("{{ url_for('admin_user.add_class_ajax') }}", { method: "POST", body: formData })
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) {
-          bootstrap.Modal.getInstance(document.getElementById('addClassModal')).hide();
-          this.reset();
-          location.replace(location.href);
-        } else {
-          alert("错误：" + data.message);
-        }
-      })
-      .catch(err => alert("网络错误：" + err));
-  });
-
-  // 修改用户名（原有）
-  document.getElementById('editUsernameForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    var formData = new FormData(this);
-    fetch("{{ url_for('admin_user.edit_username_ajax') }}", { method: "POST", body: formData })
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) {
-          var userRow = document.getElementById('userRow-' + data.user_id);
-          if (userRow) userRow.querySelector('.user-username').textContent = data.new_username;
-          bootstrap.Modal.getInstance(document.getElementById('editUsernameModal')).hide();
-          location.replace(location.href);
-        } else {
-          alert("更新失败：" + data.message);
-        }
-      })
-      .catch(err => alert("网络错误：" + err));
-  });
-
-  document.getElementById('addUserClassForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    const userId  = document.getElementById('addUserClassUserId').value;
-    const classEn = document.getElementById('addUserClassSelect').value;
-    if (!classEn) { alert('请选择班级'); return; }
-
-    const form = new FormData();
-    form.append('user_id', userId);
-    form.append('class_en', classEn);
-
-    fetch("{{ url_for('class_management.add_user_to_class') }}", { method: "POST", body: form })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) {
-          alert('添加失败：' + (data.message || '未知错误'));
-          return;
-        }
-
-        // 优先用后端返回的 class_cn；如无，则回退到前端 classMap
-        const classCn = (data.class_cn || (classMap && classMap[classEn]) || classEn);
-
-        if (data.added !== false) {
-          renderClassBadge(userId, classEn, classCn);
-        } else {
-          alert(data.message || '该用户已在此班，无需重复添加。');
-        }
-
-        // 关闭模态框
-        bootstrap.Modal.getInstance(document.getElementById('addUserClassModal')).hide();
-      })
-      .catch(err => alert('网络错误：' + err));
-  });
-
-  window.removeUserClass = function(userId, classEn, el) {
-    const form = new FormData();
-    form.append('user_id', userId);
-    form.append('class_en', classEn);
-
-    fetch("{{ url_for('class_management.remove_user_from_class') }}", { method: "POST", body: form })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) { alert('移除失败：' + (data.message || '未知错误')); return; }
-        const badge = el.closest('.badge');
-        if (badge) badge.remove();
-        const container = document.querySelector(
-          `#userRow-${userId} .user-classes-badges`
-        );
-        if (container && !container.querySelector('.badge[data-class-en]')) {
-          const empty = document.createElement('span');
-          empty.className = 'user-classes-empty text-muted';
-          empty.textContent = '暂无班级';
-          container.appendChild(empty);
-        }
-      })
-      .catch(err => alert('网络错误：' + err));
-  };
-
-  window.grantUserAdmin = function(userId, button) {
-    if (button.dataset.confirming !== '1') {
-      button.dataset.confirming = '1';
-      button.innerHTML = '<i class="fas fa-user-shield me-1"></i>再次点击确认';
-      window.setTimeout(() => {
-        if (!button.isConnected || button.disabled) return;
-        button.dataset.confirming = '0';
-        button.innerHTML = '<i class="fas fa-user-shield me-1"></i>授予管理员';
-      }, 3000);
-      return;
-    }
-
-    button.disabled = true;
-    const form = new FormData();
-    form.append('user_id', userId);
-    fetch("{{ url_for('admin_user.grant_user_admin_ajax') }}", {
-      method: 'POST',
-      body: form,
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) {
-          throw new Error(data.message || '授予管理员失败');
-        }
-        const row = document.getElementById('userRow-' + userId);
-        const roleBadge = row?.querySelector('.user-role-badge');
-        if (roleBadge) {
-          roleBadge.className = 'badge user-role-badge bg-warning text-dark';
-          roleBadge.textContent = '教师';
-        }
-        button.remove();
-      })
-      .catch(error => {
-        alert(error.message || '授予管理员失败');
-        button.disabled = false;
-        button.dataset.confirming = '0';
-        button.innerHTML = '<i class="fas fa-user-shield me-1"></i>授予管理员';
-      });
-  };
-
-  // ===== 成绩管理功能 =====
-  let allGrades = [];  // 存储所有成绩数据，用于搜索过滤
-
-  window.showGradesModal = function(userId, username) {
-    document.getElementById('gradesUserId').value = userId;
-    document.getElementById('gradesUsername').textContent = username;
-    
-    // 显示加载指示器，隐藏表格和错误信息
-    document.getElementById('gradesLoadingIndicator').style.display = 'block';
-    document.getElementById('gradesTableContainer').style.display = 'none';
-    document.getElementById('gradesErrorMessage').style.display = 'none';
-    document.getElementById('gradeSearchInput').value = '';
-    
-    // 显示模态框
-    new bootstrap.Modal(document.getElementById('gradesModal')).show();
-    
-    // 加载成绩数据
-    fetch("{{ url_for('admin_user.get_user_grades') }}?user_id=" + userId)
-      .then(r => r.json())
-      .then(data => {
-        document.getElementById('gradesLoadingIndicator').style.display = 'none';
-        
-        if (!data.success) {
-          document.getElementById('gradesErrorMessage').textContent = '加载失败：' + (data.message || '未知错误');
-          document.getElementById('gradesErrorMessage').style.display = 'block';
-          return;
-        }
-        
-        // 存储数据并渲染表格
-        allGrades = data.grades || [];
-        renderGradesTable(allGrades);
-        document.getElementById('gradesTableContainer').style.display = 'block';
-      })
-      .catch(err => {
-        document.getElementById('gradesLoadingIndicator').style.display = 'none';
-        document.getElementById('gradesErrorMessage').textContent = '网络错误：' + err;
-        document.getElementById('gradesErrorMessage').style.display = 'block';
-      });
-  };
-
-  function renderGradesTable(grades) {
-    const tbody = document.getElementById('gradesTableBody');
-    tbody.innerHTML = '';
-    
-    if (grades.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="text-center">暂无成绩数据</td></tr>';
-      return;
-    }
-    
-    grades.forEach(item => {
-      const row = document.createElement('tr');
-      const scoreClass = item.user_score === item.max_score ? 'text-success fw-bold' : 'text-primary';
-
-      appendTextCell(row, item.problem_id);
-      appendTextCell(row, item.problem_title || '');
-      const scoreCell = appendTextCell(row, item.user_score);
-      scoreCell.className = scoreClass;
-      scoreCell.id = 'score-' + item.problem_id;
-      appendTextCell(row, item.max_score);
-
-      const actionCell = document.createElement('td');
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn btn-sm btn-outline-primary';
-      btn.innerHTML = '<i class="fas fa-edit"></i> 修改';
-      btn.addEventListener('click', function() {
-        editGrade(item.problem_id, item.problem_title || '', item.user_score, item.max_score);
-      });
-      actionCell.appendChild(btn);
-      row.appendChild(actionCell);
-      tbody.appendChild(row);
-    });
-  }
-
-  function appendTextCell(row, value) {
-    const cell = document.createElement('td');
-    cell.textContent = value == null ? '' : String(value);
-    row.appendChild(cell);
-    return cell;
-  }
-
-  // 搜索过滤功能
-  document.getElementById('gradeSearchInput').addEventListener('input', function(e) {
-    const searchTerm = e.target.value.toLowerCase();
-    const filteredGrades = allGrades.filter(item => 
-      item.problem_title.toLowerCase().includes(searchTerm) ||
-      item.problem_id.toString().includes(searchTerm)
-    );
-    renderGradesTable(filteredGrades);
-  });
-
-  window.editGrade = function(problemId, problemTitle, currentScore, maxScore) {
-    const userId = document.getElementById('gradesUserId').value;
-    const scorePrompt = currentScore === null ? '未做' : currentScore;
-    
-    const newScore = prompt(
-      `修改成绩\n题目: ${problemTitle} (ID: ${problemId})\n当前得分: ${scorePrompt}\n满分: ${maxScore}\n\n请输入新的得分 (0-${maxScore})，留空表示未做:`,
-      currentScore === null ? '' : currentScore
-    );
-    
-    if (newScore === null) return;  // 用户取消
-    
-    // 验证输入
-    let finalScore = null;
-    if (newScore.trim() !== '') {
-      const parsed = parseInt(newScore);
-      if (isNaN(parsed) || parsed < 0 || parsed > maxScore) {
-        alert(`请输入 0 到 ${maxScore} 之间的整数，或留空表示未做`);
-        return;
-      }
-      finalScore = parsed;
-    }
-    
-    // 发送更新请求
-    const form = new FormData();
-    form.append('user_id', userId);
-    form.append('problem_id', problemId);
-    form.append('score', finalScore === null ? '' : finalScore);
-    
-    fetch("{{ url_for('admin_user.update_user_grade') }}", { method: "POST", body: form })
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) {
-          alert('更新失败：' + (data.message || '未知错误'));
-          return;
-        }
-        
-        // 更新存储的数据
-        const gradeItem = allGrades.find(g => g.problem_id === problemId);
-        if (gradeItem) {
-          gradeItem.user_score = finalScore;
-        }
-        
-        // 更新界面显示
-        if (finalScore === null) {
-          // 如果成绩被清空，从列表中移除这个题目
-          allGrades = allGrades.filter(g => g.problem_id !== problemId);
-          renderGradesTable(allGrades);
-        } else {
-          // 更新表格中的分数显示
-          const scoreCell = document.getElementById('score-' + problemId);
-          if (scoreCell) {
-            scoreCell.textContent = finalScore;
-            scoreCell.className = finalScore === maxScore ? 'text-success fw-bold' : 'text-primary';
-          }
-        }
-        
-        // 显示成功消息
-        const toast = document.createElement('div');
-        toast.className = 'position-fixed top-0 end-0 p-3';
-        toast.style.zIndex = '9999';
-        toast.innerHTML = `
-          <div class="toast show" role="alert">
-            <div class="toast-header bg-success text-white">
-              <strong class="me-auto">成功</strong>
-              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.position-fixed').remove()"></button>
-            </div>
-            <div class="toast-body">
-              成绩已更新
-            </div>
-          </div>
-        `;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 3000);
-      })
-      .catch(err => alert('网络错误：' + err));
-  };
-</script>
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='app/admin-users.css') }}">
 {% endblock %}
+
+{% block content_container_class %}container-fluid p-0 user-admin-shell{% endblock %}
+
+{% block content %}
+<section class="user-admin-v2"
+         data-user-admin
+         data-edit-username-url="{{ url_for('admin_user.edit_username_ajax') }}"
+         data-set-email-url="{{ url_for('admin_user.set_user_email_ajax') }}"
+         data-reset-password-url="{{ url_for('admin_user.send_password_reset_email_ajax') }}"
+         data-grant-admin-url="{{ url_for('admin_user.grant_user_admin_ajax') }}"
+         data-add-membership-url="{{ url_for('class_management.add_user_to_class') }}"
+         data-remove-membership-url="{{ url_for('class_management.remove_user_from_class') }}"
+         data-grades-url="{{ url_for('admin_user.get_user_grades') }}"
+         data-update-grade-url="{{ url_for('admin_user.update_user_grade') }}"
+         data-add-class-url="{{ url_for('admin_user.add_class_ajax') }}"
+         data-mail-configured="{{ 'true' if mail_service_configured else 'false' }}">
+  <div class="user-admin-workspace">
+    <form method="get" action="{{ url_for('admin_user.user_management') }}"
+          class="user-admin-toolbar" role="search" autocomplete="off">
+      <label class="user-admin-search" for="userSearchQuery">
+        <i class="fas fa-search" aria-hidden="true"></i>
+        <input type="search" id="userSearchQuery" name="user_search"
+               value="{{ search_username }}" placeholder="搜索用户名或邮箱"
+               aria-label="搜索用户名或邮箱" autocomplete="off"
+               autocapitalize="off" autocorrect="off" spellcheck="false"
+               data-1p-ignore data-lpignore="true" data-bwignore>
+        {% if search_username %}
+        <a href="{{ url_for('admin_user.user_management', class=search_class) }}"
+           class="user-admin-search-clear" aria-label="清除搜索">×</a>
+        {% endif %}
+      </label>
+
+      <div class="user-admin-filter">
+        {{ simple_choice(
+          'userClassFilter',
+          'class',
+          classes,
+          search_class,
+          placeholder_label='全部班级',
+          value_key='class_en',
+          label_key='class_cn',
+          default_icon='fa-layer-group',
+          aria_label='筛选班级'
+        ) }}
+      </div>
+
+      <button type="submit" class="user-admin-button user-admin-button-dark">应用筛选</button>
+      <button type="button" class="user-admin-button user-admin-button-dark"
+              data-bs-toggle="modal" data-bs-target="#addClassModal">
+        <i class="fas fa-plus" aria-hidden="true"></i>
+        <span>新建班级</span>
+      </button>
+      {% if search_username or search_class %}
+      <a href="{{ url_for('admin_user.user_management') }}"
+         class="user-admin-button user-admin-button-quiet">重置</a>
+      {% endif %}
+      <span class="user-admin-toolbar-meta">每页 50 位用户</span>
+    </form>
+
+    <section class="user-admin-panel" aria-label="用户列表">
+      <div class="user-admin-table-wrap">
+        <table class="user-admin-table" id="userTable">
+          <colgroup>
+            <col class="user-admin-col-user">
+            <col class="user-admin-col-email">
+            <col class="user-admin-col-class">
+            <col class="user-admin-col-action">
+          </colgroup>
+          <tbody>
+            {% for u in users %}
+            <tr id="userRow-{{ u.id }}" data-user-row data-user-id="{{ u.id }}"
+                data-username="{{ u.username }}" data-email="{{ u.email or '' }}"
+                data-is-admin="{{ 'true' if u.is_admin == 1 else 'false' }}"
+                data-classes="{{ u.classes|tojson|forceescape }}">
+              <td>
+                <div class="user-admin-identity">
+                  <span class="numoj-avatar user-admin-avatar" data-avatar-seed="{{ u.username }}"
+                        data-avatar-label="{{ u.username }}" aria-hidden="true">{{ u.username[:2]|upper }}</span>
+                  <span class="user-admin-identity-copy">
+                    <span class="user-admin-name-line">
+                      <strong class="user-username">{{ u.username }}</strong>
+                      <span class="user-admin-role user-role-badge is-admin"{% if u.is_admin != 1 %} hidden{% endif %}>
+                        <i aria-hidden="true"></i><span data-role-label>教师</span>
+                      </span>
+                    </span>
+                    <small>UID · {{ '%04d'|format(u.id) }}</small>
+                  </span>
+                </div>
+              </td>
+              <td><span class="user-admin-email{% if not u.email %} is-empty{% endif %}">{{ u.email or '未设置邮箱' }}</span></td>
+              <td>
+                <div class="user-admin-class-summary">
+                  {% for membership in u.classes[:3] %}<span data-class-en="{{ membership.class_en }}">{{ membership.class_cn }}</span>{% endfor %}
+                  {% if u.classes|length > 3 %}<span class="is-more">+{{ u.classes|length - 3 }}</span>
+                  {% elif not u.classes %}<span class="is-empty">未分配</span>{% endif %}
+                </div>
+              </td>
+              <td>
+                <button type="button" class="user-admin-manage-button" data-user-manage>
+                  <span>管理</span><i class="fas fa-arrow-right" aria-hidden="true"></i>
+                </button>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4"><div class="user-admin-empty"><span>00</span><strong>没有匹配的用户</strong><p>尝试调整搜索词或班级筛选。</p></div></td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if total_pages > 1 %}
+      <nav class="user-admin-pagination" aria-label="用户列表分页">
+        <span>PAGE {{ current_page }} / {{ total_pages }}</span>
+        <div>
+          {% if current_page > 1 %}<a href="{{ url_for('admin_user.user_management', page=current_page-1, user_search=search_username, class=search_class) }}" aria-label="上一页"><i class="fas fa-arrow-left" aria-hidden="true"></i></a>{% endif %}
+          {% for p in range(1, total_pages + 1) %}
+            {% if p == 1 or p == total_pages or (p >= current_page - 1 and p <= current_page + 1) %}
+            <a href="{{ url_for('admin_user.user_management', page=p, user_search=search_username, class=search_class) }}" class="{% if p == current_page %}is-current{% endif %}" {% if p == current_page %}aria-current="page"{% endif %}>{{ p }}</a>
+            {% elif p == current_page - 2 or p == current_page + 2 %}<span aria-hidden="true">…</span>{% endif %}
+          {% endfor %}
+          {% if current_page < total_pages %}<a href="{{ url_for('admin_user.user_management', page=current_page+1, user_search=search_username, class=search_class) }}" aria-label="下一页"><i class="fas fa-arrow-right" aria-hidden="true"></i></a>{% endif %}
+        </div>
+      </nav>
+      {% endif %}
+    </section>
+  </div>
+
+  <div class="user-admin-toast" data-admin-toast role="status" aria-live="polite" hidden>
+    <i class="fas fa-check" aria-hidden="true"></i><span data-admin-toast-text></span>
+    <button type="button" data-admin-toast-close aria-label="关闭通知">×</button>
+  </div>
+</section>
+
+<div class="modal fade user-admin-modal" id="manageUserModal" tabindex="-1" aria-labelledby="manageUserModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-lg">
+    <div class="modal-content">
+      <span class="user-admin-modal-accent" aria-hidden="true"></span>
+      <header class="modal-header">
+        <div class="user-admin-modal-person">
+          <span class="numoj-avatar user-admin-modal-avatar" data-manage-avatar aria-hidden="true">U</span>
+          <div><span class="user-admin-kicker">ACCOUNT / <b data-manage-user-id>UID</b></span><h2 class="modal-title" id="manageUserModalLabel" data-manage-title>管理用户</h2><p data-manage-email-summary>账户资料与权限</p></div>
+        </div>
+        <button type="button" class="user-admin-modal-close" data-bs-dismiss="modal" aria-label="关闭">×</button>
+      </header>
+
+      <div class="modal-body">
+        <div class="user-admin-detail-grid">
+          <section class="user-admin-detail-card">
+            <header><span><i class="fas fa-address-card" aria-hidden="true"></i></span><div><p>PROFILE</p><h3>账户资料</h3></div></header>
+            <form class="user-admin-inline-form" data-username-form autocomplete="off" novalidate>
+              <input type="hidden" name="user_id" data-manage-user-id-input>
+              <label for="manageUsername">用户名</label>
+              <div class="user-admin-field-action"><input id="manageUsername" type="text" name="new_username" maxlength="50" required autocomplete="off" data-manage-username><button type="submit">保存</button></div>
+              <p class="user-admin-form-message" data-username-message aria-live="polite"></p>
+            </form>
+            <form class="user-admin-inline-form" data-email-form autocomplete="off" novalidate>
+              <input type="hidden" name="user_id" data-manage-user-id-input>
+              <label for="manageEmail">邮箱</label>
+              <div class="user-admin-field-action"><input id="manageEmail" type="email" name="email" maxlength="254" required autocomplete="off" data-manage-email><button type="submit">保存</button></div>
+              <p class="user-admin-form-message" data-email-message aria-live="polite"></p>
+            </form>
+          </section>
+
+          <section class="user-admin-detail-card">
+            <header><span><i class="fas fa-layer-group" aria-hidden="true"></i></span><div><p>MEMBERSHIP</p><h3>班级关系</h3></div><b data-membership-count>0</b></header>
+            <div class="user-admin-memberships" data-membership-list></div>
+            <form class="user-admin-membership-form" data-membership-form novalidate>
+              {{ simple_choice('manageClassSelect', 'class_en', classes, '', placeholder_label='选择要加入的班级', value_key='class_en', label_key='class_cn', default_icon='fa-users', required=true, aria_label='选择要加入的班级') }}
+              <button type="submit" class="user-admin-icon-action" aria-label="添加班级" title="添加班级"><i class="fas fa-plus" aria-hidden="true"></i></button>
+            </form>
+            <p class="user-admin-form-message" data-membership-message aria-live="polite"></p>
+          </section>
+
+          <section class="user-admin-detail-card user-admin-detail-card-wide">
+            <header><span><i class="fas fa-shield-alt" aria-hidden="true"></i></span><div><p>ACCESS &amp; SECURITY</p><h3>权限与安全</h3></div></header>
+            <div class="user-admin-security-list">
+              <article>
+                <div><strong>账户身份</strong><p data-role-description>学生账户仅拥有常规学习权限。</p></div>
+                <span class="user-admin-role" data-manage-role><i aria-hidden="true"></i>学生</span>
+                <button type="button" class="user-admin-text-action" data-grant-admin-start>授予教师权限</button>
+              </article>
+              <div class="user-admin-confirm-row" data-grant-admin-confirm hidden>
+                <p><strong>确认授予教师权限？</strong>该操作不会在此页面提供撤销入口。</p>
+                <div><button type="button" class="user-admin-button user-admin-button-quiet" data-grant-admin-cancel>取消</button><button type="button" class="user-admin-button user-admin-button-dark" data-grant-admin-confirm-button>确认授予</button></div>
+              </div>
+              <article>
+                <div><strong>重置登录密码</strong><p data-reset-password-description>生成随机密码，并仅发送至当前账户邮箱。</p></div>
+                <span class="user-admin-mail-state{% if not mail_service_configured %} is-offline{% endif %}">{{ 'MAIL READY' if mail_service_configured else 'MAIL OFFLINE' }}</span>
+                <button type="button" class="user-admin-text-action is-danger" data-reset-password-start{% if not mail_service_configured %} disabled{% endif %}>发送重置邮件</button>
+              </article>
+              <div class="user-admin-confirm-row is-danger" data-reset-password-confirm hidden>
+                <p><strong>确认重置密码？</strong>旧密码将立即失效，随机新密码会发送至 <span data-reset-recipient></span>。</p>
+                <div><button type="button" class="user-admin-button user-admin-button-quiet" data-reset-password-cancel>取消</button><button type="button" class="user-admin-button user-admin-button-danger" data-reset-password-confirm-button>生成并发送</button></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+      <footer class="modal-footer"><button type="button" class="user-admin-button user-admin-button-quiet" data-open-grades><i class="fas fa-chart-line" aria-hidden="true"></i> 成绩记录</button><button type="button" class="user-admin-button user-admin-button-dark" data-bs-dismiss="modal">完成</button></footer>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade user-admin-modal" id="addClassModal" tabindex="-1" aria-labelledby="addClassModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered"><div class="modal-content"><span class="user-admin-modal-accent" aria-hidden="true"></span>
+    <form data-add-class-form autocomplete="off" novalidate>
+      <header class="modal-header"><div><span class="user-admin-kicker">DIRECTORY / CLASS</span><h2 class="modal-title" id="addClassModalLabel">新建班级</h2><p>创建一个新的班级类型，供用户加入与作业分配。</p></div><button type="button" class="user-admin-modal-close" data-bs-dismiss="modal" aria-label="关闭">×</button></header>
+      <div class="modal-body user-admin-form-stack">
+        <label class="user-admin-field" for="newClassEn"><span>英文标识 <small>自动添加 C 前缀</small></span><input id="newClassEn" name="class_en" type="text" maxlength="48" pattern="[A-Za-z0-9_]+" placeholder="例如 class2026" required></label>
+        <label class="user-admin-field" for="newClassCn"><span>班级名称</span><input id="newClassCn" name="class_cn" type="text" maxlength="100" placeholder="例如 2026 春季班" required></label>
+        <p class="user-admin-form-message" data-add-class-message aria-live="polite"></p>
+      </div>
+      <footer class="modal-footer"><button type="button" class="user-admin-button user-admin-button-quiet" data-bs-dismiss="modal">取消</button><button type="submit" class="user-admin-button user-admin-button-dark">创建班级</button></footer>
+    </form>
+  </div></div>
+</div>
+
+<div class="modal fade user-admin-modal user-admin-grades-modal" id="gradesModal" tabindex="-1" aria-labelledby="gradesModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-xl"><div class="modal-content"><span class="user-admin-modal-accent" aria-hidden="true"></span>
+    <header class="modal-header"><div><span class="user-admin-kicker">LEARNING / SCORE RECORDS</span><h2 class="modal-title" id="gradesModalLabel">成绩记录 · <span data-grades-username></span></h2><p>直接编辑已产生的题目成绩；留空保存会清除该条成绩。</p></div><button type="button" class="user-admin-modal-close" data-bs-dismiss="modal" aria-label="关闭">×</button></header>
+    <div class="modal-body">
+      <label class="user-admin-grade-search" for="gradeSearchInput"><i class="fas fa-search" aria-hidden="true"></i><input id="gradeSearchInput" type="search" placeholder="搜索题号或题目标题" autocomplete="off"></label>
+      <div class="user-admin-loading" data-grades-loading role="status"><span class="math-curve-loader" data-math-curve-loader data-size="md"><span class="math-curve-loader__label">正在读取成绩</span></span></div>
+      <div class="user-admin-grades-table-wrap" data-grades-table-wrap hidden><table class="user-admin-grades-table"><thead><tr><th>题目</th><th>当前成绩</th><th>满分</th><th>更新</th></tr></thead><tbody data-grades-body></tbody></table></div>
+      <div class="user-admin-inline-state is-error" data-grades-error hidden></div>
+    </div>
+    <footer class="modal-footer"><span>修改将立即写入成绩记录</span><button type="button" class="user-admin-button user-admin-button-dark" data-bs-dismiss="modal">完成</button></footer>
+  </div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}<script src="{{ url_for('static', filename='app/admin-users.js') }}"></script>{% endblock %}

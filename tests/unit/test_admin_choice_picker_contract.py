@@ -26,17 +26,18 @@ def test_ranking_endpoint_editor_uses_shared_picker_for_global_nodes():
 def test_admin_class_pickers_keep_submission_and_required_contracts():
     homework = _read("admin/homework.html")
     users = _read("admin/users.html")
+    users_script = (ROOT / "static/app/admin-users.js").read_text(encoding="utf-8")
 
     assert "simple_choice(" in homework
     assert "'sclass'" in homework
     assert "auto_submit=true" in homework
 
     assert users.count("simple_choice(") == 2
-    add_user_picker = users.split("'addUserClassSelect'", 1)[1].split(") }}", 1)[0]
+    add_user_picker = users.split("'manageClassSelect'", 1)[1].split(") }}", 1)[0]
     assert "'class_en'" in add_user_picker
     assert "required=true" in add_user_picker
-    assert "data-choice-disabled" in users
-    assert "select.dispatchEvent(new Event('change', {bubbles: true}))" in users
+    assert "data-choice-disabled" in users_script
+    assert "controller.setValue('', false)" in users_script
 
 
 def test_problem_forms_use_shared_pickers_and_disable_endpoint_controllers():
