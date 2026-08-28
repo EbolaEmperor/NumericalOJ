@@ -50,15 +50,11 @@ class _Connection:
 
 def test_homework_student_queries_exclude_administrator_memberships():
     membership_queries = re.findall(
-        r'FROM\s+user_class_map\s+m\s+'
-        r'JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*m\.user_id',
+        r'(?:FROM|JOIN)\s+user_class_map\s+m\b',
         HOMEWORK_QUERY_SOURCE,
         flags=re.IGNORECASE,
     )
     student_queries = re.findall(
-        r'FROM\s+user_class_map\s+m\s+'
-        r'JOIN\s+users\s+u\s+ON\s+u\.id\s*=\s*m\.user_id\s+'
-        r'WHERE\s+m\.class_en\s*=\s*%s\s+'
         r'AND\s+u\.is_admin\s*=\s*0',
         HOMEWORK_QUERY_SOURCE,
         flags=re.IGNORECASE,

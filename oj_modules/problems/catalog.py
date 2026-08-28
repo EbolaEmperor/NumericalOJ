@@ -57,7 +57,6 @@ def _attach_user_homework_scores(result, username, cursor):
             SELECT id, problem_id, score, status, created_at
             FROM submissions
             WHERE username=%s AND problem_id IN ({placeholders})
-            ORDER BY id ASC
             """,
             tuple([username] + problem_ids),
         )
@@ -79,7 +78,6 @@ def _attach_user_homework_scores(result, username, cursor):
             FROM ranking_submissions
             WHERE username=%s AND competition_id IN ({placeholders})
               AND score IS NOT NULL
-            ORDER BY id ASC
             """,
             tuple([username] + competition_ids),
         )
@@ -273,23 +271,13 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
             SELECT t.class_en, t.id, t.problem_id, t.ranking_competition_id, t.ddl, t.complete_cnt,
                    p.title AS problem_title, p.max_score AS total_score,
                    p.type AS problem_type, p.lang AS problem_lang,
-                   ar.is_ac, ms.score AS user_score,
-                   rc.title AS rk_title, rc.max_score AS rk_total, rc.scoring_mode AS rk_mode,
-                   rk.rk_best
+                   rc.title AS rk_title, rc.max_score AS rk_total, rc.scoring_mode AS rk_mode
             FROM ({union_sql}) t
             LEFT JOIN problems p ON p.id = t.problem_id
-            LEFT JOIN ac_record ar ON ar.userid=%s AND ar.problem_id = t.problem_id
-            LEFT JOIN max_score ms ON ms.userid=%s AND ms.problem_id = t.problem_id
             LEFT JOIN ranking_competitions rc ON rc.id = t.ranking_competition_id
-            LEFT JOIN (
-                SELECT competition_id, MAX(score) AS rk_best
-                FROM ranking_submissions
-                WHERE username=%s AND score IS NOT NULL
-                GROUP BY competition_id
-            ) rk ON rk.competition_id = t.ranking_competition_id
             ORDER BY t.class_en ASC, t.id ASC
             """,
-            tuple(union_params + [user_id, user_id, username]),
+            tuple(union_params),
         )
         homework_rows = db_cursor.fetchall()
         plagiarism_notice_map = _load_plagiarism_notice_map(username, class_en_list, db_cursor)
@@ -300,7 +288,6 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                 continue
             rcid = row.get("ranking_competition_id")
             if rcid:
-                best = row.get("rk_best")
                 is_elo = (row.get("rk_mode") == "elo")
                 hw = {
                     "id": row["id"],
@@ -314,9 +301,9 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                     "problem_lang": None,
                     "scoring_mode": row.get("rk_mode") or "absolute",
                     "total_score": (None if is_elo else row.get("rk_total")),
-                    "is_completed": (best is not None),
-                    "max_score": best,
-                    "has_submission": (best is not None),
+                    "is_completed": False,
+                    "max_score": None,
+                    "has_submission": False,
                 }
             else:
                 pid = row["problem_id"]
@@ -334,8 +321,8 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                     "problem_type": row.get("problem_type"),
                     "problem_lang": row.get("problem_lang"),
                     "total_score": row.get("total_score"),
-                    "is_completed": (row.get("is_ac") == 1),
-                    "max_score": row.get("user_score"),
+                    "is_completed": False,
+                    "max_score": None,
                     "plagiarism_notice": _format_plagiarism_notice(plagiarism_notice_map.get((cls, pid))),
                 }
             result[cls].append(hw)

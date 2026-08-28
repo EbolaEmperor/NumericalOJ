@@ -9,7 +9,6 @@ from oj_modules.db_services import (
     get_all_classes,
     get_all_problems,
     get_class_by_en,
-    get_problem,
     get_problem_title,
     get_user_by_username,
     set_setting,
@@ -45,66 +44,57 @@ from oj_modules.security.auth import current_user, is_admin
 homework_bp = Blueprint('homework', __name__)
 
 
-def _homework_completion_count(cursor, class_en, homework, problem=None):
-    deadline = homework.get('ddl')
-    if homework.get('ranking_competition_id'):
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS completed_count
-            FROM user_class_map m
-            JOIN users u ON u.id = m.user_id
-            WHERE m.class_en = %s
-              AND u.is_admin = 0
-              AND EXISTS (
-                  SELECT 1
-                  FROM ranking_submissions rs
-                  WHERE rs.username=u.username
-                    AND rs.competition_id=%s
-                    AND rs.score IS NOT NULL
-                    AND (%s IS NULL OR rs.created_at <= %s)
-              )
-            """,
-            (
-                class_en,
-                int(homework['ranking_competition_id']),
-                deadline,
-                deadline,
-            ),
-        )
-    else:
-        max_score = (problem or {}).get('max_score')
-        if max_score is None:
-            return 0
+def _homework_completion_counts(cursor, class_en, homeworks):
+    """用至多两条聚合查询计算整班作业完成数，避免管理页逐条查询。"""
+    counts = {int(item['id']): 0 for item in homeworks}
+    table_name = safe_table_name(class_en)
+    if any(item.get('problem_id') is not None for item in homeworks):
         statuses = sorted(NON_TERMINAL_SUBMISSION_STATUSES)
         excluded = ','.join(['%s'] * len(statuses))
         cursor.execute(
             f"""
-            SELECT COUNT(*) AS completed_count
-            FROM user_class_map m
+            SELECT h.id AS homework_id, COUNT(DISTINCT u.id) AS completed_count
+            FROM `{table_name}` h
+            JOIN problems p ON p.id = h.problem_id
+            JOIN user_class_map m ON m.class_en = %s
             JOIN users u ON u.id = m.user_id
-            WHERE m.class_en = %s
+            JOIN submissions s
+              ON s.username = u.username
+             AND s.problem_id = h.problem_id
+             AND s.created_at <= COALESCE(h.ddl, s.created_at)
+            WHERE h.problem_id IS NOT NULL
               AND u.is_admin = 0
-              AND EXISTS (
-                  SELECT 1
-                  FROM submissions s
-                  WHERE s.username=u.username
-                    AND s.problem_id=%s
-                    AND s.status NOT IN ({excluded})
-                    AND s.score >= %s
-                    AND (%s IS NULL OR s.created_at <= %s)
-              )
+              AND s.status NOT IN ({excluded})
+              AND s.score >= p.max_score
+            GROUP BY h.id
             """,
-            tuple([
-                class_en,
-                int(homework['problem_id']),
-                *statuses,
-                max_score,
-                deadline,
-                deadline,
-            ]),
+            tuple([class_en, *statuses]),
         )
-    row = cursor.fetchone() or {}
-    return int(row.get('completed_count') or 0)
+        for row in cursor.fetchall() or []:
+            counts[int(row['homework_id'])] = int(row.get('completed_count') or 0)
+
+    if any(item.get('ranking_competition_id') is not None for item in homeworks):
+        cursor.execute(
+            f"""
+            SELECT h.id AS homework_id, COUNT(DISTINCT u.id) AS completed_count
+            FROM `{table_name}` h
+            JOIN user_class_map m ON m.class_en = %s
+            JOIN users u ON u.id = m.user_id
+            JOIN ranking_submissions rs
+              ON rs.username = u.username
+             AND rs.competition_id = h.ranking_competition_id
+             AND rs.created_at <= COALESCE(h.ddl, rs.created_at)
+            WHERE h.ranking_competition_id IS NOT NULL
+              AND u.is_admin = 0
+              AND rs.score IS NOT NULL
+            GROUP BY h.id
+            """,
+            (class_en,),
+        )
+        for row in cursor.fetchall() or []:
+            counts[int(row['homework_id'])] = int(row.get('completed_count') or 0)
+
+    return counts
 
 def _wants_json_response():
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
@@ -157,6 +147,8 @@ def admin_homework():
         flash('无效的班级选择', 'danger')
         return redirect(url_for('homework.admin_homework'))
 
+    problem_records = get_all_problems() or []
+    problems_by_id = {int(item['id']): item for item in problem_records}
     homework_list = []
     plagiarism_problem_options = []
     if selected_class:
@@ -166,6 +158,9 @@ def admin_homework():
                 sql = f"SELECT * FROM {safe_table_name(selected_class)} ORDER BY id ASC"
                 cursor.execute(sql)
                 homework_list = cursor.fetchall()
+                completion_counts = _homework_completion_counts(
+                    cursor, selected_class, homework_list,
+                )
                 for hw in homework_list:
                     if hw.get('ranking_competition_id'):
                         hw['is_ranking'] = True
@@ -188,7 +183,7 @@ def admin_homework():
                             })
                     else:
                         hw['is_ranking'] = False
-                        problem = get_problem(hw['problem_id'])
+                        problem = problems_by_id.get(int(hw['problem_id']))
                         hw['problem_title'] = problem['title'] if problem else '未知题目'
                         try:
                             pid = int(hw['problem_id'])
@@ -204,15 +199,13 @@ def admin_homework():
                                 'target': f'{_PLAGIARISM_TARGET_PROBLEM}:{pid}',
                                 'title': hw['problem_title'],
                             })
-                    hw['complete_cnt'] = _homework_completion_count(
-                        cursor, selected_class, hw, problem if not hw['is_ranking'] else None,
-                    )
+                    hw['complete_cnt'] = completion_counts.get(int(hw['id']), 0)
         except pymysql.Error as e:
             flash(f'数据库操作失败，请稍后再试', 'danger')
         finally:
             conn.close()
 
-    all_problems = [{'id': p['id'], 'title': p['title']} for p in (get_all_problems() or [])]
+    all_problems = [{'id': p['id'], 'title': p['title']} for p in problem_records]
     try:
         all_competitions = [
             {'id': c['id'], 'title': c['title'], 'scoring_mode': c.get('scoring_mode')}
