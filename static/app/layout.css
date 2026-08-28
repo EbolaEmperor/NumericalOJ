@@ -2156,6 +2156,11 @@
     gap: 18px;
   }
 
+  /* 班级页侧栏贴齐页面标题；总题库侧栏贴齐下方的题目列表。 */
+  .numoj-library-grid .numoj-dashboard-aside {
+    margin-top: 82px;
+  }
+
   .numoj-dashboard-aside .numoj-panel {
     padding: 20px;
   }
