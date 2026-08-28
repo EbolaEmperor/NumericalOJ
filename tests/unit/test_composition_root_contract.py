@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 RESULT_PREFIX = "NUMOJ_COMPOSITION_ROOT_RESULT="
 
 EXPECTED_TASK_QUEUES = {
+    "oj.class_activity.refresh_snapshot": "celery",
     "oj.agent.dispatch_session_queue": "agent",
     "oj.agent.generate_testdata": "agent",
     "oj.agent.recover_session_queues": "celery",

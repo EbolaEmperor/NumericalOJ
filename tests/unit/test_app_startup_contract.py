@@ -61,6 +61,7 @@ def test_importing_oj_does_not_run_recovery_or_scheduling_jobs():
         'requeue_pending_on_startup',
         'seed_pending_requeue_watchdog',
         'seed_agent_judge_paused_probe',
+        'seed_class_activity_refresh',
     }
     actual = set()
     for statement in tree.body:
@@ -149,6 +150,8 @@ def test_destructive_recovery_is_separate_from_safe_scheduler_bootstrap():
 
     assert 'requeue_pending_on_startup' not in safe_calls
     assert 'requeue_pending_on_startup' in recovery_calls
+    assert 'seed_class_activity_refresh' in safe_calls
+    assert 'seed_class_activity_refresh' in recovery_calls
 
 
 def test_pending_watchdog_also_reclaims_expired_repository_upload_staging():
