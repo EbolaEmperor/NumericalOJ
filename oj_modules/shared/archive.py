@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""受限 ZIP 解压工具。
+"""ZIP 归档工具。
 
 调用方通过 :class:`ZipExtractionPolicy` 明确资源上限和非法成员的处理方式；
-本模块只负责校验与流式落盘，不包含任何业务错误文案。
+本模块负责受限解压与可信目录打包，不包含任何业务错误文案。
 """
 
 from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass
+from io import BytesIO
 import math
 import os
+from pathlib import Path
 import posixpath
 import re
 import shutil
@@ -26,6 +28,42 @@ _UNSAFE_MEMBER_REASONS = frozenset({
     "outside_destination",
     "symlink",
 })
+
+
+def build_directory_zip(source_directory, *, archive_root=None):
+    """将可信目录打包到内存 ZIP，并保留一个明确的顶层目录。"""
+
+    source_path = Path(source_directory)
+    if source_path.is_symlink():
+        raise ValueError("source_directory must not be a symlink")
+    source_path = source_path.resolve(strict=True)
+    if not source_path.is_dir():
+        raise NotADirectoryError(source_path)
+
+    root_name = str(archive_root or source_path.name).strip()
+    if (
+        not root_name
+        or root_name in {".", ".."}
+        or "/" in root_name
+        or "\\" in root_name
+    ):
+        raise ValueError("archive_root must be a single directory name")
+
+    members = sorted(
+        source_path.rglob("*"),
+        key=lambda path: path.relative_to(source_path).as_posix(),
+    )
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for member in members:
+            if member.is_symlink():
+                raise ValueError("source_directory must not contain symlinks")
+            if not member.is_file():
+                continue
+            relative_name = member.relative_to(source_path).as_posix()
+            archive.write(member, arcname=f"{root_name}/{relative_name}")
+    buffer.seek(0)
+    return buffer
 
 
 @dataclass(frozen=True)

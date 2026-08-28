@@ -88,7 +88,8 @@ from oj_modules.agents.trace_store import (
     get_agent_trace_work_block,
     get_last_agent_trace_assistant,
 )
-from oj_modules.security.auth import current_user
+from oj_modules.security.auth import current_user, is_admin
+from oj_modules.project_paths import PROJECT_ROOT
 from oj_modules.problems.lean_workspace import (
     LeanWorkspaceError,
     LeanWorkspaceStaleError,
@@ -138,6 +139,7 @@ from oj_modules.submissions.written_artifacts import (
     publish_manual_written_submission,
 )
 from oj_modules.shared.markdown import render_rich_markdown
+from oj_modules.shared.archive import build_directory_zip
 problem_core_bp = Blueprint('problem_core', __name__)
 logger = logging.getLogger(__name__)
 
@@ -1426,6 +1428,35 @@ def problem_library():
         'problems/list.html',
         **build_problem_library_context(user),
     )
+
+
+@problem_core_bp.get('/downloads/numoj-cli.zip')
+def download_numoj_cli_skill():
+    user = current_user()
+    if not user:
+        return Response('请先登录', status=401)
+
+    skill_name = 'numoj-admin' if is_admin(user) else 'numoj-user'
+    skill_directory = PROJECT_ROOT / 'skills' / skill_name
+    try:
+        archive = build_directory_zip(
+            skill_directory,
+            archive_root=skill_name,
+        )
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError):
+        logger.exception('生成 %s 下载包失败', skill_name)
+        return Response('下载资源暂不可用', status=404)
+
+    response = send_file(
+        archive,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'{skill_name}.zip',
+        max_age=0,
+    )
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Cookie'
+    return response
 
 
 @problem_core_bp.route('/problem/<int:problem_id>', methods=['GET'])
