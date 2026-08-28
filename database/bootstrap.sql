@@ -1579,6 +1579,7 @@ CREATE TABLE `site_settings` (
   PRIMARY KEY (`k`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
+ALTER TABLE ranking_submissions ADD INDEX idx_rs_user_comp_created (username, competition_id, created_at, id);
 
 --
 -- Table structure for table `daily_submission_stats`
