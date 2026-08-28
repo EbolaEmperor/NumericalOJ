@@ -1,7 +1,9 @@
 {% extends "layouts/site.html" %}
 {% block content_container_class %}container mt-4 numoj-problems-content{% endblock %}
 {% block title %}
-  {% if user and user.is_admin != 1 %}
+  {% if view_mode in ('admin_library', 'student_library') %}
+    总题库 - {{ super() }}
+  {% elif user and user.is_admin != 1 %}
     我的作业 - {{ super() }}
   {% else %}
     题目列表 - {{ super() }}

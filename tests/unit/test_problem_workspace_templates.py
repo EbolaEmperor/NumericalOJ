@@ -18,7 +18,7 @@ def _braced_block(source, marker):
     raise AssertionError(f"{marker} 缺少闭合花括号")
 
 
-def test_desktop_problem_templates_preserve_class_context_and_separate_library_deadline():
+def test_desktop_problem_templates_preserve_class_list_and_unify_problem_detail_entry():
     repo = Path(__file__).resolve().parents[2]
     problem_list = (repo / "templates/problems/list.html").read_text()
     desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
@@ -31,7 +31,9 @@ def test_desktop_problem_templates_preserve_class_context_and_separate_library_d
     assert "problem_core.problem_library" in navigation
     assert "source='library'" in desktop_list
     assert "class_en=selected_class_en" in desktop_list
-    assert "request.args.get('class_en')" in detail
+    assert "request.args.get('class_en')" not in detail
+    assert 'class="problem-homework-statuses"' in detail
+    assert 'id="homeworkDeadlineWarningModal"' in detail
     assert "data-numoj-class-picker" in desktop_list
     assert 'role="listbox"' in desktop_list
     assert "data-numoj-projects-refresh" in desktop_list

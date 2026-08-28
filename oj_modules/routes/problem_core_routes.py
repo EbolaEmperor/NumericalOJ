@@ -122,13 +122,13 @@ from oj_modules.problems.agent_preferences import (
     get_agent_launch_preference,
     save_agent_launch_preference,
 )
-from oj_modules.problems.catalog import get_homeworks, get_user_classes_cached
+from oj_modules.problems.catalog import get_user_classes_cached
 from oj_modules.problems.context import (
-    HOMEWORK_EXPIRED_CODE,
-    HOMEWORK_EXPIRED_MESSAGE,
+    build_homework_deadline_warning,
     build_problem_detail_context,
     build_problem_library_context,
     build_problem_list_context,
+    get_problem_homework_assignments,
 )
 from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
@@ -1295,6 +1295,22 @@ def _request_wants_json():
     return request.is_json or 'application/json' in request.headers.get('Accept', '')
 
 
+def _submission_success_response(submission_id, deadline_warning=None):
+    if _request_wants_json():
+        payload = {
+            'success': True,
+            'submission_id': int(submission_id),
+        }
+        if deadline_warning:
+            payload['warning'] = deadline_warning
+        return jsonify(payload), 201
+    if deadline_warning:
+        flash(deadline_warning['message'], 'warning')
+    return redirect(url_for(
+        'submission.submission_detail', submission_id=submission_id,
+    ))
+
+
 def _record_archive_failure(submission_id, counted_submission_limit):
     try:
         mark_submission_archive_failed(
@@ -1406,9 +1422,6 @@ def problem_library():
     user = current_user()
     if not user:
         return redirect(url_for('auth.login'))
-    if int(user.get('is_admin') or 0) != 1:
-        flash('无权限访问总题库', 'danger')
-        return redirect(url_for('problem_core.problem_list'))
     return render_template(
         'problems/list.html',
         **build_problem_library_context(user),
@@ -2207,25 +2220,20 @@ def submit_solution(problem_id):
     if not problem:
         return "<h3>题目不存在</h3>"
 
-    if user['is_admin'] != 1:
-        homeworks = get_homeworks(user)
-        ddls = []
-        for hw in homeworks:
-            if hw['problem_id'] == problem_id:
-                if hw['ddl']:
-                    ddls.append(hw['ddl'])
-
-        if ddls:
-            latest_ddl = max(ddls)
-            if latest_ddl < datetime.now():
-                if _request_wants_json():
-                    return jsonify(
-                        success=False,
-                        code=HOMEWORK_EXPIRED_CODE,
-                        message=HOMEWORK_EXPIRED_MESSAGE,
-                    ), 403
-                flash(HOMEWORK_EXPIRED_MESSAGE, 'danger')
-                return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+    deadline_warning = None
+    if user['is_admin'] != 1 and request.method == 'POST':
+        deadline_warning = build_homework_deadline_warning(
+            get_problem_homework_assignments(user, problem_id)
+        )
+        if (
+            deadline_warning
+            and not _request_wants_json()
+            and request.form.get('deadline_warning_ack') != '1'
+        ):
+            flash('请先确认已截止作业提示，再继续提交。', 'warning')
+            return redirect(url_for(
+                'problem_core.problem_detail', problem_id=problem_id,
+            ))
 
     submission_limit = problem.get('submission_limit', 10)
     counted_submission_limit = submission_limit if user['is_admin'] != 1 else None
@@ -2274,7 +2282,9 @@ def submit_solution(problem_id):
                 else:
                     _promptly_generate_submission_task.delay(submission_id)
 
-                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                return _submission_success_response(
+                    submission_id, deadline_warning,
+                )
 
             is_lean4 = str(problem.get('lang') or '').strip().lower() in {'lean', 'lean4'}
             if is_lean4:
@@ -2342,9 +2352,9 @@ def submit_solution(problem_id):
                     flash('提交成功，但评测任务未初始化。', 'warning')
                 else:
                     _evaluate_submission_task.delay(submission_id)
-                if request.is_json or 'application/json' in request.headers.get('Accept', ''):
-                    return jsonify(success=True, submission_id=submission_id), 201
-                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                return _submission_success_response(
+                    submission_id, deadline_warning,
+                )
 
             code = request.form.get('code', '')
             if not code.strip():
@@ -2376,9 +2386,9 @@ def submit_solution(problem_id):
             else:
                 _evaluate_submission_task.delay(submission_id)
 
-            if _request_wants_json():
-                return jsonify(success=True, submission_id=submission_id), 201
-            return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+            return _submission_success_response(
+                submission_id, deadline_warning,
+            )
 
         if problem['type'] == 2:
             if 'file' not in request.files:
@@ -2454,7 +2464,9 @@ def submit_solution(problem_id):
                             error_message = '新作业发布失败，已保留上一份有效作业'
                         flash(error_message, 'danger')
                         return redirect(url_for('submission.submission_detail', submission_id=submission_id))
-                    return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                    return _submission_success_response(
+                        submission_id, deadline_warning,
+                    )
                 # 首次提交：走普通 INSERT 流程（下方）
 
             try:
@@ -2492,7 +2504,9 @@ def submit_solution(problem_id):
                 except Exception as e:
                     flash(f'文件已提交，但自动评分任务入队失败：{str(e)}', 'warning')
 
-            return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+            return _submission_success_response(
+                submission_id, deadline_warning,
+            )
 
     context, error_code = build_problem_detail_context(user, problem_id)
     if error_code == "not_found":

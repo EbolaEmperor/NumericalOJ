@@ -156,6 +156,8 @@ def problem_detail(problem_id):
         can_submit=context["can_submit"],
         submit_block_code=context["submit_block_code"],
         submit_block_reason=context["submit_block_reason"],
+        submit_warning=context.get("submit_warning"),
+        homework_assignments=context.get("homework_assignments") or [],
         submit={
             "action": f"/submit/{problem_id}",
             "method": "POST",

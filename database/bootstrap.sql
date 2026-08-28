@@ -492,6 +492,7 @@ CREATE TABLE `lean_submission_files` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 ALTER TABLE submissions ADD INDEX idx_submissions_user_problem_id (username, problem_id, id);
+ALTER TABLE submissions ADD INDEX idx_submissions_user_problem_created (username, problem_id, created_at, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_user_id (username, id);
 ALTER TABLE submissions ADD INDEX idx_submissions_created_status (created_at, status);
 -- 按题目检索/重判（避免全表扫）；以及待批改书面作业查询 status+problem_type

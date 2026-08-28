@@ -17,6 +17,7 @@ from oj_modules.db_services import (
 from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
+from oj_modules.homework.scores import homework_score_snapshot
 
 
 __all__ = (
@@ -36,6 +37,95 @@ _HOMEWORKS_CACHE_TTL_SECONDS = 10
 _CLASS_GRADES_CACHE_TTL_SECONDS = 20
 _homeworks_cache = {}
 _class_grades_cache = {}
+
+def _attach_user_homework_scores(result, username, cursor):
+    """按每条作业自己的 DDL 回填用户成绩，禁止全局 max_score 污染作业成绩。"""
+    if not username:
+        return
+
+    problem_ids = sorted({
+        int(hw["problem_id"])
+        for rows in result.values()
+        for hw in rows
+        if hw.get("kind") == "problem" and hw.get("problem_id") is not None
+    })
+    problem_submissions = {}
+    if problem_ids:
+        placeholders = ",".join(["%s"] * len(problem_ids))
+        cursor.execute(
+            f"""
+            SELECT id, problem_id, score, status, created_at
+            FROM submissions
+            WHERE username=%s AND problem_id IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            tuple([username] + problem_ids),
+        )
+        for submission in cursor.fetchall() or []:
+            problem_submissions.setdefault(int(submission["problem_id"]), []).append(submission)
+
+    competition_ids = sorted({
+        int(hw["competition_id"])
+        for rows in result.values()
+        for hw in rows
+        if hw.get("kind") == "ranking" and hw.get("competition_id") is not None
+    })
+    ranking_submissions = {}
+    if competition_ids:
+        placeholders = ",".join(["%s"] * len(competition_ids))
+        cursor.execute(
+            f"""
+            SELECT id, competition_id, score, status, created_at
+            FROM ranking_submissions
+            WHERE username=%s AND competition_id IN ({placeholders})
+              AND score IS NOT NULL
+            ORDER BY id ASC
+            """,
+            tuple([username] + competition_ids),
+        )
+        for submission in cursor.fetchall() or []:
+            ranking_submissions.setdefault(
+                int(submission["competition_id"]), []
+            ).append(submission)
+
+    for rows in result.values():
+        for homework in rows:
+            if homework.get("kind") == "ranking":
+                submissions = ranking_submissions.get(
+                    int(homework["competition_id"]), []
+                )
+                snapshot = homework_score_snapshot(
+                    submissions, homework.get("ddl"), require_terminal=False,
+                )
+            else:
+                submissions = problem_submissions.get(
+                    int(homework["problem_id"]), []
+                )
+                snapshot = homework_score_snapshot(
+                    submissions, homework.get("ddl"),
+                )
+
+            eligible = snapshot["eligible"]
+            best = snapshot["best"]
+            practice_best = snapshot["practice_best"]
+
+            homework["max_score"] = best.get("score") if best else None
+            homework["best_submission_id"] = best.get("id") if best else None
+            homework["best_submission_at"] = best.get("created_at") if best else None
+            homework["practice_max_score"] = (
+                practice_best.get("score") if practice_best else None
+            )
+            homework["has_submission"] = bool(eligible)
+            homework["has_pending_submission"] = snapshot["has_pending"]
+            if homework.get("kind") == "ranking":
+                homework["is_completed"] = best is not None
+            else:
+                total_score = homework.get("total_score")
+                homework["is_completed"] = bool(
+                    best is not None
+                    and total_score is not None
+                    and float(best.get("score") or 0) >= float(total_score or 0)
+                )
 
 
 def invalidate_problem_list_cache_for_user(user_id=None, username=None):
@@ -250,6 +340,8 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                 }
             result[cls].append(hw)
 
+        _attach_user_homework_scores(result, username, db_cursor)
+
         for cls, hw_list in result.items():
             for hw in hw_list:
                 if hw.get("kind") == "ranking":
@@ -262,10 +354,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
                 hw["total_score"] = (
                     hw.get("total_score") if hw.get("total_score") is not None else 0
                 )
-                hw["has_submission"] = bool(
-                    hw["max_score"] is not None
-                    or hw["is_completed"]
-                )
+                hw["has_submission"] = bool(hw.get("has_submission"))
         _homeworks_cache[cache_key] = {
             "expires_at": now_ts + _HOMEWORKS_CACHE_TTL_SECONDS,
             "value": result,

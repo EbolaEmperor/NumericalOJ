@@ -64,8 +64,8 @@ def test_homework_student_queries_exclude_administrator_memberships():
         flags=re.IGNORECASE,
     )
 
-    # 代码导出学生表、最佳提交 CTE、成绩导出学生表、查重 CTE。
-    assert len(membership_queries) == 4
+    # 另含普通题与打榜赛作业的截止前完成人数查询。
+    assert len(membership_queries) == 6
     assert len(student_queries) == len(membership_queries)
 
 

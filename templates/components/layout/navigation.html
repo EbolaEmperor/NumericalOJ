@@ -26,10 +26,14 @@
   {% if current_user %}
   <section class="numoj-nav-group" aria-labelledby="{{ id_prefix }}-workspace">
     <h2 id="{{ id_prefix }}-workspace">WORKSPACE</h2>
-    <a class="numoj-nav-item{% if current_endpoint in ('problem_core.problem_list', 'problem_core.problem_detail') and request.args.get('source') != 'library' %} active{% endif %}" href="{{ url_for('problem_core.problem_list') }}" title="{{ '班级作业' if current_user.is_admin == 1 else '我的作业' }}">
+    <a class="numoj-nav-item{% if current_endpoint == 'problem_core.problem_list' %} active{% endif %}" href="{{ url_for('problem_core.problem_list') }}" title="{{ '班级作业' if current_user.is_admin == 1 else '我的作业' }}">
       {{ icon('homework') }}
       <span class="numoj-nav-label"{% if surface == 'mobile' %} data-problem-list-label="mobile"{% endif %}>{{ '班级作业' if current_user.is_admin == 1 else '我的作业' }}</span>
       <span class="numoj-nav-count d-none" data-numoj-nav-count="homeworks"></span>
+    </a>
+    <a class="numoj-nav-item{% if current_endpoint == 'problem_core.problem_library' %} active{% endif %}" href="{{ url_for('problem_core.problem_library') }}" title="总题库">
+      {{ icon('library') }}<span class="numoj-nav-label">总题库</span>
+      <span class="numoj-nav-count d-none" data-numoj-nav-count="problems"></span>
     </a>
     <a class="numoj-nav-item{% if current_endpoint == 'problem_core.all_submissions' or request.blueprint == 'submission' %} active{% endif %}" href="{{ url_for('problem_core.all_submissions') }}" title="提交记录">
       {{ icon('submissions') }}
@@ -57,10 +61,6 @@
   {% if current_user.is_admin == 1 %}
   <section class="numoj-nav-group" aria-labelledby="{{ id_prefix }}-admin">
     <h2 id="{{ id_prefix }}-admin">ADMIN</h2>
-    <a class="numoj-nav-item{% if current_endpoint == 'problem_core.problem_library' or current_endpoint == 'problem_core.problem_detail' and request.args.get('source') == 'library' %} active{% endif %}" href="{{ url_for('problem_core.problem_library') }}" title="总题库">
-      {{ icon('library') }}<span class="numoj-nav-label">总题库</span>
-      <span class="numoj-nav-count d-none" data-numoj-nav-count="problems"></span>
-    </a>
     <a class="numoj-nav-item{% if request.blueprint == 'admin_user' %} active{% endif %}" href="{{ url_for('admin_user.user_management') }}" title="用户管理">
       {{ icon('users') }}<span class="numoj-nav-label">用户管理</span>
       <span class="numoj-nav-count d-none" data-numoj-nav-count="users"></span>
