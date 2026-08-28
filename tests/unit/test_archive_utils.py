@@ -10,6 +10,7 @@ import pytest
 from oj_modules.shared.archive import (
     ArchiveExtractionError,
     ZipExtractionPolicy,
+    build_directory_zip,
     extract_zip,
 )
 
@@ -27,6 +28,22 @@ def _policy(**overrides):
 
 def _assert_reason(error, reason):
     assert error.value.reason == reason
+
+
+def test_build_directory_zip_preserves_one_named_root(tmp_path):
+    source = tmp_path / "skill-source"
+    (source / "scripts").mkdir(parents=True)
+    (source / "SKILL.md").write_text("skill", encoding="utf-8")
+    (source / "scripts" / "cli.py").write_text("print('ok')", encoding="utf-8")
+
+    archive_buffer = build_directory_zip(source, archive_root="numoj-user")
+
+    with zipfile.ZipFile(archive_buffer) as archive:
+        assert archive.namelist() == [
+            "numoj-user/SKILL.md",
+            "numoj-user/scripts/cli.py",
+        ]
+        assert archive.read("numoj-user/SKILL.md") == b"skill"
 
 
 def test_extract_zip_writes_nested_files_and_normalizes_backslashes(tmp_path):

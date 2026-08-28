@@ -73,80 +73,8 @@ function deleteProblem(problemId) {
 </script>
 {% endif %}
 
-<script>
-// C++ 小贴士
-const matlabTips = [
-  "使用 std::vector 代替裸指针数组，避免内存泄漏。",
-  "在循环中尽量使用前置 ++i 而不是 i++，提高效率。",
-  "使用 const 引用传参可以避免不必要的拷贝。",
-  "尽量使用范围 for (range-based for) 来简化循环。",
-  "使用 std::unique_ptr 或 std::shared_ptr 管理动态内存，避免手动 delete。",
-  "使用标准库算法（如 std::sort, std::find）代替手写循环。",
-  "避免在循环中频繁使用 new/delete，尽量在外部预分配内存。",
-  "使用头文件保护符或 #pragma once 避免重复包含。",
-  "在调试时多使用 assert 来捕获异常状态。",
-  "使用 std::string 代替 C 风格字符串，减少内存错误风险。",
-  "写类时要遵循 Rule of Three/Five，正确管理拷贝与析构。",
-  "使用命名空间避免名字冲突，但不要滥用 using namespace std。",
-  "在多线程程序中使用 std::mutex 等同步机制确保线程安全。",
-  "尽量用 auto 推导复杂类型，提升代码可读性。",
-  "使用 enum class 代替传统枚举，避免命名冲突。",
-  "注意浮点比较时不要直接用 ==，而是使用误差范围判断。"
-];
-let currentTipIndex = Math.floor(Math.random() * matlabTips.length);
-function refreshTip() {
-  currentTipIndex = (currentTipIndex + 1) % matlabTips.length;
-  const tip = matlabTips[currentTipIndex];
-  document.querySelectorAll('[data-numoj-tip]').forEach(element => { element.innerText = tip; });
-}
-refreshTip();
-document.querySelectorAll('[data-numoj-tip-refresh]').forEach(button => button.addEventListener('click', refreshTip));
-
-// GitHub 开源项目推荐
-const githubProjects = [
-  { name: "Linux", url: "https://github.com/torvalds/linux" },
-  { name: "Python", url: "https://github.com/python/cpython" },
-  { name: "VSCode", url: "https://github.com/Microsoft/vscode" },
-  { name: "TensorFlow", url: "https://github.com/tensorflow/tensorflow" },
-  { name: "React", url: "https://github.com/facebook/react" },
-  { name: "Vue", url: "https://github.com/vuejs/vue" },
-  { name: "Bootstrap", url: "https://github.com/twbs/bootstrap" },
-  { name: "Django", url: "https://github.com/django/django" },
-  { name: "Node.js", url: "https://github.com/nodejs/node" },
-  { name: "Electron", url: "https://github.com/electron/electron" },
-  { name: "Rust", url: "https://github.com/rust-lang/rust" },
-  { name: "Kubernetes", url: "https://github.com/kubernetes/kubernetes" },
-  { name: "Home Assistant", url: "https://github.com/home-assistant/core" },
-  { name: "Ansible", url: "https://github.com/ansible/ansible" },
-  { name: "Jupyter Notebook", url: "https://github.com/jupyter/notebook" },
-  { name: "Git", url: "https://github.com/git/git" },
-  { name: "Kotlin", url: "https://github.com/JetBrains/kotlin" },
-  { name: "OpenCV", url: "https://github.com/opencv/opencv" },
-  { name: "Apache Kafka", url: "https://github.com/apache/kafka" }
-];
-function refreshProjects() {
-  const selected = [];
-  while (selected.length < 3) {
-    const project = githubProjects[Math.floor(Math.random() * githubProjects.length)];
-    if (!selected.includes(project)) selected.push(project);
-  }
-  document.querySelectorAll('[data-numoj-projects]').forEach(list => {
-    list.innerHTML = "";
-    selected.forEach(project => {
-      const item = document.createElement("li");
-      const link = document.createElement("a");
-      link.href = project.url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = project.name;
-      item.appendChild(link);
-      list.appendChild(item);
-    });
-  });
-}
-refreshProjects();
-document.querySelectorAll('[data-numoj-projects-refresh]').forEach(button => button.addEventListener('click', refreshProjects));
-</script>
+<script src="{{ url_for('static', filename='app/insights.js') }}"></script>
+<script src="{{ url_for('static', filename='app/github-projects.js') }}"></script>
 <script src="{{ url_for('static', filename='app/class-picker.js') }}"></script>
 <script src="{{ url_for('static', filename='app/problem-dashboard.js') }}"></script>
 

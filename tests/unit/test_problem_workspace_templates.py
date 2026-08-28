@@ -29,6 +29,11 @@ def test_desktop_problem_templates_preserve_class_list_and_unify_problem_detail_
     ).read_text()
 
     assert "problem_core.problem_library" in navigation
+    assert navigation.index("problem_core.problem_library") < navigation.index(
+        "problem_core.problem_list' %} active"
+    )
+    assert "sidebar_brand(extra_class='')" in navigation
+    assert "href=\"{{ url_for('problem_core.problem_list') }}\"" in navigation
     assert "source='library'" in desktop_list
     assert "class_en=selected_class_en" in desktop_list
     assert "request.args.get('class_en')" not in detail
@@ -188,6 +193,27 @@ def test_problem_resources_link_to_the_repository_instead_of_the_retired_zju_sit
 
     for source in (problem_list, desktop_list):
         assert repository_url in source
+    assert "problem_core.download_numoj_cli_skill" in desktop_list
+    assert "numoj_cli_resource.label" in desktop_list
+    assert "numoj_cli_resource.description" in desktop_list
+    assert "numoj-admin CLI" not in desktop_list
+    assert "Download for agents to manage NumOJ" not in desktop_list
+    assert "www.mathworks.com" not in desktop_list
+    assert "www.baltamatica.com" not in desktop_list
+
+
+def test_problem_resource_cards_share_the_same_leading_logo_treatment():
+    repo = Path(__file__).resolve().parents[2]
+    dashboard = (repo / "templates/problems/desktop/list.html").read_text()
+    layout_css = (repo / "static/app/layout.css").read_text()
+
+    assert "Insights Everyday" in dashboard
+    assert "C++ 编程小贴士" not in dashboard
+    assert ">TIP<" not in dashboard
+    assert dashboard.count("numoj-card-mark") == 3
+    assert "fab fa-github" in dashboard
+    assert "fas fa-compass" in dashboard
+    assert ".numoj-card-mark {" in layout_css
 
 
 def test_submission_metric_renders_empty_and_cpp_values_without_undefined_errors():

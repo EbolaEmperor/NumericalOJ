@@ -2292,8 +2292,9 @@
     height: 9px;
   }
 
-  .numoj-terminal-mark {
+  .numoj-card-mark {
     display: inline-grid;
+    flex: 0 0 auto;
     width: 27px;
     height: 27px;
     place-items: center;
@@ -2304,12 +2305,34 @@
     font-size: 0.65rem;
   }
 
-  .numoj-tip-card p {
+  .numoj-card-mark i {
+    font-size: 0.78rem;
+  }
+
+  .numoj-tip-card .numoj-insight-quote {
     min-height: 42px;
     margin: 0;
     color: var(--numoj-ink-2);
     font-size: 0.8rem;
     line-height: 1.7;
+  }
+
+  .numoj-tip-card .numoj-insight-translation {
+    margin: 8px 0 0;
+    color: var(--numoj-ink-3);
+    font-size: 0.73rem;
+    font-style: italic;
+    line-height: 1.65;
+  }
+
+  .numoj-tip-card cite {
+    display: block;
+    margin-top: 10px;
+    color: var(--numoj-ink-4);
+    font-family: var(--numoj-mono);
+    font-size: 0.61rem;
+    font-style: normal;
+    line-height: 1.55;
   }
 
   .numoj-text-button {
@@ -2337,22 +2360,40 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
     color: var(--numoj-ink-2);
     font-size: 0.79rem;
     text-decoration: none;
+    transition: color 150ms ease;
+  }
+
+  .numoj-resource-card li > a > span {
+    min-width: 0;
+  }
+
+  .numoj-resource-card li > a:hover {
+    color: var(--numoj-brand-ink);
   }
 
   .numoj-resource-card li small {
     display: block;
+    overflow: hidden;
     margin-top: 2px;
     color: var(--numoj-ink-4);
     font-family: var(--numoj-mono);
     font-size: 0.6rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .numoj-resource-card li b {
     color: var(--numoj-ink-4);
     font-weight: 400;
+    transition: transform 150ms ease;
+  }
+
+  .numoj-resource-card li > a:hover b {
+    transform: translate(2px, -2px);
   }
 }
 

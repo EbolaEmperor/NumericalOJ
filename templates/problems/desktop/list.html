@@ -209,17 +209,21 @@
       {% endif %}
 
       <section class="numoj-panel numoj-tip-card">
-        <header><h2><span class="numoj-terminal-mark" aria-hidden="true">›_</span>C++ 编程小贴士</h2><span>TIP</span></header>
-        <p data-numoj-tip></p>
+        <header><h2><span class="numoj-card-mark" aria-hidden="true">›_</span>Insights Everyday</h2></header>
+        <div class="numoj-insight" aria-live="polite">
+          <p class="numoj-insight-quote" data-numoj-tip></p>
+          <p class="numoj-insight-translation" lang="zh-CN" data-numoj-tip-translation></p>
+          <cite data-numoj-tip-attribution></cite>
+        </div>
         <button type="button" class="numoj-text-button" data-numoj-tip-refresh>
           <i class="fas fa-sync-alt" aria-hidden="true"></i>
-          <span>换一条小贴士</span>
+          <span>换一条</span>
         </button>
       </section>
 
       <section class="numoj-panel numoj-resource-card">
-        <header><h2>GitHub 优质项目</h2></header>
-        <ul data-numoj-projects></ul>
+        <header><h2><span class="numoj-card-mark" aria-hidden="true"><i class="fab fa-github"></i></span>Explore the Frontier</h2></header>
+        <ul data-numoj-projects aria-live="polite"></ul>
         <button type="button" class="numoj-text-button" data-numoj-projects-refresh>
           <i class="fas fa-sync-alt" aria-hidden="true"></i>
           <span>换一组项目</span>
@@ -227,11 +231,10 @@
       </section>
 
       <section class="numoj-panel numoj-resource-card">
-        <header><h2>相关资源</h2></header>
+        <header><h2><span class="numoj-card-mark" aria-hidden="true"><i class="fas fa-compass"></i></span>Resources</h2></header>
         <ul>
-          <li><a href="https://www.mathworks.com/" target="_blank" rel="noopener noreferrer"><span>MATLAB 官网<small>mathworks.com</small></span><b>↗</b></a></li>
-          <li><a href="https://www.baltamatica.com" target="_blank" rel="noopener noreferrer"><span>北太天元<small>baltamatica.com</small></span><b>↗</b></a></li>
           <li><a href="https://github.com/EbolaEmperor/NumericalOJ" target="_blank" rel="noopener noreferrer"><span>NumericalOJ · GitHub<small>github.com/EbolaEmperor/NumericalOJ</small></span><b>↗</b></a></li>
+          <li><a href="{{ url_for('problem_core.download_numoj_cli_skill') }}" download><span>{{ numoj_cli_resource.label }}<small>{{ numoj_cli_resource.description }}</small></span><b>↓</b></a></li>
         </ul>
       </section>
     </aside>

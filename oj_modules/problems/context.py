@@ -60,6 +60,18 @@ def _base_problem_list_context():
     }
 
 
+def _numoj_cli_resource(user):
+    if int(user.get("is_admin") or 0) == 1:
+        return {
+            "label": "numoj-admin CLI",
+            "description": "Download for agents to manage NumOJ",
+        }
+    return {
+        "label": "numoj-user CLI",
+        "description": "Download for agents to use NumOJ.",
+    }
+
+
 def _deadline_is_expired(deadline):
     if isinstance(deadline, str):
         try:
@@ -162,6 +174,7 @@ def build_problem_list_context(
     """
     context = _base_problem_list_context()
     context["user"] = user
+    context["numoj_cli_resource"] = _numoj_cli_resource(user)
 
     if user['is_admin'] == 1 and not admin_class_view:
         context["problems"] = get_all_problems()
@@ -280,6 +293,7 @@ def build_problem_list_context(
 def build_problem_library_context(user):
     """构造所有登录用户可见的总题库视图，不混入班级 DDL。"""
     context = _base_problem_list_context()
+    context["numoj_cli_resource"] = _numoj_cli_resource(user)
     problems = [dict(problem) for problem in (get_all_problems() or [])]
     metrics = get_problem_submission_metrics(
         [problem.get("id") for problem in problems]
