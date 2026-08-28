@@ -852,6 +852,7 @@
           chip.appendChild(preview);
           var download = createElement('a');
           download.href = downloadFileUrl(path);
+          download.download = name;
           download.title = '下载 ' + name;
           download.setAttribute('aria-label', '下载 ' + name);
           download.innerHTML = '<i class="fas fa-download" aria-hidden="true"></i>';

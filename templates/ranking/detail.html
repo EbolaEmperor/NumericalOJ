@@ -192,6 +192,7 @@
               <div class="ranking-file-row" data-ranking-attachment-row title="{{ f.filename }} · {{ size_long }}">
                 <a href="{{ url_for('ranking.ranking_download_attachment', competition_id=competition.id, file_id=f.id) }}"
                    class="ranking-file-download"
+                   download
                    title="下载 {{ f.filename }}">
                   <i class="fas fa-paperclip" aria-hidden="true"></i>
                   <b>{{ f.filename }}</b>

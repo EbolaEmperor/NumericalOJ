@@ -41,6 +41,9 @@ def test_loader_covers_navigation_fetch_and_dynamic_content():
     assert "installFetchTracking()" in LOADER_JS
     assert "installNavigationTracking()" in LOADER_JS
     assert "link.hasAttribute('download')" in LOADER_JS
+    assert "isDownloadDestination(destination)" in LOADER_JS
+    assert "destination.searchParams.get('download') === '1'" in LOADER_JS
+    assert "(?:download|export)" in LOADER_JS
     assert "new MutationObserver" in LOADER_JS
     assert "prefers-reduced-motion: reduce" in (
         ROOT / "static" / "math-curve-loaders" / "loader.css"
@@ -71,3 +74,45 @@ def test_lean_workspace_export_is_marked_as_a_download_navigation():
         "url_for('admin_problem.download_lean_workspace', problem_id=problem.id) }}\" download"
         in template
     )
+
+
+def test_dynamic_and_ranking_downloads_opt_out_of_page_navigation_loader():
+    ranking_detail = (TEMPLATES / "ranking" / "detail.html").read_text(encoding="utf-8")
+    ranking_settings = (TEMPLATES / "ranking" / "tabs" / "settings.html").read_text(
+        encoding="utf-8"
+    )
+    agent_detail = (TEMPLATES / "admin" / "agent_task_detail.html").read_text(
+        encoding="utf-8"
+    )
+    homework = (TEMPLATES / "admin" / "homework.html").read_text(encoding="utf-8")
+    agent_controller = (ROOT / "static" / "app" / "agents" / "conversation.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'class="ranking-file-download"\n                   download' in ranking_detail
+    assert 'class="btn btn-sm btn-outline-primary me-1" download' in ranking_settings
+    assert 'download title="下载 {{ attachment_name }}"' in agent_detail
+    assert 'id="downloadPlagiarismRecordsBtn"' in homework and 'href="#" download' in homework
+    assert "download.download = name;" in agent_controller
+
+
+def test_every_file_download_surface_is_explicitly_marked_or_url_classified():
+    """下载端点不触发全页导航遮罩，哪怕路径本身不含 download。"""
+    ranking_card = (TEMPLATES / "ranking" / "components" / "submission_card.html").read_text(
+        encoding="utf-8"
+    )
+    reverse_detail = (TEMPLATES / "ranking" / "modals" / "reverse_judge_detail.html").read_text(
+        encoding="utf-8"
+    )
+    media_preview = (TEMPLATES / "ranking" / "modals" / "media_preview.html").read_text(
+        encoding="utf-8"
+    )
+    submission_detail = (TEMPLATES / "submissions" / "detail.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "download_submission_answer" in ranking_card and "download title=" in ranking_card
+    assert "download_submission_code" in ranking_card and "download title=" in ranking_card
+    assert 'id="rjAnswerDownload"' in reverse_detail and "download hidden" in reverse_detail
+    assert 'id="rkMediaDownload"' in media_preview and 'href="#" download' in media_preview
+    assert 'id="downloadImageBtn" href="" download' in submission_detail
