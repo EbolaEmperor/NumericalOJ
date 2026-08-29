@@ -324,7 +324,9 @@ def list_agent_trace_timeline(task_id, *, status="", steer_records=()):
                 SELECT item_index, block_id, MIN(event_order) AS event_order,
                        SUM(kind IN ('thinking','reasoning')) AS thinking_count,
                        SUM(kind IN ('tool','tool_call','subagent')) AS tool_count,
-                       MAX(is_error) AS has_error
+                       MAX(is_error) AS has_error,
+                       COUNT(*) AS event_count,
+                       MAX(event_order) AS last_event_order
                 FROM agent_trace_events
                 WHERE task_id=%s AND block_id IS NOT NULL
                 GROUP BY item_index, block_id
@@ -396,6 +398,8 @@ def list_agent_trace_timeline(task_id, *, status="", steer_records=()):
             "tool_count": tool_count,
             "is_running": is_running,
             "has_error": bool(row.get("has_error")),
+            "event_count": max(0, int(row.get("event_count") or 0)),
+            "last_event_order": max(0, int(row.get("last_event_order") or 0)),
             "summary": _work_summary(thinking_count, tool_count, is_running),
         })
 

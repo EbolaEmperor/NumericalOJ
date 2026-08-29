@@ -422,24 +422,29 @@ def test_agent_detail_falls_back_when_task_stream_has_no_first_payload():
     assert "clearStreamFirstPayloadTimer();\n    stopTaskPolling();" in controller
 
 
-def test_agent_detail_fetches_each_work_block_only_on_first_expand():
+def test_agent_detail_uses_three_backend_loading_levels():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
 
-    assert "data-agent-lazy-trace" not in template
-    assert "data-agent-lazy-trace-body" not in template
     assert "turn.has_detail|default(false)" in template
+    assert "data-agent-turn-detail" in template
+    assert "data-agent-turn-detail-body" in template
     assert "data-work-block-url-template" in template
     assert "data-agent-work-block" in template
-    assert "function loadWorkBlock(details)" in controller
+    assert "function loadTurnDetails(details)" in controller
+    assert "requestTaskState(taskId).then(function (state)" in controller
+    assert "details.dataset.agentTurnDetailLoaded === 'true'" in controller
+    assert "details.dataset.agentTurnDetailLoaded = 'true';" in controller
+    assert "function loadWorkBlock(details, forceRefresh)" in controller
     assert "var workBlockCache = new Map();" in controller
     assert "workBlockCache.set(workBlockCacheKey(taskId, blockId), fold);" in controller
     assert "details.dataset.agentWorkBlockLoaded === 'true'" in controller
     assert "details.dataset.agentWorkBlockLoaded = 'true';" in controller
-    assert "if (fold.open) loadWorkBlock(fold);" in controller
+    assert "loadWorkBlock(fold, fold.classList.contains('is-running'));" in controller
+    assert "loadWorkBlock(fold, true);" in controller
+    assert "message.event_count, message.last_event_order" in controller
     assert "function bindTurnDetails(scope)" in controller
     assert "syncTurnDetailState(details)" in controller
-    assert "function loadHistoricalTrace(details)" not in controller
 
 
 def test_agent_detail_uses_one_running_action_for_stop_or_queue_send():
@@ -718,7 +723,7 @@ def test_agent_trace_keeps_replies_visible_and_collapses_working_details():
     assert "thinking/tool/tool_result" in append_public
     assert "traceWorkDetail" not in append_public
     assert "function traceWorkBlock(message, taskId)" in controller
-    assert "function loadWorkBlock(details)" in controller
+    assert "function loadWorkBlock(details, forceRefresh)" in controller
     assert "function appendTraceEventContent(body, message, kind)" in controller
 
     for selector in (

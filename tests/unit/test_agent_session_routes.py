@@ -1451,7 +1451,10 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
     assert "agent_quota_pending_count" not in rendered[0][1]
     assert "agent_quota_pending_requests" not in rendered[0][1]
     assert len(decorate_calls) == 1
-    assert state_calls == [("turn-1", {"decorate_markdown": False})]
+    assert state_calls == [(
+        "turn-1",
+        {"decorate_markdown": False, "include_trace": False},
+    )]
     assert decorate_calls[0][1] == {
         "current_task_id": "turn-1",
         "current_state": current_state,
@@ -1658,34 +1661,12 @@ def test_session_usage_cost_prefers_frozen_quota_ledger_amount():
     assert projected["session_token_usage"]["cost_complete"] is True
 
 
-def test_each_turn_uses_its_task_local_v2_public_timeline(monkeypatch):
-    first_messages = [{"kind": "assistant", "text": "first-progress"}]
-    second_messages = [
-        {
-            "kind": "work_summary",
-            "block_id": "work-1234567890abcdef",
-            "summary": "3 thinkings, 2 tool calls",
-        },
-        {"kind": "assistant", "text": "second-progress"},
-    ]
-    fourth_messages = [{"kind": "assistant", "text": "fourth-progress"}]
-    traces = {
-        "turn-1": first_messages,
-        "turn-2": second_messages,
-        "turn-3": [],
-        "turn-4": fourth_messages,
-    }
-
-    def hydrate(state):
-        return {
-            **state,
-            "execution_trace": {
-                "trace_messages": traces[state["task_id"]],
-                "token_usage": {"source": "pi", "request_count": 4},
-            },
-        }
-
-    monkeypatch.setattr(routes, "hydrate_agent_run_snapshot", hydrate)
+def test_each_turn_defers_its_public_timeline_until_expand(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "hydrate_agent_run_snapshot",
+        lambda _state: pytest.fail("历史首屏不应 hydrate 时间线"),
+    )
     monkeypatch.setattr(routes, "render_rich_markdown", lambda text: f"<p>{text}</p>")
     turns = routes._decorate_agent_turns([
         {
@@ -1699,18 +1680,9 @@ def test_each_turn_uses_its_task_local_v2_public_timeline(monkeypatch):
         for index in range(1, 5)
     ])
 
-    timelines = [
-        turn["execution_trace"]["trace_messages"]
-        for turn in turns
-    ]
-    assert [len(messages) for messages in timelines] == [1, 2, 0, 1]
-    assert timelines[1][0]["kind"] == "work_summary"
-    assert timelines[1][1]["text"] == "second-progress"
-    assert timelines[3][0]["text"] == "fourth-progress"
-    assert turns[1]["execution_trace"]["token_usage"] == {
-        "source": "pi",
-        "request_count": 4,
-    }
+    assert all(turn["execution_trace"] == {} for turn in turns)
+    assert all(turn["detail_messages"] == [] for turn in turns)
+    assert all(turn["has_detail"] is True for turn in turns)
 
 
 def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
@@ -1747,25 +1719,15 @@ def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
         current_state=current_state,
     )[0]
 
-    assert turn["execution_trace"] == current_state["execution_trace"]
+    assert turn["execution_trace"] == {}
     assert turn["conclusion"] == "已完成"
 
 
-def test_decorate_turns_loads_public_timeline_without_internal_events(monkeypatch):
+def test_decorate_turns_defers_public_timeline_without_internal_events(monkeypatch):
     monkeypatch.setattr(
         routes,
         "hydrate_agent_run_snapshot",
-        lambda state: {
-            **state,
-            "execution_trace": {"trace_messages": [
-                {
-                    "kind": "work_summary",
-                    "block_id": "work-1234567890abcdef",
-                    "summary": "4 thinkings, 3 tool calls",
-                },
-                {"kind": "assistant", "text": "阶段进展"},
-            ]},
-        },
+        lambda _state: pytest.fail("历史首屏不应 hydrate 时间线"),
     )
     rendered = []
     monkeypatch.setattr(
@@ -1782,11 +1744,10 @@ def test_decorate_turns_loads_public_timeline_without_internal_events(monkeypatc
     }])[0]
 
     assert turn["has_detail"] is True
-    assert [
-        item["kind"] for item in turn["execution_trace"]["trace_messages"]
-    ] == ["work_summary", "assistant"]
+    assert turn["execution_trace"] == {}
+    assert turn["detail_messages"] == []
     assert turn["conclusion"] == "已完成具体任务"
-    assert rendered == ["阶段进展", "执行任务", "已完成具体任务"]
+    assert rendered == ["执行任务", "已完成具体任务"]
 
 
 def test_runtime_has_no_legacy_resume_trace_filter():

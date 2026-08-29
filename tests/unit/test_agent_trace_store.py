@@ -193,6 +193,8 @@ def test_public_timeline_contains_only_replies_steers_and_work_summaries(
         "thinking_count": 3,
         "tool_count": 2,
         "has_error": 0,
+        "event_count": 7,
+        "last_event_order": 8,
     }]
 
     def handler(sql, _params):
@@ -222,6 +224,8 @@ def test_public_timeline_contains_only_replies_steers_and_work_summaries(
         "assistant", "work_summary", "user", "assistant",
     ]
     assert running[1]["summary"] == "工作中…3 thinkings, 2 tool calls"
+    assert running[1]["event_count"] == 7
+    assert running[1]["last_event_order"] == 8
     assert running[2]["text"] == "请再核对一次"
 
     completed = trace_store.list_agent_trace_timeline(

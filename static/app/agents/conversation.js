@@ -1232,11 +1232,15 @@
   }
 
   function updateWorkBlock(fold, message) {
+    var wasRunning = fold.classList.contains('is-running');
     var summary = fold.querySelector('[data-agent-work-block-summary]');
     if (summary) summary.textContent = asText(message.summary || '工作详情');
     fold.classList.toggle('is-running', message.is_running === true);
     var glyph = fold.querySelector('summary > i');
     if (glyph) glyph.className = 'fas fa-wrench';
+    if (fold.open && (message.is_running === true || wasRunning)) {
+      loadWorkBlock(fold, true);
+    }
   }
 
   function bindWorkBlock(fold) {
@@ -1247,7 +1251,9 @@
     fold.dataset.agentWorkBlockBound = 'true';
     workBlockCache.set(workBlockCacheKey(taskId, blockId), fold);
     fold.addEventListener('toggle', function () {
-      if (fold.open) loadWorkBlock(fold);
+      if (fold.open) {
+        loadWorkBlock(fold, fold.classList.contains('is-running'));
+      }
     });
   }
 
@@ -1303,6 +1309,7 @@
         message.kind, message.type, message.title, message.name,
         message.is_error, message.message_id, message.block_id,
         message.thinking_count, message.tool_count, message.is_running,
+        message.event_count, message.last_event_order,
         message.summary, message.text, message.html, message.attachments
       ];
     }));
@@ -1368,6 +1375,9 @@
     var messages = traceMessages(state);
     if (messages.length) {
       var details = createElement('details', 'agent-turn-details');
+      details.setAttribute('data-agent-turn-detail', '');
+      details.dataset.agentTurnDetailTaskId = asText(state && state.task_id || currentTaskId);
+      details.dataset.agentTurnDetailLoaded = 'true';
       var summary = document.createElement('summary');
       var summaryLabel = createElement('span');
       var caret = createElement('i', 'fas fa-chevron-right');
@@ -1520,17 +1530,24 @@
     });
   }
 
-  function loadWorkBlock(details) {
-    if (!details || details.dataset.agentWorkBlockLoaded === 'true'
-        || details.dataset.agentWorkBlockLoading === 'true') return;
+  function loadWorkBlock(details, forceRefresh) {
+    if (!details) return;
+    if (details.dataset.agentWorkBlockLoading === 'true') {
+      if (forceRefresh) details.dataset.agentWorkBlockRefreshPending = 'true';
+      return;
+    }
+    if (details.dataset.agentWorkBlockLoaded === 'true' && !forceRefresh) return;
     var taskId = asText(details.dataset.agentWorkBlockTaskId).trim();
     var blockId = asText(details.dataset.agentWorkBlockId).trim();
     var body = details.querySelector('[data-agent-work-block-body]');
     if (!taskId || !blockId || !body) return;
+    var alreadyLoaded = details.dataset.agentWorkBlockLoaded === 'true';
     details.dataset.agentWorkBlockLoading = 'true';
-    body.replaceChildren(createElement(
-      'div', 'agent-work-block-placeholder', '正在加载工作详情…'
-    ));
+    if (!alreadyLoaded) {
+      body.replaceChildren(createElement(
+        'div', 'agent-work-block-placeholder', '正在加载工作详情…'
+      ));
+    }
     global.fetch(workBlockUrl(taskId, blockId), {
       headers: {'Accept': 'application/json'},
       credentials: 'same-origin',
@@ -1558,11 +1575,49 @@
       }
       details.dataset.agentWorkBlockLoaded = 'true';
     }).catch(function () {
+      if (!alreadyLoaded) {
+        body.replaceChildren(createElement(
+          'div', 'agent-work-block-placeholder', '工作详情加载失败，请收起后重试。'
+        ));
+      }
+    }).finally(function () {
+      delete details.dataset.agentWorkBlockLoading;
+      if (details.dataset.agentWorkBlockRefreshPending === 'true' && details.open) {
+        delete details.dataset.agentWorkBlockRefreshPending;
+        loadWorkBlock(details, true);
+      }
+    });
+  }
+
+  function loadTurnDetails(details) {
+    if (!details || !details.hasAttribute('data-agent-turn-detail')
+        || details.dataset.agentTurnDetailLoaded === 'true'
+        || details.dataset.agentTurnDetailLoading === 'true') return;
+    var taskId = asText(details.dataset.agentTurnDetailTaskId).trim();
+    var body = details.querySelector('[data-agent-turn-detail-body]');
+    if (!taskId || !body) return;
+    details.dataset.agentTurnDetailLoading = 'true';
+    body.replaceChildren(createElement(
+      'div', 'agent-work-block-placeholder', '正在加载工作详情…'
+    ));
+    requestTaskState(taskId).then(function (state) {
+      var messages = traceMessages(state);
+      body.replaceChildren();
+      if (!messages.length) {
+        body.appendChild(createElement(
+          'div', 'agent-workspace-empty', '本轮没有可展示的工作详情。'
+        ));
+      } else {
+        appendTraceMessages(body, messages, taskId);
+        enhanceMarkdown(body);
+      }
+      details.dataset.agentTurnDetailLoaded = 'true';
+    }).catch(function () {
       body.replaceChildren(createElement(
         'div', 'agent-work-block-placeholder', '工作详情加载失败，请收起后重试。'
       ));
     }).finally(function () {
-      delete details.dataset.agentWorkBlockLoading;
+      delete details.dataset.agentTurnDetailLoading;
     });
   }
 
@@ -1586,6 +1641,7 @@
       syncSteerSummaryAnchors(details.closest('[data-agent-turn]'));
       details.addEventListener('toggle', function () {
         syncTurnDetailState(details);
+        if (details.open) loadTurnDetails(details);
       });
     });
   }
