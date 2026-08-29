@@ -807,8 +807,10 @@ def initialize_agent_task_workspace(
         session_id,
         filename,
         (
-            "If you are confused by the user's request, please try reading "
-            f"the {skill_name} skill.\n"
+            "You are now running in the cloud container environment provided by NumOJ."
+            f"You may use the {skill_name} skill to respond to user requests."
+            "Do not attempt to access the system /tmp directory; "
+            "for temporary files, create and use a tmp subdirectory within the current project."
         ),
     )
     return workspace
