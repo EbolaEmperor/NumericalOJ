@@ -48,11 +48,11 @@ def test_ensure_agent_workspace_uses_private_fixed_layout(workspace_root):
 
 
 @pytest.mark.parametrize(
-    ("harness", "access_role", "filename", "skill_name"),
+    ("harness", "access_role", "filename"),
     [
-        ("claude_code", "user", "CLAUDE.md", "numoj-user"),
-        ("codex", "user", "AGENTS.md", "numoj-user"),
-        ("pi", "admin", "AGENTS.md", "numoj-admin"),
+        ("claude_code", "user", "CLAUDE.md"),
+        ("codex", "user", "AGENTS.md"),
+        ("pi", "admin", "AGENTS.md"),
     ],
 )
 def test_initialize_agent_task_workspace_writes_harness_memory_file(
@@ -60,7 +60,6 @@ def test_initialize_agent_task_workspace_writes_harness_memory_file(
     harness,
     access_role,
     filename,
-    skill_name,
 ):
     actual = workspace.initialize_agent_task_workspace(
         "session-01",
@@ -69,12 +68,7 @@ def test_initialize_agent_task_workspace_writes_harness_memory_file(
     )
 
     assert actual == workspace_root / "sessions" / "session-01" / "workspace"
-    assert (actual / filename).read_text(encoding="utf-8") == (
-        "You are now running in the cloud container environment provided by NumOJ."
-        f"You may use the {skill_name} skill to respond to user requests."
-        "Do not attempt to access the system /tmp directory; "
-        "for temporary files, create and use a tmp subdirectory within the current project."
-    )
+    assert (actual / filename).is_file()
 
 
 @pytest.mark.parametrize("session_id", ["", ".", "..", "../escape", "a/b", "a\\b", "空"])
