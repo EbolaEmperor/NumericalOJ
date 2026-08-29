@@ -7,6 +7,7 @@ Celery prefork 子进程会丢弃父进程遗留的空闲 socket，再按需建�
 """
 
 import atexit
+import contextvars
 import os
 import queue
 import re
@@ -36,9 +37,43 @@ _MYSQL_DB = getattr(_config, "MYSQL_DB", "myojdb")
 
 _VALID_TABLE_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
+# 连接池异常经常需要穿过多层业务代码才能到达 Flask。部分旧路由会把
+# ``pymysql.Error`` 转换成自己的 JSON 错误响应，因此仅靠全局 error handler
+# 无法判断这次失败实际来自连接池背压。这里用执行上下文隔离的标记记录请求
+# 作用域内最近一次池耗尽；未显式开启跟踪的 Celery/CLI 上下文不保留异常对象。
+_MYSQL_POOL_EXHAUSTION_UNTRACKED = object()
+_mysql_pool_exhaustion_context = contextvars.ContextVar(
+    "numoj_mysql_pool_exhaustion",
+    default=_MYSQL_POOL_EXHAUSTION_UNTRACKED,
+)
+
 
 class MySQLPoolExhausted(pymysql.err.OperationalError):
     """Web 请求在有限等待后仍无法取得连接；调用方应返回可重试的 503。"""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        if (
+            _mysql_pool_exhaustion_context.get()
+            is not _MYSQL_POOL_EXHAUSTION_UNTRACKED
+        ):
+            _mysql_pool_exhaustion_context.set(self)
+
+
+def begin_mysql_pool_exhaustion_tracking():
+    """开启一个可嵌套的池耗尽跟踪作用域，并返回用于恢复的 token。"""
+    return _mysql_pool_exhaustion_context.set(None)
+
+
+def end_mysql_pool_exhaustion_tracking(token):
+    """恢复进入跟踪作用域前的上下文，避免线程复用时泄漏状态。"""
+    _mysql_pool_exhaustion_context.reset(token)
+
+
+def current_mysql_pool_exhaustion():
+    """返回当前跟踪作用域内最近一次池耗尽异常。"""
+    error = _mysql_pool_exhaustion_context.get()
+    return error if isinstance(error, MySQLPoolExhausted) else None
 
 
 def safe_table_name(name):
@@ -314,4 +349,11 @@ def get_db_connection():
     return _get_db_pool().acquire()
 
 
-__all__ = ["MySQLPoolExhausted", "get_db_connection", "safe_table_name"]
+__all__ = [
+    "MySQLPoolExhausted",
+    "begin_mysql_pool_exhaustion_tracking",
+    "current_mysql_pool_exhaustion",
+    "end_mysql_pool_exhaustion_tracking",
+    "get_db_connection",
+    "safe_table_name",
+]

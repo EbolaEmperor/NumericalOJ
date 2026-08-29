@@ -74,6 +74,56 @@ def test_db_services_business_functions_keep_connection_monkeypatch_seam(monkeyp
     assert db_services.get_user_by_username.__globals__["get_db_connection"] is replacement
 
 
+def test_pool_exhaustion_tracking_is_explicit_and_nested():
+    # 构造异常本身不应让普通 CLI/Celery 上下文长期持有它。
+    mysql.MySQLPoolExhausted(1040, "outside request")
+    assert mysql.current_mysql_pool_exhaustion() is None
+
+    outer_token = mysql.begin_mysql_pool_exhaustion_tracking()
+    try:
+        outer_error = mysql.MySQLPoolExhausted(1040, "outer request")
+        assert mysql.current_mysql_pool_exhaustion() is outer_error
+
+        inner_token = mysql.begin_mysql_pool_exhaustion_tracking()
+        try:
+            assert mysql.current_mysql_pool_exhaustion() is None
+            inner_error = mysql.MySQLPoolExhausted(1040, "inner request")
+            assert mysql.current_mysql_pool_exhaustion() is inner_error
+        finally:
+            mysql.end_mysql_pool_exhaustion_tracking(inner_token)
+
+        assert mysql.current_mysql_pool_exhaustion() is outer_error
+    finally:
+        mysql.end_mysql_pool_exhaustion_tracking(outer_token)
+
+    assert mysql.current_mysql_pool_exhaustion() is None
+
+
+def test_pool_exhaustion_tracking_is_isolated_between_threads():
+    barrier = threading.Barrier(2)
+    observed = {}
+
+    def worker(name, exhaust):
+        token = mysql.begin_mysql_pool_exhaustion_tracking()
+        try:
+            barrier.wait()
+            if exhaust:
+                mysql.MySQLPoolExhausted(1040, name)
+            barrier.wait()
+            observed[name] = mysql.current_mysql_pool_exhaustion() is not None
+        finally:
+            mysql.end_mysql_pool_exhaustion_tracking(token)
+
+    busy = threading.Thread(target=worker, args=("busy", True))
+    healthy = threading.Thread(target=worker, args=("healthy", False))
+    busy.start()
+    healthy.start()
+    busy.join()
+    healthy.join()
+
+    assert observed == {"busy": True, "healthy": False}
+
+
 class _FakeRawConnection:
     def __init__(self):
         self.open = True
