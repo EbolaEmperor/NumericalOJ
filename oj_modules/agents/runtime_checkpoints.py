@@ -27,7 +27,7 @@ _CHECKPOINT_MANIFEST_FILENAME = "manifest.json"
 _CHECKPOINT_MANIFEST_VERSION = 1
 _MAX_MANIFEST_BYTES = 16 * 1024
 _COPY_CHUNK_BYTES = 64 * 1024
-_EPHEMERAL_RUNTIME_PATHS = (("codex", "tmp"),)
+_EPHEMERAL_RUNTIME_PATHS = (("tmp",), ("codex", "tmp"))
 
 
 @dataclass(slots=True)
@@ -780,19 +780,26 @@ def _discard_tree_at(parent_fd: int, name: str) -> None:
 
 
 def _discard_ephemeral_runtime(source_runtime_fd: int) -> None:
-    for parent_name, child_name in _EPHEMERAL_RUNTIME_PATHS:
+    for path_parts in _EPHEMERAL_RUNTIME_PATHS:
+        parent_fd = source_runtime_fd
+        opened_parent_fds: list[int] = []
         try:
-            parent_fd = workspace_store._open_existing_directory_at(
-                source_runtime_fd,
-                parent_name,
-                label="Agent harness 运行态目录",
-            )
+            for depth, parent_name in enumerate(path_parts[:-1], start=1):
+                parent_fd = workspace_store._open_existing_directory_at(
+                    parent_fd,
+                    parent_name,
+                    label=(
+                        "Agent harness 运行态目录 "
+                        + "/".join(path_parts[:depth])
+                    ),
+                )
+                opened_parent_fds.append(parent_fd)
+            _discard_tree_at(parent_fd, path_parts[-1])
         except FileNotFoundError:
             continue
-        try:
-            _discard_tree_at(parent_fd, child_name)
         finally:
-            os.close(parent_fd)
+            for opened_fd in reversed(opened_parent_fds):
+                os.close(opened_fd)
 
 
 def _create_checkpoint(
