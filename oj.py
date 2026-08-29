@@ -70,7 +70,10 @@ from oj_modules.routes.agent_access_routes import (
     agent_access_bp,
     configure_agent_concurrency_runtime_applier,
 )
-from oj_modules.security.login_guard import install_global_login_guard
+from oj_modules.security.login_guard import (
+    install_global_login_guard,
+    is_api_request,
+)
 from oj_modules.security.origin_guard import install_same_origin_protection
 from oj_modules.site_config.services import get_mail_settings
 from oj_modules.infrastructure.redis import (
@@ -176,10 +179,6 @@ app.config['DEBUG'] = bool(getattr(_cfg, 'FLASK_DEBUG', False))
 # 即便 DEBUG 关闭也保留模板热重载，保证「scp 模板即生效」的前端快速路径不受影响。
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
-_STATIC_CACHE_MAX_AGE_SECONDS = max(
-    0,
-    int(getattr(_cfg, 'STATIC_CACHE_MAX_AGE_SECONDS', 3600)),
-)
 # 会话 Cookie 加固：HttpOnly 防 JS 窃取；SameSite=Lax 阻断跨站 POST CSRF；
 # Secure 仅在 HTTPS 下回传（默认关闭以兼容内网 HTTP，部署 HTTPS 后可在 .env 置 true）。
 app.config.update(
@@ -239,11 +238,13 @@ for _api_bp in API_BLUEPRINTS:
 @app.context_processor
 def inject_globals():
     try:
-        class_adjust_enabled = is_class_adjust_enabled()
+        class_adjust_enabled = is_class_adjust_enabled(wait_timeout_seconds=0.0)
     except Exception:
         class_adjust_enabled = True
     try:
-        mail_service_configured = bool(get_mail_settings())
+        mail_service_configured = bool(
+            get_mail_settings(wait_timeout_seconds=0.0)
+        )
     except Exception:
         mail_service_configured = False
     return {
@@ -268,10 +269,9 @@ _CONTENT_SECURITY_POLICY = (
 @app.errorhandler(MySQLPoolExhausted)
 def _handle_mysql_pool_exhausted(_error):
     """数据库并发已饱和时做显式背压，避免排队数秒后伪装成普通 500。"""
-    accept = request.headers.get('Accept', '') or ''
-    wants_json = ('application/json' in accept and 'text/html' not in accept) \
-        or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
-    if wants_json:
+    # 与全站登录守卫共用 API 请求判定：/api、/api/及其子路径即使 fetch
+    # 默认发送 Accept: */* 也必须返回 JSON；JSON body 与 XHR 同样保持 JSON。
+    if is_api_request():
         response = jsonify(success=False, message='服务器繁忙，请稍后重试')
         response.status_code = 503
     else:
@@ -308,12 +308,15 @@ def _set_security_headers(resp):
     resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
     resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
     resp.headers.setdefault('Referrer-Policy', 'same-origin')
-    if request.endpoint == 'static' and resp.status_code in {200, 304}:
-        # 文件名尚未内容指纹化，只给 Flask 根 static 入口短期强缓存。不能设置
-        # SEND_FILE_MAX_AGE_DEFAULT，否则受鉴权保护的 send_file 下载也会变成公有缓存。
-        resp.cache_control.no_cache = None
+    if request.endpoint == 'static' and resp.status_code in {200, 206, 304}:
+        # 现有 Monaco 与常规 JS/CSS 都使用稳定文件名，没有可校验的完整内容指纹；
+        # 每次使用 ETag/Last-Modified 重验证，避免发布后浏览器继续执行旧入口。
+        # 不能设置 SEND_FILE_MAX_AGE_DEFAULT，否则受鉴权保护的下载也会受影响。
         resp.cache_control.public = True
-        resp.cache_control.max_age = _STATIC_CACHE_MAX_AGE_SECONDS
+        resp.cache_control.no_cache = True
+        resp.cache_control.max_age = 0
+        resp.cache_control.must_revalidate = True
+        resp.cache_control.immutable = None
     if _CONTENT_SECURITY_POLICY:
         resp.headers.setdefault('Content-Security-Policy', _CONTENT_SECURITY_POLICY)
     return resp

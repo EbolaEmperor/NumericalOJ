@@ -20,21 +20,19 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 | --- | --- | --- | --- |
 | `FLASK_DEBUG` | bool | `false` | 本地调试开关；生产必须关闭。 |
 | `SESSION_COOKIE_SECURE` | bool | `false` | 仅 HTTPS 部署时开启 Secure Cookie。 |
-| `STATIC_CACHE_MAX_AGE_SECONDS` | int | `3600` | Flask 静态资源的浏览器缓存时长；资源尚未内容指纹化，因此默认只缓存 1 小时。 |
 | `CONTENT_SECURITY_POLICY` | string/空 | 空 | 空值使用应用内兼容性 CSP。 |
 | `CSRF_TRUSTED_ORIGINS` | string[] | `[]` | 反向代理造成内外 Origin 不同时的可信公开 Origin。 |
 | `LOG_LEVEL` | string | `INFO` | 应用日志级别。 |
 | `LOG_TRUSTED_PROXY_CIDRS` | string[] | `[]` | 唯一可信反向代理网段；空值不信任转发 IP。 |
 | `WEB_GUNICORN_THREADS` | int | `256` | 单个 gthread worker 的请求线程数，服务 256 常态、512 峰值在线用户产生的 SSE 与短时点击突发；在线用户不等于同时请求。有效范围 128–512。 |
-| `WEB_GUNICORN_CONNECTIONS` | int | `1024` | gthread worker 同时维护的客户端连接上限；按 512 峰值在线浏览器各一条 SSE 和一条 HTTP keep-alive 预留，有效范围 256–4096。 |
+| `WEB_GUNICORN_CONNECTIONS` | int | `1024` | gthread worker 同时维护的客户端连接上限；按 512 峰值在线浏览器各一条 SSE 和一条 HTTP keep-alive 预留，有效范围 256–4096，且不得小于 `WEB_GUNICORN_THREADS`。 |
 | `WEB_GUNICORN_BACKLOG` | int | `512` | worker 繁忙时的监听队列上限，实际还受内核 `somaxconn` 限制；有效范围 128–8192。 |
-| `WEB_SSE_MAX_CONNECTIONS` | int | `192` | 单 Web 进程允许的页面 SSE 长连接数，必须满足 `1 <= WEB_SSE_MAX_CONNECTIONS < WEB_GUNICORN_THREADS`，剩余线程用于普通页面、静态资源与健康检查。 |
+| `WEB_SSE_MAX_CONNECTIONS` | int | `192` | 单 Web 进程允许的页面 SSE 长连接数，必须满足 `1 <= WEB_SSE_MAX_CONNECTIONS <= min(WEB_GUNICORN_THREADS, WEB_GUNICORN_CONNECTIONS) - 64`，显式保留至少 64 个普通请求槽位。 |
 | `MYSQL_CONNECT_TIMEOUT` | int | `5` | MySQL 建连超时，单位秒。 |
 | `MYSQL_POOL_MIN_SIZE` | int | `2` | 每进程连接池最小连接数。 |
 | `MYSQL_POOL_MAX_SIZE` | int | `6` | 每进程连接池最大连接数。 |
 | `MYSQL_POOL_WAIT_TIMEOUT` | int | `3` | 等待池连接的超时，单位秒。 |
 | `MYSQL_POOL_RECYCLE_SECONDS` | int | `1200` | 连接回收周期，单位秒。 |
-| `MYSQL_POOL_HEALTH_CHECK_INTERVAL_SECONDS` | float | `30` | 最近一次成功使用后跳过冗余 PING 的时长；回收周期仍是硬上限。 |
 | `MYSQL_WEB_POOL_MAX_SIZE` | int | `24` | Web 进程的连接池上限；Celery 等进程仍使用通用上限。 |
 | `MYSQL_WEB_POOL_WAIT_TIMEOUT_SECONDS` | float | `0.05` | Web 连接池耗尽时的短等待上限；超时返回带 `Retry-After` 的 503，保护 100ms 交互目标。 |
 

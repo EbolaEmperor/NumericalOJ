@@ -37,7 +37,17 @@ await build({
   format: "iife",
 });
 
-await copyFile(
-  "node_modules/@leanprover/unicode-input/LICENSE",
-  `${outputDirectory}/lean4-unicode-input.LICENSE`,
-);
+await Promise.all([
+  copyFile(
+    "node_modules/monaco-editor/LICENSE",
+    `${outputDirectory}/LICENSE`,
+  ),
+  copyFile(
+    "node_modules/monaco-editor/ThirdPartyNotices.txt",
+    `${outputDirectory}/ThirdPartyNotices.txt`,
+  ),
+  copyFile(
+    "node_modules/@leanprover/unicode-input/LICENSE",
+    `${outputDirectory}/lean4-unicode-input.LICENSE`,
+  ),
+]);

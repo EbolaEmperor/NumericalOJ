@@ -1,5 +1,6 @@
 """无需浏览器状态的前端静态 JavaScript 契约。"""
 
+import json
 import re
 import shutil
 import subprocess
@@ -43,6 +44,19 @@ JAVASCRIPT_ASSETS = (
     "static/app/site-config.js",
     "static/app/submissions/detail.js",
 )
+
+
+def test_frontend_node_runtime_is_pinned_consistently():
+    expected = (ROOT / ".node-version").read_text().strip()
+    package = json.loads((ROOT / "package.json").read_text())
+    lock = json.loads((ROOT / "package-lock.json").read_text())
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    assert expected == "22.23.2"
+    assert package["engines"]["node"] == expected
+    assert package["volta"]["node"] == expected
+    assert lock["packages"][""]["engines"]["node"] == expected
+    assert workflow.count("node-version: '22.23.2'") == 2
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
@@ -533,6 +547,28 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
     ):
         assert symbol in built_minimal
     assert "prepareTextMateHighlighting" not in built_minimal
+
+
+def test_monaco_distribution_carries_the_upstream_license():
+    build_script = (ROOT / "scripts" / "build_monaco.mjs").read_text()
+    license_asset = ROOT / "static" / "vendor" / "monaco" / "LICENSE"
+
+    assert '"node_modules/monaco-editor/LICENSE"' in build_script
+    assert '`${outputDirectory}/LICENSE`' in build_script
+    license_text = license_asset.read_text()
+    assert "The MIT License (MIT)" in license_text
+    assert "Copyright (c) 2016 - present Microsoft Corporation" in license_text
+    assert "The above copyright notice and this permission notice" in license_text
+
+    notices_asset = (
+        ROOT / "static" / "vendor" / "monaco" / "ThirdPartyNotices.txt"
+    )
+    assert '"node_modules/monaco-editor/ThirdPartyNotices.txt"' in build_script
+    assert '`${outputDirectory}/ThirdPartyNotices.txt`' in build_script
+    notices_text = notices_asset.read_text()
+    assert "THIRD-PARTY SOFTWARE NOTICES AND INFORMATION" in notices_text
+    assert "nodejs path library" in notices_text
+    assert "END OF vscode-swift NOTICES AND INFORMATION" in notices_text
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")

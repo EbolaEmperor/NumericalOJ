@@ -14,14 +14,17 @@ import hashlib
 import json
 import re
 import secrets
-import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
-from oj_modules.infrastructure.mysql import get_db_connection
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted, get_db_connection
 from oj_modules.security.credentials import verify_password
+from oj_modules.shared.singleflight_cache import (
+    BoundedSingleFlightTTLCache,
+    SingleFlightTimeout,
+)
 
 
 MASKED_SECRET = "********"
@@ -30,8 +33,9 @@ UNLOCK_CONFIRMATION = "我已阅读上述内容，我清楚后果，我坚持要
 ENDPOINT_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
 EMBEDDING_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
 _MAIL_SETTINGS_CACHE_TTL_SECONDS = 5.0
-_mail_settings_cache_lock = threading.Lock()
-_mail_settings_cache = None
+_mail_settings_cache = BoundedSingleFlightTTLCache(
+    ttl_seconds=_MAIL_SETTINGS_CACHE_TTL_SECONDS,
+)
 
 LLM_PROTOCOLS = ("openai", "anthropic")
 LLM_CATEGORIES = ("omni", "text", "vision", "embedding")
@@ -1301,32 +1305,32 @@ def _public_mail_settings(row, *, include_secret=False):
 
 
 def _invalidate_mail_settings_cache():
-    global _mail_settings_cache
-    with _mail_settings_cache_lock:
-        _mail_settings_cache = None
+    _mail_settings_cache.invalidate()
 
 
-def get_mail_settings(*, include_secret=False):
-    """读取低频全站邮件配置，并合并模板并发渲染产生的重复查询。"""
-    global _mail_settings_cache
-    now = time.monotonic()
-    with _mail_settings_cache_lock:
-        cached = _mail_settings_cache
-        if cached is not None and now < cached[0]:
-            row = cached[1]
-        else:
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT * FROM site_mail_settings WHERE id=1")
-                    loaded = cursor.fetchone()
-                row = dict(loaded) if loaded else None
-                _mail_settings_cache = (
-                    time.monotonic() + _MAIL_SETTINGS_CACHE_TTL_SECONDS,
-                    row,
-                )
-            finally:
-                conn.close()
+def _load_mail_settings_row():
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM site_mail_settings WHERE id=1")
+            loaded = cursor.fetchone()
+        return dict(loaded) if loaded else None
+    finally:
+        conn.close()
+
+
+def get_mail_settings(*, include_secret=False, wait_timeout_seconds=None):
+    """读取低频全站邮件配置，并有界合并模板并发产生的重复查询。"""
+    try:
+        row = _mail_settings_cache.get(
+            _load_mail_settings_row,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+    except SingleFlightTimeout as exc:
+        raise MySQLPoolExhausted(
+            1040,
+            "邮件配置正在加载，请稍后重试",
+        ) from exc
     return _public_mail_settings(row, include_secret=include_secret)
 
 
