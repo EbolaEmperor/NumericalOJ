@@ -566,6 +566,26 @@ def test_public_and_mine_lists_are_database_backed(monkeypatch):
     assert mine == []
 
 
+def test_public_project_limit_is_applied_before_rows_are_serialized(monkeypatch):
+    connection = _Connection([])
+    connection.fake_cursor.fetchall = lambda: [
+        _project_row(slug="first-vibe"),
+        _project_row(slug="second-vibe"),
+        _project_row(slug="third-vibe"),
+    ]
+    monkeypatch.setattr(services, "get_db_connection", lambda: connection)
+
+    projects = services.list_public_projects(limit=2)
+
+    assert [project["slug"] for project in projects] == [
+        "first-vibe", "second-vibe",
+    ]
+    query, params = connection.fake_cursor.calls[0]
+    assert query.endswith("ORDER BY p.is_featured DESC, RAND() LIMIT %s")
+    assert params == (2,)
+    assert connection.closed is True
+
+
 def test_only_owner_gets_workflow_enrichment_on_explicit_public_detail(monkeypatch):
     row = _project_row(
         latest_review_note="PRIVATE latest note",

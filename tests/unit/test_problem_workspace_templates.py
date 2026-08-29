@@ -259,11 +259,26 @@ def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     ) in detail
     assert "data-numoj-markdown" in detail
     assert detail.count("app/markdown-rendering.css") == 1
-    assert detail.count("vendor/mermaid/mermaid.min.js") == 1
+    assert "mathjax_lazy=true" in detail
+    assert detail.count("vendor/mermaid/mermaid.min.js") == 0
+    assert detail.count("vendor/shiki-markdown/highlighter.js") == 0
+    assert detail.count("app/editor-semantic-tokens.js") == 0
     assert detail.count("app/markdown-rendering.js") == 1
-    assert detail.index("vendor/mermaid/mermaid.min.js") < detail.index(
-        "app/markdown-rendering.js"
-    )
+
+    loader = (repo / "static/app/rich-content-assets.js").read_text()
+    mathjax_component = (
+        repo / "templates/components/layout/mathjax.html"
+    ).read_text()
+    for asset in (
+        "vendor/mathjax/tex-mml-chtml.js",
+        "vendor/mermaid/mermaid.min.js",
+        "vendor/shiki-markdown/highlighter.js",
+        "app/editor-semantic-tokens.js",
+    ):
+        assert asset in mathjax_component
+    assert "needsMath" in loader
+    assert "needsMermaid" in loader
+    assert "needsStructuredCode" in loader
 
     inline_math_rule = _braced_block(
         markdown_css,

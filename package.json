@@ -2,10 +2,11 @@
   "name": "numericaloj-frontend-assets",
   "private": true,
   "scripts": {
-    "build:frontend": "npm run build:monaco && npm run build:markdown-highlighter && npm run build:mermaid",
+    "build:frontend": "npm run build:monaco && npm run build:markdown-highlighter && npm run build:mermaid && npm run build:precompress",
     "build:markdown-highlighter": "node scripts/build_markdown_code_highlighter.mjs",
     "build:mermaid": "node scripts/build_mermaid.mjs",
     "build:monaco": "node scripts/build_monaco.mjs",
+    "build:precompress": "node scripts/precompress_static.mjs",
     "test:frontend": "node --test tests/frontend/*.test.cjs"
   },
   "devDependencies": {

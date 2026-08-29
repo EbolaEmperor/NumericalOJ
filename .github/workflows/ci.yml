@@ -31,9 +31,7 @@ jobs:
         run: |
           generated_status="$(
             git status --porcelain=v1 --untracked-files=all -- \
-              static/vendor/monaco \
-              static/vendor/mermaid \
-              static/vendor/shiki-markdown
+              static
           )"
           if [ -n "$generated_status" ]; then
             printf '%s\n' "$generated_status"

@@ -4,7 +4,7 @@
 import os
 import secrets
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Response, jsonify, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException
 from celery import Celery
 
@@ -78,6 +78,8 @@ from oj_modules.infrastructure.redis import (
     create_blocking_redis_client,
     create_text_redis_client,
 )
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from oj_modules.shared.static_delivery import PrecompressedStaticFlask
 from oj_modules.api.registry import API_BLUEPRINTS
 from oj_modules.tasks.registry import (
     apply_agent_concurrency_limit,
@@ -166,7 +168,7 @@ def _load_secret_key():
     return new_key
 
 
-app = Flask(__name__)
+app = PrecompressedStaticFlask(__name__)
 app.secret_key = _load_secret_key()
 # DEBUG 默认关闭：生产环境绝不能开 Werkzeug 交互式调试器（源码/变量泄露 + RCE 控制台）。
 # 本地开发可在 .env 设 FLASK_DEBUG=true。
@@ -174,6 +176,10 @@ app.config['DEBUG'] = bool(getattr(_cfg, 'FLASK_DEBUG', False))
 # 即便 DEBUG 关闭也保留模板热重载，保证「scp 模板即生效」的前端快速路径不受影响。
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
+_STATIC_CACHE_MAX_AGE_SECONDS = max(
+    0,
+    int(getattr(_cfg, 'STATIC_CACHE_MAX_AGE_SECONDS', 3600)),
+)
 # 会话 Cookie 加固：HttpOnly 防 JS 窃取；SameSite=Lax 阻断跨站 POST CSRF；
 # Secure 仅在 HTTPS 下回传（默认关闭以兼容内网 HTTP，部署 HTTPS 后可在 .env 置 true）。
 app.config.update(
@@ -259,6 +265,22 @@ _CONTENT_SECURITY_POLICY = (
 )
 
 
+@app.errorhandler(MySQLPoolExhausted)
+def _handle_mysql_pool_exhausted(_error):
+    """数据库并发已饱和时做显式背压，避免排队数秒后伪装成普通 500。"""
+    accept = request.headers.get('Accept', '') or ''
+    wants_json = ('application/json' in accept and 'text/html' not in accept) \
+        or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    if wants_json:
+        response = jsonify(success=False, message='服务器繁忙，请稍后重试')
+        response.status_code = 503
+    else:
+        # 不渲染模板：模板全局上下文本身会读数据库，池耗尽时会再次失败。
+        response = Response('服务器繁忙，请稍后重试', status=503, mimetype='text/plain')
+    response.headers['Retry-After'] = '1'
+    return response
+
+
 @app.errorhandler(Exception)
 def _handle_unexpected_error(e):
     # HTTP 异常（404/403/abort 等）按原样返回，保持各自语义。
@@ -286,6 +308,12 @@ def _set_security_headers(resp):
     resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
     resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
     resp.headers.setdefault('Referrer-Policy', 'same-origin')
+    if request.endpoint == 'static' and resp.status_code in {200, 304}:
+        # 文件名尚未内容指纹化，只给 Flask 根 static 入口短期强缓存。不能设置
+        # SEND_FILE_MAX_AGE_DEFAULT，否则受鉴权保护的 send_file 下载也会变成公有缓存。
+        resp.cache_control.no_cache = None
+        resp.cache_control.public = True
+        resp.cache_control.max_age = _STATIC_CACHE_MAX_AGE_SECONDS
     if _CONTENT_SECURITY_POLICY:
         resp.headers.setdefault('Content-Security-Policy', _CONTENT_SECURITY_POLICY)
     return resp

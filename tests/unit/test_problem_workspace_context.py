@@ -5,6 +5,7 @@ from flask import Flask
 
 from oj_modules.problems import catalog as problem_catalog
 from oj_modules.problems import context as problem_context
+from oj_modules.api import problem_api
 from oj_modules.routes import problem_core_routes
 
 
@@ -12,8 +13,36 @@ def _stub_base_context(monkeypatch):
     monkeypatch.setattr(
         problem_context,
         "_base_problem_list_context",
-        lambda: {"now": datetime(2026, 7, 22, 11, 35)},
+        lambda **_kwargs: {"now": datetime(2026, 7, 22, 11, 35)},
     )
+
+
+def test_problem_list_statistics_are_opt_in(monkeypatch):
+    today_counts = MagicMock(return_value=(12, 7))
+    trend_counts = MagicMock(return_value=(["2026-07-22"], [12]))
+    monkeypatch.setattr(problem_context, "get_today_submission_counts", today_counts)
+    monkeypatch.setattr(
+        problem_context,
+        "get_last_10_days_counts_from_counter",
+        trend_counts,
+    )
+
+    html_context = problem_context._base_problem_list_context()
+
+    assert "total_submissions" not in html_context
+    assert "daily_counts" not in html_context
+    today_counts.assert_not_called()
+    trend_counts.assert_not_called()
+
+    api_context = problem_context._base_problem_list_context(
+        include_statistics=True,
+    )
+
+    assert api_context["total_submissions"] == 12
+    assert api_context["total_accepted"] == 7
+    assert api_context["daily_counts"] == [12]
+    today_counts.assert_called_once_with()
+    trend_counts.assert_called_once_with()
 
 
 def test_problem_catalog_cache_invalidation_keeps_original_scope(monkeypatch):
@@ -234,13 +263,13 @@ def test_problem_detail_uses_all_visible_class_homeworks_regardless_of_entry(mon
     )
     load_homeworks = MagicMock(
         return_value={
-            "C1": [
-                {"kind": "ranking", "problem_id": 7, "ddl": "wrong"},
-                {"kind": "problem", "problem_id": 7, "ddl": "correct"},
-            ]
+            "problem_exists": True,
+            "rows": [{"id": 2, "class_en": "C1", "problem_id": 7, "ddl": "correct"}],
         }
     )
-    monkeypatch.setattr(problem_context, "_get_homeworks_for_classes", load_homeworks)
+    monkeypatch.setattr(
+        problem_context, "get_problem_homework_deadline_state", load_homeworks,
+    )
     monkeypatch.setattr(
         problem_context,
         "get_submission_summaries_by_user_and_problem",
@@ -254,7 +283,7 @@ def test_problem_detail_uses_all_visible_class_homeworks_regardless_of_entry(mon
 
     assert error is None
     assert context["homework"]["ddl"] == "correct"
-    load_homeworks.assert_called_once_with(1, ["C1"], username="admin")
+    load_homeworks.assert_called_once_with(7, ["C1"], verify_problem=False)
 
     load_homeworks.reset_mock()
     context, error = problem_context.build_problem_detail_context(
@@ -262,7 +291,7 @@ def test_problem_detail_uses_all_visible_class_homeworks_regardless_of_entry(mon
     )
     assert error is None
     assert context["homework"]["ddl"] == "correct"
-    load_homeworks.assert_called_once_with(1, ["C1"], username="admin")
+    load_homeworks.assert_called_once_with(7, ["C1"], verify_problem=False)
 
 
 def test_problem_task_agent_can_read_only_its_scoped_problem(monkeypatch):
@@ -358,10 +387,13 @@ def test_student_problem_detail_lists_all_class_deadlines_regardless_of_entry(mo
     )
     monkeypatch.setattr(
         problem_context,
-        "_get_homeworks_for_classes",
+        "get_problem_homework_deadline_state",
         lambda *_args, **_kwargs: {
-            "C1": [{"kind": "problem", "problem_id": 7, "ddl": "first-class"}],
-            "C2": [{"kind": "problem", "problem_id": 7, "ddl": "selected-class"}]
+            "problem_exists": True,
+            "rows": [
+                {"id": 1, "class_en": "C1", "problem_id": 7, "ddl": "first-class"},
+                {"id": 2, "class_en": "C2", "problem_id": 7, "ddl": "selected-class"},
+            ],
         },
     )
     monkeypatch.setattr(
@@ -399,14 +431,15 @@ def test_student_problem_detail_reports_expired_homework_submission_warning(monk
     )
     monkeypatch.setattr(
         problem_context,
-        "_get_homeworks_for_classes",
+        "get_problem_homework_deadline_state",
         lambda *_args, **_kwargs: {
-            "C1": [{
+            "problem_exists": True,
+            "rows": [{
                 "id": 3,
-                "kind": "problem",
+                "class_en": "C1",
                 "problem_id": 7,
                 "ddl": datetime(2026, 1, 1),
-            }]
+            }],
         },
     )
     monkeypatch.setattr(
@@ -425,6 +458,49 @@ def test_student_problem_detail_reports_expired_homework_submission_warning(monk
     assert context["submit_block_reason"] == ""
     assert context["submit_warning"]["code"] == "homework_deadline_passed"
     assert context["submit_warning"]["homeworks"][0]["class_cn"] == "一班"
+
+
+def test_deadline_warning_api_uses_lightweight_context(monkeypatch):
+    app = Flask(__name__)
+    app.secret_key = "test"
+    app.register_blueprint(problem_api.problem_api_bp)
+    monkeypatch.setattr(
+        problem_api,
+        "current_user",
+        lambda: {"id": 8, "username": "student", "is_admin": 0},
+    )
+    warning = {
+        "code": "homework_deadline_passed",
+        "message": "已截止",
+        "homeworks": [{"class_en": "C1", "class_cn": "一班", "ddl": "2026-01-01 00:00"}],
+    }
+    lightweight = MagicMock(return_value=(
+        {"problem_id": 7, "submit_warning": warning},
+        None,
+    ))
+    monkeypatch.setattr(
+        problem_api,
+        "build_problem_deadline_warning_context",
+        lightweight,
+    )
+    monkeypatch.setattr(
+        problem_api,
+        "build_problem_detail_context",
+        MagicMock(side_effect=AssertionError("轻量接口不应构建完整题目详情")),
+    )
+
+    response = app.test_client().get("/api/problems/7/deadline-warning")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "success": True,
+        "problem_id": 7,
+        "submit_warning": warning,
+    }
+    lightweight.assert_called_once_with(
+        {"id": 8, "username": "student", "is_admin": 0},
+        7,
+    )
 
 
 def test_problem_routes_forward_class_query_and_open_total_library(monkeypatch):

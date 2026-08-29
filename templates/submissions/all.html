@@ -115,6 +115,11 @@
     {{ submission_table(submissions, user) }}
     {{ submission_detail_panel(submissions | length > 0, user) }}
   </section>
+  {% if initial_submission_panel %}
+  <script type="application/json" data-initial-submission-panel>
+    {{ initial_submission_panel|tojson }}
+  </script>
+  {% endif %}
 </div>
 
 {% if user.is_admin %}

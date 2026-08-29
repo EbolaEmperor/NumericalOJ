@@ -152,6 +152,41 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
     )
 
 
+def test_monaco_component_selects_minimal_oj_and_full_repository_bundles():
+    component = (
+        TEMPLATES / "components" / "editor" / "monaco.html"
+    ).read_text(encoding="utf-8")
+    repository = (TEMPLATES / "repository" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "monaco_bundle|default('minimal')" in component
+    assert "else 'editor-minimal'" in component
+    assert "monaco_asset_stem ~ '.js'" in component
+    assert "monaco_asset_stem ~ '.css'" in component
+    assert "monaco_fetch_priority|default('auto')" in component
+    assert component.count("fetchPriority =") == 2
+    assert "{% with monaco_bundle='full' %}" in repository
+
+    agent_workspace = (
+        TEMPLATES / "admin" / "agent_task_detail.html"
+    ).read_text(encoding="utf-8")
+    assert "{% with monaco_bundle='full' %}" in agent_workspace
+
+    for name in ("problems/detail.html", "submissions/detail.html"):
+        source = (TEMPLATES / name).read_text(encoding="utf-8")
+        assert "{% with monaco_fetch_priority='low' %}" in source
+
+    for name in (
+        "problems/create.html",
+        "problems/edit.html",
+        "problems/detail.html",
+        "submissions/detail.html",
+    ):
+        source = (TEMPLATES / name).read_text(encoding="utf-8")
+        assert "monaco_bundle='full'" not in source
+
+
 def test_all_code_surfaces_share_monaco_at_every_breakpoint():
     monaco_include = "{% include 'components/editor/monaco.html' %}"
     for name in (
@@ -257,6 +292,10 @@ def test_problem_dashboard_defers_class_activity_until_after_first_render():
     assert "data-numoj-activity-loading" in desktop_list
     assert "正在加载班级活跃度" in desktop_list
     assert "fetch(activityUrl" in dashboard
+    assert "data-activity-cache-key" in desktop_list
+    assert "window.sessionStorage.getItem(cacheKey)" in dashboard
+    assert "ACTIVITY_CACHE_TTL_MS = 30_000" in dashboard
+    assert 'window.requestIdleCallback(refresh, { timeout: 800 })' in dashboard
     assert "grid.replaceChildren(fragment)" in dashboard
     assert "min-height: 144px;" in layout
 
@@ -276,6 +315,9 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     monaco_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text(
         encoding="utf-8"
     )
+    monaco_runtime = (
+        ROOT / "frontend" / "monaco" / "runtime.js"
+    ).read_text(encoding="utf-8")
     editor_runtime = (
         ROOT / "static" / "app" / "code-editor-runtime.js"
     ).read_text(encoding="utf-8")
@@ -356,20 +398,20 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert 'monaco.editor.setTheme("dark-plus")' in editor_runtime
     assert "theme: editorTheme" in editor
     assert "'semanticHighlighting.enabled': true" in editor
-    assert 'from "@shikijs/monaco"' in monaco_entry
-    assert "darkPlusSemanticRules" in monaco_entry
-    assert '{ token: "class", foreground: "4EC9B0" }' in monaco_entry
-    assert '{ token: "method", foreground: "DCDCAA" }' in monaco_entry
+    assert 'from "@shikijs/monaco"' in monaco_runtime
+    assert "darkPlusSemanticRules" in monaco_runtime
+    assert '{ token: "class", foreground: "4EC9B0" }' in monaco_runtime
+    assert '{ token: "method", foreground: "DCDCAA" }' in monaco_runtime
     assert 'from "@shikijs/langs/cpp"' in monaco_entry
     assert 'from "../lean4-grammar.js"' in monaco_entry
-    assert 'from "../lean4-unicode-input.js"' in monaco_entry
+    assert 'from "../lean4-unicode-input.js"' in monaco_runtime
     assert "attachLean4UnicodeInput(instance)" in editor
-    assert 'from "../lean4-theme.js"' in monaco_entry
+    assert 'from "../lean4-theme.js"' in monaco_runtime
     lean_theme = (ROOT / "frontend" / "lean4-theme.js").read_text(
         encoding="utf-8"
     )
     assert 'from "@shikijs/themes/dark-plus"' in lean_theme
-    assert "createJavaScriptRegexEngine()" in monaco_entry
+    assert "createJavaScriptRegexEngine()" in monaco_runtime
 
 
 def test_unified_submission_list_owns_one_component_and_asset_pair():

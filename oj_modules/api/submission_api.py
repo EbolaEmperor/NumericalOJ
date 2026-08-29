@@ -28,9 +28,9 @@ from oj_modules.problems.presentation import (
 )
 from oj_modules.problems.lean_workspace import get_submission_lean_workspace
 from oj_modules.submissions.presentation import (
+    build_submission_panel_payload as _build_submission_panel_payload,
     load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
     render_written_markdown_to_html as _render_written_markdown_to_html,
-    summarize_panel_test_points as _summarize_panel_test_points,
 )
 
 
@@ -66,45 +66,28 @@ def _submission_detail_payload(submission):
 
 
 def _submission_panel_payload(submission, raw_problem, user):
-    test_points = _summarize_panel_test_points(submission.get("test_points"))
-    problem = {
-        "id": (raw_problem or {}).get("id") or submission.get("problem_id"),
-        "title": (
-            _strip_problem_title_tags((raw_problem or {}).get("title"))
-            or _strip_problem_title_tags(submission.get("problem_title"))
-        ),
-        "lang": (raw_problem or {}).get("lang") or "",
-        "max_score": (raw_problem or {}).get("max_score"),
-    }
-    if not problem.get("max_score") and test_points:
-        problem["max_score"] = len(test_points)
-
     submission_id = int(submission["id"])
-    return {
-        "submission": {
-            "id": submission_id,
-            "username": submission.get("username"),
-            "problem_id": submission.get("problem_id"),
-            "problem_title": _strip_problem_title_tags(
-                submission.get("problem_title")
-            ),
-            "problem_type": submission.get("problem_type"),
-            "status": submission.get("status"),
-            "score": submission.get("score"),
-            "created_at": submission.get("created_at"),
-        },
-        "problem": problem,
-        "test_points": test_points,
-        "detail_url": url_for(
+    panel_submission = dict(submission)
+    panel_submission["problem_title"] = _strip_problem_title_tags(
+        submission.get("problem_title")
+    )
+    panel_problem = dict(raw_problem or {})
+    panel_problem["title"] = _strip_problem_title_tags(
+        panel_problem.get("title")
+    )
+    return _build_submission_panel_payload(
+        panel_submission,
+        panel_problem,
+        detail_url=url_for(
             "submission.submission_detail",
             submission_id=submission_id,
         ),
-        "status_stream_url": url_for(
+        status_stream_url=url_for(
             "submission.submission_status_stream",
             submission_id=submission_id,
             view="panel",
         ),
-        "rejudge_url": (
+        rejudge_url=(
             url_for(
                 "rejudge.rejudge_submission",
                 submission_id=submission_id,
@@ -112,7 +95,7 @@ def _submission_panel_payload(submission, raw_problem, user):
             if is_admin(user)
             else None
         ),
-    }
+    )
 
 
 @submission_api_bp.route("/submissions", methods=["GET"])

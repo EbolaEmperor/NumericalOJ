@@ -1,5 +1,13 @@
 {% extends "layouts/site.html" %}
 
+{# 认证页没有站点导航、模型图标或 Bootstrap 交互，避免首屏下载无用运行时。 #}
+{% block icon_assets %}{% endblock %}
+{% block model_family_assets %}{% endblock %}
+{% block bootstrap_runtime %}{% endblock %}
+{% block site_early_runtime %}{% endblock %}
+{% block choice_picker_assets %}{% endblock %}
+{% block site_runtime %}{% endblock %}
+
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/auth.css') }}">

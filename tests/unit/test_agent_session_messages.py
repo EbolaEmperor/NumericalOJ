@@ -325,6 +325,53 @@ def test_terminal_snapshot_keeps_the_current_promoted_queue_message(monkeypatch)
     assert params == ("session-1", "turn-next")
 
 
+def test_queue_snapshot_reuses_loaded_session_and_only_queries_messages(
+    monkeypatch,
+):
+    connection = _ScriptedConnection(
+        all_values=[[_message_row(status="sent", final_task_id="turn-current")]],
+    )
+    monkeypatch.setattr(messages, "get_db_connection", lambda: connection)
+    loaded_session = {
+        "session_id": "session-1",
+        "current_task_id": "turn-current",
+        "status": "Running",
+        "queue_paused": 1,
+        "queue_pause_reason": "等待确认",
+    }
+
+    snapshot = messages.get_agent_session_queue_snapshot(
+        "session-1",
+        loaded_session=loaded_session,
+    )
+
+    assert snapshot["running"] is True
+    assert snapshot["queue_paused"] is True
+    assert snapshot["queue_pause_reason"] == "等待确认"
+    assert snapshot["messages"][0]["final_task_id"] == "turn-current"
+    assert len(connection.cursor_instance.calls) == 1
+    query, params = connection.cursor_instance.calls[0]
+    assert "FROM agent_session_messages" in query
+    assert "FROM agent_sessions" not in query
+    assert params == ("session-1", "turn-current")
+
+
+def test_queue_snapshot_rejects_a_mismatched_loaded_session(monkeypatch):
+    monkeypatch.setattr(
+        messages,
+        "get_db_connection",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("会话不匹配时不应读取数据库")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="loaded_session"):
+        messages.get_agent_session_queue_snapshot(
+            "session-1",
+            loaded_session={"session_id": "session-2"},
+        )
+
+
 def test_delivery_ack_checks_linked_task_and_is_idempotent(monkeypatch):
     first = _ScriptedConnection(one_values=[{
         "status": "dispatching",

@@ -35,6 +35,49 @@ def summarize_panel_test_points(raw_points):
     return points
 
 
+def build_submission_panel_payload(
+    submission,
+    raw_problem,
+    *,
+    detail_url,
+    status_stream_url,
+    rejudge_url=None,
+):
+    """从已授权的提交行构造列表详情面板的最小公开字段。"""
+    submission = submission or {}
+    raw_problem = raw_problem or {}
+    test_points = summarize_panel_test_points(submission.get("test_points"))
+    problem = {
+        "id": raw_problem.get("id") or submission.get("problem_id"),
+        "title": (
+            raw_problem.get("title")
+            or submission.get("problem_title")
+        ),
+        "lang": raw_problem.get("lang") or "",
+        "max_score": raw_problem.get("max_score"),
+    }
+    if not problem["max_score"] and test_points:
+        problem["max_score"] = len(test_points)
+
+    return {
+        "submission": {
+            "id": int(submission["id"]),
+            "username": submission.get("username"),
+            "problem_id": submission.get("problem_id"),
+            "problem_title": submission.get("problem_title"),
+            "problem_type": submission.get("problem_type"),
+            "status": submission.get("status"),
+            "score": submission.get("score"),
+            "created_at": submission.get("created_at"),
+        },
+        "problem": problem,
+        "test_points": test_points,
+        "detail_url": detail_url,
+        "status_stream_url": status_stream_url,
+        "rejudge_url": rejudge_url,
+    }
+
+
 def _read_text_file_safe(path, max_chars=200000):
     if not path or not os.path.isfile(path):
         return ""
@@ -138,6 +181,7 @@ def load_written_submission_latex_and_error(submission):
 
 
 __all__ = [
+    "build_submission_panel_payload",
     "load_written_submission_latex_and_error",
     "render_written_markdown_to_html",
     "summarize_panel_test_points",

@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  var ACTIVITY_CACHE_TTL_MS = 30_000;
+
   function setHidden(element, hidden) {
     if (element) element.hidden = hidden;
   }
@@ -22,6 +24,12 @@
     var footer = card.querySelector("[data-numoj-activity-footer]");
     var start = card.querySelector("[data-numoj-activity-start]");
     var requestController = null;
+    var idleRequest = null;
+    var cacheKey = [
+      "numoj.classActivity.v1",
+      card.dataset.activityCacheKey || "anonymous",
+      activityUrl || "missing",
+    ].join(":");
 
     function showLoading() {
       setHidden(loading, false);
@@ -77,7 +85,30 @@
       setHidden(footer, false);
     }
 
-    function loadActivity() {
+    function readCache() {
+      try {
+        var entry = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
+        if (!entry || !entry.savedAt || !entry.payload || entry.payload.success === false) {
+          return null;
+        }
+        return entry;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function writeCache(payload) {
+      try {
+        window.sessionStorage.setItem(cacheKey, JSON.stringify({
+          savedAt: Date.now(),
+          payload: payload,
+        }));
+      } catch (_error) {
+        // sessionStorage 不可用时仍可直接请求，不阻断主页面。
+      }
+    }
+
+    function fetchActivity(keepRenderedContent) {
       if (!activityUrl) {
         showError("班级活跃度地址不可用");
         return;
@@ -85,7 +116,7 @@
 
       if (requestController) requestController.abort();
       requestController = new AbortController();
-      showLoading();
+      if (!keepRenderedContent) showLoading();
 
       fetch(activityUrl, {
         headers: { Accept: "application/json" },
@@ -103,16 +134,56 @@
             return payload;
           });
         })
-        .then(renderActivity)
+        .then(function (payload) {
+          writeCache(payload);
+          renderActivity(payload);
+        })
         .catch(function (fetchError) {
-          if (fetchError.name !== "AbortError") showError(fetchError.message);
+          if (fetchError.name !== "AbortError" && !keepRenderedContent) {
+            showError(fetchError.message);
+          }
         });
     }
 
-    if (retry) retry.addEventListener("click", loadActivity);
+    function loadActivity() {
+      var cached = readCache();
+      if (cached) renderActivity(cached.payload);
+      if (cached && Date.now() - cached.savedAt < ACTIVITY_CACHE_TTL_MS) return;
+      if (!cached) showLoading();
+
+      var refresh = function () {
+        idleRequest = null;
+        fetchActivity(Boolean(cached));
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        idleRequest = window.requestIdleCallback(refresh, { timeout: 800 });
+      } else {
+        idleRequest = window.setTimeout(refresh, 0);
+      }
+    }
+
+    if (retry) retry.addEventListener("click", function () {
+      fetchActivity(false);
+    });
     window.addEventListener("pagehide", function () {
-      if (requestController) requestController.abort();
-    }, { once: true });
+      if (requestController) {
+        requestController.abort();
+        requestController = null;
+      }
+      if (idleRequest !== null) {
+        if (typeof window.cancelIdleCallback === "function") {
+          window.cancelIdleCallback(idleRequest);
+        } else {
+          window.clearTimeout(idleRequest);
+        }
+        idleRequest = null;
+      }
+    });
+    window.addEventListener("pageshow", function (event) {
+      if (event.persisted && !requestController && idleRequest === null) {
+        loadActivity();
+      }
+    });
     loadActivity();
   }
 

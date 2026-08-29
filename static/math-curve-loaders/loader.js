@@ -45,6 +45,7 @@
   let lastInteractionTarget = null;
   let overlay = null;
   const overlayRequests = new Map();
+  let pendingNavigationTarget = null;
 
   function customRose(petals, particleCount, trailSpan, durationMs, pulseDurationMs, rotationDurationMs) {
     return {
@@ -414,6 +415,7 @@
         const form = event.target;
         if (event.defaultPrevented || !form || form.dataset.noMathCurveLoader === 'true') return;
         if (form.target && form.target !== '_self') return;
+        markNavigationPending(event.submitter || form);
         begin(form.dataset.loaderLabel || '正在提交…', { delay: 120 });
       }, 0);
     });
@@ -432,9 +434,29 @@
       // 除了显式 download 属性，也识别由脚本动态生成的常见下载 URL，避免遗漏。
       if (isDownloadDestination(destination)) return;
       window.setTimeout(() => {
-        if (!event.defaultPrevented) begin(link.dataset.loaderLabel || '正在加载页面…', { delay: 140 });
+        if (!event.defaultPrevented) {
+          markNavigationPending(link);
+          begin(link.dataset.loaderLabel || '正在加载页面…', { delay: 140 });
+        }
       }, 0);
     });
+  }
+
+  function markNavigationPending(target) {
+    clearNavigationPending();
+    pendingNavigationTarget = target;
+    document.documentElement.classList.add('numoj-navigation-pending');
+    if (!target || !target.setAttribute) return;
+    target.setAttribute('data-numoj-navigation-pending', '');
+    target.setAttribute('aria-busy', 'true');
+  }
+
+  function clearNavigationPending() {
+    document.documentElement.classList.remove('numoj-navigation-pending');
+    if (!pendingNavigationTarget || !pendingNavigationTarget.removeAttribute) return;
+    pendingNavigationTarget.removeAttribute('data-numoj-navigation-pending');
+    pendingNavigationTarget.removeAttribute('aria-busy');
+    pendingNavigationTarget = null;
   }
 
   function isDownloadDestination(destination) {
@@ -462,6 +484,7 @@
   document.addEventListener('input', trackInteraction, true);
   document.addEventListener('visibilitychange', startAnimation);
   window.addEventListener('pageshow', () => {
+    clearNavigationPending();
     overlayRequests.clear();
     if (overlay) {
       overlay.classList.remove('is-visible');

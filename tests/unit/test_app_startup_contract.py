@@ -7,6 +7,10 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
+from oj_modules import config as app_config
+
 
 ROOT = Path(__file__).resolve().parents[2]
 OJ_PATH = ROOT / 'oj.py'
@@ -191,11 +195,55 @@ def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
 
     assert settings['worker_class'] == 'gthread'
     assert settings['workers'] == 1
-    assert settings['threads'] == 64
+    assert settings['threads'] == 256
+    assert settings['worker_connections'] == 1024
+    assert settings['backlog'] == 512
+    assert settings['sse_max_connections'] == 192
+    assert settings['sse_max_connections'] < settings['threads']
+    assert settings['keepalive'] == 5
+    assert settings['worker_tmp_dir'] == '/dev/shm'
     assert settings['max_requests'] == 0
     assert settings['max_requests_jitter'] == 0
     assert settings['accesslog'] is None
     assert settings['errorlog'] == '-'
+
+
+def test_gunicorn_rejects_sse_limit_that_consumes_every_thread(monkeypatch):
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_THREADS', 128)
+    monkeypatch.setattr(app_config, 'WEB_SSE_MAX_CONNECTIONS', 128)
+
+    with pytest.raises(
+        RuntimeError,
+        match='WEB_SSE_MAX_CONNECTIONS 必须在 1–127 之间',
+    ):
+        runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+
+
+def test_static_cache_is_scoped_away_from_protected_send_file_routes():
+    source = OJ_PATH.read_text(encoding='utf-8')
+
+    assert "request.endpoint == 'static'" in source
+    assert "resp.cache_control.max_age = _STATIC_CACHE_MAX_AGE_SECONDS" in source
+    assert "app.config['SEND_FILE_MAX_AGE_DEFAULT']" not in source
+
+
+def test_mysql_pool_exhaustion_has_template_free_retryable_503_handler():
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_handle_mysql_pool_exhausted'
+    )
+    source = ast.unparse(handler)
+
+    assert any(
+        ast.unparse(decorator) == 'app.errorhandler(MySQLPoolExhausted)'
+        for decorator in handler.decorator_list
+    )
+    assert 'Response(' in source
+    assert 'status=503' in source
+    assert "response.headers['Retry-After'] = '1'" in source
+    assert 'render_template(' not in source
 
 
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
@@ -248,6 +296,10 @@ def test_supervisors_keep_distinct_runtime_controls_and_project_local_logs():
 
     assert len(pidfiles) == len(configs)
     assert len(sockets) == len(configs)
+
+    web_parser = configparser.RawConfigParser()
+    web_parser.read(ROOT / 'deploy' / 'supervisor' / 'web.conf', encoding='utf-8')
+    assert web_parser.getint('supervisord', 'minfds') == 8192
 
 
 def test_local_development_supervisor_also_uses_project_local_logs():

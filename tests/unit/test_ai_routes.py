@@ -1,7 +1,9 @@
 import json
 
+import pytest
 from flask import Flask
 
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted
 from oj_modules.routes import ai_routes
 
 
@@ -82,3 +84,26 @@ def test_stream_prepared_code_marks_returns_cached_result_without_worker():
 
     assert [name for name, _payload in events] == ["ready", "result", "done"]
     assert events[1][1]["source"] == "cache"
+
+
+def test_sync_code_marks_preserves_mysql_pool_backpressure(monkeypatch):
+    monkeypatch.setattr(
+        ai_routes,
+        "_prepare_ai_code_marks_request",
+        lambda _payload: prepared_request(),
+    )
+    monkeypatch.setattr(
+        ai_routes,
+        "_generate_prepared_ai_code_marks",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            MySQLPoolExhausted(1040, "pool busy")
+        ),
+    )
+
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/ask_ai_code_marks",
+        method="POST",
+        json={},
+    ), pytest.raises(MySQLPoolExhausted):
+        ai_routes.ask_ai_code_marks()

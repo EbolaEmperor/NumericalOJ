@@ -334,7 +334,9 @@
   </dialog>
 </section>
 
+{% with monaco_bundle='full' %}
 {% include 'components/editor/monaco.html' %}
+{% endwith %}
 {% endblock %}
 
 {% block scripts %}
