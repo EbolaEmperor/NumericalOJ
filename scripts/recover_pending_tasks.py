@@ -40,6 +40,16 @@ def _parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def _repair_known_agent_cleanup_sessions():
+    """延迟导入一次性修复，确保 worker 存活检查先于任何数据访问。"""
+
+    from scripts.repair_agent_cleanup_sessions_20260829 import (
+        repair_agent_cleanup_sessions_20260829,
+    )
+
+    return repair_agent_cleanup_sessions_20260829()
+
+
 def main(argv=None):
     args = _parse_args(argv)
     if not args.confirm_celery_stopped:
@@ -71,8 +81,12 @@ def main(argv=None):
         ) or "unknown"
         raise SystemExit(f"拒绝恢复：仍有 Celery worker 响应 ping：{names}")
 
+    repaired_agent_sessions = _repair_known_agent_cleanup_sessions()
     recover_pending_after_all_workers_stopped()
-    print("未完成任务恢复与后台调度链重建已完成。")
+    print(
+        f"指定 Agent 清理异常会话已修复 {repaired_agent_sessions} 个；"
+        "未完成任务恢复与后台调度链重建已完成。"
+    )
     return 0
 
 
