@@ -298,7 +298,7 @@ def test_checkpoint_ignores_runtime_tmp_sockets_but_preserves_other_state(
     assert not (saved_runtime / "tmp" / "nested" / "agent.sock").exists()
 
 
-def test_checkpoint_preserves_runtime_tmp_fifos(checkpoint_workspace):
+def test_checkpoint_ignores_fifos_without_modifying_source(checkpoint_workspace):
     public = workspace.ensure_agent_workspace("session")
     runtime_tmp = public / ".runtime" / "tmp"
     runtime_tmp.mkdir(parents=True)
@@ -310,22 +310,14 @@ def test_checkpoint_preserves_runtime_tmp_fifos(checkpoint_workspace):
         "runtime-tmp-fifo",
     )
 
-    saved_fifo = (
+    checkpoint_fifo = (
         _checkpoint(checkpoint_workspace, "runtime-tmp-fifo")
         / "runtime"
         / "tmp"
         / "agent.pipe"
     )
     assert stat.S_ISFIFO(os.stat(source_fifo).st_mode)
-    assert stat.S_ISFIFO(os.stat(saved_fifo).st_mode)
-
-    source_fifo.unlink()
-    runtime_checkpoints.restore_agent_runtime_checkpoint(
-        "session",
-        "runtime-tmp-fifo",
-    )
-
-    assert stat.S_ISFIFO(os.stat(source_fifo).st_mode)
+    assert not checkpoint_fifo.exists()
 
 
 def test_checkpoint_discards_codex_arg0_absolute_symlinks(
