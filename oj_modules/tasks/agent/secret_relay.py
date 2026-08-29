@@ -11,12 +11,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+import errno
 import hmac
 import http.client
 import http.server
 import json
+import os
 import re
 import secrets
+import select
 import socket
 import threading
 import time
@@ -42,8 +45,13 @@ _TEMPORARY_SECRET_BYTES = 32
 _MAX_REQUESTS_PER_RELAY = 2048
 _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _UPSTREAM_TIMEOUT_SECONDS = 600
-_HANDLER_SHUTDOWN_TIMEOUT_SECONDS = 5
+_CONNECT_POLL_INTERVAL_SECONDS = 0.2
 _CLIENT_TIMEOUT_SECONDS = 30
+# handler 可能正阻塞在受 _CLIENT_TIMEOUT_SECONDS 约束的客户端读写中。
+# 清理等待必须覆盖该边界并留出线程 finally 收束时间；否则正常的连接关闭
+# 会在 5 秒后被误判为凭据代理泄漏。
+_HANDLER_SHUTDOWN_TIMEOUT_SECONDS = _CLIENT_TIMEOUT_SECONDS + 5
+_HANDLER_SHUTDOWN_POLL_SECONDS = 0.2
 _ENDPOINT_USAGE_GATE_WAIT_SECONDS = 30
 _ENDPOINT_USAGE_DRAIN_SECONDS = _UPSTREAM_TIMEOUT_SECONDS + 5
 _DEFAULT_CACHED_HIT_RATE_PERCENT = 90
@@ -156,6 +164,84 @@ class AgentSecretRelayUsageHardStopError(AgentSecretRelayUsageError):
     """模型请求完成记账后触发用户额度硬停。"""
 
 
+def _open_interruptible_stream_connection(
+    host,
+    port,
+    timeout,
+    source_address,
+    handle,
+):
+    """替代 socket.create_connection，使上游建连可被 relay close() 中断。
+
+    未连接的 socket 先登记到中断句柄；relay 关闭后最多一个轮询周期即放弃建连，
+    避免 handler 在凭据已被丢弃后仍长时间停留在建连阶段，导致关闭等待超时。
+    DNS 解析本身不可中断，由操作系统限时；每次地址尝试沿用原有整体超时。
+    """
+
+    if handle is not None and handle.is_closed():
+        raise OSError("secret relay is closing")
+    per_attempt_timeout = (
+        None
+        if timeout is None or timeout is socket._GLOBAL_DEFAULT_TIMEOUT
+        else timeout
+    )
+    last_error = None
+    for _family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
+        host,
+        port,
+        0,
+        socket.SOCK_STREAM,
+    ):
+        if handle is not None and handle.is_closed():
+            raise OSError("secret relay is closing")
+        sock = socket.socket(_family, _type, _proto)
+        try:
+            if source_address:
+                sock.bind(source_address)
+            if handle is not None and not handle.remember_socket(sock):
+                raise OSError("secret relay is closing")
+            sock.setblocking(False)
+            error = sock.connect_ex(sockaddr)
+            deadline = (
+                None
+                if per_attempt_timeout is None
+                else time.monotonic() + float(per_attempt_timeout)
+            )
+            while error in (errno.EINPROGRESS, errno.EWOULDBLOCK):
+                wait = _CONNECT_POLL_INTERVAL_SECONDS
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise socket.timeout("Connection timed out")
+                    wait = min(wait, remaining)
+                try:
+                    select.select([], [sock], [], wait)
+                except (InterruptedError, OSError, ValueError):
+                    pass
+                if handle is not None and handle.is_closed():
+                    raise OSError("secret relay is closing")
+                error = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if error == 0:
+                    break
+            if error:
+                raise OSError(error, os.strerror(error), sockaddr)
+            sock.setblocking(True)
+            if per_attempt_timeout is not None:
+                sock.settimeout(per_attempt_timeout)
+            return sock
+        except OSError as exc:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            if str(exc) == "secret relay is closing":
+                raise
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise OSError("getaddrinfo 未返回可用地址")
+
+
 class _RelayConnectionMixin:
     """让 relay 能在 HTTPConnection 懒连接完成时立即取得底层 socket。"""
 
@@ -165,9 +251,33 @@ class _RelayConnectionMixin:
 
     def connect(self):
         original_create_connection = getattr(self, "_create_connection", None)
-        if self._relay_connect_host and original_create_connection is not None:
-            pinned_host = self._relay_connect_host
+        handle = getattr(self, "_relay_interrupt_handle", None)
+        pinned_host = self._relay_connect_host
+        # 新版 Python 的 HTTPConnection.__init__ 会把默认的
+        # socket.create_connection 写进实例属性；只有与之不同的可调用对象
+        # 才是调用方（如测试）显式注入的连接工厂。
+        injected = (
+            original_create_connection is not None
+            and original_create_connection is not socket.create_connection
+        )
+        managed = handle is not None and not injected
+        if managed:
+            def create_managed_connection(
+                address,
+                timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                source_address=None,
+            ):
+                target_host = pinned_host or address[0]
+                return _open_interruptible_stream_connection(
+                    target_host,
+                    address[1],
+                    timeout,
+                    source_address,
+                    handle,
+                )
 
+            self._create_connection = create_managed_connection
+        elif pinned_host and original_create_connection is not None:
             def create_pinned_connection(address, *args, **kwargs):
                 return original_create_connection(
                     (pinned_host, address[1]),
@@ -183,7 +293,6 @@ class _RelayConnectionMixin:
         finally:
             if original_create_connection is not None:
                 self._create_connection = original_create_connection
-        handle = getattr(self, "_relay_interrupt_handle", None)
         if handle is not None and not handle.remember_socket(self.sock):
             raise OSError("secret relay is closing")
 
@@ -204,7 +313,11 @@ class _InterruptibleHTTPConnection:
         self._lock = threading.Lock()
         self._socket = None
         self._closed = False
+        self._close_event = threading.Event()
         connection._relay_interrupt_handle = self
+
+    def is_closed(self):
+        return self._close_event.is_set()
 
     @staticmethod
     def _shutdown_socket(upstream_socket):
@@ -245,6 +358,8 @@ class _InterruptibleHTTPConnection:
                 "sock",
                 None,
             )
+        # 先通知仍停留在建连轮询中的调用方，再中断已建立的 socket。
+        self._close_event.set()
         # socket.makefile() 可能仍被 HTTPResponse.read1() 持有。仅调用
         # HTTPConnection.close() 不能可靠唤醒另一个线程里的阻塞读取。
         self._shutdown_socket(upstream_socket)
@@ -1325,14 +1440,33 @@ class _BoundedSecretRelayServer(_BoundedIdentityRelayServer):
                 self._handler_condition.notify_all()
 
     def wait_for_handlers(self, timeout):
+        """等待请求处理线程全部退出，返回截止时仍未退出的数量。"""
+
         deadline = time.monotonic() + max(0.0, float(timeout))
         with self._handler_condition:
             while self._pending_handlers:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return False
+                    return len(self._pending_handlers)
                 self._handler_condition.wait(timeout=remaining)
-            return True
+            return 0
+
+    def drain_handlers(self, timeout):
+        """持续中断已登记连接，并等待所有 handler 的 finally 完成。"""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            # close_active_requests() 保留登记项直到 handler 自己注销，因此
+            # 可以安全地重复中断仍在客户端读写或上游响应读取中的连接。
+            self.close_active_requests()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self.wait_for_handlers(0)
+            pending = self.wait_for_handlers(
+                min(_HANDLER_SHUTDOWN_POLL_SECONDS, remaining),
+            )
+            if not pending:
+                return 0
 
 
 class _AgentSecretRelay:
@@ -1993,13 +2127,19 @@ class _AgentSecretRelay:
                 return
             self._closed = True
             self._active = False
+            # 唤醒 usage 记账闸门与 drain 等待者；它们必须立即观察 _closed
+            # 并 fail-closed 退出，而不是睡到自己的 30/605 秒截止，把
+            # close() 的限时等待拖成清理失败。
+            self._usage_condition.notify_all()
             server = self.server
             thread = self.thread
+        # relay 一进入 closing 就立即擦除对象上的长期及临时凭据。已经进入
+        # handler 的局部快照只能由下方确认 handler 退出来完成生命周期收束。
+        self._forget_credentials()
         if server is None:
-            self._forget_credentials()
             return
         cleanup_error = None
-        handlers_stopped = False
+        pending_handlers = 0
         try:
             server.close_active_requests()
             server.shutdown()
@@ -2010,23 +2150,28 @@ class _AgentSecretRelay:
         except Exception as exc:
             cleanup_error = cleanup_error or exc
         try:
-            handlers_stopped = server.wait_for_handlers(
+            pending_handlers = server.drain_handlers(
                 _HANDLER_SHUTDOWN_TIMEOUT_SECONDS,
             )
         except Exception as exc:
             cleanup_error = cleanup_error or exc
         if thread is not None:
             thread.join(timeout=_HANDLER_SHUTDOWN_TIMEOUT_SECONDS)
-        # 关闭后立即丢弃 relay 内真实/临时凭据映射；即使调用方仍错误地
-        # 持有对象，也无法再次完成认证或向上游注入长期密钥。
-        self._forget_credentials()
-        if (
-            cleanup_error is not None
-            or not handlers_stopped
-            or (thread is not None and thread.is_alive())
-        ):
+        thread_alive = thread is not None and thread.is_alive()
+        if cleanup_error is not None or pending_handlers or thread_alive:
+            reasons = []
+            if cleanup_error is not None:
+                reasons.append(
+                    f"清理动作异常 {type(cleanup_error).__name__}: "
+                    f"{cleanup_error}"
+                )
+            if pending_handlers:
+                reasons.append(f"{pending_handlers} 个转发请求未在限时内退出")
+            if thread_alive:
+                reasons.append("转发服务线程未退出")
             raise AgentSecretRelayCleanupError(
-                "外部服务密钥代理未能彻底关闭"
+                f"外部服务密钥代理（{self.mode}）未能彻底关闭："
+                + "；".join(reasons)
             ) from cleanup_error
 
 

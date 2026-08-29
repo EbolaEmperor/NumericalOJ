@@ -324,16 +324,23 @@ def test_recovery_cli_rejects_remote_worker_ping(monkeypatch):
 def test_recovery_cli_runs_only_after_both_liveness_checks_pass(monkeypatch, capsys):
     monkeypatch.setattr(recover_pending_tasks, '_local_numoj_celery_processes', lambda: [])
     recovered = []
+    repaired = []
     fake_oj = types.ModuleType('oj')
     fake_oj.celery = types.SimpleNamespace(
         control=types.SimpleNamespace(ping=lambda timeout: []),
     )
     fake_oj.recover_pending_after_all_workers_stopped = lambda: recovered.append(True)
     monkeypatch.setitem(sys.modules, 'oj', fake_oj)
+    monkeypatch.setattr(
+        recover_pending_tasks,
+        '_repair_known_agent_cleanup_sessions',
+        lambda: repaired.append(True) or 2,
+    )
 
     assert recover_pending_tasks.main(['--confirm-celery-stopped']) == 0
+    assert repaired == [True]
     assert recovered == [True]
-    assert '恢复与后台调度链重建已完成' in capsys.readouterr().out
+    assert '指定 Agent 清理异常会话已修复 2 个' in capsys.readouterr().out
 
 
 def test_local_worker_detection_uses_process_listing(monkeypatch):

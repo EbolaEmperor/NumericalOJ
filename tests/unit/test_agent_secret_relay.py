@@ -1,9 +1,11 @@
 import io
+import errno
 import http.client
 from email.message import Message
 import json
 import socket
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1023,9 +1025,9 @@ def test_close_reports_cleanup_error_when_a_handler_does_not_exit():
         def server_close(self):
             lifecycle.append("server-close")
 
-        def wait_for_handlers(self, timeout):
-            lifecycle.append(("wait-handlers", timeout))
-            return False
+        def drain_handlers(self, timeout):
+            lifecycle.append(("drain-handlers", timeout))
+            return 2
 
     class FakeThread:
         def join(self, timeout):
@@ -1041,7 +1043,7 @@ def test_close_reports_cleanup_error_when_a_handler_does_not_exit():
 
     with pytest.raises(
         relay.AgentSecretRelayCleanupError,
-        match="未能彻底关闭",
+        match="未能彻底关闭：2 个转发请求未在限时内退出",
     ):
         instance.close()
 
@@ -1049,11 +1051,261 @@ def test_close_reports_cleanup_error_when_a_handler_does_not_exit():
         "close-active",
         "shutdown",
         "server-close",
-        ("wait-handlers", relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS),
+        ("drain-handlers", relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS),
         ("join", relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS),
     ]
     assert instance.real_credential == ""
     assert instance.temporary_secret == ""
+
+
+def test_handler_shutdown_budget_covers_client_timeout():
+    assert (
+        relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS
+        > relay._CLIENT_TIMEOUT_SECONDS
+    )
+
+
+class _StalledConnectSocket:
+    """connect_ex 永远停留在 EINPROGRESS 的假 socket，模拟上游建连卡死。"""
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def bind(self, _address):
+        pass
+
+    def setblocking(self, _flag):
+        pass
+
+    def settimeout(self, _timeout):
+        pass
+
+    def connect_ex(self, _address):
+        return errno.EINPROGRESS
+
+    def getsockopt(self, _level, _option):
+        return errno.EINPROGRESS
+
+    def fileno(self):
+        raise OSError("fake socket")
+
+    def shutdown(self, _how):
+        pass
+
+    def close(self):
+        pass
+
+
+def _patch_relay_socket_class(monkeypatch, socket_class):
+    """只替换 relay 模块命名空间里的 socket 构造。
+
+    直接替换全局 socket.socket 会连服务端 accept() 新建连接的路径一起替换，
+    导致 relay 监听套接字无法接受客户端连接。
+    """
+
+    real_socket_module = relay.socket
+
+    class _SocketModuleProxy:
+        socket = socket_class
+
+        def __getattr__(self, name):
+            return getattr(real_socket_module, name)
+
+    monkeypatch.setattr(relay, "socket", _SocketModuleProxy())
+
+
+def test_open_interruptible_connection_aborts_when_relay_closes(monkeypatch):
+    class FakeConnection:
+        sock = None
+
+        def close(self):
+            pass
+
+    _patch_relay_socket_class(monkeypatch, _StalledConnectSocket)
+    handle = relay._InterruptibleHTTPConnection(FakeConnection())
+
+    def close_soon():
+        time.sleep(0.3)
+        handle.close()
+
+    closer = threading.Thread(target=close_soon, daemon=True)
+    closer.start()
+    started = time.monotonic()
+    with pytest.raises(OSError, match="secret relay is closing"):
+        relay._open_interruptible_stream_connection(
+            "192.0.2.1",
+            443,
+            30,
+            None,
+            handle,
+        )
+    # 中断必须发生在轮询周期内，而不是等满 30 秒连接超时。
+    assert time.monotonic() - started < 5
+    closer.join(timeout=2)
+
+    with pytest.raises(OSError, match="secret relay is closing"):
+        relay._open_interruptible_stream_connection(
+            "192.0.2.1",
+            443,
+            30,
+            None,
+            handle,
+        )
+
+
+def test_close_interrupts_handler_blocked_in_upstream_connect(monkeypatch):
+    monkeypatch.setattr(relay, "_relay_bind_host", lambda: "127.0.0.1")
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="http://192.0.2.1/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+    )
+    instance.start()
+    relay_port = instance.server.server_address[1]
+    client_done = threading.Event()
+    connection = http.client.HTTPConnection("127.0.0.1", relay_port, timeout=5)
+    try:
+        connection.connect()
+    except OSError:
+        pytest.skip("当前测试沙箱禁止绑定 loopback 端口")
+
+    def call_relay():
+        try:
+            connection.request(
+                "POST",
+                "/v1/messages",
+                body=b"{}",
+                headers={
+                    "Authorization": f"Bearer {instance.temporary_secret}",
+                    "Content-Type": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            try:
+                response.read()
+            except (OSError, http.client.HTTPException):
+                pass
+        except (OSError, http.client.HTTPException):
+            pass
+        finally:
+            connection.close()
+            client_done.set()
+
+    client_thread = threading.Thread(target=call_relay, daemon=True)
+    # 客户端连接建立后再替换 relay 侧 socket 构造，只让上游建连停滞。
+    _patch_relay_socket_class(monkeypatch, _StalledConnectSocket)
+    client_thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            time.monotonic() < deadline
+            and not instance.server._pending_handlers
+        ):
+            time.sleep(0.05)
+        assert instance.server._pending_handlers
+        started = time.monotonic()
+        instance.close()
+        assert time.monotonic() - started < (
+            relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS
+        )
+        assert client_done.wait(timeout=2)
+        assert not instance.server._pending_handlers
+        assert instance.real_credential == ""
+        assert instance.temporary_secret == ""
+    finally:
+        if not instance._closed:
+            instance.close()
+        client_thread.join(timeout=2)
+        assert not client_thread.is_alive()
+
+
+def test_close_wakes_gate_waiter_and_aborts_stalled_connect(monkeypatch):
+    monkeypatch.setattr(relay, "_relay_bind_host", lambda: "127.0.0.1")
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="http://192.0.2.1/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: {"applied": True},
+    )
+    instance.start()
+    relay_port = instance.server.server_address[1]
+    connection_a = http.client.HTTPConnection("127.0.0.1", relay_port, timeout=5)
+    connection_b = http.client.HTTPConnection("127.0.0.1", relay_port, timeout=5)
+    try:
+        connection_a.connect()
+        connection_b.connect()
+    except OSError:
+        pytest.skip("当前测试沙箱禁止绑定 loopback 端口")
+    # 两个客户端连接建立后再替换 relay 侧 socket 构造，让 A 的上游建连停滞。
+    _patch_relay_socket_class(monkeypatch, _StalledConnectSocket)
+    done = {"a": threading.Event(), "b": threading.Event()}
+
+    def call(tag, connection):
+        try:
+            connection.request(
+                "POST",
+                "/v1/messages",
+                body=b"{}",
+                headers={
+                    "Authorization": f"Bearer {instance.temporary_secret}",
+                    "Content-Type": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            try:
+                response.read()
+            except (OSError, http.client.HTTPException):
+                pass
+        except (OSError, http.client.HTTPException):
+            pass
+        finally:
+            connection.close()
+            done[tag].set()
+
+    thread_a = threading.Thread(
+        target=call, args=("a", connection_a), daemon=True
+    )
+    thread_b = threading.Thread(
+        target=call, args=("b", connection_b), daemon=True
+    )
+    try:
+        thread_a.start()
+        deadline = time.monotonic() + 5
+        inflight = False
+        while time.monotonic() < deadline:
+            with instance._usage_condition:
+                inflight = instance._endpoint_request_inflight
+            if inflight:
+                break
+            time.sleep(0.05)
+        assert inflight
+        thread_b.start()
+        deadline = time.monotonic() + 5
+        while (
+            time.monotonic() < deadline
+            and len(instance.server._pending_handlers) < 2
+        ):
+            time.sleep(0.05)
+        assert len(instance.server._pending_handlers) == 2
+        started = time.monotonic()
+        instance.close()
+        # close() 必须立刻唤醒闸门等待者并中断建连，而不是等待闸门 30 秒截止。
+        assert time.monotonic() - started < (
+            relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS
+        )
+        assert done["a"].wait(timeout=2)
+        assert done["b"].wait(timeout=2)
+        thread_a.join(timeout=2)
+        thread_b.join(timeout=2)
+        assert not thread_a.is_alive()
+        assert not thread_b.is_alive()
+        assert not instance.server._pending_handlers
+    finally:
+        if not instance._closed:
+            instance.close()
+        thread_a.join(timeout=2)
+        thread_b.join(timeout=2)
 
 
 def test_interruptible_connection_shutdowns_saved_socket_before_close():

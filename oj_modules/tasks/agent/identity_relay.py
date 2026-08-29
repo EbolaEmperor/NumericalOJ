@@ -663,8 +663,8 @@ class _BoundedIdentityRelayServer(http.server.ThreadingHTTPServer):
             self._closing = True
             clients = list(self._active_clients)
             upstreams = list(self._active_upstreams)
-            self._active_clients.clear()
-            self._active_upstreams.clear()
+            # 资源只能由对应 handler 的 finally 注销。这里提前清空会丢失
+            # 仍在运行的连接，使后续清理无法再次中断或确认它们的状态。
         for response in upstreams:
             try:
                 response.close()
