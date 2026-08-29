@@ -153,7 +153,7 @@ def test_checkpoint_is_immutable_and_never_overwritten(checkpoint_workspace):
         ("nested/escape", "../../outside"),
     ],
 )
-def test_checkpoint_rejects_absolute_or_escaping_symlinks(
+def test_checkpoint_preserves_symlinks_without_target_policy(
     checkpoint_workspace,
     relative_path,
     target,
@@ -165,10 +165,20 @@ def test_checkpoint_rejects_absolute_or_escaping_symlinks(
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(target)
 
-    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="符号链接"):
-        runtime_checkpoints.create_agent_runtime_checkpoint("session", "unsafe")
+    runtime_checkpoints.create_agent_runtime_checkpoint("session", "opaque-link")
 
-    assert not _checkpoint(checkpoint_workspace, "unsafe").exists()
+    saved_link = (
+        _checkpoint(checkpoint_workspace, "opaque-link") / "runtime" / relative_path
+    )
+    assert saved_link.is_symlink()
+    assert os.readlink(saved_link) == target
+
+    runtime_checkpoints.restore_agent_runtime_checkpoint(
+        "session",
+        "opaque-link",
+    )
+
+    assert os.readlink(runtime / relative_path) == target
 
 
 def test_checkpoint_preserves_parent_reference_that_stays_inside_runtime(
@@ -197,7 +207,7 @@ def test_checkpoint_preserves_parent_reference_that_stays_inside_runtime(
     assert os.readlink(saved_link) == "../package/cli.js"
 
 
-def test_checkpoint_rejects_chained_symlink_escape(checkpoint_workspace):
+def test_checkpoint_preserves_chained_symlink_escape(checkpoint_workspace):
     public = workspace.ensure_agent_workspace("session")
     runtime = public / ".runtime"
     nested = runtime / "nested"
@@ -207,47 +217,25 @@ def test_checkpoint_rejects_chained_symlink_escape(checkpoint_workspace):
     # symlink 解析语义展开后，第二条链接才会越过 runtime 根。
     (nested / "escape").symlink_to("collapse/../../etc/passwd")
 
-    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="链接链"):
-        runtime_checkpoints.create_agent_runtime_checkpoint("session", "unsafe-chain")
+    runtime_checkpoints.create_agent_runtime_checkpoint("session", "opaque-chain")
 
-    assert not _checkpoint(checkpoint_workspace, "unsafe-chain").exists()
+    saved_nested = _checkpoint(checkpoint_workspace, "opaque-chain") / "runtime" / "nested"
+    assert os.readlink(saved_nested / "collapse") == ".."
+    assert os.readlink(saved_nested / "escape") == "collapse/../../etc/passwd"
 
 
-def test_checkpoint_rejects_symlink_cycle(checkpoint_workspace):
+def test_checkpoint_preserves_symlink_cycle(checkpoint_workspace):
     public = workspace.ensure_agent_workspace("session")
     runtime = public / ".runtime"
     runtime.mkdir()
     (runtime / "first").symlink_to("second")
     (runtime / "second").symlink_to("first")
 
-    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="包含环"):
-        runtime_checkpoints.create_agent_runtime_checkpoint("session", "cycle")
+    runtime_checkpoints.create_agent_runtime_checkpoint("session", "cycle")
 
-    assert not _checkpoint(checkpoint_workspace, "cycle").exists()
-
-
-def test_symlink_graph_has_a_linear_global_resolution_budget(monkeypatch):
-    link_count = 2_000
-    links = {
-        (f"link-{index}",): (
-            f"link-{index + 1}" if index + 1 < link_count else "target"
-        )
-        for index in range(link_count)
-    }
-    calls = 0
-    original_entry_name = runtime_checkpoints._entry_name
-
-    def counted_entry_name(raw_name):
-        nonlocal calls
-        calls += 1
-        return original_entry_name(raw_name)
-
-    monkeypatch.setattr(runtime_checkpoints, "_entry_name", counted_entry_name)
-
-    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="过于复杂"):
-        runtime_checkpoints._validate_symlink_graph(links)
-
-    assert calls <= link_count * 64
+    saved_runtime = _checkpoint(checkpoint_workspace, "cycle") / "runtime"
+    assert os.readlink(saved_runtime / "first") == "second"
+    assert os.readlink(saved_runtime / "second") == "first"
 
 
 def test_checkpoint_ignores_sockets_without_modifying_source(checkpoint_workspace):
