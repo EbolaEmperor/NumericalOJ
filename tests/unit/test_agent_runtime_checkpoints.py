@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import socket
 import stat
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +33,17 @@ def _checkpoint(root: Path, checkpoint_id: str = "checkpoint") -> Path:
         / runtime_checkpoints._CHECKPOINTS_DIRECTORY
         / checkpoint_id
     )
+
+
+def _create_unix_socket_node(path: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="numoj-agent-socket-") as short_tmp:
+        short_socket_path = os.path.join(short_tmp, "agent.sock")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(short_socket_path)
+        finally:
+            server.close()
+        os.replace(short_socket_path, path)
 
 
 def test_create_and_restore_runtime_preserves_workspace_files(
@@ -237,26 +250,33 @@ def test_symlink_graph_has_a_linear_global_resolution_budget(monkeypatch):
     assert calls <= link_count * 64
 
 
-def test_checkpoint_rejects_special_files(checkpoint_workspace):
+def test_checkpoint_ignores_sockets_without_modifying_source(checkpoint_workspace):
     public = workspace.ensure_agent_workspace("session")
     runtime = public / ".runtime"
     runtime.mkdir()
-    os.mkfifo(runtime / "agent.pipe")
+    source_socket = runtime / "agent.sock"
+    _create_unix_socket_node(source_socket)
 
-    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="只允许"):
-        runtime_checkpoints.create_agent_runtime_checkpoint("session", "special")
+    runtime_checkpoints.create_agent_runtime_checkpoint("session", "special")
 
-    assert not _checkpoint(checkpoint_workspace, "special").exists()
+    assert stat.S_ISSOCK(os.stat(source_socket).st_mode)
+    assert not (
+        _checkpoint(checkpoint_workspace, "special")
+        / "runtime"
+        / "agent.sock"
+    ).exists()
 
 
-def test_checkpoint_discards_root_runtime_tmp_with_special_files(
+def test_checkpoint_ignores_runtime_tmp_sockets_but_preserves_other_state(
     checkpoint_workspace,
 ):
     public = workspace.ensure_agent_workspace("session")
     runtime = public / ".runtime"
     runtime_tmp = runtime / "tmp" / "nested"
     runtime_tmp.mkdir(parents=True)
-    os.mkfifo(runtime_tmp / "agent.pipe")
+    (runtime_tmp / "state.json").write_text("persist tmp\n", encoding="utf-8")
+    socket_path = runtime_tmp / "agent.sock"
+    _create_unix_socket_node(socket_path)
     (runtime / "home").mkdir()
     (runtime / "home" / "state.json").write_text("persist\n", encoding="utf-8")
 
@@ -265,13 +285,47 @@ def test_checkpoint_discards_root_runtime_tmp_with_special_files(
         "runtime-tmp-baseline",
     )
 
-    assert not (runtime / "tmp").exists()
+    assert (runtime_tmp / "state.json").read_text() == "persist tmp\n"
+    assert stat.S_ISSOCK(os.stat(socket_path).st_mode)
     saved_runtime = _checkpoint(
         checkpoint_workspace,
         "runtime-tmp-baseline",
     ) / "runtime"
     assert (saved_runtime / "home" / "state.json").read_text() == "persist\n"
-    assert not (saved_runtime / "tmp").exists()
+    assert (saved_runtime / "tmp" / "nested" / "state.json").read_text() == (
+        "persist tmp\n"
+    )
+    assert not (saved_runtime / "tmp" / "nested" / "agent.sock").exists()
+
+
+def test_checkpoint_preserves_runtime_tmp_fifos(checkpoint_workspace):
+    public = workspace.ensure_agent_workspace("session")
+    runtime_tmp = public / ".runtime" / "tmp"
+    runtime_tmp.mkdir(parents=True)
+    source_fifo = runtime_tmp / "agent.pipe"
+    os.mkfifo(source_fifo)
+
+    runtime_checkpoints.create_agent_runtime_checkpoint(
+        "session",
+        "runtime-tmp-fifo",
+    )
+
+    saved_fifo = (
+        _checkpoint(checkpoint_workspace, "runtime-tmp-fifo")
+        / "runtime"
+        / "tmp"
+        / "agent.pipe"
+    )
+    assert stat.S_ISFIFO(os.stat(source_fifo).st_mode)
+    assert stat.S_ISFIFO(os.stat(saved_fifo).st_mode)
+
+    source_fifo.unlink()
+    runtime_checkpoints.restore_agent_runtime_checkpoint(
+        "session",
+        "runtime-tmp-fifo",
+    )
+
+    assert stat.S_ISFIFO(os.stat(source_fifo).st_mode)
 
 
 def test_checkpoint_discards_codex_arg0_absolute_symlinks(
