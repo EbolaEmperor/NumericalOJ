@@ -421,6 +421,8 @@ _AGENT_TRACE_STABLE_MESSAGE_FIELDS = (
     'tool_count',
     'is_running',
     'has_error',
+    'event_count',
+    'last_event_order',
 )
 
 
@@ -546,30 +548,21 @@ def _decorate_agent_turns(
             and current_task_id
             and str(turn.get('task_id') or '').strip() == current_task_id
         )
-        if reuse_current_state:
-            hydrated = current_state
-        else:
-            hydrate_state = {
-                'task_id': turn.get('task_id'),
-                'session_id': turn.get('session_id'),
-                'harness': turn.get('harness'),
-                'endpoint_id': turn.get('endpoint_id'),
-                'endpoint_model': turn.get('endpoint_model'),
-                'status': turn.get('status'),
-                'message': turn.get('conclusion') or '',
-            }
-            hydrated = (
-                hydrate_agent_run_snapshot(
-                    hydrate_state,
-                    steer_records=steer_records,
-                )
-                if steer_records is not None
-                else hydrate_agent_run_snapshot(hydrate_state)
-            )
-        # v2 execution_trace 已经只包含公开回复与工作块摘要；首屏可以安全
-        # 渲染这些轻量项目，不再需要为外层“工作详情”安排整轮懒加载。
-        snapshot = _decorate_agent_state_markdown(hydrated)
-        trace = snapshot.get('execution_trace') or {}
+        base_state = current_state if reuse_current_state else {
+            'task_id': turn.get('task_id'),
+            'session_id': turn.get('session_id'),
+            'harness': turn.get('harness'),
+            'endpoint_id': turn.get('endpoint_id'),
+            'endpoint_model': turn.get('endpoint_model'),
+            'status': turn.get('status'),
+            'message': turn.get('conclusion') or '',
+        }
+        # 历史首屏只投影 conclude。公开回复与工作块摘要在用户首次展开
+        # “工作详情”时通过任务状态接口加载，避免为每轮同步 hydrate 时间线。
+        snapshot = _decorate_agent_state_markdown({
+            **base_state,
+            'execution_trace': {},
+        })
         conclusion = str(
             turn.get('conclusion') or snapshot.get('conclusion') or ''
         ).strip()
@@ -578,25 +571,10 @@ def _decorate_agent_turns(
                 {**turn, 'task_id': turn.get('task_id')},
                 conclusion,
             )
-        detail_messages = list(_agent_trace_messages(trace))
-        turn['has_detail'] = bool(detail_messages)
-        turn['detail_messages'] = detail_messages
-        turn['_accepted_steer_messages'] = [
-            {
-                'message_id': str(message.get('message_id') or '').strip(),
-                'user_message': _agent_trace_text(message),
-                'user_message_html': render_rich_markdown(
-                    _agent_trace_text(message)
-                ),
-                'attachments': list(message.get('attachments') or ()),
-                'status': 'sent',
-                'target_task_id': str(turn.get('task_id') or '').strip(),
-            }
-            for message in _agent_trace_messages(trace)
-            if str(message.get('kind') or '').strip().lower() == 'user'
-            and str(message.get('message_id') or '').strip()
-        ]
-        turn['execution_trace'] = trace
+        turn['has_detail'] = bool(str(turn.get('task_id') or '').strip())
+        turn['detail_messages'] = []
+        turn['_accepted_steer_messages'] = []
+        turn['execution_trace'] = {}
         turn['user_message_html'] = render_rich_markdown(turn.get('user_message'))
         turn['conclusion'] = conclusion
         turn['conclusion_html'] = render_rich_markdown(conclusion)
@@ -1248,7 +1226,24 @@ def _hydrate_agent_state_trace_if_needed(state):
     return hydrate_agent_run_snapshot(state)
 
 
-def _get_agent_run_state(task_id, *, decorate_markdown=True):
+def _agent_state_without_trace_messages(state):
+    if not isinstance(state, dict):
+        return state
+    projected = dict(state)
+    trace = projected.get('execution_trace')
+    if isinstance(trace, dict):
+        trace = dict(trace)
+        trace.pop('trace_messages', None)
+        projected['execution_trace'] = trace
+    return projected
+
+
+def _get_agent_run_state(
+    task_id,
+    *,
+    decorate_markdown=True,
+    include_trace=True,
+):
     state = _get_agent_run_snapshot(task_id) if _get_agent_run_snapshot is not None else None
     if isinstance(state, dict):
         if not _is_agent_state_finished(state):
@@ -1263,27 +1258,36 @@ def _get_agent_run_state(task_id, *, decorate_markdown=True):
                 )
             if _is_agent_state_finished(persisted):
                 state = {**state, **persisted}
+        projected = _overlay_agent_celery_terminal(task_id, state)
+        projected = (
+            _hydrate_agent_state_trace_if_needed(projected)
+            if include_trace else _agent_state_without_trace_messages(projected)
+        )
         return _agent_state_for_response(
             task_id,
-            _hydrate_agent_state_trace_if_needed(
-                _overlay_agent_celery_terminal(task_id, state),
-            ),
+            projected,
             decorate_markdown=decorate_markdown,
         )
     state = get_agent_run_by_task_id(task_id)
     if isinstance(state, dict):
+        projected = _overlay_agent_celery_terminal(task_id, state)
+        projected = (
+            hydrate_agent_run_snapshot(projected)
+            if include_trace else _agent_state_without_trace_messages(projected)
+        )
         return _agent_state_for_response(
             task_id,
-            hydrate_agent_run_snapshot(
-                _overlay_agent_celery_terminal(task_id, state),
-            ),
+            projected,
             decorate_markdown=decorate_markdown,
         )
+    projected = _build_agent_state_from_async_result(task_id)
+    projected = (
+        hydrate_agent_run_snapshot(projected)
+        if include_trace else _agent_state_without_trace_messages(projected)
+    )
     return _agent_state_for_response(
         task_id,
-        hydrate_agent_run_snapshot(
-            _build_agent_state_from_async_result(task_id),
-        ),
+        projected,
         decorate_markdown=decorate_markdown,
     )
 
@@ -3324,9 +3328,10 @@ def agent_task_detail(session_id):
     current_state = _get_agent_run_state(
         current_task_id,
         decorate_markdown=False,
+        include_trace=not agent_status_is_terminal(agent_session.get('status')),
     )
     if current_state:
-        # 首屏携带轻量公开时间线；内部事件只在用户展开具体工作块时读取。
+        # 已结束会话首屏只携带 conclude；运行中仍需公开时间线供 SSE 接续。
         current_state = _overlay_agent_session_cleanup_failure(
             current_task_id,
             current_state,

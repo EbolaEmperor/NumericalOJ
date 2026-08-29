@@ -239,7 +239,6 @@
     <div class="agent-conversation-scroll" data-agent-conversation-scroll>
       <div class="agent-conversation-feed" data-agent-turns>
         {% for turn in turns|default([], true) %}
-          {% set detail_messages = turn.detail_messages|default(turn.messages|default(turn.execution_trace.trace_messages|default([], true), true)) %}
           <article class="agent-turn" data-agent-turn
                    data-agent-task-id="{{ turn.task_id }}"
                    data-message-id="{{ turn.message_id|default(turn.task_id, true) }}">
@@ -273,14 +272,16 @@
 
             {% if not (is_running and turn.task_id == current_task_id) %}
             <section class="agent-response">
-              {% if detail_messages or turn.has_detail|default(false) %}
-                <details class="agent-turn-details">
+              {% if turn.has_detail|default(false) %}
+                <details class="agent-turn-details"
+                         data-agent-turn-detail
+                         data-agent-turn-detail-task-id="{{ turn.task_id }}">
                   <summary>
                     <span><i class="fas fa-chevron-right" aria-hidden="true"></i>工作详情</span>
                     {% if turn.duration %}<small>{{ turn.duration }}</small>{% endif %}
                   </summary>
-                  <div class="agent-turn-trace">
-                    {{ trace_messages(detail_messages, turn.task_id) }}
+                  <div class="agent-turn-trace" data-agent-turn-detail-body>
+                    <div class="agent-work-block-placeholder">展开后加载工作详情</div>
                   </div>
                 </details>
               {% endif %}
