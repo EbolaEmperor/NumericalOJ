@@ -70,8 +70,10 @@ def test_initialize_agent_task_workspace_writes_harness_memory_file(
 
     assert actual == workspace_root / "sessions" / "session-01" / "workspace"
     assert (actual / filename).read_text(encoding="utf-8") == (
-        "If you are confused by the user's request, please try reading "
-        f"the {skill_name} skill.\n"
+        "You are now running in the cloud container environment provided by NumOJ."
+        f"You may use the {skill_name} skill to respond to user requests."
+        "Do not attempt to access the system /tmp directory; "
+        "for temporary files, create and use a tmp subdirectory within the current project."
     )
 
 

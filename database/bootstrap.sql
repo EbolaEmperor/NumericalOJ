@@ -1691,7 +1691,7 @@ CREATE TABLE `ranking_submissions` (
   `elo_in_pool` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_rs_user_comp_created` (`username`,`competition_id`,`created_at`,`id`),
+  KEY `idx_rs_user_comp_created` (`username`, `competition_id`, `created_at`, `id`),
   KEY `idx_rs_comp_user` (`competition_id`,`username`),
   KEY `idx_rs_comp_score` (`competition_id`,`score`),
   KEY `idx_rs_comp_created` (`competition_id`,`created_at`),
