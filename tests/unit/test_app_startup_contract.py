@@ -3,15 +3,30 @@ import configparser
 from pathlib import Path
 import runpy
 import sys
+import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pymysql
 import pytest
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import (
+    Flask,
+    Response,
+    copy_current_request_context,
+    jsonify,
+    request,
+    send_from_directory,
+)
+from flask.globals import request_ctx as _flask_request_ctx
 
 from oj_modules import config as app_config
-from oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from oj_modules.infrastructure.mysql import (
+    MySQLPoolExhausted,
+    begin_mysql_pool_exhaustion_tracking,
+    current_mysql_pool_exhaustion,
+    end_mysql_pool_exhaustion_tracking,
+)
 from oj_modules.security.login_guard import is_api_request
 from oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
@@ -363,13 +378,19 @@ def test_static_cache_policy_skips_404_and_non_static_send_file_response():
 
 
 def test_mysql_pool_exhaustion_has_template_free_retryable_503_handler():
+    response_builder = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_mysql_pool_exhausted_response'
+    )
     handler = next(
         node
         for node in _tree().body
         if isinstance(node, ast.FunctionDef)
         and node.name == '_handle_mysql_pool_exhausted'
     )
-    source = ast.unparse(handler)
+    source = ast.unparse(response_builder)
 
     assert any(
         ast.unparse(decorator) == 'app.errorhandler(MySQLPoolExhausted)'
@@ -379,6 +400,25 @@ def test_mysql_pool_exhaustion_has_template_free_retryable_503_handler():
     assert 'status=503' in source
     assert "response.headers['Retry-After'] = '1'" in source
     assert 'render_template(' not in source
+
+
+def test_mysql_pool_tracking_wraps_auth_and_backpressure_precedes_headers():
+    functions = {
+        node.name: node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert (
+        functions['_begin_mysql_pool_exhaustion_request_scope'].lineno
+        < _top_level_call('install_global_login_guard').lineno
+    )
+    # Flask 逆序执行 after_request；后注册的背压转换先生成最终响应，随后
+    # 安全头处理器才能把 CSP 等头写到替换后的 503 上。
+    assert (
+        functions['_enforce_mysql_pool_exhaustion_backpressure'].lineno
+        > functions['_set_security_headers'].lineno
+    )
 
 
 def test_template_globals_never_wait_behind_an_inflight_config_read():
@@ -394,6 +434,12 @@ def test_template_globals_never_wait_behind_an_inflight_config_read():
 
 
 def _mysql_pool_exhaustion_handler():
+    response_builder = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_mysql_pool_exhausted_response'
+    )
     handler = next(
         node
         for node in _tree().body
@@ -409,8 +455,42 @@ def _mysql_pool_exhaustion_handler():
         'jsonify': jsonify,
         'request': request,
     }
-    _execute([handler], namespace)
+    _execute([response_builder, handler], namespace)
     return app, namespace['_handle_mysql_pool_exhausted']
+
+
+def _mysql_pool_backpressure_app():
+    names = {
+        '_begin_mysql_pool_exhaustion_request_scope',
+        '_end_mysql_pool_exhaustion_request_scope',
+        '_mysql_pool_exhausted_response',
+        '_handle_mysql_pool_exhausted',
+        '_enforce_mysql_pool_exhaustion_backpressure',
+    }
+    statements = [
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    assert {node.name for node in statements} == names
+
+    app = Flask(__name__)
+    namespace = {
+        'MySQLPoolExhausted': MySQLPoolExhausted,
+        'Response': Response,
+        'app': app,
+        'begin_mysql_pool_exhaustion_tracking': (
+            begin_mysql_pool_exhaustion_tracking
+        ),
+        'current_mysql_pool_exhaustion': current_mysql_pool_exhaustion,
+        'end_mysql_pool_exhaustion_tracking': end_mysql_pool_exhaustion_tracking,
+        '_flask_request_ctx': _flask_request_ctx,
+        'is_api_request': is_api_request,
+        'jsonify': jsonify,
+        'request': request,
+    }
+    _execute(statements, namespace)
+    return app
 
 
 @pytest.mark.parametrize(
@@ -461,6 +541,146 @@ def test_mysql_pool_exhaustion_keeps_non_api_html_requests_as_plain_text(
     assert response.mimetype == 'text/plain'
     assert response.get_data(as_text=True) == '服务器繁忙，请稍后重试'
     assert response.headers['Retry-After'] == '1'
+
+
+def test_route_local_database_catch_is_rewritten_to_retryable_json_503():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/api/caught')
+    def caught():
+        try:
+            raise MySQLPoolExhausted(1040, 'pool busy')
+        except pymysql.Error:
+            return jsonify(success=False, message='数据库操作失败'), 500
+
+    response = app.test_client().get('/api/caught')
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        'success': False,
+        'message': '服务器繁忙，请稍后重试',
+    }
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_pool_backpressure_preserves_successful_fallback_and_request_isolation():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/api/fallback')
+    def fallback():
+        try:
+            raise MySQLPoolExhausted(1040, 'pool busy')
+        except pymysql.Error:
+            return jsonify(success=True, optional_rows=[])
+
+    @app.get('/api/ok')
+    def ok():
+        return jsonify(success=True)
+
+    client = app.test_client()
+    fallback_response = client.get('/api/fallback')
+    next_response = client.get('/api/ok')
+
+    assert fallback_response.status_code == 200
+    assert fallback_response.get_json() == {
+        'success': True,
+        'optional_rows': [],
+    }
+    assert next_response.status_code == 200
+    assert next_response.get_json() == {'success': True}
+
+
+def test_pool_backpressure_keeps_existing_structured_503_response():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/health/ready')
+    def ready():
+        try:
+            raise MySQLPoolExhausted(1040, 'pool busy')
+        except pymysql.Error:
+            return jsonify(status='unhealthy', mysql=False, redis=True), 503
+
+    response = app.test_client().get('/health/ready')
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        'status': 'unhealthy',
+        'mysql': False,
+        'redis': True,
+    }
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_pool_backpressure_request_scopes_restore_across_nested_contexts():
+    app = _mysql_pool_backpressure_app()
+
+    with app.test_request_context('/api/outer'):
+        app.preprocess_request()
+        outer_error = MySQLPoolExhausted(1040, 'outer request')
+        assert current_mysql_pool_exhaustion() is outer_error
+
+        with app.test_request_context('/api/inner'):
+            app.preprocess_request()
+            assert current_mysql_pool_exhaustion() is None
+            inner_error = MySQLPoolExhausted(1040, 'inner request')
+            assert current_mysql_pool_exhaustion() is inner_error
+
+        assert current_mysql_pool_exhaustion() is outer_error
+
+    assert current_mysql_pool_exhaustion() is None
+
+
+def test_pool_scope_survives_synchronous_copied_request_context():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/api/copied-sync')
+    def copied_sync():
+        @copy_current_request_context
+        def copied_operation():
+            return current_mysql_pool_exhaustion()
+
+        assert copied_operation() is None
+        try:
+            raise MySQLPoolExhausted(1040, 'outer request remains tracked')
+        except pymysql.Error:
+            return jsonify(success=False), 500
+
+    response = app.test_client().get('/api/copied-sync')
+
+    assert response.status_code == 503
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_copied_request_context_thread_cannot_reset_parent_scope():
+    app = _mysql_pool_backpressure_app()
+    worker_errors = []
+    worker_tracking = []
+
+    @app.get('/api/copied-thread')
+    def copied_thread():
+        @copy_current_request_context
+        def copied_operation():
+            MySQLPoolExhausted(1040, 'worker request')
+            worker_tracking.append(current_mysql_pool_exhaustion())
+
+        def run():
+            try:
+                copied_operation()
+            except BaseException as exc:  # teardown token 错位也必须被观测到
+                worker_errors.append(exc)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join()
+        return jsonify(success=True)
+
+    response = app.test_client().get('/api/copied-thread')
+
+    assert response.status_code == 200
+    assert worker_errors == []
+    assert worker_tracking == [None]
+    MySQLPoolExhausted(1040, 'after copied request')
+    assert current_mysql_pool_exhaustion() is None
 
 
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
