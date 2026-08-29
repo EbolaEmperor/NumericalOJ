@@ -829,6 +829,275 @@
       padding: 0 14px;
     }
 
+    .result-dialog {
+      --result-accent: var(--numoj-success);
+      --result-soft: var(--numoj-success-soft);
+      width: min(calc(100% - 24px), 680px);
+      max-height: calc(100dvh - 24px);
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: 13px;
+      background: var(--numoj-panel);
+      box-shadow: 0 30px 90px rgb(9 9 11 / 28%);
+      color: var(--numoj-ink);
+    }
+
+    .result-dialog[data-correct="false"] {
+      --result-accent: var(--numoj-danger);
+      --result-soft: var(--numoj-danger-soft);
+    }
+
+    .result-dialog::backdrop {
+      background: rgb(9 9 11 / 58%);
+      backdrop-filter: blur(4px);
+    }
+
+    .result-dialog[open] {
+      animation: dialog-enter 180ms ease-out both;
+    }
+
+    .result-surface {
+      position: relative;
+      display: flex;
+      max-height: calc(100dvh - 24px);
+      flex-direction: column;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .result-header {
+      position: relative;
+      z-index: 3;
+    }
+
+    .result-heading {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .result-status-mark {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      flex: 0 0 30px;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--result-accent) 28%, transparent);
+      border-radius: 50%;
+      background: var(--result-soft);
+      color: var(--result-accent);
+    }
+
+    .result-status-mark svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    .result-dialog-content {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 16px;
+      min-height: 0;
+      padding: 20px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+    }
+
+    .answer-reveal {
+      display: grid;
+      min-width: 0;
+      grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .result-answer-card {
+      display: grid;
+      min-width: 0;
+      min-height: 158px;
+      grid-template-rows: auto 1fr auto;
+      justify-items: center;
+      gap: 10px;
+      padding: 13px;
+      border: 1px solid var(--numoj-line);
+      border-radius: 10px;
+      background: #fafafa;
+      text-align: center;
+    }
+
+    .result-answer-card[data-role="actual"] {
+      border-color: color-mix(in srgb, var(--result-accent) 30%, var(--numoj-line));
+      background: var(--result-soft);
+    }
+
+    .result-answer-caption {
+      color: var(--numoj-ink-4);
+      font-family: var(--numoj-mono);
+      font-size: 0.68rem;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+    }
+
+    .result-answer-icon {
+      display: grid;
+      width: 84px;
+      align-self: center;
+      place-items: center;
+      color: var(--numoj-ink-3);
+    }
+
+    .result-answer-card[data-role="actual"] .result-answer-icon {
+      color: var(--result-accent);
+    }
+
+    .result-answer-icon svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible;
+    }
+
+    .result-answer-name {
+      min-width: 0;
+      color: var(--numoj-ink);
+      font-size: 0.9rem;
+      font-weight: 700;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .result-connector {
+      display: grid;
+      place-items: center;
+      color: var(--numoj-ink-4);
+    }
+
+    .result-connector svg {
+      width: 30px;
+      height: 24px;
+    }
+
+    .result-notes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .result-note {
+      min-width: 0;
+      padding: 13px 14px;
+      border: 1px solid var(--numoj-line-soft);
+      border-radius: 9px;
+      background: #fff;
+    }
+
+    .result-note h3 {
+      margin: 0 0 7px;
+      color: var(--numoj-ink-3);
+      font-family: var(--numoj-mono);
+      font-size: 0.7rem;
+      font-weight: 680;
+      letter-spacing: 0.08em;
+    }
+
+    .result-note p {
+      margin: 0;
+      color: var(--numoj-ink-2);
+      font-size: 0.78rem;
+      line-height: 1.65;
+    }
+
+    .result-footer {
+      position: relative;
+      z-index: 3;
+    }
+
+    .result-new-game {
+      min-height: 44px;
+      padding: 0 15px;
+      border: 1px solid var(--numoj-ink);
+      border-radius: 7px;
+      background: var(--numoj-ink);
+      color: #fff;
+      font-size: 0.76rem;
+      font-weight: 650;
+      transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+    }
+
+    .result-new-game:hover:not(:disabled) {
+      border-color: #000;
+      background: #000;
+      transform: translateY(-1px);
+    }
+
+    .celebration-scene {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      visibility: hidden;
+    }
+
+    .celebration-orbit {
+      position: absolute;
+      top: 46px;
+      left: 50%;
+      width: 260px;
+      height: 190px;
+      color: var(--numoj-brand);
+      opacity: 0;
+      transform: translateX(-50%);
+    }
+
+    .celebration-shard {
+      position: absolute;
+      top: 132px;
+      left: 50%;
+      width: 8px;
+      height: 12px;
+      border: 1px solid rgb(24 24 27 / 18%);
+      border-radius: 2px;
+      background: var(--shard-color);
+      opacity: 0;
+      transform: translate(-50%, -50%);
+    }
+
+    .celebration-shard[data-shape="circle"] {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+    }
+
+    .celebration-shard[data-shape="dash"] {
+      width: 15px;
+      height: 4px;
+      border-radius: 999px;
+    }
+
+    .celebration-shard[data-shape="diamond"] {
+      clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+      border: 0;
+      border-radius: 0;
+    }
+
+    .result-dialog.is-celebrating .celebration-scene {
+      visibility: visible;
+    }
+
+    .result-dialog.is-celebrating .celebration-orbit {
+      animation: celebration-orbit 900ms cubic-bezier(0.2, 0.72, 0.18, 1) both;
+    }
+
+    .result-dialog.is-celebrating .celebration-shard {
+      animation: celebration-shard 980ms cubic-bezier(0.17, 0.72, 0.22, 1) var(--delay) both;
+    }
+
     @keyframes dialog-enter {
       from {
         opacity: 0;
@@ -853,6 +1122,31 @@
       to {
         opacity: 1;
         transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes celebration-orbit {
+      0% {
+        opacity: 0;
+        transform: translateX(-50%) scale(0.34) rotate(-18deg);
+      }
+      24% { opacity: 0.72; }
+      100% {
+        opacity: 0;
+        transform: translateX(-50%) scale(1.22) rotate(8deg);
+      }
+    }
+
+    @keyframes celebration-shard {
+      0% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.22) rotate(0deg);
+      }
+      20% { opacity: 1; }
+      78% { opacity: 0.92; }
+      100% {
+        opacity: 0;
+        transform: translate(calc(-50% + var(--x)), calc(-50% + var(--y))) scale(1) rotate(var(--turn));
       }
     }
 
@@ -918,6 +1212,38 @@
       }
 
       .guess-button {
+        width: 100%;
+      }
+
+      .result-dialog-content {
+        gap: 13px;
+        padding: 14px;
+      }
+
+      .answer-reveal {
+        grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr);
+        gap: 5px;
+      }
+
+      .result-answer-card {
+        min-height: 142px;
+        gap: 7px;
+        padding: 10px 7px;
+      }
+
+      .result-answer-icon {
+        width: min(68px, 76%);
+      }
+
+      .result-notes {
+        grid-template-columns: 1fr;
+      }
+
+      .result-footer {
+        padding: 11px 14px 14px;
+      }
+
+      .result-new-game {
         width: 100%;
       }
     }
@@ -1064,6 +1390,78 @@
     </form>
   </dialog>
 
+  <dialog class="result-dialog" id="resultDialog" aria-labelledby="resultDialogTitle" data-correct="false">
+    <div class="result-surface">
+      <div class="celebration-scene" aria-hidden="true">
+        <svg class="celebration-orbit" viewBox="0 0 260 190" fill="none" focusable="false">
+          <ellipse cx="130" cy="95" rx="55" ry="34" stroke="currentColor" stroke-width="2" stroke-dasharray="5 7"></ellipse>
+          <ellipse cx="130" cy="95" rx="91" ry="59" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="2 10"></ellipse>
+          <path d="M130 16v24M118 28h24M56 54l16 13M49 70l24-2M204 55l-15 13M212 71l-24-2" stroke="#15803d" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+        <span class="celebration-shard" data-shape="diamond" style="--x:-250px;--y:-92px;--turn:-210deg;--delay:0ms;--shard-color:#ea580c"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:-205px;--y:76px;--turn:170deg;--delay:45ms;--shard-color:#2563eb"></span>
+        <span class="celebration-shard" data-shape="dash" style="--x:-160px;--y:-116px;--turn:-145deg;--delay:85ms;--shard-color:#15803d"></span>
+        <span class="celebration-shard" style="--x:-112px;--y:128px;--turn:250deg;--delay:10ms;--shard-color:#7c3aed"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:-56px;--y:-128px;--turn:-125deg;--delay:125ms;--shard-color:#d97706"></span>
+        <span class="celebration-shard" data-shape="diamond" style="--x:-20px;--y:142px;--turn:280deg;--delay:70ms;--shard-color:#0f766e"></span>
+        <span class="celebration-shard" data-shape="dash" style="--x:44px;--y:-132px;--turn:150deg;--delay:20ms;--shard-color:#2563eb"></span>
+        <span class="celebration-shard" style="--x:82px;--y:136px;--turn:-255deg;--delay:115ms;--shard-color:#ea580c"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:138px;--y:-118px;--turn:190deg;--delay:65ms;--shard-color:#7c3aed"></span>
+        <span class="celebration-shard" data-shape="diamond" style="--x:178px;--y:105px;--turn:-240deg;--delay:145ms;--shard-color:#15803d"></span>
+        <span class="celebration-shard" data-shape="dash" style="--x:224px;--y:-78px;--turn:135deg;--delay:35ms;--shard-color:#d97706"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:258px;--y:62px;--turn:-180deg;--delay:95ms;--shard-color:#2563eb"></span>
+      </div>
+
+      <header class="dialog-header result-header">
+        <div class="result-heading">
+          <span class="result-status-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <circle cx="16" cy="16" r="11"></circle>
+              <path id="resultStatusPath" d="m10 10 12 12m0-12L10 22"></path>
+            </svg>
+          </span>
+          <h2 id="resultDialogTitle">结果</h2>
+        </div>
+        <button class="dialog-close" id="resultCloseButton" type="button" aria-label="关闭结果">×</button>
+      </header>
+
+      <div class="result-dialog-content">
+        <div class="answer-reveal">
+          <article class="result-answer-card" data-role="selected">
+            <span class="result-answer-caption">你的答案</span>
+            <span class="result-answer-icon" id="resultSelectedIcon" aria-hidden="true"></span>
+            <strong class="result-answer-name" id="resultSelectedName"></strong>
+          </article>
+          <div class="result-connector" aria-hidden="true">
+            <svg viewBox="0 0 30 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M3 12h23m-5-5 5 5-5 5"></path>
+            </svg>
+          </div>
+          <article class="result-answer-card" data-role="actual">
+            <span class="result-answer-caption">真实答案</span>
+            <span class="result-answer-icon" id="resultActualIcon" aria-hidden="true"></span>
+            <strong class="result-answer-name" id="resultActualName"></strong>
+          </article>
+        </div>
+
+        <div class="result-notes">
+          <section class="result-note">
+            <h3>特点</h3>
+            <p id="resultFeature"></p>
+          </section>
+          <section class="result-note">
+            <h3>如何判断</h3>
+            <p id="resultClue"></p>
+          </section>
+        </div>
+      </div>
+
+      <footer class="dialog-footer result-footer">
+        <button class="result-new-game" id="resultNewGameButton" type="button">新一局</button>
+      </footer>
+    </div>
+  </dialog>
+
   <div class="answer-popover" id="answerPopover" hidden>
     <div class="answer-listbox" id="answerListbox" role="listbox" aria-label="数据结构答案">
       <div class="answer-option" id="answerOptionUnordered" role="option" aria-selected="false" data-value="unordered_array" data-label="无序数组">
@@ -1178,8 +1576,50 @@
       var newGameButton = document.getElementById("newGameButton");
       var rulesButton = document.getElementById("rulesButton");
       var rulesDialog = document.getElementById("rulesDialog");
+      var resultDialog = document.getElementById("resultDialog");
+      var resultDialogTitle = document.getElementById("resultDialogTitle");
+      var resultStatusPath = document.getElementById("resultStatusPath");
+      var resultCloseButton = document.getElementById("resultCloseButton");
+      var resultNewGameButton = document.getElementById("resultNewGameButton");
+      var resultSelectedIcon = document.getElementById("resultSelectedIcon");
+      var resultSelectedName = document.getElementById("resultSelectedName");
+      var resultActualIcon = document.getElementById("resultActualIcon");
+      var resultActualName = document.getElementById("resultActualName");
+      var resultFeature = document.getElementById("resultFeature");
+      var resultClue = document.getElementById("resultClue");
       var gameControls = Array.prototype.slice.call(document.querySelectorAll("[data-game-control]"));
       var operationButtons = Array.prototype.slice.call(document.querySelectorAll("[data-operation]"));
+
+      var structureNotes = {
+        unordered_array: {
+          feature: "不维持大小顺序，删除时会用末项补位。",
+          clue: "min 和未命中的 contain 通常随元素增多而变慢；连续插入后，查找最新值往往也要走到末尾。"
+        },
+        sorted_array: {
+          feature: "始终按大小排列，定位快，但插入和删除可能需要搬动元素。",
+          clue: "min 通常只需 1 步，contain 增长较慢；插入很小的值通常比插入很大的值多出明显的搬移步数。"
+        },
+        linked_list: {
+          feature: "新值放在表头，删除只需改动相邻链接。",
+          clue: "连续插入后，最新值通常很快命中，最早值和未命中查询则会随元素增多而变慢。"
+        },
+        binary_heap: {
+          feature: "最小值留在堆顶，插入和删除后通过上下调整恢复结构。",
+          clue: "min 通常只需 1 步，但 contain 仍可能逐项查找；插入特别小的值时，常能看到额外的上浮步数。"
+        },
+        bst: {
+          feature: "按大小分支查找，但不会主动修正树形。",
+          clue: "连续插入递增值后，再查找末端值或更大的缺失值，步数可能持续增长，呈现退化倾向。"
+        },
+        avl: {
+          feature: "在 BST 的基础上维护高度，并通过旋转保持平衡。",
+          clue: "连续插入递增值后，查询步数通常仍较低；部分 insert 或 erase 会因高度更新和旋转出现额外步数。"
+        },
+        linear_probing_hash: {
+          feature: "从哈希位置开始逐格探测，并用墓碑保留删除后的探测路径。",
+          clue: "尝试 0、8、16、24 等同余值，碰撞时步数会逐渐增加；扩容或清理墓碑的某次插入还可能突然变慢。"
+        }
+      };
 
       var currentItems = [];
       var positionCache = new Map();
@@ -1415,6 +1855,48 @@
         syncAnswerOptionStates();
       }
 
+      function fillResultIdentity(iconElement, nameElement, value, fallbackLabel) {
+        var optionIndex = answerOptionIndex(value);
+        var option = optionIndex >= 0 ? answerOptions[optionIndex] : null;
+        iconElement.replaceChildren(
+          option
+            ? option.querySelector("svg").cloneNode(true)
+            : placeholderAnswerIcon.cloneNode(true)
+        );
+        nameElement.textContent = option ? option.dataset.label : (fallbackLabel || "—");
+      }
+
+      function closeResultDialog() {
+        resultDialog.classList.remove("is-celebrating");
+        if (resultDialog.open) resultDialog.close();
+      }
+
+      function showResultDialog(guess) {
+        if (!guess || typeof guess !== "object") return;
+        var correct = guess.correct === true;
+        var notes = structureNotes[guess.answer] || { feature: "—", clue: "—" };
+
+        resultDialog.dataset.correct = correct ? "true" : "false";
+        resultDialogTitle.textContent = correct ? "猜对了" : "未猜中";
+        resultStatusPath.setAttribute(
+          "d",
+          correct ? "m9.5 16.5 4.2 4.2 9-10" : "m10 10 12 12m0-12L10 22"
+        );
+        fillResultIdentity(resultSelectedIcon, resultSelectedName, guess.selected, "—");
+        fillResultIdentity(resultActualIcon, resultActualName, guess.answer, guess.label);
+        resultFeature.textContent = notes.feature;
+        resultClue.textContent = notes.clue;
+
+        resultDialog.classList.remove("is-celebrating");
+        if (!resultDialog.open && typeof resultDialog.showModal === "function") {
+          resultDialog.showModal();
+        }
+        if (correct) {
+          void resultDialog.offsetWidth;
+          resultDialog.classList.add("is-celebrating");
+        }
+      }
+
       function setActiveAnswer(index, scrollIntoView) {
         if (!answerOptions.length) return;
         activeAnswerIndex = (index + answerOptions.length) % answerOptions.length;
@@ -1566,6 +2048,7 @@
           control.disabled = pending || !loaded || finished;
         });
         newGameButton.disabled = pending;
+        resultNewGameButton.disabled = pending;
         if (answerTrigger.disabled) closeAnswerMenu(false);
         app.setAttribute("aria-busy", pending ? "true" : "false");
       }
@@ -1598,13 +2081,12 @@
 
         finished = payload.finished === true;
         var correct = guessResult(payload);
-        var answerLabel = payload.guess && typeof payload.guess.label === "string"
-          ? " · " + payload.guess.label
-          : "";
-        if (correct === true) showStatus(guessStatus, "猜对了" + answerLabel, "is-correct");
-        if (correct === false) {
-          showStatus(guessStatus, "未猜中" + (answerLabel ? " · 答案：" + payload.guess.label : ""), "is-wrong");
+        if (!finished && (kind === "new" || kind === "reset" || kind === "state")) {
+          closeResultDialog();
         }
+        if (correct === true) showStatus(guessStatus, "猜对了", "is-correct");
+        if (correct === false) showStatus(guessStatus, "未猜中", "is-wrong");
+        if (correct !== null) showResultDialog(payload.guess);
       }
 
       function parseResponse(response) {
@@ -1714,6 +2196,23 @@
 
       newGameButton.addEventListener("click", function () {
         post("api/new", {}, "new");
+      });
+
+      resultNewGameButton.addEventListener("click", function () {
+        post("api/new", {}, "new").then(function (response) {
+          if (response) integerInput.focus();
+        });
+      });
+
+      resultCloseButton.addEventListener("click", closeResultDialog);
+
+      resultDialog.addEventListener("click", function (event) {
+        if (event.target === resultDialog) closeResultDialog();
+      });
+
+      resultDialog.addEventListener("close", function () {
+        resultDialog.classList.remove("is-celebrating");
+        if (finished) newGameButton.focus();
       });
 
       guessButton.addEventListener("click", function () {
