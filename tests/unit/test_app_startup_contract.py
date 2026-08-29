@@ -8,8 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from oj_modules import config as app_config
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from oj_modules.security.login_guard import is_api_request
+from oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -199,7 +203,13 @@ def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
     assert settings['worker_connections'] == 1024
     assert settings['backlog'] == 512
     assert settings['sse_max_connections'] == 192
-    assert settings['sse_max_connections'] < settings['threads']
+    assert settings['MIN_ORDINARY_REQUEST_SLOTS'] == 64
+    assert settings['worker_connections'] >= settings['threads']
+    assert (
+        min(settings['threads'], settings['worker_connections'])
+        - settings['sse_max_connections']
+        >= settings['MIN_ORDINARY_REQUEST_SLOTS']
+    )
     assert settings['keepalive'] == 5
     assert settings['worker_tmp_dir'] == '/dev/shm'
     assert settings['max_requests'] == 0
@@ -214,17 +224,142 @@ def test_gunicorn_rejects_sse_limit_that_consumes_every_thread(monkeypatch):
 
     with pytest.raises(
         RuntimeError,
-        match='WEB_SSE_MAX_CONNECTIONS 必须在 1–127 之间',
+        match='WEB_SSE_MAX_CONNECTIONS 必须在 1–64 之间',
     ):
         runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
 
 
-def test_static_cache_is_scoped_away_from_protected_send_file_routes():
-    source = OJ_PATH.read_text(encoding='utf-8')
+def test_gunicorn_rejects_connection_limit_below_thread_count(monkeypatch):
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_THREADS', 512)
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_CONNECTIONS', 256)
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            'WEB_GUNICORN_CONNECTIONS 必须大于等于 '
+            'WEB_GUNICORN_THREADS（512）'
+        ),
+    ):
+        runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+
+
+def test_gunicorn_sse_limit_preserves_explicit_ordinary_request_slots(monkeypatch):
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_THREADS', 128)
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_CONNECTIONS', 256)
+    monkeypatch.setattr(app_config, 'WEB_SSE_MAX_CONNECTIONS', 65)
+
+    with pytest.raises(
+        RuntimeError,
+        match='WEB_SSE_MAX_CONNECTIONS 必须在 1–64 之间',
+    ):
+        runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+
+    monkeypatch.setattr(app_config, 'WEB_SSE_MAX_CONNECTIONS', 64)
+    settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+    assert settings['sse_max_connections'] == 64
+    assert settings['sse_capacity'] == 64
+
+
+def _static_cache_app():
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_set_security_headers'
+    )
+    app = PrecompressedStaticFlask(
+        __name__,
+        static_folder=str(ROOT / 'static'),
+        static_url_path='/static',
+    )
+
+    @app.get('/download')
+    def download():
+        return send_from_directory(
+            ROOT / 'static' / 'app',
+            'layout.js',
+            conditional=True,
+        )
+
+    _execute(
+        [handler],
+        {
+            '_CONTENT_SECURITY_POLICY': '',
+            'app': app,
+            'request': request,
+        },
+    )
+    return app
+
+
+def _assert_static_revalidates(response):
+    assert response.cache_control.public
+    assert response.cache_control.no_cache
+    assert response.cache_control.max_age == 0
+    assert response.cache_control.must_revalidate
+    assert not response.cache_control.immutable
+
+
+def test_static_cache_contract_uses_revalidation_without_global_send_file_cache():
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_set_security_headers'
+    )
+    source = ast.unparse(handler)
 
     assert "request.endpoint == 'static'" in source
-    assert "resp.cache_control.max_age = _STATIC_CACHE_MAX_AGE_SECONDS" in source
+    assert 'resp.status_code in {200, 206, 304}' in source
+    assert 'resp.cache_control.no_cache = True' in source
+    assert 'resp.cache_control.max_age = 0' in source
+    assert 'resp.cache_control.must_revalidate = True' in source
+    assert 'resp.cache_control.immutable = None' in source
     assert "app.config['SEND_FILE_MAX_AGE_DEFAULT']" not in source
+    assert 'STATIC_CACHE_MAX_AGE_SECONDS' not in OJ_PATH.read_text(encoding='utf-8')
+
+
+def test_real_unfingerprinted_static_responses_revalidate_on_get_head_and_304():
+    client = _static_cache_app().test_client()
+
+    initial = client.get(
+        '/static/app/layout.js',
+        headers={'Accept-Encoding': 'identity'},
+    )
+    head = client.head(
+        '/static/vendor/monaco/editor.js',
+        headers={'Accept-Encoding': 'identity'},
+    )
+    not_modified = client.get(
+        '/static/app/layout.js',
+        headers={
+            'Accept-Encoding': 'identity',
+            'If-None-Match': initial.headers['ETag'],
+        },
+    )
+
+    assert initial.status_code == 200
+    assert head.status_code == 200
+    assert head.data == b''
+    assert not_modified.status_code == 304
+    assert not_modified.headers['ETag'] == initial.headers['ETag']
+    for response in (initial, head, not_modified):
+        _assert_static_revalidates(response)
+
+
+def test_static_cache_policy_skips_404_and_non_static_send_file_response():
+    client = _static_cache_app().test_client()
+
+    missing = client.get('/static/not-found.js')
+    download = client.get('/download')
+
+    assert missing.status_code == 404
+    assert not missing.cache_control.public
+    assert not missing.cache_control.must_revalidate
+    assert download.status_code == 200
+    assert not download.cache_control.public
+    assert not download.cache_control.must_revalidate
+    assert download.cache_control.max_age is None
 
 
 def test_mysql_pool_exhaustion_has_template_free_retryable_503_handler():
@@ -244,6 +379,88 @@ def test_mysql_pool_exhaustion_has_template_free_retryable_503_handler():
     assert 'status=503' in source
     assert "response.headers['Retry-After'] = '1'" in source
     assert 'render_template(' not in source
+
+
+def test_template_globals_never_wait_behind_an_inflight_config_read():
+    processor = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef) and node.name == 'inject_globals'
+    )
+    source = ast.unparse(processor)
+
+    assert 'is_class_adjust_enabled(wait_timeout_seconds=0.0)' in source
+    assert 'get_mail_settings(wait_timeout_seconds=0.0)' in source
+
+
+def _mysql_pool_exhaustion_handler():
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_handle_mysql_pool_exhausted'
+    )
+    app = Flask(__name__)
+    namespace = {
+        'MySQLPoolExhausted': MySQLPoolExhausted,
+        'Response': Response,
+        'is_api_request': is_api_request,
+        'app': app,
+        'jsonify': jsonify,
+        'request': request,
+    }
+    _execute([handler], namespace)
+    return app, namespace['_handle_mysql_pool_exhausted']
+
+
+@pytest.mark.parametrize(
+    ('path', 'request_kwargs'),
+    (
+        ('/api', {'headers': {'Accept': '*/*'}}),
+        ('/api/', {'headers': {'Accept': '*/*'}}),
+        ('/api/problems/7?class_en=C1', {'headers': {'Accept': '*/*'}}),
+        ('/private', {'json': {}}),
+        ('/private', {'headers': {'X-Requested-With': 'XMLHttpRequest'}}),
+        ('/private', {'headers': {'Accept': 'application/json'}}),
+    ),
+)
+def test_mysql_pool_exhaustion_returns_json_for_api_and_json_requests(
+    path,
+    request_kwargs,
+):
+    app, handler = _mysql_pool_exhaustion_handler()
+    with app.test_request_context(path, **request_kwargs):
+        response = handler(MySQLPoolExhausted(1040, 'pool busy'))
+
+    assert response.status_code == 503
+    assert response.mimetype == 'application/json'
+    assert response.get_json() == {
+        'success': False,
+        'message': '服务器繁忙，请稍后重试',
+    }
+    assert response.headers['Retry-After'] == '1'
+
+
+@pytest.mark.parametrize(
+    ('path', 'accept'),
+    (
+        ('/private', '*/*'),
+        ('/private', 'text/html'),
+        ('/api-like-but-not-api', '*/*'),
+    ),
+)
+def test_mysql_pool_exhaustion_keeps_non_api_html_requests_as_plain_text(
+    path,
+    accept,
+):
+    app, handler = _mysql_pool_exhaustion_handler()
+    with app.test_request_context(path, headers={'Accept': accept}):
+        response = handler(MySQLPoolExhausted(1040, 'pool busy'))
+
+    assert response.status_code == 503
+    assert response.mimetype == 'text/plain'
+    assert response.get_data(as_text=True) == '服务器繁忙，请稍后重试'
+    assert response.headers['Retry-After'] == '1'
 
 
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):

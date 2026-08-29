@@ -76,28 +76,32 @@ def test_db_services_business_functions_keep_connection_monkeypatch_seam(monkeyp
 
 class _FakeRawConnection:
     def __init__(self):
+        self.open = True
+        self.ping_error = None
         self.ping_count = 0
         self.rollback_count = 0
         self.close_count = 0
 
     def ping(self, reconnect=False):
-        assert reconnect is True
+        assert reconnect is False
         self.ping_count += 1
+        if self.ping_error is not None:
+            raise self.ping_error
 
     def rollback(self):
         self.rollback_count += 1
 
     def close(self):
+        self.open = False
         self.close_count += 1
 
 
-def test_recently_successful_pool_connection_skips_redundant_ping(monkeypatch):
+def test_pool_connection_is_pinged_on_every_checkout(monkeypatch):
     raw = _FakeRawConnection()
     monkeypatch.setattr(mysql, "_create_raw_mysql_connection", lambda: raw)
     pool = mysql._MySQLConnectionPool(
         min_size=1,
         max_size=1,
-        health_check_interval_seconds=30,
     )
 
     first = pool.acquire()
@@ -105,25 +109,68 @@ def test_recently_successful_pool_connection_skips_redundant_ping(monkeypatch):
     second = pool.acquire()
     second.close()
 
-    assert raw.ping_count == 0
+    assert raw.ping_count == 2
     assert raw.rollback_count == 2
     pool.close_idle_connections()
 
 
-def test_zero_health_check_interval_preserves_checkout_ping(monkeypatch):
-    raw = _FakeRawConnection()
-    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", lambda: raw)
+def test_recently_successful_but_closed_idle_connection_is_replaced(monkeypatch):
+    initial = _FakeRawConnection()
+    replacement = _FakeRawConnection()
+    raw_connections = iter((initial, replacement))
+    monkeypatch.setattr(
+        mysql,
+        "_create_raw_mysql_connection",
+        lambda: next(raw_connections),
+    )
     pool = mysql._MySQLConnectionPool(
         min_size=1,
         max_size=1,
-        health_check_interval_seconds=0,
     )
 
-    connection = pool.acquire()
-    connection.close()
+    first = pool.acquire()
+    first.close()
+    initial.close()
 
-    assert raw.ping_count == 1
-    pool.close_idle_connections()
+    second = pool.acquire()
+    try:
+        assert second._raw_conn is replacement
+        assert initial.ping_count == 1
+    finally:
+        second.close()
+        pool.close_idle_connections()
+
+
+def test_remotely_killed_idle_connection_is_replaced_before_business_sql(
+    monkeypatch,
+):
+    initial = _FakeRawConnection()
+    replacement = _FakeRawConnection()
+    raw_connections = iter((initial, replacement))
+    monkeypatch.setattr(
+        mysql,
+        "_create_raw_mysql_connection",
+        lambda: next(raw_connections),
+    )
+    pool = mysql._MySQLConnectionPool(min_size=1, max_size=1)
+
+    first = pool.acquire()
+    first.close()
+    # 服务端 KILL/重启后 PyMySQL 可能仍认为 socket open，只有 pre-ping
+    # 才能在业务 cursor.execute() 前发现远端断链。
+    initial.ping_error = mysql.pymysql.err.OperationalError(
+        2013,
+        "lost connection",
+    )
+
+    second = pool.acquire()
+    try:
+        assert second._raw_conn is replacement
+        assert initial.ping_count == 2
+        assert initial.open is False
+    finally:
+        second.close()
+        pool.close_idle_connections()
 
 
 def test_slow_connection_creation_does_not_block_reusing_idle_connection(monkeypatch):

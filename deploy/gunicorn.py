@@ -23,16 +23,24 @@ workers = 1
 # 提交、Agent 与打榜赛页面使用长连接 SSE。每条连接会独占一个 gthread，线程数必须
 # 覆盖课堂并发，而不能沿用只适合普通短请求的低值。
 # 256 在线是常态容量、512 在线是非同时请求的峰值容量。SSE 另有 192 条准入上限，
-# 因此至少保留 64 条线程处理普通页面、静态资源和健康检查。每个浏览器可能同时
+# 因此至少保留 64 个并发槽位处理普通页面、静态资源和健康检查。每个浏览器可能同时
 # 持有一条 SSE 和一条空闲 HTTP keep-alive，客户端连接上限按峰值在线数的两倍预留。
+MIN_ORDINARY_REQUEST_SLOTS = 64
 threads = _bounded_setting("WEB_GUNICORN_THREADS", 128, 512)
 worker_connections = _bounded_setting("WEB_GUNICORN_CONNECTIONS", 256, 4096)
+if worker_connections < threads:
+    raise RuntimeError(
+        "WEB_GUNICORN_CONNECTIONS 必须大于等于 "
+        f"WEB_GUNICORN_THREADS（{threads}）"
+    )
 backlog = _bounded_setting("WEB_GUNICORN_BACKLOG", 128, 8192)
-sse_max_connections = _bounded_setting(
-    "WEB_SSE_MAX_CONNECTIONS",
-    1,
-    threads - 1,
-)
+sse_capacity = min(threads, worker_connections) - MIN_ORDINARY_REQUEST_SLOTS
+sse_max_connections = int(getattr(_config, "WEB_SSE_MAX_CONNECTIONS"))
+if not 1 <= sse_max_connections <= sse_capacity:
+    raise RuntimeError(
+        f"WEB_SSE_MAX_CONNECTIONS 必须在 1–{sse_capacity} 之间，"
+        f"为普通请求保留至少 {MIN_ORDINARY_REQUEST_SLOTS} 个并发槽位"
+    )
 timeout = 600
 graceful_timeout = 30
 keepalive = 5

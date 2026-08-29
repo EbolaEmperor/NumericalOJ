@@ -20,7 +20,6 @@ from oj_modules.config import (
     MYSQL_CONNECT_TIMEOUT,
     MYSQL_PASSWORD,
     MYSQL_POOL_MAX_SIZE,
-    MYSQL_POOL_HEALTH_CHECK_INTERVAL_SECONDS,
     MYSQL_POOL_MIN_SIZE,
     MYSQL_POOL_RECYCLE_SECONDS,
     MYSQL_POOL_WAIT_TIMEOUT,
@@ -101,22 +100,16 @@ class _MySQLConnectionPool:
         max_size=6,
         wait_timeout=5,
         recycle_seconds=1200,
-        health_check_interval_seconds=30,
     ):
         self._min_size = max(1, int(min_size))
         self._max_size = max(self._min_size, int(max_size))
         self._wait_timeout = max(0.01, float(wait_timeout))
         self._recycle_seconds = max(60, int(recycle_seconds))
-        self._health_check_interval_seconds = max(
-            0.0,
-            float(health_check_interval_seconds),
-        )
 
         self._idle = queue.Queue(maxsize=self._max_size)
         self._lock = threading.Lock()
         self._created = 0
         self._conn_birth = {}
-        self._conn_last_success = {}
         self._pid = os.getpid()
 
         self._warm_up()
@@ -141,7 +134,6 @@ class _MySQLConnectionPool:
                 except Exception:
                     pass
             self._conn_birth.clear()
-            self._conn_last_success.clear()
             self._created = 0
             self._pid = current_pid
 
@@ -157,7 +149,6 @@ class _MySQLConnectionPool:
                 conn_id = id(conn)
                 now = time.monotonic()
                 self._conn_birth[conn_id] = now
-                self._conn_last_success[conn_id] = now
                 self._idle.put_nowait(conn)
                 self._created += 1
 
@@ -170,7 +161,6 @@ class _MySQLConnectionPool:
         with self._lock:
             conn_id = id(conn)
             self._conn_birth[conn_id] = now
-            self._conn_last_success[conn_id] = now
 
     def _release_reserved_slot(self):
         with self._lock:
@@ -200,7 +190,6 @@ class _MySQLConnectionPool:
             pass
         with self._lock:
             self._conn_birth.pop(id(conn), None)
-            self._conn_last_success.pop(id(conn), None)
             if self._created > 0:
                 self._created -= 1
 
@@ -212,24 +201,20 @@ class _MySQLConnectionPool:
             pass
         with self._lock:
             self._conn_birth.pop(id(conn), None)
-            self._conn_last_success.pop(id(conn), None)
         return self._create_for_reserved_slot()
 
     def _prepare_for_checkout(self, conn):
         if self._should_recycle(conn):
             return self._replace_reserved_connection(conn)
 
-        last_success = self._conn_last_success.get(id(conn), 0)
-        if (
-            time.monotonic() - last_success
-            < self._health_check_interval_seconds
-        ):
-            return conn
+        # ``release()`` 成功回滚只能证明连接在归还当时可用；它进入空闲队列后
+        # 仍可能被服务端 KILL、重启或网络断开。``open`` 先覆盖本地已知关闭，
+        # pre-ping 再覆盖 PyMySQL 尚未感知的远端断链，避免首个业务 SQL 失败。
+        if not conn.open:
+            return self._replace_reserved_connection(conn)
 
         try:
-            conn.ping(reconnect=True)
-            with self._lock:
-                self._conn_last_success[id(conn)] = time.monotonic()
+            conn.ping()
             return conn
         except Exception:
             return self._replace_reserved_connection(conn)
@@ -249,6 +234,8 @@ class _MySQLConnectionPool:
 
         if create_new:
             conn = self._create_for_reserved_slot()
+            # 新握手本身已经验证连接；只有从空闲队列复用的 socket 需要 pre-ping。
+            return _PooledConnectionProxy(self, conn)
 
         if conn is None:
             try:
@@ -270,9 +257,6 @@ class _MySQLConnectionPool:
             self._discard(conn)
             return
 
-        with self._lock:
-            self._conn_last_success[id(conn)] = time.monotonic()
-
         if self._should_recycle(conn):
             self._discard(conn)
             return
@@ -291,7 +275,6 @@ class _MySQLConnectionPool:
                 pass
         with self._lock:
             self._conn_birth.clear()
-            self._conn_last_success.clear()
             self._created = 0
 
 
@@ -322,9 +305,6 @@ def _get_db_pool():
                         else float(MYSQL_POOL_WAIT_TIMEOUT)
                     ),
                     recycle_seconds=int(MYSQL_POOL_RECYCLE_SECONDS),
-                    health_check_interval_seconds=float(
-                        MYSQL_POOL_HEALTH_CHECK_INTERVAL_SECONDS
-                    ),
                 )
     return _db_pool
 

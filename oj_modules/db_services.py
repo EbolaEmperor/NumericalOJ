@@ -4,7 +4,6 @@
 import json
 import logging
 import os
-import threading
 import time
 
 from flask import session
@@ -16,12 +15,17 @@ from oj_modules.forum.identity import (
     run_identity_namespace_transaction,
 )
 from oj_modules.infrastructure.mysql import (
+    MySQLPoolExhausted,
     _MySQLConnectionPool,
     _PooledConnectionProxy,
     _create_raw_mysql_connection,
     _get_db_pool,
     get_db_connection,
     safe_table_name,
+)
+from oj_modules.shared.singleflight_cache import (
+    BoundedSingleFlightTTLCache,
+    SingleFlightTimeout,
 )
 from oj_modules.observability import (
     content_fingerprint,
@@ -53,8 +57,9 @@ _PROGRAMMING_OUTPUT_IMAGE_EXTENSIONS = frozenset({
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
 _CLASS_ADJUST_CACHE_TTL_SECONDS = 5.0
-_class_adjust_cache_lock = threading.Lock()
-_class_adjust_cache = None
+_class_adjust_cache = BoundedSingleFlightTTLCache(
+    ttl_seconds=_CLASS_ADJUST_CACHE_TTL_SECONDS,
+)
 
 
 class SubmissionLimitExceeded(RuntimeError):
@@ -944,26 +949,21 @@ def set_setting(key, value):
 
 
 def _invalidate_class_adjust_cache():
-    global _class_adjust_cache
-    with _class_adjust_cache_lock:
-        _class_adjust_cache = None
+    _class_adjust_cache.invalidate()
 
 
-def is_class_adjust_enabled():
-    """读取低频全站开关，合并模板并发渲染产生的重复查询。"""
-    global _class_adjust_cache
-    now = time.monotonic()
-    with _class_adjust_cache_lock:
-        cached = _class_adjust_cache
-        if cached is not None and now < cached[0]:
-            return cached[1]
-        val = get_setting(CLASS_ADJUST_FLAG_KEY, default='1')
-        enabled = str(val) == '1'
-        _class_adjust_cache = (
-            time.monotonic() + _CLASS_ADJUST_CACHE_TTL_SECONDS,
-            enabled,
+def is_class_adjust_enabled(*, wait_timeout_seconds=None):
+    """读取低频全站开关，并有界合并模板并发产生的重复查询。"""
+    try:
+        return _class_adjust_cache.get(
+            lambda: str(get_setting(CLASS_ADJUST_FLAG_KEY, default='1')) == '1',
+            wait_timeout_seconds=wait_timeout_seconds,
         )
-        return enabled
+    except SingleFlightTimeout as exc:
+        raise MySQLPoolExhausted(
+            1040,
+            "班级调整配置正在加载，请稍后重试",
+        ) from exc
 
 
 def get_user_by_username(username):

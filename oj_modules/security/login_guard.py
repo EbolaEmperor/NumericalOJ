@@ -70,7 +70,7 @@ def _is_public_request():
     return request.path.startswith("/static/")
 
 
-def _is_api_request():
+def is_api_request():
     if request.path == "/api" or request.path.startswith("/api/"):
         return True
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
@@ -94,7 +94,7 @@ def install_global_login_guard(app, *, user_loader):
             return None
         if user_loader():
             return None
-        if _is_api_request():
+        if is_api_request():
             return jsonify(success=False, message="请先登录"), 401
 
         target = safe_local_next(_original_request_target())
@@ -104,4 +104,4 @@ def install_global_login_guard(app, *, user_loader):
     return _require_authenticated_user
 
 
-__all__ = ["install_global_login_guard", "safe_local_next"]
+__all__ = ["install_global_login_guard", "is_api_request", "safe_local_next"]

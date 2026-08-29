@@ -10,6 +10,7 @@ import {
   readFile,
   rename,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { extname, join } from "node:path";
@@ -22,22 +23,28 @@ const minimumBytes = 100 * 1024;
 const compressibleExtensions = new Set([".css", ".html", ".js", ".json", ".svg"]);
 
 async function collect(directory) {
-  const files = [];
+  const sources = [];
+  const sidecars = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await collect(path));
+      const nested = await collect(path);
+      sources.push(...nested.sources);
+      sidecars.push(...nested.sidecars);
+    } else if (
+      entry.isFile()
+      && (entry.name.endsWith(".br") || entry.name.endsWith(".gz"))
+    ) {
+      sidecars.push(path);
     } else if (
       entry.isFile()
       && compressibleExtensions.has(extname(entry.name))
-      && !entry.name.endsWith(".br")
-      && !entry.name.endsWith(".gz")
       && (await stat(path)).size >= minimumBytes
     ) {
-      files.push(path);
+      sources.push(path);
     }
   }
-  return files;
+  return { sources, sidecars };
 }
 
 async function atomicWrite(path, bytes) {
@@ -46,10 +53,13 @@ async function atomicWrite(path, bytes) {
   await rename(temporary, path);
 }
 
-const files = await collect(staticRoot);
+const { sources, sidecars } = await collect(staticRoot);
+const expectedSidecars = new Set(
+  sources.flatMap((path) => [`${path}.br`, `${path}.gz`]),
+);
 let rawBytes = 0;
 let compressedBytes = 0;
-for (const path of files) {
+for (const path of sources) {
   const source = await readFile(path);
   const [brotliBytes, gzipBytes] = await Promise.all([
     brotli(source, {
@@ -68,6 +78,13 @@ for (const path of files) {
   compressedBytes += brotliBytes.length;
   console.log(`${path}: ${source.length} -> br ${brotliBytes.length}, gzip ${gzipBytes.length}`);
 }
+let removedSidecars = 0;
+for (const path of sidecars) {
+  if (!expectedSidecars.has(path)) {
+    await unlink(path);
+    removedSidecars += 1;
+  }
+}
 console.log(
-  `precompressed ${files.length} assets: ${rawBytes} raw bytes -> ${compressedBytes} Brotli bytes`,
+  `precompressed ${sources.length} assets: ${rawBytes} raw bytes -> ${compressedBytes} Brotli bytes; removed ${removedSidecars} orphaned sidecars`,
 );
