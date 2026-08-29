@@ -195,8 +195,8 @@ def _new_counter() -> _UsageCounter:
     return _UsageCounter(max_bytes, max_files, max_entries, max_depth)
 
 
-def _is_ignored_runtime_socket(mode: int) -> bool:
-    return stat.S_ISSOCK(mode)
+def _is_ignored_runtime_ipc(mode: int) -> bool:
+    return stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode)
 
 
 def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, int]:
@@ -283,17 +283,10 @@ def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, in
                 symlinks[(*parent_parts, name)] = target
                 counter.add_entry(depth=entry_depth, size=int(before.st_size))
                 continue
-            if stat.S_ISFIFO(before.st_mode):
-                if int(before.st_nlink) != 1:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime FIFO 必须只有一个硬链接"
-                    )
-                counter.add_entry(depth=entry_depth)
-                continue
-            if _is_ignored_runtime_socket(before.st_mode):
+            if _is_ignored_runtime_ipc(before.st_mode):
                 continue
             raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 只允许目录、普通文件、FIFO 和内部相对符号链接"
+                "Agent runtime 只允许目录、普通文件和内部相对符号链接"
             )
         if _stable_signature(directory_before) != _stable_signature(os.fstat(directory_fd)):
             raise workspace_store.AgentWorkspaceSecurityError(
@@ -513,36 +506,10 @@ def _copy_tree_fd(
                         "无法创建 Agent runtime checkpoint 符号链接"
                     ) from exc
                 continue
-            if stat.S_ISFIFO(before.st_mode):
-                if int(before.st_nlink) != 1:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime FIFO 必须只有一个硬链接"
-                    )
-                counter.add_entry(depth=entry_depth)
-                try:
-                    os.mkfifo(
-                        name,
-                        mode=_safe_mode(before, directory=False),
-                        dir_fd=destination_fd,
-                    )
-                    after = os.stat(
-                        name,
-                        dir_fd=source_fd,
-                        follow_symlinks=False,
-                    )
-                except OSError as exc:
-                    raise workspace_store.AgentWorkspaceError(
-                        "无法创建 Agent runtime checkpoint FIFO"
-                    ) from exc
-                if not _same_inode(before, after):
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime FIFO 复制期间发生变化"
-                    )
-                continue
-            if _is_ignored_runtime_socket(before.st_mode):
+            if _is_ignored_runtime_ipc(before.st_mode):
                 continue
             raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 只允许目录、普通文件、FIFO 和内部相对符号链接"
+                "Agent runtime 只允许目录、普通文件和内部相对符号链接"
             )
         if _stable_signature(source_before) != _stable_signature(os.fstat(source_fd)):
             raise workspace_store.AgentWorkspaceSecurityError(
