@@ -611,7 +611,7 @@ def test_legacy_game_bookmarks_redirect_and_old_apis_are_gone():
 
 
 def test_bundled_examples_are_complete_valid_packages():
-    for slug in ("circle-cat", "arc-agi-3"):
+    for slug in ("circle-cat", "arc-agi-3", "guess-who"):
         package = ROOT / "vibehub_examples" / slug
         manifest = validate_manifest(package)
         dockerfile = (package / "Dockerfile").read_text(encoding="utf-8")

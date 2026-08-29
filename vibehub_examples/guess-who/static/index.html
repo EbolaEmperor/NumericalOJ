@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>猜猜我是谁 - Numerical OJ</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --numoj-bg: #f7f7f5;
+      --numoj-panel: #fff;
+      --numoj-ink: #18181b;
+      --numoj-ink-2: #3f3f46;
+      --numoj-ink-3: #71717a;
+      --numoj-ink-4: #a1a1aa;
+      --numoj-line: #e4e4e7;
+      --numoj-line-soft: #f4f4f5;
+      --numoj-brand: #ea580c;
+      --numoj-brand-hover: #c2410c;
+      --numoj-brand-ink: #9a3412;
+      --numoj-brand-soft: #fff7ed;
+      --numoj-success: #15803d;
+      --numoj-success-soft: #f0fdf4;
+      --numoj-danger: #b91c1c;
+      --numoj-danger-soft: #fef2f2;
+      --numoj-radius: 12px;
+      --numoj-radius-sm: 8px;
+      --numoj-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --numoj-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-height: 100%;
+      background: var(--numoj-bg);
+    }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      min-height: 100dvh;
+      margin: 0;
+      background-color: var(--numoj-bg);
+      background-image: radial-gradient(circle, var(--numoj-line) 1px, transparent 1px);
+      background-position: -10px -10px;
+      background-size: 20px 20px;
+      color: var(--numoj-ink);
+      font-family: var(--numoj-font);
+      font-feature-settings: "cv11", "ss01";
+    }
+
+    button,
+    input,
+    select {
+      color: inherit;
+      font: inherit;
+    }
+
+    button,
+    select {
+      cursor: pointer;
+    }
+
+    button:disabled,
+    input:disabled,
+    select:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    :focus-visible {
+      outline: 3px solid rgb(234 88 12 / 28%);
+      outline-offset: 2px;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
+
+    .game-shell {
+      display: grid;
+      width: min(100%, 1480px);
+      min-height: 100vh;
+      min-height: 100dvh;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: clamp(12px, 1.8vw, 20px);
+      margin: 0 auto;
+      padding: clamp(14px, 2.5vw, 34px);
+    }
+
+    .game-header {
+      display: flex;
+      min-width: 0;
+      min-height: 40px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .game-title {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 9px;
+      margin: 0;
+      color: var(--numoj-ink);
+      font-size: clamp(1rem, 1.35vw, 1.18rem);
+      font-weight: 690;
+      letter-spacing: -0.025em;
+      line-height: 1.2;
+    }
+
+    .game-title::before {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 7px;
+      border-radius: 2px;
+      background: var(--numoj-brand);
+      box-shadow: 3px 3px 0 #fed7aa;
+      content: "";
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .quiet-button,
+    .action-button,
+    .guess-button,
+    .dialog-button,
+    .dialog-close {
+      border: 1px solid var(--numoj-line);
+      border-radius: 7px;
+      background: var(--numoj-panel);
+      color: var(--numoj-ink-2);
+      font-size: 0.76rem;
+      font-weight: 620;
+      transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+
+    .quiet-button {
+      min-height: 36px;
+      padding: 0 11px;
+    }
+
+    .quiet-button:hover:not(:disabled),
+    .dialog-button:hover,
+    .dialog-close:hover {
+      border-color: #d4d4d8;
+      background: var(--numoj-line-soft);
+      color: var(--numoj-ink);
+    }
+
+    .game-layout {
+      display: grid;
+      min-width: 0;
+      min-height: 0;
+      grid-template-columns: minmax(0, 1fr) minmax(250px, 300px);
+      gap: clamp(12px, 1.8vw, 20px);
+      align-items: stretch;
+    }
+
+    .blackbox {
+      position: relative;
+      min-width: 0;
+      min-height: clamp(440px, calc(100dvh - 112px), 860px);
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: var(--numoj-radius);
+      background: #fdfdfc;
+      box-shadow: 0 1px 2px rgb(24 24 27 / 3%);
+      isolation: isolate;
+    }
+
+    .blackbox::before {
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      background-image:
+        linear-gradient(rgb(228 228 231 / 34%) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(228 228 231 / 34%) 1px, transparent 1px);
+      background-position: -1px -1px;
+      background-size: 44px 44px;
+      content: "";
+      mask-image: linear-gradient(to bottom right, rgb(0 0 0 / 74%), transparent 88%);
+    }
+
+    .piece-field {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .empty-mark {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      color: #d4d4d8;
+      font-family: var(--numoj-mono);
+      font-size: clamp(2.4rem, 7vw, 5rem);
+      font-weight: 400;
+      line-height: 1;
+      transform: translate(-50%, -50%);
+      user-select: none;
+    }
+
+    .number-piece {
+      position: absolute;
+      top: 0;
+      left: 0;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--piece-border);
+      border-radius: 50%;
+      background: var(--piece-bg);
+      box-shadow:
+        0 3px 0 var(--piece-shadow),
+        0 8px 16px rgb(24 24 27 / 10%);
+      color: var(--piece-ink);
+      font-family: var(--numoj-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 720;
+      line-height: 1;
+      user-select: none;
+      will-change: transform;
+    }
+
+    .number-piece[data-tone="0"] {
+      --piece-bg: #fff7ed;
+      --piece-border: #fdba74;
+      --piece-shadow: #c2410c;
+      --piece-ink: #9a3412;
+    }
+
+    .number-piece[data-tone="1"] {
+      --piece-bg: #eff6ff;
+      --piece-border: #93c5fd;
+      --piece-shadow: #2563eb;
+      --piece-ink: #1e3a8a;
+    }
+
+    .number-piece[data-tone="2"] {
+      --piece-bg: #f0fdf4;
+      --piece-border: #86efac;
+      --piece-shadow: #16a34a;
+      --piece-ink: #166534;
+    }
+
+    .number-piece[data-tone="3"] {
+      --piece-bg: #f5f3ff;
+      --piece-border: #c4b5fd;
+      --piece-shadow: #7c3aed;
+      --piece-ink: #5b21b6;
+    }
+
+    .number-piece[data-tone="4"] {
+      --piece-bg: #fefce8;
+      --piece-border: #fde68a;
+      --piece-shadow: #ca8a04;
+      --piece-ink: #854d0e;
+    }
+
+    .control-panel {
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: var(--numoj-radius);
+      background: var(--numoj-panel);
+      box-shadow: 0 1px 2px rgb(24 24 27 / 3%);
+    }
+
+    .operation-panel,
+    .guess-panel {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .guess-panel {
+      margin-top: auto;
+      border-top: 1px solid var(--numoj-line-soft);
+    }
+
+    .integer-input,
+    .answer-select {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid #d4d4d8;
+      border-radius: var(--numoj-radius-sm);
+      outline: 0;
+      background: #fff;
+      color: var(--numoj-ink);
+      font-size: 0.82rem;
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+
+    .integer-input {
+      padding: 0 12px;
+      font-family: var(--numoj-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .answer-select {
+      padding: 0 34px 0 11px;
+    }
+
+    .integer-input:focus,
+    .answer-select:focus {
+      border-color: var(--numoj-brand);
+      box-shadow: 0 0 0 3px rgb(234 88 12 / 11%);
+    }
+
+    .integer-input::placeholder {
+      color: var(--numoj-ink-4);
+    }
+
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .action-button {
+      min-height: 44px;
+      padding: 0 8px;
+      font-family: var(--numoj-mono);
+      font-size: 0.75rem;
+      font-weight: 650;
+    }
+
+    .action-button:hover:not(:disabled) {
+      border-color: var(--numoj-ink);
+      background: var(--numoj-ink);
+      color: #fff;
+      transform: translateY(-1px);
+    }
+
+    .telemetry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 7px;
+    }
+
+    .telemetry-item {
+      display: grid;
+      min-width: 0;
+      min-height: 62px;
+      align-content: center;
+      gap: 5px;
+      padding: 9px 10px;
+      border: 1px solid var(--numoj-line);
+      border-radius: var(--numoj-radius-sm);
+      background: #fafafa;
+    }
+
+    .telemetry-item span,
+    .guess-label {
+      color: var(--numoj-ink-4);
+      font-family: var(--numoj-mono);
+      font-size: 0.75rem;
+      font-weight: 650;
+      letter-spacing: 0.11em;
+    }
+
+    .telemetry-item output {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--numoj-ink);
+      font-family: var(--numoj-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 680;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-line {
+      min-height: 18px;
+      margin: 0;
+      color: var(--numoj-ink-3);
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+
+    .status-line.is-error,
+    .status-line.is-wrong {
+      color: var(--numoj-danger);
+    }
+
+    .status-line.is-correct {
+      color: var(--numoj-success);
+      font-weight: 650;
+    }
+
+    .guess-label {
+      margin: 0;
+    }
+
+    .guess-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px;
+    }
+
+    .guess-button {
+      min-height: 44px;
+      padding: 0 13px;
+      border-color: var(--numoj-ink);
+      background: var(--numoj-ink);
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    .guess-button:hover:not(:disabled) {
+      border-color: #000;
+      background: #000;
+      transform: translateY(-1px);
+    }
+
+    .rules-dialog {
+      width: min(calc(100% - 28px), 440px);
+      max-height: min(680px, calc(100dvh - 28px));
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: 11px;
+      background: var(--numoj-panel);
+      box-shadow: 0 28px 80px rgb(9 9 11 / 25%);
+      color: var(--numoj-ink);
+    }
+
+    .rules-dialog::backdrop {
+      background: rgb(9 9 11 / 54%);
+      backdrop-filter: blur(3px);
+    }
+
+    .rules-dialog[open] {
+      animation: dialog-enter 150ms ease-out both;
+    }
+
+    .dialog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--numoj-line-soft);
+    }
+
+    .dialog-header h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 690;
+    }
+
+    .dialog-close {
+      display: grid;
+      width: 40px;
+      height: 40px;
+      flex: 0 0 40px;
+      padding: 0;
+      place-items: center;
+      border-color: transparent;
+      background: transparent;
+      color: var(--numoj-ink-3);
+      font-size: 1.15rem;
+      font-weight: 400;
+    }
+
+    .rules-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 19px 24px 19px 40px;
+      color: var(--numoj-ink-2);
+      font-size: 0.78rem;
+      line-height: 1.65;
+    }
+
+    .dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 14px 20px 18px;
+      border-top: 1px solid var(--numoj-line-soft);
+    }
+
+    .dialog-button {
+      min-height: 44px;
+      padding: 0 14px;
+    }
+
+    @keyframes dialog-enter {
+      from {
+        opacity: 0;
+        transform: translateY(7px) scale(0.985);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @media (max-width: 860px) {
+      .game-shell {
+        min-height: auto;
+      }
+
+      .game-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .blackbox {
+        min-height: clamp(330px, 55dvh, 500px);
+      }
+
+      .control-panel {
+        min-height: auto;
+      }
+
+      .operation-panel,
+      .guess-panel {
+        padding: 14px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .game-shell {
+        gap: 10px;
+        padding: 11px;
+      }
+
+      .game-header {
+        align-items: flex-start;
+      }
+
+      .header-actions {
+        flex-wrap: wrap;
+      }
+
+      .quiet-button {
+        min-height: 44px;
+        padding-inline: 8px;
+        font-size: 0.75rem;
+      }
+
+      .blackbox {
+        min-height: 320px;
+        border-radius: 10px;
+      }
+
+      .control-panel {
+        border-radius: 10px;
+      }
+
+      .guess-controls {
+        grid-template-columns: 1fr;
+      }
+
+      .guess-button {
+        width: 100%;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="game-shell" id="gameApp" aria-busy="true">
+    <header class="game-header">
+      <h1 class="game-title">猜猜我是谁</h1>
+      <div class="header-actions" aria-label="游戏控制">
+        <button class="quiet-button" id="newGameButton" type="button" data-always-available>新一局</button>
+        <button class="quiet-button" id="resetButton" type="button" data-game-control>清空</button>
+        <button class="quiet-button" id="rulesButton" type="button" aria-haspopup="dialog" aria-controls="rulesDialog">规则</button>
+      </div>
+    </header>
+
+    <div class="game-layout">
+      <section class="blackbox" aria-label="黑盒">
+        <div class="piece-field" id="pieceField" role="list" aria-label="黑盒中的整数"></div>
+      </section>
+
+      <aside class="control-panel" aria-label="操作台">
+        <section class="operation-panel">
+          <label class="visually-hidden" for="integerInput">整数</label>
+          <input
+            class="integer-input"
+            id="integerInput"
+            type="number"
+            step="1"
+            min="-1000000"
+            max="1000000"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="整数"
+            data-game-control
+          >
+
+          <div class="action-grid" aria-label="黑盒操作">
+            <button class="action-button" type="button" data-operation="insert" data-game-control>insert</button>
+            <button class="action-button" type="button" data-operation="erase" data-game-control>erase</button>
+            <button class="action-button" type="button" data-operation="contains" data-game-control>contains</button>
+            <button class="action-button" type="button" data-operation="min" data-game-control>min</button>
+          </div>
+
+          <div class="telemetry" aria-label="操作反馈">
+            <div class="telemetry-item">
+              <span>结果</span>
+              <output id="resultOutput" aria-live="polite">—</output>
+            </div>
+            <div class="telemetry-item">
+              <span>步数</span>
+              <output id="stepsOutput" aria-live="polite">—</output>
+            </div>
+          </div>
+
+          <p class="status-line" id="statusLine" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="guess-panel">
+          <p class="guess-label">答案</p>
+          <div class="guess-controls">
+            <label class="visually-hidden" for="answerSelect">选择数据结构</label>
+            <select class="answer-select" id="answerSelect" required data-game-control>
+              <option value="">选择答案</option>
+              <option value="unordered_array">无序数组</option>
+              <option value="sorted_array">有序数组</option>
+              <option value="linked_list">链表</option>
+              <option value="binary_heap">二叉堆</option>
+              <option value="bst">普通 BST</option>
+              <option value="avl">AVL</option>
+              <option value="linear_probing_hash">线性探测哈希</option>
+            </select>
+            <button class="guess-button" id="guessButton" type="button" data-game-control>提交</button>
+          </div>
+          <p class="status-line" id="guessStatus" role="status" aria-live="polite"></p>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <dialog class="rules-dialog" id="rulesDialog" aria-labelledby="rulesTitle">
+    <form method="dialog">
+      <header class="dialog-header">
+        <h2 id="rulesTitle">规则</h2>
+        <button class="dialog-close" type="submit" value="close" aria-label="关闭规则">×</button>
+      </header>
+      <ol class="rules-list">
+        <li>每一局会随机选定一种隐藏的数据结构。</li>
+        <li>执行操作，观察完整元素集合、返回结果与操作步数。</li>
+        <li>清空只移除元素，不会更换当前隐藏结构。</li>
+        <li>选择一种结构并提交；提交后本局结束。</li>
+      </ol>
+      <footer class="dialog-footer">
+        <button class="dialog-button" type="submit" value="close">关闭</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var app = document.getElementById("gameApp");
+      var pieceField = document.getElementById("pieceField");
+      var integerInput = document.getElementById("integerInput");
+      var resultOutput = document.getElementById("resultOutput");
+      var stepsOutput = document.getElementById("stepsOutput");
+      var statusLine = document.getElementById("statusLine");
+      var answerSelect = document.getElementById("answerSelect");
+      var guessButton = document.getElementById("guessButton");
+      var guessStatus = document.getElementById("guessStatus");
+      var resetButton = document.getElementById("resetButton");
+      var newGameButton = document.getElementById("newGameButton");
+      var rulesButton = document.getElementById("rulesButton");
+      var rulesDialog = document.getElementById("rulesDialog");
+      var gameControls = Array.prototype.slice.call(document.querySelectorAll("[data-game-control]"));
+      var operationButtons = Array.prototype.slice.call(document.querySelectorAll("[data-operation]"));
+
+      var currentItems = [];
+      var positionCache = new Map();
+      var pending = false;
+      var loaded = false;
+      var finished = false;
+      var resizeFrame = 0;
+
+      function hasOwn(object, key) {
+        return Object.prototype.hasOwnProperty.call(object, key);
+      }
+
+      function hashString(value) {
+        var hash = 2166136261;
+        for (var index = 0; index < value.length; index += 1) {
+          hash ^= value.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+
+      function unitRandom(value) {
+        var seed = hashString(value) + 0x6d2b79f5;
+        seed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+        seed ^= seed + Math.imul(seed ^ (seed >>> 7), seed | 61);
+        return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
+      }
+
+      function normalizedItems(value) {
+        if (!Array.isArray(value)) return [];
+        return value.filter(function (item) {
+          return typeof item === "number" && Number.isSafeInteger(item);
+        });
+      }
+
+      function itemDescriptors(items) {
+        var occurrences = new Map();
+        return items.map(function (value) {
+          var seen = occurrences.get(value) || 0;
+          occurrences.set(value, seen + 1);
+          return { value: value, key: String(value) + ":" + String(seen) };
+        }).sort(function (left, right) {
+          if (left.value !== right.value) return left.value - right.value;
+          return left.key.localeCompare(right.key);
+        });
+      }
+
+      function positionFor(key, occupied) {
+        if (positionCache.has(key)) return positionCache.get(key);
+
+        var best = null;
+        var bestDistance = -1;
+        for (var attempt = 0; attempt < 24; attempt += 1) {
+          var candidate = {
+            x: 0.04 + unitRandom(key + ":x:" + attempt) * 0.92,
+            y: 0.05 + unitRandom(key + ":y:" + attempt) * 0.9,
+            angle: Math.round((unitRandom(key + ":a") - 0.5) * 14),
+            tone: hashString(key + ":tone") % 5
+          };
+          var minimumDistance = occupied.reduce(function (minimum, existing) {
+            var dx = candidate.x - existing.x;
+            var dy = candidate.y - existing.y;
+            return Math.min(minimum, dx * dx + dy * dy);
+          }, 2);
+          if (minimumDistance > bestDistance) {
+            best = candidate;
+            bestDistance = minimumDistance;
+          }
+        }
+        positionCache.set(key, best);
+        return best;
+      }
+
+      function pieceSize(count, width, height) {
+        if (count <= 0) return 48;
+        var areaSize = Math.sqrt((width * height) / Math.max(count, 1)) * 0.43;
+        return Math.max(32, Math.min(56, Math.floor(areaSize)));
+      }
+
+      function renderItems() {
+        var descriptors = itemDescriptors(currentItems);
+        pieceField.replaceChildren();
+        pieceField.setAttribute("aria-label", "黑盒中的整数，共 " + descriptors.length + " 个");
+
+        if (!descriptors.length) {
+          var empty = document.createElement("span");
+          empty.className = "empty-mark";
+          empty.textContent = "∅";
+          empty.setAttribute("aria-label", "空");
+          pieceField.appendChild(empty);
+          return;
+        }
+
+        var bounds = pieceField.getBoundingClientRect();
+        var width = Math.max(260, bounds.width);
+        var height = Math.max(260, bounds.height);
+        var size = pieceSize(descriptors.length, width, height);
+        var edge = Math.max(12, Math.round(size * 0.32));
+        var usableWidth = Math.max(0, width - size - edge * 2);
+        var usableHeight = Math.max(0, height - size - edge * 2 - 3);
+        var occupied = [];
+        var reserved = descriptors.filter(function (descriptor) {
+          return positionCache.has(descriptor.key);
+        }).map(function (descriptor) {
+          return positionCache.get(descriptor.key);
+        });
+
+        descriptors.forEach(function (descriptor) {
+          var position = positionFor(descriptor.key, occupied.concat(reserved));
+          occupied.push(position);
+
+          var piece = document.createElement("span");
+          var text = String(descriptor.value);
+          var fontSize = text.length >= 9 ? 0.54 : (text.length >= 6 ? 0.65 : 0.82);
+          var x = edge + position.x * usableWidth;
+          var y = edge + position.y * usableHeight;
+          piece.className = "number-piece";
+          piece.dataset.tone = String(position.tone);
+          piece.setAttribute("role", "listitem");
+          piece.style.width = size + "px";
+          piece.style.height = size + "px";
+          piece.style.fontSize = fontSize + "rem";
+          piece.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) rotate(" + position.angle + "deg)";
+          piece.textContent = text;
+          pieceField.appendChild(piece);
+        });
+      }
+
+      function formatResult(value) {
+        if (value === null || typeof value === "undefined") return "∅";
+        if (typeof value === "boolean") return value ? "true" : "false";
+        if (typeof value === "number" || typeof value === "string") return String(value);
+        return "—";
+      }
+
+      function clearStatus(element) {
+        element.textContent = "";
+        element.classList.remove("is-error", "is-correct", "is-wrong");
+      }
+
+      function showStatus(element, message, className) {
+        clearStatus(element);
+        element.textContent = message || "";
+        if (className) element.classList.add(className);
+      }
+
+      function refreshControls() {
+        gameControls.forEach(function (control) {
+          control.disabled = pending || !loaded || finished;
+        });
+        newGameButton.disabled = pending;
+        app.setAttribute("aria-busy", pending ? "true" : "false");
+      }
+
+      function guessResult(payload) {
+        if (!payload || typeof payload.guess !== "object" || payload.guess === null) return null;
+        return typeof payload.guess.correct === "boolean" ? payload.guess.correct : null;
+      }
+
+      function applyPayload(payload, kind) {
+        if (hasOwn(payload, "items")) {
+          currentItems = normalizedItems(payload.items);
+          renderItems();
+        }
+
+        if (kind === "new" || kind === "reset" || kind === "state") {
+          resultOutput.textContent = "—";
+          stepsOutput.textContent = "—";
+          answerSelect.value = "";
+          clearStatus(guessStatus);
+        } else if (kind === "action") {
+          if (hasOwn(payload, "result")) resultOutput.textContent = formatResult(payload.result);
+          if (hasOwn(payload, "steps")) {
+            stepsOutput.textContent = payload.steps === null || typeof payload.steps === "undefined"
+              ? "—"
+              : String(payload.steps);
+          }
+        }
+
+        finished = payload.finished === true;
+        var correct = guessResult(payload);
+        var answerLabel = payload.guess && typeof payload.guess.label === "string"
+          ? " · " + payload.guess.label
+          : "";
+        if (correct === true) showStatus(guessStatus, "猜对了" + answerLabel, "is-correct");
+        if (correct === false) {
+          showStatus(guessStatus, "未猜中" + (answerLabel ? " · 答案：" + payload.guess.label : ""), "is-wrong");
+        }
+      }
+
+      function parseResponse(response) {
+        return response.json().catch(function () {
+          return { success: false, message: "响应无法读取" };
+        }).then(function (payload) {
+          if (!response.ok || !payload || payload.success !== true) {
+            var error = new Error(payload && payload.message ? payload.message : "请求失败");
+            error.status = response.status;
+            error.payload = payload;
+            throw error;
+          }
+          return payload;
+        });
+      }
+
+      function request(path, options, kind) {
+        if (pending) return Promise.resolve(null);
+        pending = true;
+        clearStatus(statusLine);
+        refreshControls();
+
+        return fetch(path, options || { method: "GET", cache: "no-store" })
+          .then(parseResponse)
+          .then(function (payload) {
+            if (kind === "new") positionCache.clear();
+            loaded = true;
+            applyPayload(payload, kind);
+            return payload;
+          })
+          .catch(function (error) {
+            if (error.payload && Array.isArray(error.payload.items)) {
+              loaded = true;
+              applyPayload(error.payload, kind);
+            }
+            showStatus(statusLine, error.message || "请求失败", "is-error");
+            return null;
+          })
+          .finally(function () {
+            pending = false;
+            refreshControls();
+          });
+      }
+
+      function post(path, payload, kind) {
+        return request(path, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload || {})
+        }, kind);
+      }
+
+      function integerValue() {
+        var value = integerInput.valueAsNumber;
+        if (!Number.isSafeInteger(value)) {
+          integerInput.setCustomValidity("请输入整数");
+          integerInput.reportValidity();
+          integerInput.setCustomValidity("");
+          return null;
+        }
+        return value;
+      }
+
+      operationButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          var operation = button.dataset.operation;
+          var payload = { operation: operation };
+          if (operation !== "min") {
+            var value = integerValue();
+            if (value === null) return;
+            payload.value = value;
+          }
+          post("api/action", payload, "action").then(function (response) {
+            if (response && operation !== "min") {
+              integerInput.focus();
+              integerInput.select();
+            }
+          });
+        });
+      });
+
+      resetButton.addEventListener("click", function () {
+        post("api/reset", {}, "reset");
+      });
+
+      newGameButton.addEventListener("click", function () {
+        post("api/new", {}, "new");
+      });
+
+      guessButton.addEventListener("click", function () {
+        if (!answerSelect.value) {
+          answerSelect.reportValidity();
+          return;
+        }
+        post("api/guess", { answer: answerSelect.value }, "guess");
+      });
+
+      integerInput.addEventListener("input", function () {
+        integerInput.setCustomValidity("");
+      });
+
+      rulesButton.addEventListener("click", function () {
+        if (typeof rulesDialog.showModal === "function") rulesDialog.showModal();
+      });
+
+      rulesDialog.addEventListener("click", function (event) {
+        if (event.target === rulesDialog) rulesDialog.close();
+      });
+
+      rulesDialog.addEventListener("close", function () {
+        rulesButton.focus();
+      });
+
+      if (typeof ResizeObserver === "function") {
+        new ResizeObserver(function () {
+          if (resizeFrame) cancelAnimationFrame(resizeFrame);
+          resizeFrame = requestAnimationFrame(function () {
+            resizeFrame = 0;
+            renderItems();
+          });
+        }).observe(pieceField);
+      } else {
+        window.addEventListener("resize", function () {
+          if (resizeFrame) cancelAnimationFrame(resizeFrame);
+          resizeFrame = requestAnimationFrame(function () {
+            resizeFrame = 0;
+            renderItems();
+          });
+        });
+      }
+
+      renderItems();
+      refreshControls();
+      request("api/state", { method: "GET", cache: "no-store", headers: { "Accept": "application/json" } }, "state");
+    }());
+  </script>
+</body>
+</html>
