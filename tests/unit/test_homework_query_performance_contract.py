@@ -20,12 +20,13 @@ def test_student_homework_query_avoids_redundant_ranking_aggregation():
 
 def test_homework_submission_indexes_cover_user_deadline_lookups():
     schema = (ROOT / "database/bootstrap.sql").read_text(encoding="utf-8")
+    normalized = schema.replace("`", "")
 
     assert (
         "idx_submissions_user_problem_created "
         "(username, problem_id, created_at, id)"
-    ) in schema
+    ) in normalized
     assert (
         "idx_rs_user_comp_created "
         "(username, competition_id, created_at, id)"
-    ) in schema
+    ) in normalized

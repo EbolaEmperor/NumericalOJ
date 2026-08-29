@@ -1579,8 +1579,6 @@ CREATE TABLE `site_settings` (
   PRIMARY KEY (`k`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 /*!40101 SET character_set_client = @saved_cs_client */;
-ALTER TABLE ranking_submissions ADD INDEX idx_rs_user_comp_created (username, competition_id, created_at, id);
-
 --
 -- Table structure for table `daily_submission_stats`
 --
@@ -1693,6 +1691,7 @@ CREATE TABLE `ranking_submissions` (
   `elo_in_pool` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  KEY `idx_rs_user_comp_created` (`username`, `competition_id`, `created_at`, `id`),
   KEY `idx_rs_comp_user` (`competition_id`,`username`),
   KEY `idx_rs_comp_score` (`competition_id`,`score`),
   KEY `idx_rs_comp_created` (`competition_id`,`created_at`),
