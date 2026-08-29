@@ -53,6 +53,22 @@ async function atomicWrite(path, bytes) {
   await rename(temporary, path);
 }
 
+function makeGzipPortable(bytes) {
+  if (
+    bytes.length < 10
+    || bytes[0] !== 0x1f
+    || bytes[1] !== 0x8b
+    || bytes[2] !== 0x08
+  ) {
+    throw new Error("zlib returned an invalid gzip stream");
+  }
+  // RFC 1952 的第 10 字节只是创建端操作系统标识，不参与解压。Node/zlib
+  // 会在 macOS 写 19、Linux 写 3，导致同一源文件在 ARM Mac 和 GitHub x64
+  // runner 上产生一字节漂移。统一写 unknown(255)，保留压缩流和校验值不变。
+  bytes[9] = 0xff;
+  return bytes;
+}
+
 const { sources, sidecars } = await collect(staticRoot);
 const expectedSidecars = new Set(
   sources.flatMap((path) => [`${path}.br`, `${path}.gz`]),
@@ -61,7 +77,7 @@ let rawBytes = 0;
 let compressedBytes = 0;
 for (const path of sources) {
   const source = await readFile(path);
-  const [brotliBytes, gzipBytes] = await Promise.all([
+  const [brotliBytes, nativeGzipBytes] = await Promise.all([
     brotli(source, {
       params: {
         [constants.BROTLI_PARAM_QUALITY]: 11,
@@ -70,6 +86,7 @@ for (const path of sources) {
     }),
     gzipAsync(source, { level: 9 }),
   ]);
+  const gzipBytes = makeGzipPortable(nativeGzipBytes);
   await Promise.all([
     atomicWrite(`${path}.br`, brotliBytes),
     atomicWrite(`${path}.gz`, gzipBytes),
