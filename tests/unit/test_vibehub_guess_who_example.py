@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import random
+import re
 import socket
 import sys
 import tempfile
@@ -35,6 +36,34 @@ EXPECTED_KINDS = (
     "avl",
     "linear_probing_hash",
 )
+
+
+def test_frontend_uses_custom_viewport_safe_structure_controls():
+    html = (PACKAGE / "static" / "index.html").read_text(encoding="utf-8")
+    lowered = html.lower()
+
+    assert "<select" not in lowered
+    assert 'type="number"' not in lowered
+    assert 'type="text"' in lowered
+    assert 'role="combobox"' in lowered
+    assert 'role="listbox"' in lowered
+    assert 'id="integerSignButton"' in html
+    assert 'aria-invalid="false"' in html
+    assert 'aria-required="true"' in html
+
+    icon_options = re.findall(
+        r'<div class="answer-option"[^>]*data-value="([^"]+)"[\s\S]*?'
+        r'<span class="answer-option-icon"[\s\S]*?<svg\b',
+        html,
+    )
+    assert tuple(icon_options) == EXPECTED_KINDS
+
+    assert "window.visualViewport" in html
+    assert 'answerPopover.dataset.direction = "overlay"' in html
+    assert "answerPopover.dataset.compact" in html
+    assert ".answer-popover[data-compact=\"true\"]" in html
+    assert ".number-piece::before" in html
+    assert "@keyframes piece-appear" in html
 
 
 @pytest.fixture(autouse=True)
@@ -343,7 +372,12 @@ def _request(socket_path, method, path, payload=None, *, session_id=None, raw=No
         headers["X-VibeHub-Session-Id"] = session_id
     connection = _UnixHTTPConnection(socket_path)
     try:
-        connection.request(method, path, body=body, headers=headers)
+        try:
+            connection.request(method, path, body=body, headers=headers)
+        except BrokenPipeError:
+            # 服务端可仅凭 Content-Length 提前拒绝超限请求并关闭写方向；
+            # 响应此时已经在 socket 中，仍应读取并断言其状态。
+            pass
         response = connection.getresponse()
         data = response.read()
         return response.status, json.loads(data.decode("utf-8"))
