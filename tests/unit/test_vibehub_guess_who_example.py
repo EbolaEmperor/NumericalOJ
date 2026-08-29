@@ -64,6 +64,9 @@ def test_frontend_uses_custom_viewport_safe_structure_controls():
     assert ".answer-popover[data-compact=\"true\"]" in html
     assert ".number-piece::before" in html
     assert "@keyframes piece-appear" in html
+    assert 'id="operationHistory"' in html
+    assert 'role="log"' in html
+    assert "operationHistory.parentElement.scrollTop" in html
 
 
 @pytest.fixture(autouse=True)

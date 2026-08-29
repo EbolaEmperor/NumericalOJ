@@ -361,6 +361,72 @@
       border-top: 1px solid var(--numoj-line-soft);
     }
 
+    .history-panel {
+      min-height: 0;
+      flex: 1 1 120px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      border-top: 1px solid var(--numoj-line-soft);
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+    }
+
+    .operation-history {
+      display: flex;
+      min-height: 100%;
+      flex-direction: column;
+      margin: 0;
+      padding: 2px 0;
+      list-style: none;
+    }
+
+    .operation-history-item {
+      display: grid;
+      min-width: 0;
+      min-height: 36px;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 16px;
+      border-bottom: 1px solid var(--numoj-line-soft);
+      font-size: 0.72rem;
+      line-height: 1.25;
+    }
+
+    .history-operation,
+    .history-steps {
+      font-family: var(--numoj-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .history-operation {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--numoj-ink-2);
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .history-result {
+      font-weight: 650;
+    }
+
+    .history-result[data-success="true"] {
+      color: var(--numoj-success);
+    }
+
+    .history-result[data-success="false"] {
+      color: var(--numoj-danger);
+    }
+
+    .history-steps {
+      color: var(--numoj-ink-3);
+      text-align: right;
+      white-space: nowrap;
+    }
+
     .integer-control,
     .answer-trigger {
       width: 100%;
@@ -807,6 +873,11 @@
         min-height: auto;
       }
 
+      .history-panel {
+        max-height: min(240px, 34dvh);
+        flex: 0 1 auto;
+      }
+
       .operation-panel,
       .guess-panel {
         padding: 14px;
@@ -926,6 +997,16 @@
           </div>
 
           <p class="status-line" id="statusLine" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="history-panel" aria-label="操作历史">
+          <ol
+            class="operation-history"
+            id="operationHistory"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+          ></ol>
         </section>
 
         <section class="guess-panel">
@@ -1083,6 +1164,7 @@
       var resultOutput = document.getElementById("resultOutput");
       var stepsOutput = document.getElementById("stepsOutput");
       var statusLine = document.getElementById("statusLine");
+      var operationHistory = document.getElementById("operationHistory");
       var answerTrigger = document.getElementById("answerTrigger");
       var answerSelection = document.getElementById("answerSelection");
       var answerSelectedIcon = document.getElementById("answerSelectedIcon");
@@ -1240,6 +1322,53 @@
         if (typeof value === "boolean") return value ? "true" : "false";
         if (typeof value === "number" || typeof value === "string") return String(value);
         return "—";
+      }
+
+      function operationLabel(operation, value) {
+        if (operation === "min") return "min";
+        var name = operation === "contains" ? "contain" : operation;
+        return name + "(" + String(value) + ")";
+      }
+
+      function operationSucceeded(operation, payload) {
+        if (!payload || payload.success !== true) return false;
+        if (operation === "min") {
+          return hasOwn(payload, "result")
+            && payload.result !== null
+            && typeof payload.result !== "undefined";
+        }
+        return payload.result === true;
+      }
+
+      function appendOperationHistory(operation, value, payload) {
+        var steps = Number.isSafeInteger(payload && payload.steps) && payload.steps >= 0
+          ? payload.steps
+          : 0;
+        var succeeded = operationSucceeded(operation, payload);
+        var item = document.createElement("li");
+        item.className = "operation-history-item";
+
+        var operationText = document.createElement("span");
+        operationText.className = "history-operation";
+        operationText.textContent = operationLabel(operation, value);
+
+        var resultText = document.createElement("span");
+        resultText.className = "history-result";
+        resultText.dataset.success = succeeded ? "true" : "false";
+        resultText.textContent = succeeded ? "成功" : "失败";
+
+        var stepsText = document.createElement("span");
+        stepsText.className = "history-steps";
+        stepsText.textContent = String(steps) + " 步";
+
+        item.append(operationText, resultText, stepsText);
+        operationHistory.appendChild(item);
+        operationHistory.parentElement.scrollTop = operationHistory.parentElement.scrollHeight;
+      }
+
+      function clearOperationHistory() {
+        operationHistory.replaceChildren();
+        operationHistory.parentElement.scrollTop = 0;
       }
 
       function clearStatus(element) {
@@ -1455,6 +1584,7 @@
         if (kind === "new" || kind === "reset" || kind === "state") {
           resultOutput.textContent = "—";
           stepsOutput.textContent = "—";
+          clearOperationHistory();
           setAnswer("");
           clearStatus(guessStatus);
         } else if (kind === "action") {
@@ -1491,7 +1621,7 @@
         });
       }
 
-      function request(path, options, kind) {
+      function request(path, options, kind, operationEntry) {
         if (pending) return Promise.resolve(null);
         pending = true;
         clearStatus(statusLine);
@@ -1503,12 +1633,23 @@
             if (kind === "new") positionCache.clear();
             loaded = true;
             applyPayload(payload, kind);
+            if (kind === "action" && operationEntry) {
+              appendOperationHistory(operationEntry.operation, operationEntry.value, payload);
+            }
             return payload;
           })
           .catch(function (error) {
             if (error.payload && Array.isArray(error.payload.items)) {
               loaded = true;
               applyPayload(error.payload, kind);
+            }
+            if (
+              kind === "action"
+              && operationEntry
+              && error.payload
+              && hasOwn(error.payload, "steps")
+            ) {
+              appendOperationHistory(operationEntry.operation, operationEntry.value, error.payload);
             }
             showStatus(statusLine, error.message || "请求失败", "is-error");
             return null;
@@ -1519,7 +1660,7 @@
           });
       }
 
-      function post(path, payload, kind) {
+      function post(path, payload, kind, operationEntry) {
         return request(path, {
           method: "POST",
           cache: "no-store",
@@ -1528,7 +1669,7 @@
             "Content-Type": "application/json"
           },
           body: JSON.stringify(payload || {})
-        }, kind);
+        }, kind, operationEntry);
       }
 
       function integerValue() {
@@ -1555,7 +1696,10 @@
             if (value === null) return;
             payload.value = value;
           }
-          post("api/action", payload, "action").then(function (response) {
+          post("api/action", payload, "action", {
+            operation: operation,
+            value: payload.value
+          }).then(function (response) {
             if (response && operation !== "min") {
               integerInput.focus();
               integerInput.select();
