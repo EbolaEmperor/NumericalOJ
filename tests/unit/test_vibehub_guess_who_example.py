@@ -67,6 +67,13 @@ def test_frontend_uses_custom_viewport_safe_structure_controls():
     assert 'id="operationHistory"' in html
     assert 'role="log"' in html
     assert "operationHistory.parentElement.scrollTop" in html
+    assert 'id="resultDialog"' in html
+    assert 'id="resultSelectedIcon"' in html
+    assert 'id="resultActualIcon"' in html
+    assert "structureNotes" in html
+    assert "celebration-shard" in html
+    for kind in EXPECTED_KINDS:
+        assert re.search(rf"^\s*{re.escape(kind)}:\s*{{", html, re.MULTILINE)
 
 
 @pytest.fixture(autouse=True)
