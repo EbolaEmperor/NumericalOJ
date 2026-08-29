@@ -27,7 +27,7 @@ from oj_modules.vibehub import services, storage
 from oj_modules.vibehub.runtime import get_runtime_manager
 
 
-EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3")
+EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3", "guess-who")
 EXPECTED_ARC_GAME_COUNT = 25
 DETERMINISTIC_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
@@ -37,6 +37,7 @@ class ExampleSeedError(RuntimeError):
 
 
 def _load_state() -> tuple[dict, dict[str, dict]]:
+    project_placeholders = ", ".join("%s" for _ in EXAMPLE_SLUGS)
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -46,11 +47,11 @@ def _load_state() -> tuple[dict, dict[str, dict]]:
             )
             admin = cursor.fetchone()
             cursor.execute(
-                """SELECT p.slug, p.owner_id, p.public_version_id,
+                f"""SELECT p.slug, p.owner_id, p.public_version_id,
                        v.package_sha256 AS public_package_sha256
                 FROM vibehub_projects AS p
                 LEFT JOIN vibehub_versions AS v ON v.id = p.public_version_id
-                WHERE p.slug IN (%s, %s)""",
+                WHERE p.slug IN ({project_placeholders})""",
                 EXAMPLE_SLUGS,
             )
             projects = {row["slug"]: row for row in (cursor.fetchall() or [])}

@@ -13,6 +13,50 @@ from deploy import seed_vibehub_examples as seed
 ADMIN = {"id": 4, "username": "admin", "is_admin": 1}
 
 
+def test_load_state_parameterizes_every_example_slug(monkeypatch):
+    calls = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params):
+            calls.append((" ".join(query.split()), params))
+
+        def fetchone(self):
+            return dict(ADMIN)
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        closed = False
+
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(seed, "get_db_connection", lambda: connection)
+
+    admin, projects = seed._load_state()
+
+    assert admin == ADMIN
+    assert projects == {}
+    assert connection.closed is True
+    project_query, project_params = calls[1]
+    placeholders = ", ".join("%s" for _ in seed.EXAMPLE_SLUGS)
+    assert f"WHERE p.slug IN ({placeholders})" in project_query
+    assert project_params == seed.EXAMPLE_SLUGS
+    assert project_query.count("%s") == len(seed.EXAMPLE_SLUGS)
+    assert all(slug not in project_query for slug in seed.EXAMPLE_SLUGS)
+
+
 def test_seed_uses_normal_publish_and_direct_featured_setting(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(seed, "_load_state", lambda: (ADMIN, {}))
@@ -46,16 +90,17 @@ def test_seed_uses_normal_publish_and_direct_featured_setting(tmp_path, monkeypa
 
     result = seed.seed_examples(tmp_path, tmp_path / "uploads", tmp_path / "arc")
 
-    assert result == ["circle-cat: created", "arc-agi-3: created"]
+    assert result == [f"{slug}: created" for slug in seed.EXAMPLE_SLUGS]
     assert [call[0] for call in calls] == [
-        "remove", "create", "review", "set_featured",
-        "remove", "create", "review", "set_featured",
+        action
+        for _slug in seed.EXAMPLE_SLUGS
+        for action in ("remove", "create", "review", "set_featured")
     ]
-    for call in (calls[1], calls[5]):
-        assert call[1] == ADMIN
-    assert calls[2][2]["expected_version"] == 1
-    assert calls[3][1] == (ADMIN, "circle-cat", True)
-    assert calls[7][1] == (ADMIN, "arc-agi-3", True)
+    for index, slug in enumerate(seed.EXAMPLE_SLUGS):
+        offset = index * 4
+        assert calls[offset + 1][1] == ADMIN
+        assert calls[offset + 2][2]["expected_version"] == 1
+        assert calls[offset + 3][1] == (ADMIN, slug, True)
 
 
 def test_existing_admin_projects_with_same_package_are_unchanged(tmp_path, monkeypatch):
@@ -101,7 +146,7 @@ def test_existing_admin_projects_with_same_package_are_unchanged(tmp_path, monke
 
     result = seed.seed_examples(tmp_path, tmp_path / "uploads", tmp_path / "arc")
 
-    assert result == ["circle-cat: unchanged", "arc-agi-3: unchanged"]
+    assert result == [f"{slug}: unchanged" for slug in seed.EXAMPLE_SLUGS]
     assert removed == list(seed.EXAMPLE_SLUGS)
     assert ensured == [
         (ADMIN, slug, tmp_path / "uploads") for slug in seed.EXAMPLE_SLUGS
@@ -192,13 +237,20 @@ def test_existing_admin_project_is_published_when_package_changes(tmp_path, monk
 
     result = seed.seed_examples(tmp_path, tmp_path / "uploads", tmp_path / "arc")
 
-    assert result == ["circle-cat: updated", "arc-agi-3: updated"]
-    assert [call[0] for call in calls] == ["upload", "review", "upload", "review"]
-    for upload_call in (calls[0], calls[2]):
+    assert result == [f"{slug}: updated" for slug in seed.EXAMPLE_SLUGS]
+    assert [call[0] for call in calls] == [
+        action
+        for _slug in seed.EXAMPLE_SLUGS
+        for action in ("upload", "review")
+    ]
+    for index, slug in enumerate(seed.EXAMPLE_SLUGS):
+        upload_call = calls[index * 2]
+        review_call = calls[index * 2 + 1]
         assert upload_call[1] == ADMIN
+        assert upload_call[2] == slug
         assert upload_call[4] == {}
-    assert calls[1][2]["expected_version"] == 21
-    assert calls[3][2]["expected_version"] == 23
+        assert review_call[1][1] == slug
+        assert review_call[2]["expected_version"] == 21 + index * 2
 
 
 def test_deterministic_package_ignores_unrelated_commit_timestamp(tmp_path):
