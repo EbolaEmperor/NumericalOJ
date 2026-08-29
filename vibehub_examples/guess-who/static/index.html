@@ -1701,8 +1701,14 @@
 
       function pieceSize(count, width, height) {
         if (count <= 0) return 48;
-        var areaSize = Math.sqrt((width * height) / Math.max(count, 1)) * 0.43;
-        return Math.max(32, Math.min(56, Math.floor(areaSize)));
+        var areaSize = Math.sqrt((width * height) / Math.max(count, 1)) * 0.5;
+        var minimumSize = count > 72 ? 27 : (count > 40 ? 31 : 36);
+        return Math.max(minimumSize, Math.min(66, Math.floor(areaSize)));
+      }
+
+      function pieceFontSize(text, size) {
+        var fitWidth = (size - 10) / (Math.max(text.length, 2) * 0.6);
+        return Math.max(7, Math.min(16, size * 0.34, fitWidth));
       }
 
       function renderItems() {
@@ -1739,7 +1745,7 @@
 
           var piece = document.createElement("span");
           var text = String(descriptor.value);
-          var fontSize = text.length >= 9 ? 0.54 : (text.length >= 6 ? 0.65 : 0.82);
+          var fontSize = pieceFontSize(text, size);
           var x = edge + position.x * usableWidth;
           var y = edge + position.y * usableHeight;
           piece.className = "number-piece";
@@ -1747,7 +1753,7 @@
           piece.setAttribute("role", "listitem");
           piece.style.width = size + "px";
           piece.style.height = size + "px";
-          piece.style.fontSize = fontSize + "rem";
+          piece.style.fontSize = fontSize.toFixed(1) + "px";
           piece.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) rotate(" + position.angle + "deg)";
           var label = document.createElement("span");
           label.className = "number-piece-label";
