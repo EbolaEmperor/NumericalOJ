@@ -249,6 +249,31 @@ def test_checkpoint_rejects_special_files(checkpoint_workspace):
     assert not _checkpoint(checkpoint_workspace, "special").exists()
 
 
+def test_checkpoint_discards_root_runtime_tmp_with_special_files(
+    checkpoint_workspace,
+):
+    public = workspace.ensure_agent_workspace("session")
+    runtime = public / ".runtime"
+    runtime_tmp = runtime / "tmp" / "nested"
+    runtime_tmp.mkdir(parents=True)
+    os.mkfifo(runtime_tmp / "agent.pipe")
+    (runtime / "home").mkdir()
+    (runtime / "home" / "state.json").write_text("persist\n", encoding="utf-8")
+
+    runtime_checkpoints.create_agent_runtime_checkpoint(
+        "session",
+        "runtime-tmp-baseline",
+    )
+
+    assert not (runtime / "tmp").exists()
+    saved_runtime = _checkpoint(
+        checkpoint_workspace,
+        "runtime-tmp-baseline",
+    ) / "runtime"
+    assert (saved_runtime / "home" / "state.json").read_text() == "persist\n"
+    assert not (saved_runtime / "tmp").exists()
+
+
 def test_checkpoint_discards_codex_arg0_absolute_symlinks(
     checkpoint_workspace,
 ):
