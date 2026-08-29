@@ -43,6 +43,13 @@ def _log_page_failure(operation):
 @vibehub_bp.get("/")
 def index():
     user = current_user()
+    allowed_filters = {"all", "featured"}
+    if user:
+        allowed_filters.add("mine")
+    if user and int(user.get("is_admin") or 0) == 1:
+        allowed_filters.add("pending")
+    requested_filter = str(request.args.get("view") or "").strip()
+    initial_filter = requested_filter if requested_filter in allowed_filters else "all"
     load_error = None
     try:
         projects = services.list_gallery_projects(user)
@@ -53,7 +60,7 @@ def index():
     response = make_response(
         render_template(
             "vibehub/index.html", user=user, projects=projects, load_error=load_error,
-            initial_filter="mine" if user and request.args.get("view") == "mine" else "all",
+            initial_filter=initial_filter,
             edit_slug=(request.args.get("edit") or "").strip(),
         )
     )

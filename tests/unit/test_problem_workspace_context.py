@@ -457,6 +457,48 @@ def test_problem_routes_forward_class_query_and_open_total_library(monkeypatch):
     build_library.assert_called_once_with({"id": 8, "is_admin": 0})
 
 
+def test_problem_list_remembers_selected_class_in_cookie(monkeypatch):
+    app = Flask(__name__)
+    app.secret_key = "test"
+    user = {"id": 1, "is_admin": 0}
+    monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "render_template",
+        lambda _template, **_context: "rendered",
+    )
+    build_list = MagicMock(
+        side_effect=lambda _user, **kwargs: {
+            "selected_class_en": kwargs["selected_class_en"] or "C1",
+        },
+    )
+    monkeypatch.setattr(
+        problem_core_routes, "build_problem_list_context", build_list,
+    )
+
+    cookie_name = problem_core_routes._PROBLEM_LIST_CLASS_COOKIE
+    with app.test_request_context(
+        "/problems?class_en=C2",
+        headers={"Cookie": f"{cookie_name}=C1"},
+    ):
+        response = problem_core_routes.problem_list()
+
+    assert response.get_data(as_text=True) == "rendered"
+    assert f"{cookie_name}=C2" in response.headers["Set-Cookie"]
+    assert "HttpOnly" in response.headers["Set-Cookie"]
+    assert "SameSite=Lax" in response.headers["Set-Cookie"]
+    assert "Path=/problems" in response.headers["Set-Cookie"]
+    assert build_list.call_args.kwargs["selected_class_en"] == "C2"
+
+    build_list.reset_mock()
+    with app.test_request_context(
+        "/problems",
+        headers={"Cookie": f"{cookie_name}=C2"},
+    ):
+        problem_core_routes.problem_list()
+    assert build_list.call_args.kwargs["selected_class_en"] == "C2"
+
+
 def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):
     app = Flask(__name__)
     user = {"id": 8, "username": "student", "is_admin": 0}

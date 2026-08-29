@@ -805,20 +805,13 @@ def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
     if admin:
         condition = "p.public_version_id IS NOT NULL OR p.owner_id = %s"
         condition += " OR (p.review_version_id IS NOT NULL AND rv.review_status = 'pending')"
-        order = "COALESCE(rv.review_requested_at, pv.reviewed_at, p.updated_at)"
         params = (_actor_id(actor),)
     elif actor:
         condition = "p.public_version_id IS NOT NULL OR p.owner_id = %s"
-        order = (
-            "CASE WHEN p.owner_id = %s "
-            "THEN COALESCE(rv.review_requested_at, p.updated_at, pv.reviewed_at, p.created_at) "
-            "ELSE COALESCE(pv.reviewed_at, p.created_at) END"
-        )
         actor_id = _actor_id(actor)
-        params = (actor_id, actor_id)
+        params = (actor_id,)
     else:
         condition = "p.public_version_id IS NOT NULL"
-        order = "COALESCE(pv.reviewed_at, p.created_at)"
         params = ()
 
     conn = get_db_connection()
@@ -827,7 +820,7 @@ def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
             cursor.execute(
                 _PROJECT_SELECT
                 + f" WHERE ({condition}) ORDER BY p.is_featured DESC,"
-                + f" {order} DESC",
+                + " RAND()",
                 params,
             )
             projects = []

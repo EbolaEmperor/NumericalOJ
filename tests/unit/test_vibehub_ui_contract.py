@@ -73,6 +73,9 @@ def test_vibehub_gallery_keeps_the_compact_card_and_dialog_contract():
     assert "JSON.stringify({ featured: featured })" in javascript
     assert "expected_version" in javascript
     assert "NumojIdenticon" in javascript
+    assert "projectDialog.dataset.originFilter = activeFilter" in javascript
+    assert "deleteDialog.dataset.originFilter = projectDialog.dataset.originFilter" in javascript
+    assert '"/vibehub/?view=" + encodeURIComponent(originFilter)' in javascript
 
 
 def test_vibehub_author_avatar_keeps_its_identicon_grid_on_mobile():
@@ -485,7 +488,12 @@ def test_removed_auxiliary_pages_leave_gallery_and_play_routes(monkeypatch):
         vibehub_routes.services, "get_project",
         lambda slug, **_kwargs: {"play_url": f"/vibehub/{slug}/play"},
     )
-    monkeypatch.setattr(vibehub_routes, "render_template", lambda template, **_context: template)
+    rendered_contexts = []
+    monkeypatch.setattr(
+        vibehub_routes,
+        "render_template",
+        lambda template, **context: rendered_contexts.append(context) or template,
+    )
     app = Flask(__name__)
     app.config.update(SECRET_KEY="test", TESTING=True)
     app.add_url_rule("/login", endpoint="auth.login", view_func=lambda: "login")
@@ -494,6 +502,11 @@ def test_removed_auxiliary_pages_leave_gallery_and_play_routes(monkeypatch):
     gallery = client.get("/vibehub/?view=mine")
     assert seen == [user]
     assert gallery.headers["Cache-Control"] == "private, no-store"
+    assert rendered_contexts[-1]["initial_filter"] == "mine"
+    client.get("/vibehub/?view=featured")
+    assert rendered_contexts[-1]["initial_filter"] == "featured"
+    client.get("/vibehub/?view=pending")
+    assert rendered_contexts[-1]["initial_filter"] == "all"
     assert client.get("/vibehub/admin/reviews").status_code == 404
 
     for path, destination in (

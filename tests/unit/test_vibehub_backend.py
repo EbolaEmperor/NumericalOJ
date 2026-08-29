@@ -466,7 +466,8 @@ def test_gallery_projects_selects_only_actor_visible_snapshots(monkeypatch):
     )) == ("latest", True, True, True, False, False)
     user_query, params = user_connection.fake_cursor.calls[0]
     assert "p.owner_id = %s" in user_query and "rv.review_status = 'pending'" not in user_query
-    assert params == (USER["id"], USER["id"])
+    assert "ORDER BY p.is_featured DESC, RAND()" in user_query
+    assert params == (USER["id"],)
 
     admin_connection = _Connection([])
     admin_connection.fake_cursor.fetchall = lambda: [_project_row()]
@@ -479,7 +480,9 @@ def test_gallery_projects_selects_only_actor_visible_snapshots(monkeypatch):
         "latest", True, True, True,
     )
     assert pending["play_url"].endswith("?channel=review")
-    assert "rv.review_status = 'pending'" in admin_connection.fake_cursor.calls[0][0]
+    admin_query = admin_connection.fake_cursor.calls[0][0]
+    assert "rv.review_status = 'pending'" in admin_query
+    assert "ORDER BY p.is_featured DESC, RAND()" in admin_query
 
 
 def test_save_always_replaces_the_pending_review():
@@ -559,7 +562,7 @@ def test_public_and_mine_lists_are_database_backed(monkeypatch):
     assert public == []
     public_query = public_connection.fake_cursor.calls[0][0]
     assert "p.updated_at DESC" not in public_query
-    assert "COALESCE(pv.reviewed_at, p.created_at) DESC" in public_query
+    assert "ORDER BY p.is_featured DESC, RAND()" in public_query
     assert mine == []
 
 

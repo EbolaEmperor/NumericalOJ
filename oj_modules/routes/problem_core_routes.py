@@ -1338,20 +1338,46 @@ def _load_expected_written_submission(username, problem_id, expected_id):
     return None
 
 
+_PROBLEM_LIST_CLASS_COOKIE = 'numoj_problem_list_class'
+
+
 @problem_core_bp.route('/problems', methods=['GET'])
 def problem_list():
     user = current_user()
     if not user:
         return redirect(url_for('auth.login'))
 
+    requested_class_en = str(request.args.get('class_en') or '').strip()
+    remembered_class_en = str(
+        request.cookies.get(_PROBLEM_LIST_CLASS_COOKIE) or ''
+    ).strip()
     context = build_problem_list_context(
         user,
         admin_class_view=(int(user.get('is_admin') or 0) == 1),
-        selected_class_en=request.args.get('class_en'),
+        selected_class_en=requested_class_en or remembered_class_en or None,
         include_dashboard=True,
         include_class_activity=False,
     )
-    return render_template('problems/list.html', **context)
+    rendered = render_template('problems/list.html', **context)
+    selected_class_en = str(context.get('selected_class_en') or '').strip()
+    if not selected_class_en:
+        if not remembered_class_en:
+            return rendered
+        response = current_app.make_response(rendered)
+        response.delete_cookie(_PROBLEM_LIST_CLASS_COOKIE, path='/problems')
+        return response
+
+    response = current_app.make_response(rendered)
+    response.set_cookie(
+        _PROBLEM_LIST_CLASS_COOKIE,
+        selected_class_en,
+        max_age=60 * 60 * 24 * 365,
+        httponly=True,
+        secure=request.is_secure,
+        samesite='Lax',
+        path='/problems',
+    )
+    return response
 
 
 @problem_core_bp.route('/api/class-activity', methods=['GET'])
