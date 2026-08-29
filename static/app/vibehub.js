@@ -190,6 +190,7 @@
 
     async function openEditor(button) {
       cancelLoad();
+      projectDialog.dataset.originFilter = activeFilter;
       var generation = loadGeneration;
       var slug = button.dataset.projectSlug;
       loadController = new AbortController();
@@ -285,9 +286,15 @@
           await apiRequest(projectUrl(root.dataset.deleteUrlTemplate, deleteDialog.dataset.slug), {
             method: "DELETE"
           });
+          var originFilter = deleteDialog.dataset.originFilter || "all";
+          var returnUrl = originFilter === "all"
+            ? "/vibehub/"
+            : "/vibehub/?view=" + encodeURIComponent(originFilter);
           deleteDialog.dataset.returnToEditor = "";
-          showMessage(deleteStatus, "作品已删除，正在返回我的作品…");
-          setTimeout(function () { window.location.assign("/vibehub/?view=mine"); }, 250);
+          showMessage(deleteStatus, "作品已删除，正在返回原作品页面…");
+          setTimeout(function () {
+            window.location.assign(returnUrl);
+          }, 250);
         } catch (error) {
           showMessage(deleteStatus, error.message, true);
           setBusy(deleteSubmit, false);
@@ -303,6 +310,7 @@
         var phrase = "我确认要删除 " + title + " 这个作品";
         deleteDialog.dataset.slug = slug;
         deleteDialog.dataset.phrase = phrase;
+        deleteDialog.dataset.originFilter = projectDialog.dataset.originFilter || "all";
         deleteDialog.dataset.returnToEditor = "true";
         deletePhrase.textContent = phrase;
         deleteInput.value = "";
