@@ -30,6 +30,11 @@ from oj_modules.submissions.presentation import (
     render_written_markdown_to_html as _render_written_markdown_to_html,
     summarize_panel_test_points as _summarize_panel_test_points,
 )
+from oj_modules.shared.sse import (
+    guard_sse_stream,
+    sse_capacity_response,
+    try_acquire_sse_slot,
+)
 
 
 submission_bp = Blueprint('submission', __name__)
@@ -299,8 +304,12 @@ def submission_status_stream(submission_id):
             except Exception:
                 pass
 
+    lease = try_acquire_sse_slot()
+    if lease is None:
+        return sse_capacity_response()
+
     return Response(
-        generate(),
+        guard_sse_stream(generate(), lease),
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',

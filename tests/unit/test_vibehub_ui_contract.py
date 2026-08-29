@@ -521,6 +521,7 @@ def test_removed_auxiliary_pages_leave_gallery_and_play_routes(monkeypatch):
 def test_developer_guide_renders_the_cli_markdown_with_generated_toc():
     template = _read("templates/vibehub/guide.html")
     problem_template = _read("templates/problems/detail.html")
+    mathjax_component = _read("templates/components/layout/mathjax.html")
     markdown = _read("docs/vibehub-developer-guide.md")
     content_html, toc_html = render_developer_guide()
 
@@ -529,14 +530,19 @@ def test_developer_guide_renders_the_cli_markdown_with_generated_toc():
         "numoj-problem-code-rendering", "data-numoj-markdown",
         "{% block mathjax %}", "components/layout/mathjax.html",
     ))
-    for asset in (
+    assert "app/markdown-rendering.js" in template
+    assert "app/markdown-rendering.js" in problem_template
+    assert "mathjax_lazy=true" in template
+    assert "mathjax_lazy=true" in problem_template
+    assert "app/rich-content-assets.js" in mathjax_component
+    for lazy_asset in (
         "app/editor-semantic-tokens.js",
         "vendor/mermaid/mermaid.min.js",
         "vendor/shiki-markdown/highlighter.js",
-        "app/markdown-rendering.js",
     ):
-        assert asset in template
-        assert asset in problem_template
+        assert lazy_asset not in template
+        assert lazy_asset not in problem_template
+        assert lazy_asset in mathjax_component
     assert all(token not in markdown for token in ("## API", "/api/vibehub/"))
     assert "## 使用 CLI 管理作品" in markdown
     assert "id=\"使用-cli-管理作品\"" in content_html
@@ -611,7 +617,7 @@ def test_legacy_game_bookmarks_redirect_and_old_apis_are_gone():
 
 
 def test_bundled_examples_are_complete_valid_packages():
-    for slug in ("circle-cat", "arc-agi-3"):
+    for slug in ("circle-cat", "arc-agi-3", "guess-who"):
         package = ROOT / "vibehub_examples" / slug
         manifest = validate_manifest(package)
         dockerfile = (package / "Dockerfile").read_text(encoding="utf-8")

@@ -110,6 +110,34 @@ def test_layout_loads_shared_static_assets_instead_of_inline_app_code():
     assert SITE_LAYOUT.index("app/identicon.js") < SITE_LAYOUT.index("app/layout.js")
 
 
+def test_auth_pages_skip_unused_global_runtime_assets():
+    """认证首屏只保留实际使用的公共能力，注册页按需补回班级选择器。"""
+    for block_name in (
+        "icon_assets",
+        "model_family_assets",
+        "bootstrap_runtime",
+        "site_early_runtime",
+        "choice_picker_assets",
+        "site_runtime",
+    ):
+        assert f"{{% block {block_name} %}}{{% endblock %}}" in AUTH_BASE
+
+    assert "vendor/fontawesome" not in AUTH_BASE
+    assert "bootstrap.bundle" not in AUTH_BASE
+    assert "app/class-select.js" not in AUTH_BASE
+    assert "app/class-select.js" in REGISTER
+    assert "fa-chevron-down" not in REGISTER
+    assert '<svg class="numoj-class-select-chevron"' in REGISTER
+
+
+def test_navigation_counts_use_scoped_short_lived_browser_cache():
+    assert "data-navigation-cache-key" in NAVIGATION
+    assert "window.sessionStorage.getItem(cacheKey)" in LAYOUT_JS
+    assert "window.sessionStorage.setItem(cacheKey" in LAYOUT_JS
+    assert "const CACHE_TTL_MS = 10_000;" in LAYOUT_JS
+    assert "window.requestIdleCallback(refresh, { timeout: 800 })" in LAYOUT_JS
+
+
 def test_mathjax_is_an_explicit_page_level_capability():
     assert "window.MathJax" in MATHJAX_COMPONENT
     assert "vendor/mathjax/tex-mml-chtml.js" in MATHJAX_COMPONENT
@@ -127,6 +155,28 @@ def test_mathjax_is_an_explicit_page_level_capability():
     for name in consumers:
         source = (ROOT / "templates" / name).read_text(encoding="utf-8")
         assert source.count(include) == 1
+
+    lazy_rich_content_consumers = {
+        "problems/detail.html",
+        "forum/index.html",
+        "ranking/detail.html",
+        "admin/agent_task_detail.html",
+        "vibehub/guide.html",
+    }
+    lazy_assets = (
+        "app/editor-semantic-tokens.js",
+        "vendor/mermaid/mermaid.min.js",
+        "vendor/shiki-markdown/highlighter.js",
+    )
+    assert "app/rich-content-assets.js" in MATHJAX_COMPONENT
+    for asset in lazy_assets:
+        assert asset in MATHJAX_COMPONENT
+    for name in lazy_rich_content_consumers:
+        source = (ROOT / "templates" / name).read_text(encoding="utf-8")
+        assert "mathjax_lazy=true" in source
+        assert "app/markdown-rendering.js" in source
+        for asset in lazy_assets:
+            assert asset not in source
 
     non_consumers = {
         "auth/login.html",

@@ -801,6 +801,14 @@ def _point_latest_version(
 
 
 def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
+    normalized_limit = None
+    if limit is not None:
+        try:
+            normalized_limit = max(0, min(int(limit), 500))
+        except (TypeError, ValueError):
+            # 保持旧契约：非法 limit 不截断结果。
+            pass
+
     admin = _is_admin(actor)
     if admin:
         condition = "p.public_version_id IS NOT NULL OR p.owner_id = %s"
@@ -817,11 +825,19 @@ def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
+            query = (
                 _PROJECT_SELECT
                 + f" WHERE ({condition}) ORDER BY p.is_featured DESC,"
-                + " RAND()",
-                params,
+                + " RAND()"
+            )
+            query_params = params
+            if normalized_limit is not None:
+                # API 的 limit 必须在 MySQL 侧生效，避免先读取并序列化整张作品表。
+                query += " LIMIT %s"
+                query_params += (normalized_limit,)
+            cursor.execute(
+                query,
+                query_params,
             )
             projects = []
             for row in cursor.fetchall() or []:
@@ -842,11 +858,9 @@ def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
     finally:
         conn.close()
 
-    if limit is not None:
-        try:
-            projects = projects[: max(0, min(int(limit), 500))]
-        except (TypeError, ValueError):
-            pass
+    if normalized_limit is not None:
+        # 也保留应用侧的防御性截断，便于兼容测试替身及异常驱动实现。
+        projects = projects[:normalized_limit]
     return projects
 
 

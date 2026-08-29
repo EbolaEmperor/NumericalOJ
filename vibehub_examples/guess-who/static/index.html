@@ -1,0 +1,2420 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>猜猜我是谁 - Numerical OJ</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --numoj-bg: #f7f7f5;
+      --numoj-panel: #fff;
+      --numoj-ink: #18181b;
+      --numoj-ink-2: #3f3f46;
+      --numoj-ink-3: #71717a;
+      --numoj-ink-4: #a1a1aa;
+      --numoj-line: #e4e4e7;
+      --numoj-line-soft: #f4f4f5;
+      --numoj-brand: #ea580c;
+      --numoj-brand-hover: #c2410c;
+      --numoj-brand-ink: #9a3412;
+      --numoj-brand-soft: #fff7ed;
+      --numoj-success: #15803d;
+      --numoj-success-soft: #f0fdf4;
+      --numoj-danger: #b91c1c;
+      --numoj-danger-soft: #fef2f2;
+      --numoj-radius: 12px;
+      --numoj-radius-sm: 8px;
+      --numoj-font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --numoj-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      min-height: 100%;
+      background: var(--numoj-bg);
+    }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      min-height: 100dvh;
+      margin: 0;
+      background-color: var(--numoj-bg);
+      background-image: radial-gradient(circle, var(--numoj-line) 1px, transparent 1px);
+      background-position: -10px -10px;
+      background-size: 20px 20px;
+      color: var(--numoj-ink);
+      font-family: var(--numoj-font);
+      font-feature-settings: "cv11", "ss01";
+    }
+
+    button,
+    input,
+    select {
+      color: inherit;
+      font: inherit;
+    }
+
+    button,
+    select {
+      cursor: pointer;
+    }
+
+    button:disabled,
+    input:disabled,
+    select:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    :focus-visible {
+      outline: 3px solid rgb(234 88 12 / 28%);
+      outline-offset: 2px;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
+
+    .game-shell {
+      display: grid;
+      width: min(100%, 1480px);
+      min-height: 100vh;
+      min-height: 100dvh;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: clamp(12px, 1.8vw, 20px);
+      margin: 0 auto;
+      padding: clamp(14px, 2.5vw, 34px);
+    }
+
+    .game-header {
+      display: flex;
+      min-width: 0;
+      min-height: 40px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+
+    .game-title {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 9px;
+      margin: 0;
+      color: var(--numoj-ink);
+      font-size: clamp(1rem, 1.35vw, 1.18rem);
+      font-weight: 690;
+      letter-spacing: -0.025em;
+      line-height: 1.2;
+    }
+
+    .game-title::before {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 7px;
+      border-radius: 2px;
+      background: var(--numoj-brand);
+      box-shadow: 3px 3px 0 #fed7aa;
+      content: "";
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .quiet-button,
+    .action-button,
+    .guess-button,
+    .dialog-button,
+    .dialog-close {
+      border: 1px solid var(--numoj-line);
+      border-radius: 7px;
+      background: var(--numoj-panel);
+      color: var(--numoj-ink-2);
+      font-size: 0.76rem;
+      font-weight: 620;
+      transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+
+    .quiet-button {
+      min-height: 36px;
+      padding: 0 11px;
+    }
+
+    .quiet-button:hover:not(:disabled),
+    .dialog-button:hover,
+    .dialog-close:hover {
+      border-color: #d4d4d8;
+      background: var(--numoj-line-soft);
+      color: var(--numoj-ink);
+    }
+
+    .game-layout {
+      display: grid;
+      min-width: 0;
+      min-height: 0;
+      grid-template-columns: minmax(0, 1fr) minmax(250px, 300px);
+      gap: clamp(12px, 1.8vw, 20px);
+      align-items: stretch;
+    }
+
+    .blackbox {
+      position: relative;
+      min-width: 0;
+      min-height: clamp(440px, calc(100dvh - 112px), 860px);
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: var(--numoj-radius);
+      background: #fdfdfc;
+      box-shadow: 0 1px 2px rgb(24 24 27 / 3%);
+      isolation: isolate;
+    }
+
+    .blackbox::before {
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      background-image:
+        linear-gradient(rgb(228 228 231 / 34%) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(228 228 231 / 34%) 1px, transparent 1px);
+      background-position: -1px -1px;
+      background-size: 44px 44px;
+      content: "";
+      mask-image: linear-gradient(to bottom right, rgb(0 0 0 / 74%), transparent 88%);
+    }
+
+    .piece-field {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .empty-mark {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      color: #d4d4d8;
+      font-family: var(--numoj-mono);
+      font-size: clamp(2.4rem, 7vw, 5rem);
+      font-weight: 400;
+      line-height: 1;
+      transform: translate(-50%, -50%);
+      user-select: none;
+    }
+
+    .number-piece {
+      position: absolute;
+      top: 0;
+      left: 0;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--piece-border);
+      border-radius: var(--piece-radius, 50%);
+      background:
+        radial-gradient(circle at 31% 23%, rgb(255 255 255 / 92%) 0 8%, transparent 9%),
+        linear-gradient(145deg, #fff 0%, var(--piece-bg) 68%, var(--piece-bg-deep) 100%);
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 92%),
+        inset 0 -1px 2px var(--piece-glaze),
+        0 3px 0 var(--piece-base),
+        0 6px 12px rgb(24 24 27 / 11%);
+      color: var(--piece-ink);
+      font-family: var(--numoj-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 720;
+      line-height: 1;
+      user-select: none;
+      will-change: transform;
+      animation: piece-appear 180ms ease-out both;
+    }
+
+    .number-piece::before,
+    .number-piece::after {
+      position: absolute;
+      pointer-events: none;
+      content: "";
+    }
+
+    .number-piece::before {
+      inset: 3px 4px 5px;
+      border-top: 1px solid rgb(255 255 255 / 88%);
+      border-radius: inherit;
+      opacity: 0.86;
+    }
+
+    .number-piece::after {
+      right: 18%;
+      bottom: 11%;
+      left: 18%;
+      height: 1px;
+      border-radius: 999px;
+      background: var(--piece-accent);
+      opacity: 0.24;
+    }
+
+    .number-piece-label {
+      position: relative;
+      z-index: 1;
+      text-shadow: 0 1px 0 rgb(255 255 255 / 86%);
+      animation: piece-label-settle 180ms ease-out both;
+    }
+
+    .number-piece[data-tone="0"] {
+      --piece-bg: #fffaf4;
+      --piece-bg-deep: #fff1df;
+      --piece-border: #efb27d;
+      --piece-base: #c9662e;
+      --piece-glaze: rgb(194 65 12 / 12%);
+      --piece-accent: #d76725;
+      --piece-ink: #7c2d12;
+      --piece-radius: 50%;
+    }
+
+    .number-piece[data-tone="1"] {
+      --piece-bg: #f8fbff;
+      --piece-bg-deep: #eaf3ff;
+      --piece-border: #9abce8;
+      --piece-base: #4f78b6;
+      --piece-glaze: rgb(37 99 235 / 11%);
+      --piece-accent: #477bc3;
+      --piece-ink: #1e3a6f;
+      --piece-radius: 47% 53% 49% 51% / 52% 47% 53% 48%;
+    }
+
+    .number-piece[data-tone="2"] {
+      --piece-bg: #f8fdf9;
+      --piece-bg-deep: #e9f8ee;
+      --piece-border: #91caa5;
+      --piece-base: #438a5c;
+      --piece-glaze: rgb(22 163 74 / 10%);
+      --piece-accent: #3d9660;
+      --piece-ink: #14532d;
+      --piece-radius: 52% 48% 53% 47% / 47% 53% 48% 52%;
+    }
+
+    .number-piece[data-tone="3"] {
+      --piece-bg: #fbf9ff;
+      --piece-bg-deep: #f0eaff;
+      --piece-border: #b8a7e0;
+      --piece-base: #7455aa;
+      --piece-glaze: rgb(124 58 237 / 10%);
+      --piece-accent: #7a5ab3;
+      --piece-ink: #4c1d95;
+      --piece-radius: 49% 51% 46% 54% / 53% 48% 52% 47%;
+    }
+
+    .number-piece[data-tone="4"] {
+      --piece-bg: #fffdf7;
+      --piece-bg-deep: #fff6dc;
+      --piece-border: #ddc27a;
+      --piece-base: #a97a25;
+      --piece-glaze: rgb(202 138 4 / 11%);
+      --piece-accent: #b2822c;
+      --piece-ink: #713f12;
+      --piece-radius: 51% 49% 52% 48% / 49% 52% 48% 51%;
+    }
+
+    .control-panel {
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: var(--numoj-radius);
+      background: var(--numoj-panel);
+      box-shadow: 0 1px 2px rgb(24 24 27 / 3%);
+    }
+
+    .operation-panel,
+    .guess-panel {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .guess-panel {
+      margin-top: auto;
+      border-top: 1px solid var(--numoj-line-soft);
+    }
+
+    .history-panel {
+      min-height: 0;
+      flex: 1 1 120px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      border-top: 1px solid var(--numoj-line-soft);
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+    }
+
+    .operation-history {
+      display: flex;
+      min-height: 100%;
+      flex-direction: column;
+      margin: 0;
+      padding: 2px 0;
+      list-style: none;
+    }
+
+    .operation-history-item {
+      display: grid;
+      min-width: 0;
+      min-height: 36px;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 16px;
+      border-bottom: 1px solid var(--numoj-line-soft);
+      font-size: 0.72rem;
+      line-height: 1.25;
+    }
+
+    .history-operation,
+    .history-steps {
+      font-family: var(--numoj-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .history-operation {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--numoj-ink-2);
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .history-result {
+      font-weight: 650;
+    }
+
+    .history-result[data-success="true"] {
+      color: var(--numoj-success);
+    }
+
+    .history-result[data-success="false"] {
+      color: var(--numoj-danger);
+    }
+
+    .history-steps {
+      color: var(--numoj-ink-3);
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .integer-control,
+    .answer-trigger {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid #d4d4d8;
+      border-radius: var(--numoj-radius-sm);
+      outline: 0;
+      background: #fff;
+      color: var(--numoj-ink);
+      font-size: 0.82rem;
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+
+    .integer-control {
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+    }
+
+    .integer-mark {
+      display: grid;
+      width: 37px;
+      align-self: stretch;
+      flex: 0 0 37px;
+      place-items: center;
+      border-right: 1px solid var(--numoj-line-soft);
+      color: var(--numoj-ink-4);
+      font-family: var(--numoj-mono);
+      font-size: 0.72rem;
+      font-weight: 680;
+      user-select: none;
+    }
+
+    .integer-input {
+      width: 100%;
+      min-width: 0;
+      min-height: 42px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 0;
+      outline: 0;
+      appearance: none;
+      background: transparent;
+      color: var(--numoj-ink);
+      font-family: var(--numoj-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .integer-sign {
+      width: 42px;
+      min-height: 42px;
+      align-self: stretch;
+      flex: 0 0 42px;
+      border: 0;
+      border-left: 1px solid var(--numoj-line-soft);
+      appearance: none;
+      background: #fafafa;
+      color: var(--numoj-ink-3);
+      font-family: var(--numoj-mono);
+      font-size: 0.82rem;
+      font-weight: 720;
+      line-height: 1;
+    }
+
+    .integer-sign:hover:not(:disabled),
+    .integer-sign[aria-pressed="true"] {
+      background: var(--numoj-brand-soft);
+      color: var(--numoj-brand-ink);
+    }
+
+    .integer-input::-webkit-inner-spin-button,
+    .integer-input::-webkit-outer-spin-button {
+      margin: 0;
+      appearance: none;
+    }
+
+    .integer-control:focus-within,
+    .answer-trigger:focus-visible,
+    .answer-trigger[aria-expanded="true"] {
+      border-color: var(--numoj-brand);
+      box-shadow: 0 0 0 3px rgb(234 88 12 / 11%);
+    }
+
+    .integer-control.is-invalid,
+    .answer-trigger.is-invalid {
+      border-color: var(--numoj-danger);
+      box-shadow: 0 0 0 3px rgb(185 28 28 / 10%);
+    }
+
+    .integer-input::placeholder {
+      color: var(--numoj-ink-4);
+    }
+
+    .answer-trigger {
+      display: grid;
+      min-width: 0;
+      grid-template-columns: 26px minmax(0, 1fr) 16px;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      appearance: none;
+      text-align: left;
+    }
+
+    .answer-trigger:hover:not(:disabled) {
+      border-color: #a1a1aa;
+    }
+
+    .answer-selected-icon,
+    .answer-option-icon {
+      display: grid;
+      color: var(--numoj-ink-3);
+      place-items: center;
+    }
+
+    .answer-selected-icon svg,
+    .answer-option-icon svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible;
+    }
+
+    .answer-selection {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .answer-selection.is-placeholder {
+      color: var(--numoj-ink-4);
+    }
+
+    .answer-chevron {
+      width: 14px;
+      height: 14px;
+      color: var(--numoj-ink-3);
+      transition: transform 140ms ease;
+    }
+
+    .answer-trigger[aria-expanded="true"] .answer-chevron {
+      transform: rotate(180deg);
+    }
+
+    .answer-popover {
+      position: fixed;
+      z-index: 1200;
+      padding: 5px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      border: 1px solid #d4d4d8;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 16px 42px rgb(24 24 27 / 16%);
+      scrollbar-width: thin;
+    }
+
+    .answer-listbox {
+      display: grid;
+      gap: 2px;
+      outline: 0;
+    }
+
+    .answer-option {
+      display: grid;
+      min-height: 44px;
+      grid-template-columns: 32px minmax(0, 1fr) 18px;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 9px;
+      border-radius: 7px;
+      color: var(--numoj-ink-2);
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 610;
+      line-height: 1.25;
+      user-select: none;
+    }
+
+    .answer-option::after {
+      color: var(--numoj-brand);
+      content: "";
+      font-family: var(--numoj-mono);
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .answer-option[data-active="true"] {
+      background: var(--numoj-line-soft);
+      color: var(--numoj-ink);
+    }
+
+    .answer-option[aria-selected="true"] {
+      background: var(--numoj-brand-soft);
+      color: var(--numoj-brand-ink);
+    }
+
+    .answer-option[aria-selected="true"]::after {
+      content: "\2713";
+    }
+
+    .answer-option[aria-selected="true"] .answer-option-icon {
+      color: var(--numoj-brand);
+    }
+
+    .answer-popover[data-compact="true"] .answer-option {
+      grid-template-columns: minmax(0, 1fr);
+      justify-items: center;
+      gap: 3px;
+      padding: 7px 3px;
+      font-size: 0.72rem;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
+
+    .answer-popover[data-compact="true"] .answer-option-icon {
+      width: 24px;
+    }
+
+    .answer-popover[data-compact="true"] .answer-option::after {
+      display: none;
+    }
+
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+
+    .action-button {
+      min-height: 44px;
+      padding: 0 8px;
+      font-family: var(--numoj-mono);
+      font-size: 0.75rem;
+      font-weight: 650;
+    }
+
+    .action-button:hover:not(:disabled) {
+      border-color: var(--numoj-ink);
+      background: var(--numoj-ink);
+      color: #fff;
+      transform: translateY(-1px);
+    }
+
+    .telemetry {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 7px;
+    }
+
+    .telemetry-item {
+      display: grid;
+      min-width: 0;
+      min-height: 62px;
+      align-content: center;
+      gap: 5px;
+      padding: 9px 10px;
+      border: 1px solid var(--numoj-line);
+      border-radius: var(--numoj-radius-sm);
+      background: #fafafa;
+    }
+
+    .telemetry-item span,
+    .guess-label {
+      color: var(--numoj-ink-4);
+      font-family: var(--numoj-mono);
+      font-size: 0.75rem;
+      font-weight: 650;
+      letter-spacing: 0.11em;
+    }
+
+    .telemetry-item output {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--numoj-ink);
+      font-family: var(--numoj-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
+      font-weight: 680;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-line {
+      min-height: 18px;
+      margin: 0;
+      color: var(--numoj-ink-3);
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+
+    .status-line.is-error,
+    .status-line.is-wrong {
+      color: var(--numoj-danger);
+    }
+
+    .status-line.is-correct {
+      color: var(--numoj-success);
+      font-weight: 650;
+    }
+
+    .guess-label {
+      margin: 0;
+    }
+
+    .guess-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 7px;
+    }
+
+    .guess-button {
+      min-height: 44px;
+      padding: 0 13px;
+      border-color: var(--numoj-ink);
+      background: var(--numoj-ink);
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    .guess-button:hover:not(:disabled) {
+      border-color: #000;
+      background: #000;
+      transform: translateY(-1px);
+    }
+
+    .rules-dialog {
+      width: min(calc(100% - 28px), 440px);
+      max-height: min(680px, calc(100dvh - 28px));
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: 11px;
+      background: var(--numoj-panel);
+      box-shadow: 0 28px 80px rgb(9 9 11 / 25%);
+      color: var(--numoj-ink);
+    }
+
+    .rules-dialog::backdrop {
+      background: rgb(9 9 11 / 54%);
+      backdrop-filter: blur(3px);
+    }
+
+    .rules-dialog[open] {
+      animation: dialog-enter 150ms ease-out both;
+    }
+
+    .dialog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--numoj-line-soft);
+    }
+
+    .dialog-header h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 690;
+    }
+
+    .dialog-close {
+      display: grid;
+      width: 40px;
+      height: 40px;
+      flex: 0 0 40px;
+      padding: 0;
+      place-items: center;
+      border-color: transparent;
+      background: transparent;
+      color: var(--numoj-ink-3);
+      font-size: 1.15rem;
+      font-weight: 400;
+    }
+
+    .rules-list {
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 19px 24px 19px 40px;
+      color: var(--numoj-ink-2);
+      font-size: 0.78rem;
+      line-height: 1.65;
+    }
+
+    .dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 14px 20px 18px;
+      border-top: 1px solid var(--numoj-line-soft);
+    }
+
+    .dialog-button {
+      min-height: 44px;
+      padding: 0 14px;
+    }
+
+    .result-dialog {
+      --result-accent: var(--numoj-success);
+      --result-soft: var(--numoj-success-soft);
+      width: min(calc(100% - 24px), 680px);
+      max-height: calc(100dvh - 24px);
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid var(--numoj-line);
+      border-radius: 13px;
+      background: var(--numoj-panel);
+      box-shadow: 0 30px 90px rgb(9 9 11 / 28%);
+      color: var(--numoj-ink);
+    }
+
+    .result-dialog[data-correct="false"] {
+      --result-accent: var(--numoj-danger);
+      --result-soft: var(--numoj-danger-soft);
+    }
+
+    .result-dialog::backdrop {
+      background: rgb(9 9 11 / 58%);
+      backdrop-filter: blur(4px);
+    }
+
+    .result-dialog[open] {
+      animation: dialog-enter 180ms ease-out both;
+    }
+
+    .result-surface {
+      position: relative;
+      display: flex;
+      max-height: calc(100dvh - 24px);
+      flex-direction: column;
+      overflow: hidden;
+      isolation: isolate;
+    }
+
+    .result-header {
+      position: relative;
+      z-index: 3;
+    }
+
+    .result-heading {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .result-status-mark {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      flex: 0 0 30px;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--result-accent) 28%, transparent);
+      border-radius: 50%;
+      background: var(--result-soft);
+      color: var(--result-accent);
+    }
+
+    .result-status-mark svg {
+      width: 21px;
+      height: 21px;
+    }
+
+    .result-dialog-content {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 16px;
+      min-height: 0;
+      padding: 20px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+    }
+
+    .answer-reveal {
+      display: grid;
+      min-width: 0;
+      grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr);
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .result-answer-card {
+      display: grid;
+      min-width: 0;
+      min-height: 158px;
+      grid-template-rows: auto 1fr auto;
+      justify-items: center;
+      gap: 10px;
+      padding: 13px;
+      border: 1px solid var(--numoj-line);
+      border-radius: 10px;
+      background: #fafafa;
+      text-align: center;
+    }
+
+    .result-answer-card[data-role="actual"] {
+      border-color: color-mix(in srgb, var(--result-accent) 30%, var(--numoj-line));
+      background: var(--result-soft);
+    }
+
+    .result-answer-caption {
+      color: var(--numoj-ink-4);
+      font-family: var(--numoj-mono);
+      font-size: 0.68rem;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+    }
+
+    .result-answer-icon {
+      display: grid;
+      width: 84px;
+      align-self: center;
+      place-items: center;
+      color: var(--numoj-ink-3);
+    }
+
+    .result-answer-card[data-role="actual"] .result-answer-icon {
+      color: var(--result-accent);
+    }
+
+    .result-answer-icon svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible;
+    }
+
+    .result-answer-name {
+      min-width: 0;
+      color: var(--numoj-ink);
+      font-size: 0.9rem;
+      font-weight: 700;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .result-connector {
+      display: grid;
+      place-items: center;
+      color: var(--numoj-ink-4);
+    }
+
+    .result-connector svg {
+      width: 30px;
+      height: 24px;
+    }
+
+    .result-notes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .result-note {
+      min-width: 0;
+      padding: 13px 14px;
+      border: 1px solid var(--numoj-line-soft);
+      border-radius: 9px;
+      background: #fff;
+    }
+
+    .result-note h3 {
+      margin: 0 0 7px;
+      color: var(--numoj-ink-3);
+      font-family: var(--numoj-mono);
+      font-size: 0.7rem;
+      font-weight: 680;
+      letter-spacing: 0.08em;
+    }
+
+    .result-note p {
+      margin: 0;
+      color: var(--numoj-ink-2);
+      font-size: 0.78rem;
+      line-height: 1.65;
+    }
+
+    .result-footer {
+      position: relative;
+      z-index: 3;
+    }
+
+    .result-new-game {
+      min-height: 44px;
+      padding: 0 15px;
+      border: 1px solid var(--numoj-ink);
+      border-radius: 7px;
+      background: var(--numoj-ink);
+      color: #fff;
+      font-size: 0.76rem;
+      font-weight: 650;
+      transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
+    }
+
+    .result-new-game:hover:not(:disabled) {
+      border-color: #000;
+      background: #000;
+      transform: translateY(-1px);
+    }
+
+    .celebration-scene {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      visibility: hidden;
+    }
+
+    .celebration-orbit {
+      position: absolute;
+      top: 46px;
+      left: 50%;
+      width: 260px;
+      height: 190px;
+      color: var(--numoj-brand);
+      opacity: 0;
+      transform: translateX(-50%);
+    }
+
+    .celebration-shard {
+      position: absolute;
+      top: 132px;
+      left: 50%;
+      width: 8px;
+      height: 12px;
+      border: 1px solid rgb(24 24 27 / 18%);
+      border-radius: 2px;
+      background: var(--shard-color);
+      opacity: 0;
+      transform: translate(-50%, -50%);
+    }
+
+    .celebration-shard[data-shape="circle"] {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+    }
+
+    .celebration-shard[data-shape="dash"] {
+      width: 15px;
+      height: 4px;
+      border-radius: 999px;
+    }
+
+    .celebration-shard[data-shape="diamond"] {
+      clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+      border: 0;
+      border-radius: 0;
+    }
+
+    .result-dialog.is-celebrating .celebration-scene {
+      visibility: visible;
+    }
+
+    .result-dialog.is-celebrating .celebration-orbit {
+      animation: celebration-orbit 900ms cubic-bezier(0.2, 0.72, 0.18, 1) both;
+    }
+
+    .result-dialog.is-celebrating .celebration-shard {
+      animation: celebration-shard 980ms cubic-bezier(0.17, 0.72, 0.22, 1) var(--delay) both;
+    }
+
+    @keyframes dialog-enter {
+      from {
+        opacity: 0;
+        transform: translateY(7px) scale(0.985);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes piece-appear {
+      from { opacity: 0.42; }
+      to { opacity: 1; }
+    }
+
+    @keyframes piece-label-settle {
+      from {
+        opacity: 0.5;
+        transform: translateY(-1px) scale(0.96);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes celebration-orbit {
+      0% {
+        opacity: 0;
+        transform: translateX(-50%) scale(0.34) rotate(-18deg);
+      }
+      24% { opacity: 0.72; }
+      100% {
+        opacity: 0;
+        transform: translateX(-50%) scale(1.22) rotate(8deg);
+      }
+    }
+
+    @keyframes celebration-shard {
+      0% {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.22) rotate(0deg);
+      }
+      20% { opacity: 1; }
+      78% { opacity: 0.92; }
+      100% {
+        opacity: 0;
+        transform: translate(calc(-50% + var(--x)), calc(-50% + var(--y))) scale(1) rotate(var(--turn));
+      }
+    }
+
+    @media (max-width: 860px) {
+      .game-shell {
+        min-height: auto;
+      }
+
+      .game-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .blackbox {
+        min-height: clamp(330px, 55dvh, 500px);
+      }
+
+      .control-panel {
+        min-height: auto;
+      }
+
+      .history-panel {
+        max-height: min(240px, 34dvh);
+        flex: 0 1 auto;
+      }
+
+      .operation-panel,
+      .guess-panel {
+        padding: 14px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .game-shell {
+        gap: 10px;
+        padding: 11px;
+      }
+
+      .game-header {
+        align-items: flex-start;
+      }
+
+      .header-actions {
+        flex-wrap: wrap;
+      }
+
+      .quiet-button {
+        min-height: 44px;
+        padding-inline: 8px;
+        font-size: 0.75rem;
+      }
+
+      .blackbox {
+        min-height: 320px;
+        border-radius: 10px;
+      }
+
+      .control-panel {
+        border-radius: 10px;
+      }
+
+      .guess-controls {
+        grid-template-columns: 1fr;
+      }
+
+      .guess-button {
+        width: 100%;
+      }
+
+      .result-dialog-content {
+        gap: 13px;
+        padding: 14px;
+      }
+
+      .answer-reveal {
+        grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr);
+        gap: 5px;
+      }
+
+      .result-answer-card {
+        min-height: 142px;
+        gap: 7px;
+        padding: 10px 7px;
+      }
+
+      .result-answer-icon {
+        width: min(68px, 76%);
+      }
+
+      .result-notes {
+        grid-template-columns: 1fr;
+      }
+
+      .result-footer {
+        padding: 11px 14px 14px;
+      }
+
+      .result-new-game {
+        width: 100%;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="game-shell" id="gameApp" aria-busy="true">
+    <header class="game-header">
+      <h1 class="game-title">猜猜我是谁</h1>
+      <div class="header-actions" aria-label="游戏控制">
+        <button class="quiet-button" id="newGameButton" type="button" data-always-available>新一局</button>
+        <button class="quiet-button" id="resetButton" type="button" data-game-control>清空</button>
+        <button class="quiet-button" id="rulesButton" type="button" aria-haspopup="dialog" aria-controls="rulesDialog">规则</button>
+      </div>
+    </header>
+
+    <div class="game-layout">
+      <section class="blackbox" aria-label="黑盒">
+        <div class="piece-field" id="pieceField" role="list" aria-label="黑盒中的整数"></div>
+      </section>
+
+      <aside class="control-panel" aria-label="操作台">
+        <section class="operation-panel">
+          <label class="visually-hidden" for="integerInput">整数</label>
+          <div class="integer-control" id="integerControl">
+            <span class="integer-mark" aria-hidden="true">int</span>
+            <input
+              class="integer-input"
+              id="integerInput"
+              type="text"
+              inputmode="numeric"
+              pattern="-?[0-9]+"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="整数"
+              aria-describedby="statusLine"
+              aria-invalid="false"
+              data-game-control
+            >
+            <button
+              class="integer-sign"
+              id="integerSignButton"
+              type="button"
+              aria-label="切换负号"
+              aria-pressed="false"
+              data-game-control
+            >±</button>
+          </div>
+
+          <div class="action-grid" aria-label="黑盒操作">
+            <button class="action-button" type="button" data-operation="insert" data-game-control>insert</button>
+            <button class="action-button" type="button" data-operation="erase" data-game-control>erase</button>
+            <button class="action-button" type="button" data-operation="contains" data-game-control>contains</button>
+            <button class="action-button" type="button" data-operation="min" data-game-control>min</button>
+          </div>
+
+          <div class="telemetry" aria-label="操作反馈">
+            <div class="telemetry-item">
+              <span>结果</span>
+              <output id="resultOutput" aria-live="polite">—</output>
+            </div>
+            <div class="telemetry-item">
+              <span>步数</span>
+              <output id="stepsOutput" aria-live="polite">—</output>
+            </div>
+          </div>
+
+          <p class="status-line" id="statusLine" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="history-panel" aria-label="操作历史">
+          <ol
+            class="operation-history"
+            id="operationHistory"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions"
+          ></ol>
+        </section>
+
+        <section class="guess-panel">
+          <p class="guess-label" id="answerLabel">答案</p>
+          <div class="guess-controls">
+            <button
+              class="answer-trigger"
+              id="answerTrigger"
+              type="button"
+              role="combobox"
+              aria-labelledby="answerLabel"
+              aria-haspopup="listbox"
+              aria-expanded="false"
+              aria-controls="answerListbox"
+              aria-describedby="answerSelection guessStatus"
+              aria-invalid="false"
+              aria-required="true"
+              data-game-control
+            >
+              <span class="answer-selected-icon" id="answerSelectedIcon" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <rect x="7" y="3" width="18" height="18" rx="4" fill="currentColor" opacity="0.08"></rect>
+                  <path d="M13 9.1c.25-1.7 1.45-2.6 3.2-2.6 1.9 0 3.3 1.1 3.3 2.8 0 1.45-.78 2.16-2.03 2.9-.98.58-1.47 1.2-1.47 2.3"></path>
+                  <circle cx="16" cy="17.8" r=".8" fill="currentColor" stroke="none"></circle>
+                </svg>
+              </span>
+              <span class="answer-selection is-placeholder" id="answerSelection">选择答案</span>
+              <svg class="answer-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="m3.5 6 4.5 4 4.5-4"></path>
+              </svg>
+            </button>
+            <button class="guess-button" id="guessButton" type="button" data-game-control>提交</button>
+          </div>
+          <p class="status-line" id="guessStatus" role="status" aria-live="polite"></p>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <dialog class="rules-dialog" id="rulesDialog" aria-labelledby="rulesTitle">
+    <form method="dialog">
+      <header class="dialog-header">
+        <h2 id="rulesTitle">规则</h2>
+        <button class="dialog-close" type="submit" value="close" aria-label="关闭规则">×</button>
+      </header>
+      <ol class="rules-list">
+        <li>每一局会随机选定一种隐藏的数据结构。</li>
+        <li>执行操作，观察完整元素集合、返回结果与操作步数。</li>
+        <li>清空只移除元素，不会更换当前隐藏结构。</li>
+        <li>选择一种结构并提交；提交后本局结束。</li>
+      </ol>
+      <footer class="dialog-footer">
+        <button class="dialog-button" type="submit" value="close">关闭</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog class="result-dialog" id="resultDialog" aria-labelledby="resultDialogTitle" data-correct="false">
+    <div class="result-surface">
+      <div class="celebration-scene" aria-hidden="true">
+        <svg class="celebration-orbit" viewBox="0 0 260 190" fill="none" focusable="false">
+          <ellipse cx="130" cy="95" rx="55" ry="34" stroke="currentColor" stroke-width="2" stroke-dasharray="5 7"></ellipse>
+          <ellipse cx="130" cy="95" rx="91" ry="59" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="2 10"></ellipse>
+          <path d="M130 16v24M118 28h24M56 54l16 13M49 70l24-2M204 55l-15 13M212 71l-24-2" stroke="#15803d" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+        <span class="celebration-shard" data-shape="diamond" style="--x:-250px;--y:-92px;--turn:-210deg;--delay:0ms;--shard-color:#ea580c"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:-205px;--y:76px;--turn:170deg;--delay:45ms;--shard-color:#2563eb"></span>
+        <span class="celebration-shard" data-shape="dash" style="--x:-160px;--y:-116px;--turn:-145deg;--delay:85ms;--shard-color:#15803d"></span>
+        <span class="celebration-shard" style="--x:-112px;--y:128px;--turn:250deg;--delay:10ms;--shard-color:#7c3aed"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:-56px;--y:-128px;--turn:-125deg;--delay:125ms;--shard-color:#d97706"></span>
+        <span class="celebration-shard" data-shape="diamond" style="--x:-20px;--y:142px;--turn:280deg;--delay:70ms;--shard-color:#0f766e"></span>
+        <span class="celebration-shard" data-shape="dash" style="--x:44px;--y:-132px;--turn:150deg;--delay:20ms;--shard-color:#2563eb"></span>
+        <span class="celebration-shard" style="--x:82px;--y:136px;--turn:-255deg;--delay:115ms;--shard-color:#ea580c"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:138px;--y:-118px;--turn:190deg;--delay:65ms;--shard-color:#7c3aed"></span>
+        <span class="celebration-shard" data-shape="diamond" style="--x:178px;--y:105px;--turn:-240deg;--delay:145ms;--shard-color:#15803d"></span>
+        <span class="celebration-shard" data-shape="dash" style="--x:224px;--y:-78px;--turn:135deg;--delay:35ms;--shard-color:#d97706"></span>
+        <span class="celebration-shard" data-shape="circle" style="--x:258px;--y:62px;--turn:-180deg;--delay:95ms;--shard-color:#2563eb"></span>
+      </div>
+
+      <header class="dialog-header result-header">
+        <div class="result-heading">
+          <span class="result-status-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <circle cx="16" cy="16" r="11"></circle>
+              <path id="resultStatusPath" d="m10 10 12 12m0-12L10 22"></path>
+            </svg>
+          </span>
+          <h2 id="resultDialogTitle">结果</h2>
+        </div>
+        <button class="dialog-close" id="resultCloseButton" type="button" aria-label="关闭结果">×</button>
+      </header>
+
+      <div class="result-dialog-content">
+        <div class="answer-reveal">
+          <article class="result-answer-card" data-role="selected">
+            <span class="result-answer-caption">你的答案</span>
+            <span class="result-answer-icon" id="resultSelectedIcon" aria-hidden="true"></span>
+            <strong class="result-answer-name" id="resultSelectedName"></strong>
+          </article>
+          <div class="result-connector" aria-hidden="true">
+            <svg viewBox="0 0 30 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M3 12h23m-5-5 5 5-5 5"></path>
+            </svg>
+          </div>
+          <article class="result-answer-card" data-role="actual">
+            <span class="result-answer-caption">真实答案</span>
+            <span class="result-answer-icon" id="resultActualIcon" aria-hidden="true"></span>
+            <strong class="result-answer-name" id="resultActualName"></strong>
+          </article>
+        </div>
+
+        <div class="result-notes">
+          <section class="result-note">
+            <h3>特点</h3>
+            <p id="resultFeature"></p>
+          </section>
+          <section class="result-note">
+            <h3>如何判断</h3>
+            <p id="resultClue"></p>
+          </section>
+        </div>
+      </div>
+
+      <footer class="dialog-footer result-footer">
+        <button class="result-new-game" id="resultNewGameButton" type="button">新一局</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <div class="answer-popover" id="answerPopover" hidden>
+    <div class="answer-listbox" id="answerListbox" role="listbox" aria-label="数据结构答案">
+      <div class="answer-option" id="answerOptionUnordered" role="option" aria-selected="false" data-value="unordered_array" data-label="无序数组">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" focusable="false">
+            <rect x="2.5" y="11" width="6" height="6" rx="1" fill="currentColor" opacity="0.12"></rect>
+            <rect x="9.5" y="3" width="6" height="6" rx="1" fill="currentColor" opacity="0.12"></rect>
+            <rect x="17" y="14" width="6" height="6" rx="1" fill="currentColor" opacity="0.12"></rect>
+            <rect x="24" y="7" width="5.5" height="5.5" rx="1" fill="currentColor" opacity="0.12"></rect>
+          </svg>
+        </span>
+        <span>无序数组</span>
+      </div>
+      <div class="answer-option" id="answerOptionSorted" role="option" aria-selected="false" data-value="sorted_array" data-label="有序数组">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" focusable="false">
+            <path d="M1.5 21.5h29"></path>
+            <rect x="3" y="15" width="5" height="6" rx=".8" fill="currentColor" opacity="0.1"></rect>
+            <rect x="10" y="12" width="5" height="9" rx=".8" fill="currentColor" opacity="0.1"></rect>
+            <rect x="17" y="8" width="5" height="13" rx=".8" fill="currentColor" opacity="0.1"></rect>
+            <rect x="24" y="3" width="5" height="18" rx=".8" fill="currentColor" opacity="0.1"></rect>
+          </svg>
+        </span>
+        <span>有序数组</span>
+      </div>
+      <div class="answer-option" id="answerOptionLinked" role="option" aria-selected="false" data-value="linked_list" data-label="链表">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+            <path d="M8 12h5m6 0h4"></path>
+            <path d="m11.5 9.8 2.5 2.2-2.5 2.2m10-4.4L24 12l-2.5 2.2"></path>
+            <circle cx="5" cy="12" r="3" fill="currentColor" opacity="0.12"></circle>
+            <circle cx="16" cy="12" r="3" fill="currentColor" opacity="0.12"></circle>
+            <circle cx="27" cy="12" r="3" fill="currentColor" opacity="0.12"></circle>
+          </svg>
+        </span>
+        <span>链表</span>
+      </div>
+      <div class="answer-option" id="answerOptionHeap" role="option" aria-selected="false" data-value="binary_heap" data-label="二叉堆">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+            <path d="m16 5-8 6m8-6 8 6M8 11l-4 6m4-6 5 6m11-6-5 6m5-6 4 6"></path>
+            <circle cx="16" cy="4.5" r="3" fill="currentColor" opacity="0.16"></circle>
+            <circle cx="8" cy="11" r="2.5" fill="currentColor" opacity="0.1"></circle>
+            <circle cx="24" cy="11" r="2.5" fill="currentColor" opacity="0.1"></circle>
+            <circle cx="4" cy="19" r="2"></circle><circle cx="13" cy="19" r="2"></circle><circle cx="19" cy="19" r="2"></circle><circle cx="28" cy="19" r="2"></circle>
+          </svg>
+        </span>
+        <span>二叉堆</span>
+      </div>
+      <div class="answer-option" id="answerOptionBst" role="option" aria-selected="false" data-value="bst" data-label="普通 BST">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+            <path d="m12 5-7 7m7-7 10 6m0 0-5 7m5-7 7 7"></path>
+            <rect x="9" y="2" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.13"></rect>
+            <rect x="2" y="9" width="6" height="6" rx="1.5"></rect>
+            <rect x="19" y="8" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.08"></rect>
+            <rect x="14" y="16" width="5" height="5" rx="1.2"></rect>
+            <rect x="26" y="16" width="5" height="5" rx="1.2"></rect>
+          </svg>
+        </span>
+        <span>普通 BST</span>
+      </div>
+      <div class="answer-option" id="answerOptionAvl" role="option" aria-selected="false" data-value="avl" data-label="AVL">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+            <path d="m16 4-8 6m8-6 8 6M8 10l-4 6m4-6 4 6m12-6-4 6m4-6 4 6M3 22h26"></path>
+            <circle cx="16" cy="4" r="2.5" fill="currentColor" opacity="0.14"></circle>
+            <circle cx="8" cy="10" r="2.2"></circle><circle cx="24" cy="10" r="2.2"></circle>
+            <circle cx="4" cy="17" r="1.8"></circle><circle cx="12" cy="17" r="1.8"></circle><circle cx="20" cy="17" r="1.8"></circle><circle cx="28" cy="17" r="1.8"></circle>
+            <path d="M13.5 22h5"></path>
+          </svg>
+        </span>
+        <span>AVL</span>
+      </div>
+      <div class="answer-option" id="answerOptionHash" role="option" aria-selected="false" data-value="linear_probing_hash" data-label="线性探测哈希">
+        <span class="answer-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+            <rect x="1.5" y="10" width="5.5" height="8" rx="1"></rect><rect x="7.5" y="10" width="5.5" height="8" rx="1"></rect>
+            <rect x="13.5" y="10" width="5.5" height="8" rx="1" fill="currentColor" opacity="0.16"></rect><rect x="19.5" y="10" width="5.5" height="8" rx="1"></rect><rect x="25.5" y="10" width="5" height="8" rx="1"></rect>
+            <path d="M16 7h10m-2.5-2.5L26 7l-2.5 2.5"></path>
+            <circle cx="16" cy="7" r="1.2" fill="currentColor" stroke="none"></circle>
+          </svg>
+        </span>
+        <span>线性探测哈希</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var app = document.getElementById("gameApp");
+      var pieceField = document.getElementById("pieceField");
+      var integerControl = document.getElementById("integerControl");
+      var integerInput = document.getElementById("integerInput");
+      var integerSignButton = document.getElementById("integerSignButton");
+      var resultOutput = document.getElementById("resultOutput");
+      var stepsOutput = document.getElementById("stepsOutput");
+      var statusLine = document.getElementById("statusLine");
+      var operationHistory = document.getElementById("operationHistory");
+      var answerTrigger = document.getElementById("answerTrigger");
+      var answerSelection = document.getElementById("answerSelection");
+      var answerSelectedIcon = document.getElementById("answerSelectedIcon");
+      var answerPopover = document.getElementById("answerPopover");
+      var answerListbox = document.getElementById("answerListbox");
+      var answerOptions = Array.prototype.slice.call(document.querySelectorAll("[data-value][role='option']"));
+      var placeholderAnswerIcon = answerSelectedIcon.firstElementChild.cloneNode(true);
+      var guessButton = document.getElementById("guessButton");
+      var guessStatus = document.getElementById("guessStatus");
+      var resetButton = document.getElementById("resetButton");
+      var newGameButton = document.getElementById("newGameButton");
+      var rulesButton = document.getElementById("rulesButton");
+      var rulesDialog = document.getElementById("rulesDialog");
+      var resultDialog = document.getElementById("resultDialog");
+      var resultDialogTitle = document.getElementById("resultDialogTitle");
+      var resultStatusPath = document.getElementById("resultStatusPath");
+      var resultCloseButton = document.getElementById("resultCloseButton");
+      var resultNewGameButton = document.getElementById("resultNewGameButton");
+      var resultSelectedIcon = document.getElementById("resultSelectedIcon");
+      var resultSelectedName = document.getElementById("resultSelectedName");
+      var resultActualIcon = document.getElementById("resultActualIcon");
+      var resultActualName = document.getElementById("resultActualName");
+      var resultFeature = document.getElementById("resultFeature");
+      var resultClue = document.getElementById("resultClue");
+      var gameControls = Array.prototype.slice.call(document.querySelectorAll("[data-game-control]"));
+      var operationButtons = Array.prototype.slice.call(document.querySelectorAll("[data-operation]"));
+
+      var structureNotes = {
+        unordered_array: {
+          feature: "不维持大小顺序，删除时会用末项补位。",
+          clue: "min 和未命中的 contain 通常随元素增多而变慢；连续插入后，查找最新值往往也要走到末尾。"
+        },
+        sorted_array: {
+          feature: "始终按大小排列，定位快，但插入和删除可能需要搬动元素。",
+          clue: "min 通常只需 1 步，contain 增长较慢；插入很小的值通常比插入很大的值多出明显的搬移步数。"
+        },
+        linked_list: {
+          feature: "新值放在表头，删除只需改动相邻链接。",
+          clue: "连续插入后，最新值通常很快命中，最早值和未命中查询则会随元素增多而变慢。"
+        },
+        binary_heap: {
+          feature: "最小值留在堆顶，插入和删除后通过上下调整恢复结构。",
+          clue: "min 通常只需 1 步，但 contain 仍可能逐项查找；插入特别小的值时，常能看到额外的上浮步数。"
+        },
+        bst: {
+          feature: "按大小分支查找，但不会主动修正树形。",
+          clue: "连续插入递增值后，再查找末端值或更大的缺失值，步数可能持续增长，呈现退化倾向。"
+        },
+        avl: {
+          feature: "在 BST 的基础上维护高度，并通过旋转保持平衡。",
+          clue: "连续插入递增值后，查询步数通常仍较低；部分 insert 或 erase 会因高度更新和旋转出现额外步数。"
+        },
+        linear_probing_hash: {
+          feature: "从哈希位置开始逐格探测，并用墓碑保留删除后的探测路径。",
+          clue: "尝试 0、8、16、24 等同余值，碰撞时步数会逐渐增加；扩容或清理墓碑的某次插入还可能突然变慢。"
+        }
+      };
+
+      var currentItems = [];
+      var positionCache = new Map();
+      var pending = false;
+      var loaded = false;
+      var finished = false;
+      var resizeFrame = 0;
+      var answerLayoutFrame = 0;
+      var answerMenuOpen = false;
+      var selectedAnswer = "";
+      var activeAnswerIndex = -1;
+      var typeaheadValue = "";
+      var typeaheadTimer = 0;
+
+      function hasOwn(object, key) {
+        return Object.prototype.hasOwnProperty.call(object, key);
+      }
+
+      function hashString(value) {
+        var hash = 2166136261;
+        for (var index = 0; index < value.length; index += 1) {
+          hash ^= value.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+
+      function unitRandom(value) {
+        var seed = hashString(value) + 0x6d2b79f5;
+        seed = Math.imul(seed ^ (seed >>> 15), seed | 1);
+        seed ^= seed + Math.imul(seed ^ (seed >>> 7), seed | 61);
+        return ((seed ^ (seed >>> 14)) >>> 0) / 4294967296;
+      }
+
+      function normalizedItems(value) {
+        if (!Array.isArray(value)) return [];
+        return value.filter(function (item) {
+          return typeof item === "number" && Number.isSafeInteger(item);
+        });
+      }
+
+      function itemDescriptors(items) {
+        var occurrences = new Map();
+        return items.map(function (value) {
+          var seen = occurrences.get(value) || 0;
+          occurrences.set(value, seen + 1);
+          return { value: value, key: String(value) + ":" + String(seen) };
+        }).sort(function (left, right) {
+          if (left.value !== right.value) return left.value - right.value;
+          return left.key.localeCompare(right.key);
+        });
+      }
+
+      function positionFor(key, occupied) {
+        if (positionCache.has(key)) return positionCache.get(key);
+
+        var best = null;
+        var bestDistance = -1;
+        for (var attempt = 0; attempt < 24; attempt += 1) {
+          var candidate = {
+            x: 0.04 + unitRandom(key + ":x:" + attempt) * 0.92,
+            y: 0.05 + unitRandom(key + ":y:" + attempt) * 0.9,
+            angle: Math.round((unitRandom(key + ":a") - 0.5) * 14),
+            tone: hashString(key + ":tone") % 5
+          };
+          var minimumDistance = occupied.reduce(function (minimum, existing) {
+            var dx = candidate.x - existing.x;
+            var dy = candidate.y - existing.y;
+            return Math.min(minimum, dx * dx + dy * dy);
+          }, 2);
+          if (minimumDistance > bestDistance) {
+            best = candidate;
+            bestDistance = minimumDistance;
+          }
+        }
+        positionCache.set(key, best);
+        return best;
+      }
+
+      function pieceSize(count, width, height) {
+        if (count <= 0) return 48;
+        var areaSize = Math.sqrt((width * height) / Math.max(count, 1)) * 0.5;
+        var minimumSize = count > 72 ? 27 : (count > 40 ? 31 : 36);
+        return Math.max(minimumSize, Math.min(66, Math.floor(areaSize)));
+      }
+
+      function pieceFontSize(text, size) {
+        var fitWidth = (size - 10) / (Math.max(text.length, 2) * 0.6);
+        return Math.max(7, Math.min(16, size * 0.34, fitWidth));
+      }
+
+      function renderItems() {
+        var descriptors = itemDescriptors(currentItems);
+        pieceField.replaceChildren();
+        pieceField.setAttribute("aria-label", "黑盒中的整数，共 " + descriptors.length + " 个");
+
+        if (!descriptors.length) {
+          var empty = document.createElement("span");
+          empty.className = "empty-mark";
+          empty.textContent = "∅";
+          empty.setAttribute("aria-label", "空");
+          pieceField.appendChild(empty);
+          return;
+        }
+
+        var bounds = pieceField.getBoundingClientRect();
+        var width = Math.max(260, bounds.width);
+        var height = Math.max(260, bounds.height);
+        var size = pieceSize(descriptors.length, width, height);
+        var edge = Math.max(12, Math.round(size * 0.32));
+        var usableWidth = Math.max(0, width - size - edge * 2);
+        var usableHeight = Math.max(0, height - size - edge * 2 - 3);
+        var occupied = [];
+        var reserved = descriptors.filter(function (descriptor) {
+          return positionCache.has(descriptor.key);
+        }).map(function (descriptor) {
+          return positionCache.get(descriptor.key);
+        });
+
+        descriptors.forEach(function (descriptor) {
+          var position = positionFor(descriptor.key, occupied.concat(reserved));
+          occupied.push(position);
+
+          var piece = document.createElement("span");
+          var text = String(descriptor.value);
+          var fontSize = pieceFontSize(text, size);
+          var x = edge + position.x * usableWidth;
+          var y = edge + position.y * usableHeight;
+          piece.className = "number-piece";
+          piece.dataset.tone = String(position.tone);
+          piece.setAttribute("role", "listitem");
+          piece.style.width = size + "px";
+          piece.style.height = size + "px";
+          piece.style.fontSize = fontSize.toFixed(1) + "px";
+          piece.style.transform = "translate(" + x.toFixed(1) + "px," + y.toFixed(1) + "px) rotate(" + position.angle + "deg)";
+          var label = document.createElement("span");
+          label.className = "number-piece-label";
+          label.textContent = text;
+          piece.appendChild(label);
+          pieceField.appendChild(piece);
+        });
+      }
+
+      function formatResult(value) {
+        if (value === null || typeof value === "undefined") return "∅";
+        if (typeof value === "boolean") return value ? "true" : "false";
+        if (typeof value === "number" || typeof value === "string") return String(value);
+        return "—";
+      }
+
+      function operationLabel(operation, value) {
+        if (operation === "min") return "min";
+        var name = operation === "contains" ? "contain" : operation;
+        return name + "(" + String(value) + ")";
+      }
+
+      function operationSucceeded(operation, payload) {
+        if (!payload || payload.success !== true) return false;
+        if (operation === "min") {
+          return hasOwn(payload, "result")
+            && payload.result !== null
+            && typeof payload.result !== "undefined";
+        }
+        return payload.result === true;
+      }
+
+      function appendOperationHistory(operation, value, payload) {
+        var steps = Number.isSafeInteger(payload && payload.steps) && payload.steps >= 0
+          ? payload.steps
+          : 0;
+        var succeeded = operationSucceeded(operation, payload);
+        var item = document.createElement("li");
+        item.className = "operation-history-item";
+
+        var operationText = document.createElement("span");
+        operationText.className = "history-operation";
+        operationText.textContent = operationLabel(operation, value);
+
+        var resultText = document.createElement("span");
+        resultText.className = "history-result";
+        resultText.dataset.success = succeeded ? "true" : "false";
+        resultText.textContent = succeeded ? "成功" : "失败";
+
+        var stepsText = document.createElement("span");
+        stepsText.className = "history-steps";
+        stepsText.textContent = String(steps) + " 步";
+
+        item.append(operationText, resultText, stepsText);
+        operationHistory.appendChild(item);
+        operationHistory.parentElement.scrollTop = operationHistory.parentElement.scrollHeight;
+      }
+
+      function clearOperationHistory() {
+        operationHistory.replaceChildren();
+        operationHistory.parentElement.scrollTop = 0;
+      }
+
+      function clearStatus(element) {
+        element.textContent = "";
+        element.classList.remove("is-error", "is-correct", "is-wrong");
+      }
+
+      function showStatus(element, message, className) {
+        clearStatus(element);
+        element.textContent = message || "";
+        if (className) element.classList.add(className);
+      }
+
+      function answerOptionIndex(value) {
+        return answerOptions.findIndex(function (option) {
+          return option.dataset.value === value;
+        });
+      }
+
+      function syncAnswerOptionStates() {
+        answerOptions.forEach(function (item, index) {
+          var selected = answerMenuOpen
+            ? index === activeAnswerIndex
+            : item.dataset.value === selectedAnswer;
+          item.setAttribute("aria-selected", selected ? "true" : "false");
+        });
+      }
+
+      function setAnswer(value) {
+        var optionIndex = answerOptionIndex(value);
+        var option = optionIndex >= 0 ? answerOptions[optionIndex] : null;
+        selectedAnswer = option ? option.dataset.value : "";
+
+        answerSelection.textContent = option ? option.dataset.label : "选择答案";
+        answerSelection.classList.toggle("is-placeholder", !option);
+        answerSelectedIcon.replaceChildren(
+          option
+            ? option.querySelector("svg").cloneNode(true)
+            : placeholderAnswerIcon.cloneNode(true)
+        );
+        answerTrigger.classList.remove("is-invalid");
+        answerTrigger.setAttribute("aria-invalid", "false");
+        if (option) activeAnswerIndex = optionIndex;
+        syncAnswerOptionStates();
+      }
+
+      function fillResultIdentity(iconElement, nameElement, value, fallbackLabel) {
+        var optionIndex = answerOptionIndex(value);
+        var option = optionIndex >= 0 ? answerOptions[optionIndex] : null;
+        iconElement.replaceChildren(
+          option
+            ? option.querySelector("svg").cloneNode(true)
+            : placeholderAnswerIcon.cloneNode(true)
+        );
+        nameElement.textContent = option ? option.dataset.label : (fallbackLabel || "—");
+      }
+
+      function closeResultDialog() {
+        resultDialog.classList.remove("is-celebrating");
+        if (resultDialog.open) resultDialog.close();
+      }
+
+      function showResultDialog(guess) {
+        if (!guess || typeof guess !== "object") return;
+        var correct = guess.correct === true;
+        var notes = structureNotes[guess.answer] || { feature: "—", clue: "—" };
+
+        resultDialog.dataset.correct = correct ? "true" : "false";
+        resultDialogTitle.textContent = correct ? "猜对了" : "未猜中";
+        resultStatusPath.setAttribute(
+          "d",
+          correct ? "m9.5 16.5 4.2 4.2 9-10" : "m10 10 12 12m0-12L10 22"
+        );
+        fillResultIdentity(resultSelectedIcon, resultSelectedName, guess.selected, "—");
+        fillResultIdentity(resultActualIcon, resultActualName, guess.answer, guess.label);
+        resultFeature.textContent = notes.feature;
+        resultClue.textContent = notes.clue;
+
+        resultDialog.classList.remove("is-celebrating");
+        if (!resultDialog.open && typeof resultDialog.showModal === "function") {
+          resultDialog.showModal();
+        }
+        if (correct) {
+          void resultDialog.offsetWidth;
+          resultDialog.classList.add("is-celebrating");
+        }
+      }
+
+      function setActiveAnswer(index, scrollIntoView) {
+        if (!answerOptions.length) return;
+        activeAnswerIndex = (index + answerOptions.length) % answerOptions.length;
+        answerOptions.forEach(function (option, optionIndex) {
+          option.dataset.active = optionIndex === activeAnswerIndex ? "true" : "false";
+        });
+        syncAnswerOptionStates();
+        var activeOption = answerOptions[activeAnswerIndex];
+        answerTrigger.setAttribute("aria-activedescendant", activeOption.id);
+        if (scrollIntoView && answerMenuOpen) {
+          var optionTop = activeOption.offsetTop;
+          var optionBottom = optionTop + activeOption.offsetHeight;
+          var visibleTop = answerPopover.scrollTop;
+          var visibleBottom = visibleTop + answerPopover.clientHeight;
+          if (optionTop < visibleTop) answerPopover.scrollTop = optionTop;
+          if (optionBottom > visibleBottom) {
+            answerPopover.scrollTop = optionBottom - answerPopover.clientHeight;
+          }
+        }
+      }
+
+      function viewportBounds() {
+        var viewport = window.visualViewport;
+        var left = viewport ? viewport.offsetLeft : 0;
+        var top = viewport ? viewport.offsetTop : 0;
+        var width = viewport ? viewport.width : window.innerWidth;
+        var height = viewport ? viewport.height : window.innerHeight;
+        return {
+          left: left,
+          top: top,
+          right: left + width,
+          bottom: top + height,
+          width: width,
+          height: height
+        };
+      }
+
+      function clamp(value, minimum, maximum) {
+        return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+      }
+
+      function layoutAnswerPopover() {
+        answerLayoutFrame = 0;
+        if (!answerMenuOpen || answerPopover.hidden) return;
+
+        var bounds = viewportBounds();
+        var triggerBounds = answerTrigger.getBoundingClientRect();
+        var margin = 8;
+        var gap = 6;
+        var availableWidth = Math.max(0, bounds.width - margin * 2);
+        var width = Math.min(Math.max(triggerBounds.width, 240), availableWidth);
+        answerPopover.dataset.compact = width < 180 ? "true" : "false";
+        var left = clamp(
+          triggerBounds.left,
+          bounds.left + margin,
+          bounds.right - margin - width
+        );
+
+        answerPopover.style.visibility = "hidden";
+        answerPopover.style.width = width + "px";
+        answerPopover.style.maxHeight = "none";
+        answerPopover.style.left = left + "px";
+        answerPopover.style.top = bounds.top + margin + "px";
+
+        var naturalHeight = Math.min(answerPopover.scrollHeight, 360);
+        var spaceBelow = Math.max(0, bounds.bottom - triggerBounds.bottom - gap - margin);
+        var spaceAbove = Math.max(0, triggerBounds.top - bounds.top - gap - margin);
+        var overlay = Math.max(spaceBelow, spaceAbove) < Math.min(naturalHeight, 88);
+        if (overlay) {
+          var overlayHeight = Math.min(naturalHeight, Math.max(0, bounds.height - margin * 2));
+          answerPopover.style.maxHeight = overlayHeight + "px";
+          answerPopover.dataset.direction = "overlay";
+          answerPopover.style.top = clamp(
+            bounds.top + (bounds.height - answerPopover.offsetHeight) / 2,
+            bounds.top + margin,
+            bounds.bottom - margin - answerPopover.offsetHeight
+          ) + "px";
+          answerPopover.style.visibility = "visible";
+          setActiveAnswer(activeAnswerIndex, true);
+          return;
+        }
+        var openBelow = spaceBelow >= Math.min(naturalHeight, 220) || spaceBelow >= spaceAbove;
+        var availableHeight = openBelow ? spaceBelow : spaceAbove;
+        var height = Math.min(naturalHeight, availableHeight);
+        answerPopover.style.maxHeight = height + "px";
+        answerPopover.dataset.direction = openBelow ? "down" : "up";
+
+        var top = openBelow
+          ? triggerBounds.bottom + gap
+          : triggerBounds.top - gap - answerPopover.offsetHeight;
+        answerPopover.style.top = clamp(
+          top,
+          bounds.top + margin,
+          bounds.bottom - margin - answerPopover.offsetHeight
+        ) + "px";
+        answerPopover.style.visibility = "visible";
+        setActiveAnswer(activeAnswerIndex, true);
+      }
+
+      function scheduleAnswerLayout() {
+        if (!answerMenuOpen) return;
+        if (answerLayoutFrame) cancelAnimationFrame(answerLayoutFrame);
+        answerLayoutFrame = requestAnimationFrame(layoutAnswerPopover);
+      }
+
+      function openAnswerMenu(preferredIndex) {
+        if (answerTrigger.disabled || answerMenuOpen) return;
+        answerMenuOpen = true;
+        answerPopover.style.visibility = "hidden";
+        answerPopover.hidden = false;
+        answerTrigger.setAttribute("aria-expanded", "true");
+        var selectedIndex = answerOptionIndex(selectedAnswer);
+        setActiveAnswer(
+          typeof preferredIndex === "number"
+            ? preferredIndex
+            : (selectedIndex >= 0 ? selectedIndex : 0),
+          false
+        );
+        scheduleAnswerLayout();
+      }
+
+      function closeAnswerMenu(restoreFocus) {
+        if (!answerMenuOpen) return;
+        answerMenuOpen = false;
+        answerPopover.hidden = true;
+        answerPopover.style.visibility = "";
+        answerTrigger.setAttribute("aria-expanded", "false");
+        answerTrigger.removeAttribute("aria-activedescendant");
+        answerOptions.forEach(function (option) {
+          option.dataset.active = "false";
+        });
+        syncAnswerOptionStates();
+        if (answerLayoutFrame) cancelAnimationFrame(answerLayoutFrame);
+        answerLayoutFrame = 0;
+        window.clearTimeout(typeaheadTimer);
+        typeaheadValue = "";
+        if (restoreFocus) answerTrigger.focus();
+      }
+
+      function chooseActiveAnswer() {
+        if (activeAnswerIndex < 0 || activeAnswerIndex >= answerOptions.length) return;
+        setAnswer(answerOptions[activeAnswerIndex].dataset.value);
+        clearStatus(guessStatus);
+        closeAnswerMenu(true);
+      }
+
+      function refreshControls() {
+        gameControls.forEach(function (control) {
+          control.disabled = pending || !loaded || finished;
+        });
+        newGameButton.disabled = pending;
+        resultNewGameButton.disabled = pending;
+        if (answerTrigger.disabled) closeAnswerMenu(false);
+        app.setAttribute("aria-busy", pending ? "true" : "false");
+      }
+
+      function guessResult(payload) {
+        if (!payload || typeof payload.guess !== "object" || payload.guess === null) return null;
+        return typeof payload.guess.correct === "boolean" ? payload.guess.correct : null;
+      }
+
+      function applyPayload(payload, kind) {
+        if (hasOwn(payload, "items")) {
+          currentItems = normalizedItems(payload.items);
+          renderItems();
+        }
+
+        if (kind === "new" || kind === "reset" || kind === "state") {
+          resultOutput.textContent = "—";
+          stepsOutput.textContent = "—";
+          clearOperationHistory();
+          setAnswer("");
+          clearStatus(guessStatus);
+        } else if (kind === "action") {
+          if (hasOwn(payload, "result")) resultOutput.textContent = formatResult(payload.result);
+          if (hasOwn(payload, "steps")) {
+            stepsOutput.textContent = payload.steps === null || typeof payload.steps === "undefined"
+              ? "—"
+              : String(payload.steps);
+          }
+        }
+
+        finished = payload.finished === true;
+        var correct = guessResult(payload);
+        if (!finished && (kind === "new" || kind === "reset" || kind === "state")) {
+          closeResultDialog();
+        }
+        if (correct === true) showStatus(guessStatus, "猜对了", "is-correct");
+        if (correct === false) showStatus(guessStatus, "未猜中", "is-wrong");
+        if (correct !== null) showResultDialog(payload.guess);
+      }
+
+      function parseResponse(response) {
+        return response.json().catch(function () {
+          return { success: false, message: "响应无法读取" };
+        }).then(function (payload) {
+          if (!response.ok || !payload || payload.success !== true) {
+            var error = new Error(payload && payload.message ? payload.message : "请求失败");
+            error.status = response.status;
+            error.payload = payload;
+            throw error;
+          }
+          return payload;
+        });
+      }
+
+      function request(path, options, kind, operationEntry) {
+        if (pending) return Promise.resolve(null);
+        pending = true;
+        clearStatus(statusLine);
+        refreshControls();
+
+        return fetch(path, options || { method: "GET", cache: "no-store" })
+          .then(parseResponse)
+          .then(function (payload) {
+            if (kind === "new") positionCache.clear();
+            loaded = true;
+            applyPayload(payload, kind);
+            if (kind === "action" && operationEntry) {
+              appendOperationHistory(operationEntry.operation, operationEntry.value, payload);
+            }
+            return payload;
+          })
+          .catch(function (error) {
+            if (error.payload && Array.isArray(error.payload.items)) {
+              loaded = true;
+              applyPayload(error.payload, kind);
+            }
+            if (
+              kind === "action"
+              && operationEntry
+              && error.payload
+              && hasOwn(error.payload, "steps")
+            ) {
+              appendOperationHistory(operationEntry.operation, operationEntry.value, error.payload);
+            }
+            showStatus(statusLine, error.message || "请求失败", "is-error");
+            return null;
+          })
+          .finally(function () {
+            pending = false;
+            refreshControls();
+          });
+      }
+
+      function post(path, payload, kind, operationEntry) {
+        return request(path, {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload || {})
+        }, kind, operationEntry);
+      }
+
+      function integerValue() {
+        var rawValue = integerInput.value.trim();
+        var value = /^-?\d+$/.test(rawValue) ? Number(rawValue) : NaN;
+        if (!Number.isSafeInteger(value) || value < -1000000 || value > 1000000) {
+          integerControl.classList.add("is-invalid");
+          integerInput.setAttribute("aria-invalid", "true");
+          showStatus(statusLine, "请输入 -1000000 至 1000000 的整数", "is-error");
+          integerInput.focus();
+          return null;
+        }
+        integerControl.classList.remove("is-invalid");
+        integerInput.setAttribute("aria-invalid", "false");
+        return value;
+      }
+
+      operationButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          var operation = button.dataset.operation;
+          var payload = { operation: operation };
+          if (operation !== "min") {
+            var value = integerValue();
+            if (value === null) return;
+            payload.value = value;
+          }
+          post("api/action", payload, "action", {
+            operation: operation,
+            value: payload.value
+          }).then(function (response) {
+            if (response && operation !== "min") {
+              integerInput.focus();
+              integerInput.select();
+            }
+          });
+        });
+      });
+
+      resetButton.addEventListener("click", function () {
+        post("api/reset", {}, "reset");
+      });
+
+      newGameButton.addEventListener("click", function () {
+        post("api/new", {}, "new");
+      });
+
+      resultNewGameButton.addEventListener("click", function () {
+        post("api/new", {}, "new").then(function (response) {
+          if (response) integerInput.focus();
+        });
+      });
+
+      resultCloseButton.addEventListener("click", closeResultDialog);
+
+      resultDialog.addEventListener("click", function (event) {
+        if (event.target === resultDialog) closeResultDialog();
+      });
+
+      resultDialog.addEventListener("close", function () {
+        resultDialog.classList.remove("is-celebrating");
+        if (finished) newGameButton.focus();
+      });
+
+      guessButton.addEventListener("click", function () {
+        if (!selectedAnswer) {
+          answerTrigger.classList.add("is-invalid");
+          answerTrigger.setAttribute("aria-invalid", "true");
+          showStatus(guessStatus, "请选择答案", "is-error");
+          answerTrigger.focus();
+          openAnswerMenu(0);
+          return;
+        }
+        closeAnswerMenu(false);
+        post("api/guess", { answer: selectedAnswer }, "guess");
+      });
+
+      integerInput.addEventListener("input", function () {
+        integerControl.classList.remove("is-invalid");
+        integerInput.setAttribute("aria-invalid", "false");
+        integerSignButton.setAttribute(
+          "aria-pressed",
+          integerInput.value.trim().startsWith("-") ? "true" : "false"
+        );
+        if (statusLine.classList.contains("is-error")) clearStatus(statusLine);
+      });
+
+      integerSignButton.addEventListener("click", function () {
+        var value = integerInput.value.trim();
+        integerInput.value = value.startsWith("-") ? value.slice(1) : "-" + value;
+        integerControl.classList.remove("is-invalid");
+        integerInput.setAttribute("aria-invalid", "false");
+        integerSignButton.setAttribute(
+          "aria-pressed",
+          integerInput.value.startsWith("-") ? "true" : "false"
+        );
+        if (statusLine.classList.contains("is-error")) clearStatus(statusLine);
+        integerInput.focus();
+        integerInput.setSelectionRange(integerInput.value.length, integerInput.value.length);
+      });
+
+      answerTrigger.addEventListener("click", function () {
+        if (answerMenuOpen) {
+          closeAnswerMenu(false);
+        } else {
+          openAnswerMenu();
+        }
+      });
+
+      answerTrigger.addEventListener("keydown", function (event) {
+        var key = event.key;
+        if (key === "ArrowDown" || key === "ArrowUp") {
+          event.preventDefault();
+          if (!answerMenuOpen) {
+            var selectedIndex = answerOptionIndex(selectedAnswer);
+            openAnswerMenu(
+              selectedIndex >= 0
+                ? selectedIndex
+                : (key === "ArrowDown" ? 0 : answerOptions.length - 1)
+            );
+          } else {
+            setActiveAnswer(activeAnswerIndex + (key === "ArrowDown" ? 1 : -1), true);
+          }
+          return;
+        }
+        if (key === "Home" || key === "End") {
+          event.preventDefault();
+          var edgeIndex = key === "Home" ? 0 : answerOptions.length - 1;
+          if (answerMenuOpen) {
+            setActiveAnswer(edgeIndex, true);
+          } else {
+            openAnswerMenu(edgeIndex);
+          }
+          return;
+        }
+        if (key === "Enter" || key === " ") {
+          event.preventDefault();
+          if (answerMenuOpen) {
+            chooseActiveAnswer();
+          } else {
+            openAnswerMenu();
+          }
+          return;
+        }
+        if (key === "Escape" && answerMenuOpen) {
+          event.preventDefault();
+          event.stopPropagation();
+          closeAnswerMenu(true);
+          return;
+        }
+        if (key === "Tab") {
+          if (answerMenuOpen && activeAnswerIndex >= 0) {
+            setAnswer(answerOptions[activeAnswerIndex].dataset.value);
+            clearStatus(guessStatus);
+          }
+          closeAnswerMenu(false);
+          return;
+        }
+        if (
+          key.length === 1
+          && !event.altKey
+          && !event.ctrlKey
+          && !event.metaKey
+          && !/^\s$/.test(key)
+        ) {
+          var typeaheadKey = key.toLocaleLowerCase();
+          var repeatedCharacter = typeaheadValue.length > 0
+            && typeaheadValue.split("").every(function (character) {
+              return character === typeaheadKey;
+            });
+          typeaheadValue = repeatedCharacter
+            ? typeaheadKey
+            : typeaheadValue + typeaheadKey;
+          window.clearTimeout(typeaheadTimer);
+          typeaheadTimer = window.setTimeout(function () {
+            typeaheadValue = "";
+          }, 650);
+          if (!answerMenuOpen) openAnswerMenu();
+          var start = Math.max(activeAnswerIndex, -1);
+          for (var offset = 1; offset <= answerOptions.length; offset += 1) {
+            var index = (start + offset) % answerOptions.length;
+            var option = answerOptions[index];
+            var label = option.dataset.label.toLocaleLowerCase();
+            var value = option.dataset.value.toLocaleLowerCase();
+            if (label.indexOf(typeaheadValue) === 0 || value.indexOf(typeaheadValue) === 0) {
+              setActiveAnswer(index, true);
+              break;
+            }
+          }
+        }
+      });
+
+      answerOptions.forEach(function (option, optionIndex) {
+        option.addEventListener("pointermove", function () {
+          setActiveAnswer(optionIndex, false);
+        });
+        option.addEventListener("click", function () {
+          activeAnswerIndex = optionIndex;
+          chooseActiveAnswer();
+        });
+      });
+
+      document.addEventListener("pointerdown", function (event) {
+        if (
+          answerMenuOpen
+          && !answerTrigger.contains(event.target)
+          && !answerPopover.contains(event.target)
+        ) {
+          closeAnswerMenu(false);
+        }
+      }, true);
+
+      window.addEventListener("resize", scheduleAnswerLayout);
+      window.addEventListener("scroll", function (event) {
+        if (!answerMenuOpen) return;
+        if (event.target === answerPopover || answerPopover.contains(event.target)) return;
+        closeAnswerMenu(false);
+      }, true);
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", scheduleAnswerLayout);
+        window.visualViewport.addEventListener("scroll", scheduleAnswerLayout);
+      }
+
+      rulesButton.addEventListener("click", function () {
+        closeAnswerMenu(false);
+        if (typeof rulesDialog.showModal === "function") rulesDialog.showModal();
+      });
+
+      rulesDialog.addEventListener("click", function (event) {
+        if (event.target === rulesDialog) rulesDialog.close();
+      });
+
+      rulesDialog.addEventListener("close", function () {
+        rulesButton.focus();
+      });
+
+      if (typeof ResizeObserver === "function") {
+        new ResizeObserver(function () {
+          if (resizeFrame) cancelAnimationFrame(resizeFrame);
+          resizeFrame = requestAnimationFrame(function () {
+            resizeFrame = 0;
+            renderItems();
+          });
+        }).observe(pieceField);
+      } else {
+        window.addEventListener("resize", function () {
+          if (resizeFrame) cancelAnimationFrame(resizeFrame);
+          resizeFrame = requestAnimationFrame(function () {
+            resizeFrame = 0;
+            renderItems();
+          });
+        });
+      }
+
+      renderItems();
+      refreshControls();
+      request("api/state", { method: "GET", cache: "no-store", headers: { "Accept": "application/json" } }, "state");
+    }());
+  </script>
+</body>
+</html>

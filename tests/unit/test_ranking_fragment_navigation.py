@@ -353,6 +353,75 @@ def test_fragment_normalizes_forbidden_admin_tab_without_loading_admin_data(monk
     assert payload['navigation']['permissions']['matches'] is False
 
 
+@pytest.mark.parametrize('tab', ['description', 'leaderboard', 'all_submissions'])
+def test_common_agent_tabs_skip_hidden_judge_configuration(monkeypatch, tab):
+    user = {'username': 'admin', 'is_admin': 1}
+    app = _app(
+        monkeypatch,
+        user=user,
+        competition=_competition(scoring_mode='agent_judge'),
+        state=_state(scoring_mode='agent_judge'),
+    )
+    monkeypatch.setattr(ranking_routes, 'list_all_submissions', lambda *_a, **_kw: ([], 1, 0))
+    monkeypatch.setattr(ranking_routes, 'get_submission_stats', lambda *_a, **_kw: {})
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail(f'{tab} 标签不应加载不可见的 Agent 评测配置')
+
+    for name in (
+        'list_competition_rules',
+        'list_agent_judge_endpoints',
+        'list_quality_gate_endpoints',
+        'global_agent_endpoint_candidates',
+        '_agent_judge_endpoint_ready',
+        '_reverse_quality_gate_ready',
+    ):
+        monkeypatch.setattr(ranking_routes, name, unexpected)
+
+    response = _logged_in_client(app).get(
+        f'/ranking/24/?tab={tab}&fragment=1',
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()['tab'] == tab
+
+
+def test_reverse_batch_tab_loads_choices_without_settings_queries(monkeypatch):
+    app = _app(
+        monkeypatch,
+        user={'username': 'admin', 'is_admin': 1},
+        competition=_competition(scoring_mode='reverse_judge'),
+        state=_state(scoring_mode='reverse_judge'),
+    )
+    endpoint_calls = []
+    monkeypatch.setattr(ranking_routes, 'get_all_classes', lambda: [])
+    monkeypatch.setattr(
+        ranking_routes,
+        'list_agent_judge_endpoints',
+        lambda competition_id: endpoint_calls.append(competition_id) or [],
+    )
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('批评测标签不应加载管理设置或额外就绪状态')
+
+    for name in (
+        'list_competition_rules',
+        'list_quality_gate_endpoints',
+        'global_agent_endpoint_candidates',
+        '_agent_judge_endpoint_ready',
+        '_reverse_quality_gate_ready',
+    ):
+        monkeypatch.setattr(ranking_routes, name, unexpected)
+
+    response = _logged_in_client(app).get(
+        '/ranking/24/?tab=batch_eval&fragment=1',
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()['tab'] == 'batch_eval'
+    assert endpoint_calls == [24]
+
+
 def test_matches_fragment_bypasses_stale_list_cache(monkeypatch):
     app = _app(monkeypatch)
     client = _logged_in_client(app)

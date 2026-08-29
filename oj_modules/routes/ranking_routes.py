@@ -30,6 +30,11 @@ from oj_modules.db_services import (
 from oj_modules.infrastructure.redis import create_optional_redis_client
 from oj_modules.security.auth import current_user
 from oj_modules.security.throttling import rate_limit_hit
+from oj_modules.shared.sse import (
+    guard_sse_stream,
+    sse_capacity_response,
+    try_acquire_sse_slot,
+)
 from oj_modules.ranking.db import (
     activate_elo_submission,
     competition_attachments_dir,
@@ -905,20 +910,36 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
     matches_total = 0
     matches_mine = False
 
-    judge_rules = list_competition_rules(competition_id) if is_agent_judge else []
+    # 评测规则和端点池只出现在编辑页；反向评测的提交/批评测页还需要
+    # 主端点作为用户选择项。其余高频标签不应为不可见的管理配置付出查询成本。
+    needs_agent_settings = is_admin and tab == 'edit' and is_ai_judge
+    needs_reverse_endpoint_choices = (
+        is_reverse_judge and tab in ('submit', 'batch_eval')
+    )
+    judge_rules = (
+        list_competition_rules(competition_id)
+        if is_agent_judge and needs_agent_settings
+        else []
+    )
     aj_endpoints = []
     quality_gate_endpoints = []
     agent_global_endpoint_candidates = {}
     agent_judge_ready = False
-    quality_gate_ready = (
-        _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
-    )
-    if is_ai_judge:
+    quality_gate_ready = True
+    if needs_agent_settings or needs_reverse_endpoint_choices:
         try:
             raw_endpoints = list_agent_judge_endpoints(competition_id)
         except Exception:
             raw_endpoints = []
         aj_endpoints = _masked_agent_endpoints(raw_endpoints)
+
+    # 就绪状态仅服务于管理配置上下文；提交页仍由下方权威校验生成阻断原因。
+    if needs_agent_settings:
+        quality_gate_ready = (
+            _reverse_quality_gate_ready(competition_id, comp)
+            if is_reverse_judge
+            else True
+        )
         agent_judge_ready = (
             _agent_judge_endpoint_ready(competition_id, comp) and bool(judge_rules)
         )
@@ -926,14 +947,13 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
             agent_judge_ready = (
                 _agent_judge_endpoint_ready(competition_id, comp) and quality_gate_ready
             )
-            if is_admin:
-                try:
-                    quality_gate_endpoints = _masked_agent_endpoints(
-                        list_quality_gate_endpoints(competition_id)
-                    )
-                except Exception:
-                    quality_gate_endpoints = []
-        if is_admin:
+            try:
+                quality_gate_endpoints = _masked_agent_endpoints(
+                    list_quality_gate_endpoints(competition_id)
+                )
+            except Exception:
+                quality_gate_endpoints = []
+        if needs_agent_settings:
             try:
                 agent_global_endpoint_candidates = global_agent_endpoint_candidates()
             except Exception:
@@ -2708,9 +2728,19 @@ def ranking_judge_stream(competition_id, submission_id):
             except Exception:
                 pass
 
-    return Response(generate(), mimetype='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
-                             'Connection': 'keep-alive'})
+    lease = try_acquire_sse_slot()
+    if lease is None:
+        return sse_capacity_response()
+
+    return Response(
+        guard_sse_stream(generate(), lease),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
 
 
 def _project_reverse_judge_snapshot(snapshot, *, include_internal=False):
@@ -2850,9 +2880,19 @@ def ranking_reverse_judge_stream(competition_id, submission_id):
             except Exception:
                 pass
 
-    return Response(generate(), mimetype='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
-                             'Connection': 'keep-alive'})
+    lease = try_acquire_sse_slot()
+    if lease is None:
+        return sse_capacity_response()
+
+    return Response(
+        guard_sse_stream(generate(), lease),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
 
 
 @ranking_bp.route('/<int:competition_id>/submission/<int:submission_id>/rejudge_agent', methods=['POST'])

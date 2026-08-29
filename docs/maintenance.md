@@ -99,6 +99,28 @@ oj.py 只负责把上述组件装配起来
 
 GitHub Actions 对每次 push/PR 执行语法、unit、DB 和 E2E。集成 job 使用 GitHub-hosted runner 上的一次性 MySQL 8.4/Redis 服务，构建 `numericaloj-judger-lite` 后运行真实 C/C++/Python/Octave 判题；JUnit 结果作为 artifact 保留。只有需要外部密钥的 live AI 测试默认跳过，平台具备 Node、loopback、符号链接、FIFO 与 Docker 的测试不得仅因运行在 GitHub 上而跳过。
 
+修改 `frontend/`、前端构建脚本或被打包的依赖后，执行 `npm run build:frontend`。该命令会重建
+Monaco、Markdown 高亮、Mermaid，并刷新大型静态资源的 `.br` / `.gz` 旁路文件；随后执行
+`npm run test:frontend` 和 unit 测试。禁止只提交源文件而保留旧旁路文件，静态分发的契约测试会逐个
+解压并与源文件比较。
+
+HTTP 延迟基准只允许对本地或明确隔离的测试 Web 执行。`scripts/benchmark_http.py` 只发送 GET，
+统计 TTFB、完整响应、状态码、压缩和缓存头；它不会使任意业务 URL 自动变成安全只读接口，调用者
+仍须选择健康检查或确认无副作用的页面。以下命令分别模拟 256 条常态并发和 512 条瞬时峰值并发，
+并把 p95 TTFB/完整响应超过 100ms 视为失败：
+
+```bash
+python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live \
+  -n 2560 -c 256 --max-p95-ttfb-ms 100 --max-p95-total-ms 100
+python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live \
+  -n 5120 -c 512 --max-p95-ttfb-ms 100 --max-p95-total-ms 100
+```
+
+健康检查只测 Web 传输路径。页面/JSON 链路需要把 URL 换成代表性只读入口；认证信息通过权限受限的
+`--header-file` 注入，禁止把 Cookie 写进命令或仓库。并发连接数是合成的同时请求，不等于在线用户数。
+脚本默认拒绝非回环地址；只有明确隔离的测试网络才可加 `--allow-non-loopback-test-host`。
+上述基准属于测试，**不得在生产主机或生产服务上运行**，也不得加入 `deploy.sh`。
+
 真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再通过测试专用环境变量 `NUMOJ_REVERSE_LIVE_API_KEY` 提供密钥（不要写入站点 `.env`），最后运行：
 
 ```bash

@@ -10,7 +10,9 @@
 - validate_username：用户身份字段白名单，防用户名进入管理员页面形成存储型 XSS
 """
 import hashlib
+from concurrent.futures import Future
 from pathlib import Path
+from threading import Barrier, Event, Lock, Thread
 
 import pytest
 from flask import Flask, session
@@ -37,6 +39,310 @@ def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypat
         assert auth.current_user() == {'username': 'bob'}
 
     assert lookups == ['alice', 'bob']
+
+
+def test_current_user_short_cache_reuses_normal_user_across_requests(monkeypatch):
+    from oj_modules.security import auth
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    lookups = []
+
+    def load_user(username):
+        lookups.append(username)
+        return {'id': 7, 'username': username, 'is_admin': 0}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    for _ in range(2):
+        with app.test_request_context('/'):
+            session['username'] = 'alice'
+            user = auth.current_user()
+            user['username'] = 'mutated-locally'
+
+    assert lookups == ['alice']
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth.current_user()['username'] == 'alice'
+
+
+def test_current_user_does_not_cross_request_cache_admin(monkeypatch):
+    from oj_modules.security import auth
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    lookups = []
+
+    def load_user(username):
+        lookups.append(username)
+        return {'id': 1, 'username': username, 'is_admin': 1}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    for _ in range(2):
+        with app.test_request_context('/'):
+            session['username'] = 'admin'
+            assert auth.current_user()['is_admin'] == 1
+
+    assert lookups == ['admin', 'admin']
+
+
+def test_current_user_cache_can_be_invalidated_by_user_id(monkeypatch):
+    from oj_modules.security import auth
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    roles = [0, 1]
+
+    def load_user(username):
+        return {'id': 7, 'username': username, 'is_admin': roles.pop(0)}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth.current_user()['is_admin'] == 0
+
+    auth.invalidate_cached_browser_user(user_id=7)
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth.current_user()['is_admin'] == 1
+
+    assert roles == []
+
+
+def test_current_user_cache_loader_identity_change_forces_reload(monkeypatch):
+    from oj_modules.security import auth
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(
+        auth,
+        'get_user_by_username',
+        lambda username: {
+            'id': 7,
+            'username': username,
+            'email': 'old@test',
+            'is_admin': 0,
+        },
+    )
+    assert auth._cached_browser_user('alice')['email'] == 'old@test'
+
+    lookups = []
+
+    def replacement(username):
+        lookups.append(username)
+        return {
+            'id': 7,
+            'username': username,
+            'email': 'new@test',
+            'is_admin': 0,
+        }
+
+    monkeypatch.setattr(auth, 'get_user_by_username', replacement)
+    assert auth._cached_browser_user('alice')['email'] == 'new@test'
+    assert lookups == ['alice']
+
+
+def test_current_user_cache_does_not_negative_cache_missing_user(monkeypatch):
+    from oj_modules.security import auth
+
+    lookups = []
+
+    def load_user(username):
+        lookups.append(username)
+        return None
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+
+    assert auth._cached_browser_user('missing') is None
+    assert auth._cached_browser_user('missing') is None
+    assert lookups == ['missing', 'missing']
+
+
+def test_current_user_cache_fans_out_one_loader_failure_without_retry_convoy(
+    monkeypatch,
+):
+    from oj_modules.security import auth
+
+    worker_count = 8
+    start = Barrier(worker_count)
+    loader_started = Event()
+    release_loader = Event()
+    all_waiters_ready = Event()
+    state_lock = Lock()
+    calls = 0
+    waiter_count = 0
+    now = [100.0]
+
+    class TrackingFuture(Future):
+        def result(self, *args, **kwargs):
+            nonlocal waiter_count
+            with state_lock:
+                waiter_count += 1
+                if waiter_count == worker_count - 1:
+                    all_waiters_ready.set()
+            return super().result(*args, **kwargs)
+
+    def load_user(username):
+        nonlocal calls
+        with state_lock:
+            calls += 1
+            attempt = calls
+        if attempt == 1:
+            loader_started.set()
+            assert release_loader.wait(timeout=2)
+            raise RuntimeError('database unavailable')
+        return {'id': 7, 'username': username, 'is_admin': 0}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, '_browser_user_cache_now', lambda: now[0])
+    monkeypatch.setattr(
+        auth,
+        '_BROWSER_USER_SINGLEFLIGHT_WAIT_SECONDS',
+        1.0,
+    )
+    monkeypatch.setattr(auth, 'Future', TrackingFuture)
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    errors = []
+
+    def read_user():
+        start.wait(timeout=2)
+        try:
+            auth._cached_browser_user('alice')
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    workers = [Thread(target=read_user) for _ in range(worker_count)]
+    for worker in workers:
+        worker.start()
+    assert loader_started.wait(timeout=2)
+    assert all_waiters_ready.wait(timeout=2)
+    release_loader.set()
+    for worker in workers:
+        worker.join(timeout=2)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert errors == ['database unavailable'] * worker_count
+    assert calls == 1
+    assert auth._browser_user_cache_inflight == {}
+
+    with pytest.raises(RuntimeError, match='database unavailable'):
+        auth._cached_browser_user('alice')
+    assert calls == 1
+
+    now[0] += auth._BROWSER_USER_FAILURE_COOLDOWN_SECONDS + 0.001
+    assert auth._cached_browser_user('alice')['username'] == 'alice'
+    assert calls == 2
+
+
+def test_current_user_cache_waiter_timeout_uses_fast_mysql_backpressure(
+    monkeypatch,
+):
+    from oj_modules.infrastructure.mysql import MySQLPoolExhausted
+    from oj_modules.security import auth
+
+    loader_started = Event()
+    release_loader = Event()
+    owner_result = []
+    calls = 0
+
+    def load_user(username):
+        nonlocal calls
+        calls += 1
+        loader_started.set()
+        assert release_loader.wait(timeout=2)
+        return {'id': 7, 'username': username, 'is_admin': 0}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    monkeypatch.setattr(
+        auth,
+        '_BROWSER_USER_SINGLEFLIGHT_WAIT_SECONDS',
+        0.01,
+    )
+
+    owner = Thread(
+        target=lambda: owner_result.append(auth._cached_browser_user('alice')),
+    )
+    owner.start()
+    assert loader_started.wait(timeout=2)
+
+    with pytest.raises(MySQLPoolExhausted, match='用户认证读取繁忙'):
+        auth._cached_browser_user('alice')
+    assert owner.is_alive()
+    assert calls == 1
+
+    release_loader.set()
+    owner.join(timeout=2)
+    assert not owner.is_alive()
+    assert owner_result[0]['username'] == 'alice'
+    assert auth._cached_browser_user('alice')['username'] == 'alice'
+    assert calls == 1
+
+
+def test_current_user_cache_invalidation_detaches_inflight_stale_load(monkeypatch):
+    from oj_modules.security import auth
+
+    first_started = Event()
+    release_first = Event()
+    second_finished = Event()
+    state_lock = Lock()
+    calls = 0
+    results = {}
+
+    def load_user(username):
+        nonlocal calls
+        with state_lock:
+            calls += 1
+            attempt = calls
+        if attempt == 1:
+            first_started.set()
+            assert release_first.wait(timeout=2)
+            email = 'stale@test'
+        else:
+            email = 'fresh@test'
+        return {
+            'id': 7,
+            'username': username,
+            'email': email,
+            'is_admin': 0,
+        }
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+
+    first = Thread(
+        target=lambda: results.setdefault(
+            'first', auth._cached_browser_user('alice')['email'],
+        )
+    )
+    first.start()
+    assert first_started.wait(timeout=2)
+
+    # 写路径常只知道 user_id；运行中的查询尚未发布映射，也必须被 generation
+    # 隔离并从 singleflight 索引摘除。
+    auth.invalidate_cached_browser_user(user_id=7)
+
+    def read_fresh():
+        results['second'] = auth._cached_browser_user('alice')['email']
+        second_finished.set()
+
+    second = Thread(target=read_fresh)
+    second.start()
+    assert second_finished.wait(timeout=2)
+    assert results['second'] == 'fresh@test'
+
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert results['first'] == 'stale@test'
+    assert auth._cached_browser_user('alice')['email'] == 'fresh@test'
+    assert calls == 2
+    assert auth._browser_user_cache_inflight == {}
 
 
 # ---------------- safe_table_name ----------------

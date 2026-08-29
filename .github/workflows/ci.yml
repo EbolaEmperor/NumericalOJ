@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '22.23.2'
           cache: 'npm'
       - name: Rebuild checked-in frontend assets
         run: |
@@ -31,9 +31,7 @@ jobs:
         run: |
           generated_status="$(
             git status --porcelain=v1 --untracked-files=all -- \
-              static/vendor/monaco \
-              static/vendor/mermaid \
-              static/vendor/shiki-markdown
+              static
           )"
           if [ -n "$generated_status" ]; then
             printf '%s\n' "$generated_status"
@@ -60,7 +58,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '22.23.2'
           cache: npm
       - uses: actions/setup-python@v6
         with:

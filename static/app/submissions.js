@@ -13,6 +13,15 @@
   var detailStream = null;
   var activeRow = null;
   var activePayload = null;
+  var initialPanelPayload = null;
+  var initialPanelNode = page.querySelector("[data-initial-submission-panel]");
+  if (initialPanelNode) {
+    try {
+      initialPanelPayload = JSON.parse(initialPanelNode.textContent || "null");
+    } catch (_error) {
+      initialPanelPayload = null;
+    }
+  }
 
   function setHidden(element, hidden) {
     if (element) element.hidden = Boolean(hidden);
@@ -381,7 +390,20 @@
     });
     activeRow = row;
     activePayload = null;
-    requestPanel(row);
+    if (
+      initialPanelPayload &&
+      initialPanelPayload.submission &&
+      String(initialPanelPayload.submission.id) === row.dataset.submissionId
+    ) {
+      var prefetchedPayload = initialPanelPayload;
+      initialPanelPayload = null;
+      renderPanel(prefetchedPayload);
+      if (isActiveStatus(prefetchedPayload.submission.status)) {
+        openDetailStream(prefetchedPayload.status_stream_url);
+      }
+    } else {
+      requestPanel(row);
+    }
   }
 
   rows.forEach(function (row) {

@@ -4,7 +4,8 @@
 import os
 import secrets
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Response, jsonify, redirect, render_template, request, url_for
+from flask.globals import request_ctx as _flask_request_ctx
 from werkzeug.exceptions import HTTPException
 from celery import Celery
 
@@ -70,7 +71,10 @@ from oj_modules.routes.agent_access_routes import (
     agent_access_bp,
     configure_agent_concurrency_runtime_applier,
 )
-from oj_modules.security.login_guard import install_global_login_guard
+from oj_modules.security.login_guard import (
+    install_global_login_guard,
+    is_api_request,
+)
 from oj_modules.security.origin_guard import install_same_origin_protection
 from oj_modules.site_config.services import get_mail_settings
 from oj_modules.infrastructure.redis import (
@@ -78,6 +82,13 @@ from oj_modules.infrastructure.redis import (
     create_blocking_redis_client,
     create_text_redis_client,
 )
+from oj_modules.infrastructure.mysql import (
+    MySQLPoolExhausted,
+    begin_mysql_pool_exhaustion_tracking,
+    current_mysql_pool_exhaustion,
+    end_mysql_pool_exhaustion_tracking,
+)
+from oj_modules.shared.static_delivery import PrecompressedStaticFlask
 from oj_modules.api.registry import API_BLUEPRINTS
 from oj_modules.tasks.registry import (
     apply_agent_concurrency_limit,
@@ -166,7 +177,7 @@ def _load_secret_key():
     return new_key
 
 
-app = Flask(__name__)
+app = PrecompressedStaticFlask(__name__)
 app.secret_key = _load_secret_key()
 # DEBUG 默认关闭：生产环境绝不能开 Werkzeug 交互式调试器（源码/变量泄露 + RCE 控制台）。
 # 本地开发可在 .env 设 FLASK_DEBUG=true。
@@ -187,6 +198,29 @@ app.config.update(
         _cfg, 'VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS', 0.1,
     ),
 )
+
+
+@app.before_request
+def _begin_mysql_pool_exhaustion_request_scope():
+    # 必须早于登录守卫：current_user() 本身也可能是第一个触发池背压的调用。
+    # token 绑定到精确 RequestContext，不能放进共享 request.environ：
+    # copy_current_request_context 会复制 context、复用 environ，并可能在线程中
+    # teardown；只有原 context 才有权 reset 自己创建的 ContextVar token。
+    context = _flask_request_ctx._get_current_object()
+    context._numoj_mysql_pool_exhaustion_token = (
+        begin_mysql_pool_exhaustion_tracking()
+    )
+
+
+@app.teardown_request
+def _end_mysql_pool_exhaustion_request_scope(_error):
+    context = _flask_request_ctx._get_current_object()
+    token = getattr(context, '_numoj_mysql_pool_exhaustion_token', None)
+    if token is not None:
+        del context._numoj_mysql_pool_exhaustion_token
+        end_mysql_pool_exhaustion_tracking(token)
+
+
 install_flask_observability(
     app,
     trusted_proxy_cidrs=getattr(_cfg, 'LOG_TRUSTED_PROXY_CIDRS', ()),
@@ -233,11 +267,13 @@ for _api_bp in API_BLUEPRINTS:
 @app.context_processor
 def inject_globals():
     try:
-        class_adjust_enabled = is_class_adjust_enabled()
+        class_adjust_enabled = is_class_adjust_enabled(wait_timeout_seconds=0.0)
     except Exception:
         class_adjust_enabled = True
     try:
-        mail_service_configured = bool(get_mail_settings())
+        mail_service_configured = bool(
+            get_mail_settings(wait_timeout_seconds=0.0)
+        )
     except Exception:
         mail_service_configured = False
     return {
@@ -257,6 +293,25 @@ _DEFAULT_CSP = (
 _CONTENT_SECURITY_POLICY = (
     getattr(_cfg, 'CONTENT_SECURITY_POLICY', None) or _DEFAULT_CSP
 )
+
+
+def _mysql_pool_exhausted_response():
+    """数据库并发已饱和时做显式背压，避免排队数秒后伪装成普通 500。"""
+    # 与全站登录守卫共用 API 请求判定：/api、/api/及其子路径即使 fetch
+    # 默认发送 Accept: */* 也必须返回 JSON；JSON body 与 XHR 同样保持 JSON。
+    if is_api_request():
+        response = jsonify(success=False, message='服务器繁忙，请稍后重试')
+        response.status_code = 503
+    else:
+        # 不渲染模板：模板全局上下文本身会读数据库，池耗尽时会再次失败。
+        response = Response('服务器繁忙，请稍后重试', status=503, mimetype='text/plain')
+    response.headers['Retry-After'] = '1'
+    return response
+
+
+@app.errorhandler(MySQLPoolExhausted)
+def _handle_mysql_pool_exhausted(_error):
+    return _mysql_pool_exhausted_response()
 
 
 @app.errorhandler(Exception)
@@ -286,9 +341,41 @@ def _set_security_headers(resp):
     resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
     resp.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
     resp.headers.setdefault('Referrer-Policy', 'same-origin')
+    if request.endpoint == 'static' and resp.status_code in {200, 206, 304}:
+        # 现有 Monaco 与常规 JS/CSS 都使用稳定文件名，没有可校验的完整内容指纹；
+        # 每次使用 ETag/Last-Modified 重验证，避免发布后浏览器继续执行旧入口。
+        # 不能设置 SEND_FILE_MAX_AGE_DEFAULT，否则受鉴权保护的下载也会受影响。
+        resp.cache_control.public = True
+        resp.cache_control.no_cache = True
+        resp.cache_control.max_age = 0
+        resp.cache_control.must_revalidate = True
+        resp.cache_control.immutable = None
     if _CONTENT_SECURITY_POLICY:
         resp.headers.setdefault('Content-Security-Policy', _CONTENT_SECURITY_POLICY)
     return resp
+
+
+@app.after_request
+def _enforce_mysql_pool_exhaustion_backpressure(resp):
+    """纠正被旧路由局部 catch 转换成 4xx/5xx 的池耗尽响应。
+
+    200/3xx 表示调用方明确采用了缓存、空列表或提交后 best-effort 降级，不能
+    改写成可重试错误，否则写请求可能被客户端重复提交。已有 503（例如
+    /health/ready 的结构化响应）也保持原 body，只补齐重试提示。
+    """
+    error = current_mysql_pool_exhaustion()
+    if error is None or resp.status_code < 400:
+        return resp
+    if resp.status_code == 503:
+        resp.headers.setdefault('Retry-After', '1')
+        return resp
+    try:
+        # 当前响应不会再发送；主动关闭可及时释放 call_on_close/流式资源。
+        resp.close()
+    except Exception:
+        pass
+    return _mysql_pool_exhausted_response()
+
 
 ###############################################################################
 #  会话 / 权限

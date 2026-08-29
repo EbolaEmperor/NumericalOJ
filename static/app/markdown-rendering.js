@@ -1098,6 +1098,10 @@
   }
 
   async function typesetMath(root, enhancementGeneration) {
+    const assetLoader = window.NumOJRichContentAssets;
+    if (assetLoader && typeof assetLoader.ensureMathJax === "function") {
+      await assetLoader.ensureMathJax(root);
+    }
     const mathJax = window.MathJax;
     if (!mathJax) return;
     try {
@@ -1237,11 +1241,25 @@
   async function enhance(root) {
     if (!root || typeof root.querySelectorAll !== "function") return;
     const enhancementGeneration = enhancementGenerationFor(root);
+    const assetLoader = window.NumOJRichContentAssets;
+    const codeAssetsReady = assetLoader
+      ? assetLoader.ensureCodeAssets(root)
+      : Promise.resolve(true);
+    const mermaidAssetReady = assetLoader
+      ? assetLoader.ensureMermaid(root)
+      : Promise.resolve(true);
+    if (assetLoader) assetLoader.ensureMathJax(root);
     enhanceRenderedLinks(root);
     ensureCodeCopyButtons(root);
-    const bashHighlighting = renderBashTextMateHighlights(root);
-    const structuredHighlighting = sharedStructuredTextMateTask(root);
-    const mermaidRendering = renderMermaidDiagrams(root);
+    const bashHighlighting = codeAssetsReady.then(
+      () => renderBashTextMateHighlights(root),
+    );
+    const structuredHighlighting = codeAssetsReady.then(
+      () => sharedStructuredTextMateTask(root),
+    );
+    const mermaidRendering = mermaidAssetReady.then(
+      () => renderMermaidDiagrams(root),
+    );
     await structuredHighlighting;
     if (!enhancementIsCurrent(root, enhancementGeneration)) {
       await Promise.all([bashHighlighting, mermaidRendering]);

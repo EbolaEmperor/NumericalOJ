@@ -13,17 +13,22 @@ const shared = {
   logLevel: "info",
 };
 
-await build({
-  ...shared,
-  entryPoints: ["frontend/monaco/editor.js"],
-  outfile: `${outputDirectory}/editor.js`,
-  format: "iife",
-  globalName: "NumericalOJMonaco",
-  loader: {
-    ".ttf": "file",
-  },
-  assetNames: "assets/[name]-[hash]",
-});
+for (const [entryPoint, outputName] of [
+  ["frontend/monaco/editor.js", "editor"],
+  ["frontend/monaco/editor-minimal.js", "editor-minimal"],
+]) {
+  await build({
+    ...shared,
+    entryPoints: [entryPoint],
+    outfile: `${outputDirectory}/${outputName}.js`,
+    format: "iife",
+    globalName: "NumericalOJMonaco",
+    loader: {
+      ".ttf": "file",
+    },
+    assetNames: "assets/[name]-[hash]",
+  });
+}
 
 await build({
   ...shared,
@@ -32,7 +37,17 @@ await build({
   format: "iife",
 });
 
-await copyFile(
-  "node_modules/@leanprover/unicode-input/LICENSE",
-  `${outputDirectory}/lean4-unicode-input.LICENSE`,
-);
+await Promise.all([
+  copyFile(
+    "node_modules/monaco-editor/LICENSE",
+    `${outputDirectory}/LICENSE`,
+  ),
+  copyFile(
+    "node_modules/monaco-editor/ThirdPartyNotices.txt",
+    `${outputDirectory}/ThirdPartyNotices.txt`,
+  ),
+  copyFile(
+    "node_modules/@leanprover/unicode-input/LICENSE",
+    `${outputDirectory}/lean4-unicode-input.LICENSE`,
+  ),
+]);

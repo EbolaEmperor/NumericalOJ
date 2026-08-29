@@ -3,9 +3,32 @@ import configparser
 from pathlib import Path
 import runpy
 import sys
+import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pymysql
+import pytest
+from flask import (
+    Flask,
+    Response,
+    copy_current_request_context,
+    jsonify,
+    request,
+    send_from_directory,
+)
+from flask.globals import request_ctx as _flask_request_ctx
+
+from oj_modules import config as app_config
+from oj_modules.infrastructure.mysql import (
+    MySQLPoolExhausted,
+    begin_mysql_pool_exhaustion_tracking,
+    current_mysql_pool_exhaustion,
+    end_mysql_pool_exhaustion_tracking,
+)
+from oj_modules.security.login_guard import is_api_request
+from oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -191,11 +214,473 @@ def test_gunicorn_config_preserves_single_worker_and_sse_capacity():
 
     assert settings['worker_class'] == 'gthread'
     assert settings['workers'] == 1
-    assert settings['threads'] == 64
+    assert settings['threads'] == 256
+    assert settings['worker_connections'] == 1024
+    assert settings['backlog'] == 512
+    assert settings['sse_max_connections'] == 192
+    assert settings['MIN_ORDINARY_REQUEST_SLOTS'] == 64
+    assert settings['worker_connections'] >= settings['threads']
+    assert (
+        min(settings['threads'], settings['worker_connections'])
+        - settings['sse_max_connections']
+        >= settings['MIN_ORDINARY_REQUEST_SLOTS']
+    )
+    assert settings['keepalive'] == 5
+    assert settings['worker_tmp_dir'] == '/dev/shm'
     assert settings['max_requests'] == 0
     assert settings['max_requests_jitter'] == 0
     assert settings['accesslog'] is None
     assert settings['errorlog'] == '-'
+
+
+def test_gunicorn_rejects_sse_limit_that_consumes_every_thread(monkeypatch):
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_THREADS', 128)
+    monkeypatch.setattr(app_config, 'WEB_SSE_MAX_CONNECTIONS', 128)
+
+    with pytest.raises(
+        RuntimeError,
+        match='WEB_SSE_MAX_CONNECTIONS 必须在 1–64 之间',
+    ):
+        runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+
+
+def test_gunicorn_rejects_connection_limit_below_thread_count(monkeypatch):
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_THREADS', 512)
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_CONNECTIONS', 256)
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            'WEB_GUNICORN_CONNECTIONS 必须大于等于 '
+            'WEB_GUNICORN_THREADS（512）'
+        ),
+    ):
+        runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+
+
+def test_gunicorn_sse_limit_preserves_explicit_ordinary_request_slots(monkeypatch):
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_THREADS', 128)
+    monkeypatch.setattr(app_config, 'WEB_GUNICORN_CONNECTIONS', 256)
+    monkeypatch.setattr(app_config, 'WEB_SSE_MAX_CONNECTIONS', 65)
+
+    with pytest.raises(
+        RuntimeError,
+        match='WEB_SSE_MAX_CONNECTIONS 必须在 1–64 之间',
+    ):
+        runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+
+    monkeypatch.setattr(app_config, 'WEB_SSE_MAX_CONNECTIONS', 64)
+    settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
+    assert settings['sse_max_connections'] == 64
+    assert settings['sse_capacity'] == 64
+
+
+def _static_cache_app():
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_set_security_headers'
+    )
+    app = PrecompressedStaticFlask(
+        __name__,
+        static_folder=str(ROOT / 'static'),
+        static_url_path='/static',
+    )
+
+    @app.get('/download')
+    def download():
+        return send_from_directory(
+            ROOT / 'static' / 'app',
+            'layout.js',
+            conditional=True,
+        )
+
+    _execute(
+        [handler],
+        {
+            '_CONTENT_SECURITY_POLICY': '',
+            'app': app,
+            'request': request,
+        },
+    )
+    return app
+
+
+def _assert_static_revalidates(response):
+    assert response.cache_control.public
+    assert response.cache_control.no_cache
+    assert response.cache_control.max_age == 0
+    assert response.cache_control.must_revalidate
+    assert not response.cache_control.immutable
+
+
+def test_static_cache_contract_uses_revalidation_without_global_send_file_cache():
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_set_security_headers'
+    )
+    source = ast.unparse(handler)
+
+    assert "request.endpoint == 'static'" in source
+    assert 'resp.status_code in {200, 206, 304}' in source
+    assert 'resp.cache_control.no_cache = True' in source
+    assert 'resp.cache_control.max_age = 0' in source
+    assert 'resp.cache_control.must_revalidate = True' in source
+    assert 'resp.cache_control.immutable = None' in source
+    assert "app.config['SEND_FILE_MAX_AGE_DEFAULT']" not in source
+    assert 'STATIC_CACHE_MAX_AGE_SECONDS' not in OJ_PATH.read_text(encoding='utf-8')
+
+
+def test_real_unfingerprinted_static_responses_revalidate_on_get_head_and_304():
+    client = _static_cache_app().test_client()
+
+    initial = client.get(
+        '/static/app/layout.js',
+        headers={'Accept-Encoding': 'identity'},
+    )
+    head = client.head(
+        '/static/vendor/monaco/editor.js',
+        headers={'Accept-Encoding': 'identity'},
+    )
+    not_modified = client.get(
+        '/static/app/layout.js',
+        headers={
+            'Accept-Encoding': 'identity',
+            'If-None-Match': initial.headers['ETag'],
+        },
+    )
+
+    assert initial.status_code == 200
+    assert head.status_code == 200
+    assert head.data == b''
+    assert not_modified.status_code == 304
+    assert not_modified.headers['ETag'] == initial.headers['ETag']
+    for response in (initial, head, not_modified):
+        _assert_static_revalidates(response)
+
+
+def test_static_cache_policy_skips_404_and_non_static_send_file_response():
+    client = _static_cache_app().test_client()
+
+    missing = client.get('/static/not-found.js')
+    download = client.get('/download')
+
+    assert missing.status_code == 404
+    assert not missing.cache_control.public
+    assert not missing.cache_control.must_revalidate
+    assert download.status_code == 200
+    assert not download.cache_control.public
+    assert not download.cache_control.must_revalidate
+    assert download.cache_control.max_age is None
+
+
+def test_mysql_pool_exhaustion_has_template_free_retryable_503_handler():
+    response_builder = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_mysql_pool_exhausted_response'
+    )
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_handle_mysql_pool_exhausted'
+    )
+    source = ast.unparse(response_builder)
+
+    assert any(
+        ast.unparse(decorator) == 'app.errorhandler(MySQLPoolExhausted)'
+        for decorator in handler.decorator_list
+    )
+    assert 'Response(' in source
+    assert 'status=503' in source
+    assert "response.headers['Retry-After'] = '1'" in source
+    assert 'render_template(' not in source
+
+
+def test_mysql_pool_tracking_wraps_auth_and_backpressure_precedes_headers():
+    functions = {
+        node.name: node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert (
+        functions['_begin_mysql_pool_exhaustion_request_scope'].lineno
+        < _top_level_call('install_global_login_guard').lineno
+    )
+    # Flask 逆序执行 after_request；后注册的背压转换先生成最终响应，随后
+    # 安全头处理器才能把 CSP 等头写到替换后的 503 上。
+    assert (
+        functions['_enforce_mysql_pool_exhaustion_backpressure'].lineno
+        > functions['_set_security_headers'].lineno
+    )
+
+
+def test_template_globals_never_wait_behind_an_inflight_config_read():
+    processor = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef) and node.name == 'inject_globals'
+    )
+    source = ast.unparse(processor)
+
+    assert 'is_class_adjust_enabled(wait_timeout_seconds=0.0)' in source
+    assert 'get_mail_settings(wait_timeout_seconds=0.0)' in source
+
+
+def _mysql_pool_exhaustion_handler():
+    response_builder = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_mysql_pool_exhausted_response'
+    )
+    handler = next(
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == '_handle_mysql_pool_exhausted'
+    )
+    app = Flask(__name__)
+    namespace = {
+        'MySQLPoolExhausted': MySQLPoolExhausted,
+        'Response': Response,
+        'is_api_request': is_api_request,
+        'app': app,
+        'jsonify': jsonify,
+        'request': request,
+    }
+    _execute([response_builder, handler], namespace)
+    return app, namespace['_handle_mysql_pool_exhausted']
+
+
+def _mysql_pool_backpressure_app():
+    names = {
+        '_begin_mysql_pool_exhaustion_request_scope',
+        '_end_mysql_pool_exhaustion_request_scope',
+        '_mysql_pool_exhausted_response',
+        '_handle_mysql_pool_exhausted',
+        '_enforce_mysql_pool_exhaustion_backpressure',
+    }
+    statements = [
+        node
+        for node in _tree().body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    assert {node.name for node in statements} == names
+
+    app = Flask(__name__)
+    namespace = {
+        'MySQLPoolExhausted': MySQLPoolExhausted,
+        'Response': Response,
+        'app': app,
+        'begin_mysql_pool_exhaustion_tracking': (
+            begin_mysql_pool_exhaustion_tracking
+        ),
+        'current_mysql_pool_exhaustion': current_mysql_pool_exhaustion,
+        'end_mysql_pool_exhaustion_tracking': end_mysql_pool_exhaustion_tracking,
+        '_flask_request_ctx': _flask_request_ctx,
+        'is_api_request': is_api_request,
+        'jsonify': jsonify,
+        'request': request,
+    }
+    _execute(statements, namespace)
+    return app
+
+
+@pytest.mark.parametrize(
+    ('path', 'request_kwargs'),
+    (
+        ('/api', {'headers': {'Accept': '*/*'}}),
+        ('/api/', {'headers': {'Accept': '*/*'}}),
+        ('/api/problems/7?class_en=C1', {'headers': {'Accept': '*/*'}}),
+        ('/private', {'json': {}}),
+        ('/private', {'headers': {'X-Requested-With': 'XMLHttpRequest'}}),
+        ('/private', {'headers': {'Accept': 'application/json'}}),
+    ),
+)
+def test_mysql_pool_exhaustion_returns_json_for_api_and_json_requests(
+    path,
+    request_kwargs,
+):
+    app, handler = _mysql_pool_exhaustion_handler()
+    with app.test_request_context(path, **request_kwargs):
+        response = handler(MySQLPoolExhausted(1040, 'pool busy'))
+
+    assert response.status_code == 503
+    assert response.mimetype == 'application/json'
+    assert response.get_json() == {
+        'success': False,
+        'message': '服务器繁忙，请稍后重试',
+    }
+    assert response.headers['Retry-After'] == '1'
+
+
+@pytest.mark.parametrize(
+    ('path', 'accept'),
+    (
+        ('/private', '*/*'),
+        ('/private', 'text/html'),
+        ('/api-like-but-not-api', '*/*'),
+    ),
+)
+def test_mysql_pool_exhaustion_keeps_non_api_html_requests_as_plain_text(
+    path,
+    accept,
+):
+    app, handler = _mysql_pool_exhaustion_handler()
+    with app.test_request_context(path, headers={'Accept': accept}):
+        response = handler(MySQLPoolExhausted(1040, 'pool busy'))
+
+    assert response.status_code == 503
+    assert response.mimetype == 'text/plain'
+    assert response.get_data(as_text=True) == '服务器繁忙，请稍后重试'
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_route_local_database_catch_is_rewritten_to_retryable_json_503():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/api/caught')
+    def caught():
+        try:
+            raise MySQLPoolExhausted(1040, 'pool busy')
+        except pymysql.Error:
+            return jsonify(success=False, message='数据库操作失败'), 500
+
+    response = app.test_client().get('/api/caught')
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        'success': False,
+        'message': '服务器繁忙，请稍后重试',
+    }
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_pool_backpressure_preserves_successful_fallback_and_request_isolation():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/api/fallback')
+    def fallback():
+        try:
+            raise MySQLPoolExhausted(1040, 'pool busy')
+        except pymysql.Error:
+            return jsonify(success=True, optional_rows=[])
+
+    @app.get('/api/ok')
+    def ok():
+        return jsonify(success=True)
+
+    client = app.test_client()
+    fallback_response = client.get('/api/fallback')
+    next_response = client.get('/api/ok')
+
+    assert fallback_response.status_code == 200
+    assert fallback_response.get_json() == {
+        'success': True,
+        'optional_rows': [],
+    }
+    assert next_response.status_code == 200
+    assert next_response.get_json() == {'success': True}
+
+
+def test_pool_backpressure_keeps_existing_structured_503_response():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/health/ready')
+    def ready():
+        try:
+            raise MySQLPoolExhausted(1040, 'pool busy')
+        except pymysql.Error:
+            return jsonify(status='unhealthy', mysql=False, redis=True), 503
+
+    response = app.test_client().get('/health/ready')
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        'status': 'unhealthy',
+        'mysql': False,
+        'redis': True,
+    }
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_pool_backpressure_request_scopes_restore_across_nested_contexts():
+    app = _mysql_pool_backpressure_app()
+
+    with app.test_request_context('/api/outer'):
+        app.preprocess_request()
+        outer_error = MySQLPoolExhausted(1040, 'outer request')
+        assert current_mysql_pool_exhaustion() is outer_error
+
+        with app.test_request_context('/api/inner'):
+            app.preprocess_request()
+            assert current_mysql_pool_exhaustion() is None
+            inner_error = MySQLPoolExhausted(1040, 'inner request')
+            assert current_mysql_pool_exhaustion() is inner_error
+
+        assert current_mysql_pool_exhaustion() is outer_error
+
+    assert current_mysql_pool_exhaustion() is None
+
+
+def test_pool_scope_survives_synchronous_copied_request_context():
+    app = _mysql_pool_backpressure_app()
+
+    @app.get('/api/copied-sync')
+    def copied_sync():
+        @copy_current_request_context
+        def copied_operation():
+            return current_mysql_pool_exhaustion()
+
+        assert copied_operation() is None
+        try:
+            raise MySQLPoolExhausted(1040, 'outer request remains tracked')
+        except pymysql.Error:
+            return jsonify(success=False), 500
+
+    response = app.test_client().get('/api/copied-sync')
+
+    assert response.status_code == 503
+    assert response.headers['Retry-After'] == '1'
+
+
+def test_copied_request_context_thread_cannot_reset_parent_scope():
+    app = _mysql_pool_backpressure_app()
+    worker_errors = []
+    worker_tracking = []
+
+    @app.get('/api/copied-thread')
+    def copied_thread():
+        @copy_current_request_context
+        def copied_operation():
+            MySQLPoolExhausted(1040, 'worker request')
+            worker_tracking.append(current_mysql_pool_exhaustion())
+
+        def run():
+            try:
+                copied_operation()
+            except BaseException as exc:  # teardown token 错位也必须被观测到
+                worker_errors.append(exc)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        worker.join()
+        return jsonify(success=True)
+
+    response = app.test_client().get('/api/copied-thread')
+
+    assert response.status_code == 200
+    assert worker_errors == []
+    assert worker_tracking == [None]
+    MySQLPoolExhausted(1040, 'after copied request')
+    assert current_mysql_pool_exhaustion() is None
 
 
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
@@ -248,6 +733,10 @@ def test_supervisors_keep_distinct_runtime_controls_and_project_local_logs():
 
     assert len(pidfiles) == len(configs)
     assert len(sockets) == len(configs)
+
+    web_parser = configparser.RawConfigParser()
+    web_parser.read(ROOT / 'deploy' / 'supervisor' / 'web.conf', encoding='utf-8')
+    assert web_parser.getint('supervisord', 'minfds') == 8192
 
 
 def test_local_development_supervisor_also_uses_project_local_logs():

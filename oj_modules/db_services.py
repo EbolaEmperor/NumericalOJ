@@ -15,12 +15,17 @@ from oj_modules.forum.identity import (
     run_identity_namespace_transaction,
 )
 from oj_modules.infrastructure.mysql import (
+    MySQLPoolExhausted,
     _MySQLConnectionPool,
     _PooledConnectionProxy,
     _create_raw_mysql_connection,
     _get_db_pool,
     get_db_connection,
     safe_table_name,
+)
+from oj_modules.shared.singleflight_cache import (
+    BoundedSingleFlightTTLCache,
+    SingleFlightTimeout,
 )
 from oj_modules.observability import (
     content_fingerprint,
@@ -51,6 +56,10 @@ _PROGRAMMING_OUTPUT_IMAGE_EXTENSIONS = frozenset({
 
 
 CLASS_ADJUST_FLAG_KEY = 'class_adjust_enabled'
+_CLASS_ADJUST_CACHE_TTL_SECONDS = 5.0
+_class_adjust_cache = BoundedSingleFlightTTLCache(
+    ttl_seconds=_CLASS_ADJUST_CACHE_TTL_SECONDS,
+)
 
 
 class SubmissionLimitExceeded(RuntimeError):
@@ -935,11 +944,26 @@ def set_setting(key, value):
         conn.commit()
     finally:
         conn.close()
+    if key == CLASS_ADJUST_FLAG_KEY:
+        _invalidate_class_adjust_cache()
 
 
-def is_class_adjust_enabled():
-    val = get_setting(CLASS_ADJUST_FLAG_KEY, default='1')
-    return str(val) == '1'
+def _invalidate_class_adjust_cache():
+    _class_adjust_cache.invalidate()
+
+
+def is_class_adjust_enabled(*, wait_timeout_seconds=None):
+    """读取低频全站开关，并有界合并模板并发产生的重复查询。"""
+    try:
+        return _class_adjust_cache.get(
+            lambda: str(get_setting(CLASS_ADJUST_FLAG_KEY, default='1')) == '1',
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+    except SingleFlightTimeout as exc:
+        raise MySQLPoolExhausted(
+            1040,
+            "班级调整配置正在加载，请稍后重试",
+        ) from exc
 
 
 def get_user_by_username(username):
@@ -2181,6 +2205,7 @@ def get_filtered_submissions_paginated(
                     s.problem_type,
                     s.created_at
                     {test_points_column},
+                    p.title AS current_problem_title,
                     p.lang,
                     p.max_score
                 FROM submissions s

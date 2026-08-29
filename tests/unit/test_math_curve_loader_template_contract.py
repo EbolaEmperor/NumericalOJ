@@ -45,6 +45,9 @@ def test_loader_covers_navigation_fetch_and_dynamic_content():
     assert "destination.searchParams.get('download') === '1'" in LOADER_JS
     assert "(?:download|export)" in LOADER_JS
     assert "new MutationObserver" in LOADER_JS
+    assert "markNavigationPending(link)" in LOADER_JS
+    assert "clearNavigationPending()" in LOADER_JS
+    assert "data-numoj-navigation-pending" in LOADER_JS
     assert "prefers-reduced-motion: reduce" in (
         ROOT / "static" / "math-curve-loaders" / "loader.css"
     ).read_text(encoding="utf-8")
@@ -86,6 +89,8 @@ def test_problem_detail_has_deadline_status_and_non_native_confirmation_modal():
     assert 'id="homeworkDeadlineWarningModal"' in detail
     assert "我明白了" in detail
     assert "problem-deadline-warning.js" in detail
+    assert "problem_api.deadline_warning" in detail
+    assert "problem_api.submit_context" not in detail
     assert "window.confirm" not in deadline_script
     assert "window.alert" not in deadline_script
 

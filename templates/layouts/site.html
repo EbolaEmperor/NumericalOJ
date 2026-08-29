@@ -1,10 +1,14 @@
 {% extends "layouts/base.html" %}
 
 {% block head %}
+{% block site_early_runtime %}
 <script src="{{ url_for('static', filename='app/sidebar-state.js') }}"></script>
+{% endblock %}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/layout.css') }}">
+{% block choice_picker_assets %}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/choice-picker.css') }}">
 <script src="{{ url_for('static', filename='app/choice-picker.js') }}"></script>
+{% endblock %}
 {% endblock %}
 
 {% block body %}
@@ -26,7 +30,9 @@
   </main>
 </div>
 
+{% block site_runtime %}
 <script src="{{ url_for('static', filename='app/identicon.js') }}"></script>
 <script src="{{ url_for('static', filename='app/class-select.js') }}"></script>
 <script src="{{ url_for('static', filename='app/layout.js') }}"></script>
+{% endblock %}
 {% endblock %}

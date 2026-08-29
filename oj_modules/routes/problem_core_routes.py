@@ -89,6 +89,12 @@ from oj_modules.agents.trace_store import (
     get_last_agent_trace_assistant,
 )
 from oj_modules.security.auth import current_user, is_admin
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from oj_modules.shared.sse import (
+    guard_sse_stream,
+    sse_capacity_response,
+    try_acquire_sse_slot,
+)
 from oj_modules.project_paths import PROJECT_ROOT
 from oj_modules.problems.lean_workspace import (
     LeanWorkspaceError,
@@ -134,6 +140,7 @@ from oj_modules.problems.context import (
 from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
+from oj_modules.submissions.presentation import build_submission_panel_payload
 from oj_modules.submissions.written_artifacts import (
     WrittenSubmissionArtifactError,
     publish_manual_written_submission,
@@ -204,6 +211,9 @@ def _read_agent_standard_solution(upload):
 
 
 _AGENT_MESSAGE_MAX_CHARS = 100_000
+_AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS = 2.0
+_AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS = 10.0
+_AGENT_MESSAGE_STREAM_OVERLOAD_RETRY_SECONDS = 5.0
 
 
 def _agent_actor(user=None):
@@ -879,7 +889,10 @@ def _agent_session_message_snapshot(agent_session, current_state=None):
     """构造页面与会话 SSE 共用的 MySQL 权威消息快照。"""
 
     session_id = str((agent_session or {}).get('session_id') or '').strip()
-    snapshot = get_agent_session_queue_snapshot(session_id)
+    snapshot = get_agent_session_queue_snapshot(
+        session_id,
+        loaded_session=agent_session,
+    )
     messages = [
         _decorate_agent_session_message(message)
         for message in snapshot.get('messages') or []
@@ -2260,8 +2273,12 @@ def agent_run_stream(task_id):
                 except Exception:
                     pass
 
+    lease = try_acquire_sse_slot()
+    if lease is None:
+        return sse_capacity_response()
+
     return Response(
-        generate(),
+        guard_sse_stream(generate(), lease),
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
@@ -3634,6 +3651,10 @@ def agent_task_message_state(session_id):
             user['id'],
             is_admin=int(user.get('is_admin') or 0) == 1,
         )
+    except MySQLPoolExhausted:
+        # 交给应用级处理器返回统一的 503 + Retry-After，不能把预期背压
+        # 伪装成不可重试的业务 500。
+        raise
     except Exception as exc:
         try:
             return _agent_message_mutation_error(exc)
@@ -3654,24 +3675,62 @@ def agent_task_message_stream(session_id):
     if not user:
         return jsonify(success=False, message='未登录'), 401
     try:
-        _agent_message_route_session(session_id, user, require_owner=False)
+        initial_session = _agent_message_route_session(
+            session_id,
+            user,
+            require_owner=False,
+        )
+    except MySQLPoolExhausted:
+        raise
     except Exception as exc:
+        return _agent_message_mutation_error(exc)
+
+    lease = try_acquire_sse_slot()
+    if lease is None:
+        return sse_capacity_response()
+
+    try:
+        initial_state = _agent_session_message_snapshot(initial_session)
+        initial_quota_summary = get_agent_runtime_quota_summary(
+            user['id'],
+            is_admin=int(user.get('is_admin') or 0) == 1,
+        )
+        initial_state['quota_summary'] = initial_quota_summary
+        initial_payload = json.dumps(
+            initial_state,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    except MySQLPoolExhausted:
+        # 首帧所需的数据在发送 200 前完成；池已饱和时由全局处理器明确
+        # 返回 503，避免建立一个随即断开的 EventSource。
+        lease.release()
+        raise
+    except Exception as exc:
+        lease.release()
         return _agent_message_mutation_error(exc)
 
     @stream_with_context
     def generate():
-        previous_payload = None
+        previous_payload = initial_payload
         heartbeat_at = time.monotonic()
-        quota_refreshed_at = 0.0
-        quota_summary = None
+        quota_refreshed_at = heartbeat_at
+        quota_summary = initial_quota_summary
+        next_poll_delay = _AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
+        yield f"event: session\ndata: {initial_payload}\n\n"
         while True:
+            time.sleep(next_poll_delay)
+            next_poll_delay = _AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
             try:
                 current_session = get_agent_session(session_id)
                 if not current_session or current_session.get('is_legacy'):
                     break
                 state = _agent_session_message_snapshot(current_session)
                 now = time.monotonic()
-                if now - quota_refreshed_at >= 3:
+                if (
+                    now - quota_refreshed_at
+                    >= _AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS
+                ):
                     quota_summary = get_agent_runtime_quota_summary(
                         user['id'],
                         is_admin=int(user.get('is_admin') or 0) == 1,
@@ -3681,6 +3740,25 @@ def agent_task_message_stream(session_id):
                 payload = json.dumps(state, ensure_ascii=False, sort_keys=True)
             except GeneratorExit:
                 break
+            except MySQLPoolExhausted:
+                # 已发出 200 后无法改写 HTTP 状态。保持连接并降低轮询频率，
+                # 同时给 EventSource 写入重连退避，避免数据库过载时形成重连风暴。
+                retry_seconds = _AGENT_MESSAGE_STREAM_OVERLOAD_RETRY_SECONDS
+                retry_ms = int(retry_seconds * 1000)
+                overloaded = json.dumps({
+                    'code': 'mysql_pool_exhausted',
+                    'message': '服务器繁忙，实时消息将在稍后继续同步',
+                    'retry_after_ms': retry_ms,
+                }, ensure_ascii=False)
+                yield (
+                    f"retry: {retry_ms}\n"
+                    f"event: overloaded\n"
+                    f"data: {overloaded}\n\n"
+                )
+                previous_payload = None
+                heartbeat_at = time.monotonic()
+                next_poll_delay = retry_seconds
+                continue
             except Exception:
                 logger.warning(
                     'Agent 会话消息流读取失败',
@@ -3695,9 +3773,11 @@ def agent_task_message_stream(session_id):
             elif time.monotonic() - heartbeat_at >= 15:
                 yield ': keep-alive\n\n'
                 heartbeat_at = time.monotonic()
-            time.sleep(1.0)
 
-    response = Response(generate(), mimetype='text/event-stream')
+    response = Response(
+        guard_sse_stream(generate(), lease),
+        mimetype='text/event-stream',
+    )
     response.headers['Cache-Control'] = 'private, no-cache, no-store'
     response.headers['X-Accel-Buffering'] = 'no'
     return response
@@ -4116,6 +4196,41 @@ def all_submissions():
             else (sub.get('test_points_count') or None)
         )
 
+    initial_submission_panel = None
+    if submissions:
+        first_submission = submissions[0]
+        submission_id = int(first_submission['id'])
+        panel_submission = dict(first_submission)
+        panel_submission['problem_title'] = first_submission.get(
+            'display_problem_title'
+        )
+        initial_submission_panel = build_submission_panel_payload(
+            panel_submission,
+            {
+                'id': first_submission.get('problem_id'),
+                'title': _strip_problem_title_tags(
+                    first_submission.get('current_problem_title')
+                ),
+                'lang': first_submission.get('lang'),
+                'max_score': first_submission.get('max_score'),
+            },
+            detail_url=url_for(
+                'submission.submission_detail', submission_id=submission_id,
+            ),
+            status_stream_url=url_for(
+                'submission.submission_status_stream',
+                submission_id=submission_id,
+                view='panel',
+            ),
+            rejudge_url=(
+                url_for(
+                    'rejudge.rejudge_submission', submission_id=submission_id,
+                )
+                if user['is_admin']
+                else None
+            ),
+        )
+
     problem_options = get_submission_problem_options(username=scope_username)
     current_problem_label = ''
     for option in problem_options:
@@ -4141,6 +4256,7 @@ def all_submissions():
         total_pages=total_pages,
         page_numbers=page_numbers,
         problem_options=problem_options,
+        initial_submission_panel=initial_submission_panel,
         current_problem_label=current_problem_label,
         filters={
             'q': query,

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "transport": "unix",
+  "socket_path": "/run/vibehub/app.sock",
+  "health_path": "/healthz",
+  "cover_image": "static/cover.jpg",
+  "title": "猜猜我是谁",
+  "summary": "通过黑盒操作的结果与步数，辨认隐藏的数据结构。",
+  "tags": ["数据结构", "推理", "互动"]
+}

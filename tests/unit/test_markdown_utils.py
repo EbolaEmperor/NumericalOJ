@@ -3,7 +3,9 @@
 """共享富 Markdown 渲染器的功能与安全契约。"""
 
 import pytest
+from threading import Event, Thread
 
+from oj_modules.shared import markdown as markdown_module
 from oj_modules.shared.markdown import render_rich_markdown
 
 
@@ -92,3 +94,52 @@ def test_rich_markdown_marks_mermaid_as_safe_source_without_server_svg():
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in rendered
     assert "<script" not in rendered.lower()
     assert "<svg" not in rendered.lower()
+
+
+def test_rich_markdown_cache_reuses_identical_render(monkeypatch):
+    markdown_module._clear_rich_markdown_cache()
+    original = markdown_module._render_rich_markdown_uncached
+    calls = []
+
+    def counted(raw):
+        calls.append(raw)
+        return original(raw)
+
+    monkeypatch.setattr(markdown_module, "_render_rich_markdown_uncached", counted)
+    source = "缓存题面：$x^2$\n\n```python\nprint(1)\n```"
+
+    first = render_rich_markdown(source)
+    second = render_rich_markdown(source)
+
+    assert second == first
+    assert calls == [source]
+    markdown_module._clear_rich_markdown_cache()
+
+
+def test_rich_markdown_cache_coalesces_concurrent_misses(monkeypatch):
+    markdown_module._clear_rich_markdown_cache()
+    started = Event()
+    release = Event()
+    calls = []
+
+    def render_once(raw):
+        calls.append(raw)
+        started.set()
+        assert release.wait(timeout=2)
+        return "<p>共享结果</p>"
+
+    monkeypatch.setattr(markdown_module, "_render_rich_markdown_uncached", render_once)
+    results = []
+    first = Thread(target=lambda: results.append(render_rich_markdown("并发缓存题面")))
+    second = Thread(target=lambda: results.append(render_rich_markdown("并发缓存题面")))
+
+    first.start()
+    assert started.wait(timeout=2)
+    second.start()
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert results == ["<p>共享结果</p>", "<p>共享结果</p>"]
+    assert calls == ["并发缓存题面"]
+    markdown_module._clear_rich_markdown_cache()

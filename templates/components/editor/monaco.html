@@ -1,4 +1,7 @@
-{# 所有代码编辑与展示界面在任意断点共用同一 Monaco 运行时。 #}
+{# OJ 页面默认使用最小包；Repository/Agent Workspace 显式使用完整包。 #}
+{% set monaco_bundle_name = monaco_bundle|default('minimal') %}
+{% set monaco_asset_stem = 'editor' if monaco_bundle_name == 'full' else 'editor-minimal' %}
+{% set monaco_fetch_priority_name = monaco_fetch_priority|default('auto') %}
 <link rel="stylesheet" href="{{ url_for('static', filename='styles/code-editor.css') }}">
 <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
 <script src="{{ url_for('static', filename='app/code-editor-runtime.js') }}"></script>
@@ -22,13 +25,15 @@
     var stylesheetReady = new Promise(function(done) {
       var stylesheet = document.createElement('link');
       stylesheet.rel = 'stylesheet';
-      stylesheet.href = {{ url_for('static', filename='vendor/monaco/editor.css')|tojson }};
+      stylesheet.fetchPriority = {{ monaco_fetch_priority_name|tojson }};
+      stylesheet.href = {{ url_for('static', filename='vendor/monaco/' ~ monaco_asset_stem ~ '.css')|tojson }};
       stylesheet.onload = done;
       stylesheet.onerror = done;
       document.head.appendChild(stylesheet);
     });
     var script = document.createElement('script');
-    script.src = {{ url_for('static', filename='vendor/monaco/editor.js')|tojson }};
+    script.fetchPriority = {{ monaco_fetch_priority_name|tojson }};
+    script.src = {{ url_for('static', filename='vendor/monaco/' ~ monaco_asset_stem ~ '.js')|tojson }};
     script.async = true;
     script.onload = function() {
       stylesheetReady.then(function() {

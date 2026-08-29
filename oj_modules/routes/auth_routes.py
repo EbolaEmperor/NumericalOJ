@@ -28,6 +28,7 @@ from oj_modules.observability import (
     request_audit_fields,
 )
 from oj_modules.security.login_guard import safe_local_next
+from oj_modules.security.auth import invalidate_cached_browser_user
 
 
 auth_bp = Blueprint('auth', __name__)
@@ -110,6 +111,7 @@ def _update_password_hash(*, user_id=None, email=None, new_hash=None):
         conn.commit()
     finally:
         conn.close()
+    invalidate_cached_browser_user(user_id=user_id, email=email)
 
 
 def _check_send_code_allowed(email):

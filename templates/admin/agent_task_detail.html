@@ -1,6 +1,6 @@
 {% extends "layouts/site.html" %}
 {% block title %}{{ agent_session.title|default('Agent 会话', true) }} - {{ super() }}{% endblock %}
-{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block mathjax %}{% with mathjax_lazy=true %}{% include 'components/layout/mathjax.html' %}{% endwith %}{% endblock %}
 
 {% block head %}
 {{ super() }}
@@ -489,12 +489,12 @@
   </div>
 </div>
 
+{% with monaco_bundle='full' %}
 {% include 'components/editor/monaco.html' %}
+{% endwith %}
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
-<script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
 <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
 <script src="{{ url_for('static', filename='app/agents/conversation.js') }}"></script>
 {% endblock %}

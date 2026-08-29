@@ -144,7 +144,9 @@
 {%- endmacro %}
 
 {% if navigation_user %}
-<aside class="numoj-sidebar d-none d-lg-flex" data-numoj-sidebar data-navigation-url="{{ url_for('problem_core.layout_navigation_data') }}" aria-label="桌面主导航">
+<aside class="numoj-sidebar d-none d-lg-flex" data-numoj-sidebar
+  data-navigation-url="{{ url_for('problem_core.layout_navigation_data') }}"
+  data-navigation-cache-key="{{ navigation_user.username }}" aria-label="桌面主导航">
   {{ sidebar_brand() }}
   {{ navigation_groups('numoj-nav', navigation_user, active_endpoint, class_adjust_enabled|default(false)) }}
   {{ sidebar_footer(navigation_user) }}
@@ -169,7 +171,7 @@
   id="offcanvasNavbar"
   aria-labelledby="offcanvasNavbarLabel"
   data-numoj-mobile-sidebar
-  {% if navigation_user %}data-navigation-url="{{ url_for('problem_core.layout_navigation_data') }}"{% endif %}
+  {% if navigation_user %}data-navigation-url="{{ url_for('problem_core.layout_navigation_data') }}" data-navigation-cache-key="{{ navigation_user.username }}"{% endif %}
 >
   <h2 class="visually-hidden" id="offcanvasNavbarLabel">移动主导航</h2>
   {{ sidebar_brand('numoj-mobile-sidebar-brand') }}

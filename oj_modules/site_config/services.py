@@ -19,8 +19,12 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
-from oj_modules.infrastructure.mysql import get_db_connection
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted, get_db_connection
 from oj_modules.security.credentials import verify_password
+from oj_modules.shared.singleflight_cache import (
+    BoundedSingleFlightTTLCache,
+    SingleFlightTimeout,
+)
 
 
 MASKED_SECRET = "********"
@@ -28,6 +32,10 @@ LLM_TEST_GRANT_TTL_SECONDS = 10 * 60
 UNLOCK_CONFIRMATION = "我已阅读上述内容，我清楚后果，我坚持要解锁"
 ENDPOINT_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
 EMBEDDING_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
+_MAIL_SETTINGS_CACHE_TTL_SECONDS = 5.0
+_mail_settings_cache = BoundedSingleFlightTTLCache(
+    ttl_seconds=_MAIL_SETTINGS_CACHE_TTL_SECONDS,
+)
 
 LLM_PROTOCOLS = ("openai", "anthropic")
 LLM_CATEGORIES = ("omni", "text", "vision", "embedding")
@@ -1296,15 +1304,34 @@ def _public_mail_settings(row, *, include_secret=False):
     return result
 
 
-def get_mail_settings(*, include_secret=False):
+def _invalidate_mail_settings_cache():
+    _mail_settings_cache.invalidate()
+
+
+def _load_mail_settings_row():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute("SELECT * FROM site_mail_settings WHERE id=1")
-            row = cursor.fetchone()
-        return _public_mail_settings(row, include_secret=include_secret)
+            loaded = cursor.fetchone()
+        return dict(loaded) if loaded else None
     finally:
         conn.close()
+
+
+def get_mail_settings(*, include_secret=False, wait_timeout_seconds=None):
+    """读取低频全站邮件配置，并有界合并模板并发产生的重复查询。"""
+    try:
+        row = _mail_settings_cache.get(
+            _load_mail_settings_row,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+    except SingleFlightTimeout as exc:
+        raise MySQLPoolExhausted(
+            1040,
+            "邮件配置正在加载，请稍后重试",
+        ) from exc
+    return _public_mail_settings(row, include_secret=include_secret)
 
 
 def save_mail_settings(payload, *, user_id):
@@ -1339,6 +1366,7 @@ def save_mail_settings(payload, *, user_id):
         raise
     finally:
         conn.close()
+    _invalidate_mail_settings_cache()
     return get_mail_settings()
 
 
@@ -1377,6 +1405,7 @@ def test_mail_settings(payload, *, user_id, recipient_email, tester):
             raise
         finally:
             conn.close()
+        _invalidate_mail_settings_cache()
     if not result["passed"]:
         raise DynamicConfigTestFailedError(result["message"], result=result)
     return result
@@ -1393,6 +1422,7 @@ def clear_mail_settings():
         raise
     finally:
         conn.close()
+    _invalidate_mail_settings_cache()
 
 
 def normalize_web_search_settings_payload(payload, *, existing=None):

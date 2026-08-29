@@ -13,6 +13,7 @@ from oj_modules.problems.llm_bindings import (
     get_problem_llm_endpoint_candidates as _problem_llm_endpoint_candidates,
 )
 from oj_modules.problems.context import (
+    build_problem_deadline_warning_context,
     build_problem_detail_context,
     build_problem_list_context,
 )
@@ -94,7 +95,7 @@ def problems():
         return json_error("请先登录", 401)
 
     limit = clamp_limit(request.args.get("limit"), default=None)
-    context = build_problem_list_context(user)
+    context = build_problem_list_context(user, include_statistics=True)
     items = _visible_items_from_context(context)
     return json_success(
         user=public_user(user),
@@ -192,6 +193,26 @@ def problem_detail(problem_id):
 @problem_api_bp.route("/problems/<int:problem_id>/submit-context", methods=["GET"])
 def submit_context(problem_id):
     return problem_detail(problem_id)
+
+
+@problem_api_bp.route(
+    "/problems/<int:problem_id>/deadline-warning",
+    methods=["GET"],
+)
+def deadline_warning(problem_id):
+    user = current_user()
+    if not user:
+        return json_error("请先登录", 401)
+
+    context, error_code = build_problem_deadline_warning_context(
+        user,
+        problem_id,
+    )
+    if error_code == "not_found":
+        return json_error("题目不存在", 404)
+    if error_code == "forbidden":
+        return json_error("无权限访问该题目", 403)
+    return json_success(**context)
 
 
 def _problem_form_options():

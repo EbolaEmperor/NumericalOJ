@@ -24,11 +24,42 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 | `CSRF_TRUSTED_ORIGINS` | string[] | `[]` | 反向代理造成内外 Origin 不同时的可信公开 Origin。 |
 | `LOG_LEVEL` | string | `INFO` | 应用日志级别。 |
 | `LOG_TRUSTED_PROXY_CIDRS` | string[] | `[]` | 唯一可信反向代理网段；空值不信任转发 IP。 |
+| `WEB_GUNICORN_THREADS` | int | `256` | 单个 gthread worker 的请求线程数，服务 256 常态、512 峰值在线用户产生的 SSE 与短时点击突发；在线用户不等于同时请求。有效范围 128–512。 |
+| `WEB_GUNICORN_CONNECTIONS` | int | `1024` | gthread worker 同时维护的客户端连接上限；按 512 峰值在线浏览器各一条 SSE 和一条 HTTP keep-alive 预留，有效范围 256–4096，且不得小于 `WEB_GUNICORN_THREADS`。 |
+| `WEB_GUNICORN_BACKLOG` | int | `512` | worker 繁忙时的监听队列上限，实际还受内核 `somaxconn` 限制；有效范围 128–8192。 |
+| `WEB_SSE_MAX_CONNECTIONS` | int | `192` | 单 Web 进程允许的页面 SSE 长连接数，必须满足 `1 <= WEB_SSE_MAX_CONNECTIONS <= min(WEB_GUNICORN_THREADS, WEB_GUNICORN_CONNECTIONS) - 64`，显式保留至少 64 个普通请求槽位。 |
 | `MYSQL_CONNECT_TIMEOUT` | int | `5` | MySQL 建连超时，单位秒。 |
 | `MYSQL_POOL_MIN_SIZE` | int | `2` | 每进程连接池最小连接数。 |
 | `MYSQL_POOL_MAX_SIZE` | int | `6` | 每进程连接池最大连接数。 |
 | `MYSQL_POOL_WAIT_TIMEOUT` | int | `3` | 等待池连接的超时，单位秒。 |
 | `MYSQL_POOL_RECYCLE_SECONDS` | int | `1200` | 连接回收周期，单位秒。 |
+| `MYSQL_WEB_POOL_MAX_SIZE` | int | `24` | Web 进程的连接池上限；Celery 等进程仍使用通用上限。 |
+| `MYSQL_WEB_POOL_WAIT_TIMEOUT_SECONDS` | float | `0.05` | Web 连接池耗尽时的短等待上限；超时返回带 `Retry-After` 的 503，保护 100ms 交互目标。 |
+
+生产 Web Supervisor 固定设置 `minfds=8192`，覆盖 1024 个客户端连接、MySQL/Redis、
+日志 socket、语言服务子进程与文件响应所需描述符，并为短时峰值保留余量。Gunicorn 的
+keep-alive 等待为 5 秒；gthread 会把空闲 keep-alive 放回事件循环，不占用处理请求的线程，
+让页面加载后的连续点击复用连接。
+
+`WEB_SSE_MAX_CONNECTIONS` 是单进程共享护栏，覆盖提交状态、Agent 运行与消息、AI 代码批注、
+打榜赛正向/反向评测六类流。容量满时新流立即收到 `503` 与 `Retry-After: 1`；已有流结束、异常或
+客户端断开时归还槽位，避免长连接把普通页面和健康检查的线程全部占满。
+
+`npm run build:frontend` 会在前端打包结束后，为 `static/` 下不小于 100 KiB 的
+JS/CSS/HTML/JSON/SVG 同时生成 Brotli 与 Gzip 旁路文件。Web 只按客户端
+`Accept-Encoding` 发送构建期产物，不在请求线程中现场压缩；旁路文件缺失或比源文件旧时自动回退
+identity，并始终返回 `Vary: Accept-Encoding`。当前 14 个大型资源共 19,496,851 字节，Brotli
+表示合计 3,461,008 字节；更新这些资源后必须重跑构建并提交对应 `.br` / `.gz`。
+
+只读 HTTP 基准脚本默认使用 256 条并发连接。256/512 指这里刻意制造的“同时请求”，不能把结果
+直接等同于在线用户数；实际 256 常态、512 峰值在线用户通常只有一部分人在同一瞬间点击或保持 SSE。
+先用存活检查验证纯 Web 传输容量，再把 URL 替换为代表性页面；认证页面通过权限受限的
+`--header-file` 提供 Cookie，避免把凭据写进命令历史。
+
+```bash
+python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 2560 -c 256
+python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 512
+```
 
 ## Redis 与任务快照
 
