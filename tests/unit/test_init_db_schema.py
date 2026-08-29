@@ -226,6 +226,21 @@ def test_dynamic_site_config_schema_is_fully_declared():
     assert "uq_dynamic_config_test_token" in grants.indexes
 
 
+def test_ranking_submissions_covering_index_declared_in_create_table():
+    from scripts import init_db_schema
+
+    specs = init_db_schema._load_schema_specs()
+    assert "idx_rs_user_comp_created" in specs["ranking_submissions"].indexes
+
+    bootstrap = init_db_schema.DATABASE_BOOTSTRAP_SQL.read_text(encoding="utf-8").lower()
+    create_pos = bootstrap.find("create table `ranking_submissions`")
+    alter_pos = bootstrap.find(
+        "alter table ranking_submissions add index idx_rs_user_comp_created"
+    )
+    assert create_pos >= 0
+    assert alter_pos == -1 or alter_pos > create_pos
+
+
 
 def test_agent_task_run_schema_declares_endpoint_snapshot():
     from scripts import init_db_schema
