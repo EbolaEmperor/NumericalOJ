@@ -18,6 +18,7 @@ from oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
 from oj_modules.homework.scores import homework_score_snapshot
+from oj_modules.infrastructure.mysql import safe_table_name
 
 
 __all__ = (
@@ -25,6 +26,7 @@ __all__ = (
     "get_homeworks",
     "get_homeworks_and_grades_map",
     "get_homeworks_for_class",
+    "get_problem_homework_deadline_state",
     "get_today_submission_counts",
     "get_user_classes_cached",
     "invalidate_problem_list_cache_all",
@@ -230,6 +232,62 @@ def _load_plagiarism_notice_map(username, class_en_list, cursor):
 
 def get_user_classes_cached(user_id):
     return visible_classes_for_user_cached({"id": user_id, "is_admin": 0})
+
+
+def get_problem_homework_deadline_state(
+    problem_id,
+    class_en_list,
+    *,
+    verify_problem=False,
+):
+    """只读取目标题目的班级作业截止时间，不加载成绩与提交历史。
+
+    ``verify_problem`` 供轻量 API 使用；题目详情与提交路径已经持有题目记录，可跳过
+    存在性查询。多个班级仍合并为一条 UNION ALL，避免按班级产生 N+1。
+    """
+    normalized_problem_id = int(problem_id)
+    classes = tuple(dict.fromkeys(
+        str(class_en or "").strip()
+        for class_en in class_en_list or ()
+        if str(class_en or "").strip()
+    ))
+    if not classes and not verify_problem:
+        return {"problem_exists": True, "rows": []}
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            problem_exists = True
+            if verify_problem:
+                cursor.execute(
+                    "SELECT 1 AS problem_exists FROM problems WHERE id=%s LIMIT 1",
+                    (normalized_problem_id,),
+                )
+                problem_exists = cursor.fetchone() is not None
+            if not problem_exists or not classes:
+                return {
+                    "problem_exists": problem_exists,
+                    "rows": [],
+                }
+
+            union_parts = []
+            params = []
+            for class_en in classes:
+                table_name = safe_table_name(class_en)
+                union_parts.append(
+                    f"SELECT %s AS class_en, id, problem_id, ddl "
+                    f"FROM `{table_name}` WHERE problem_id=%s"
+                )
+                params.extend((class_en, normalized_problem_id))
+            cursor.execute(
+                " UNION ALL ".join(union_parts) + " ORDER BY class_en ASC, id ASC",
+                tuple(params),
+            )
+            return {
+                "problem_exists": problem_exists,
+                "rows": cursor.fetchall() or [],
+            }
+    finally:
+        conn.close()
 
 
 def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=None):

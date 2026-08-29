@@ -388,25 +388,40 @@ def get_agent_session_message(message_id):
         conn.close()
 
 
-def get_agent_session_queue_snapshot(session_id):
-    """读取页面/SSE 可直接使用的会话队列快照。"""
+def get_agent_session_queue_snapshot(session_id, *, loaded_session=None):
+    """读取页面/SSE 可直接使用的会话队列快照。
+
+    ``loaded_session`` 仅用于已经权威读取过会话的只读链路，避免紧接着
+    为同一会话再执行一次 SELECT。消息仍始终从数据库读取；会修改队列的
+    API 不接受这一快捷参数，并继续在各自事务内锁定、校验会话行。
+    """
 
     session_id = _normalize_session_id(session_id)
+    if loaded_session is not None:
+        loaded_session_id = _normalize_session_id(
+            loaded_session.get("session_id")
+        )
+        if loaded_session_id != session_id:
+            raise ValueError("loaded_session 与 session_id 不一致")
+        session = loaded_session
+    else:
+        session = None
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT current_task_id, status, queue_paused, queue_pause_reason
-                FROM agent_sessions
-                WHERE session_id=%s
-                LIMIT 1
-                """,
-                (session_id,),
-            )
-            session = cursor.fetchone()
-            if not session:
-                raise AgentSessionMessageNotFoundError("Agent 会话不存在")
+            if session is None:
+                cursor.execute(
+                    """
+                    SELECT current_task_id, status, queue_paused, queue_pause_reason
+                    FROM agent_sessions
+                    WHERE session_id=%s
+                    LIMIT 1
+                    """,
+                    (session_id,),
+                )
+                session = cursor.fetchone()
+                if not session:
+                    raise AgentSessionMessageNotFoundError("Agent 会话不存在")
             cursor.execute(
                 """
                 SELECT message_id, session_id, created_by, user_message,

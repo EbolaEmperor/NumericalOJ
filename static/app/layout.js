@@ -116,6 +116,7 @@
   }
 
   function initDesktopNavigationData() {
+    const CACHE_TTL_MS = 10_000;
     const sidebars = document.querySelectorAll(
       '[data-numoj-sidebar], [data-numoj-mobile-sidebar]'
     );
@@ -128,26 +129,74 @@
     const selectedClass = new URLSearchParams(window.location.search).get('class_en');
     if (selectedClass) url.searchParams.set('class_en', selectedClass);
 
-    fetch(url.toString(), { headers: { Accept: 'application/json' } })
+    const cacheKey = [
+      'numoj.layoutNavigation.v1',
+      dataSource.dataset.navigationCacheKey || 'anonymous',
+      url.pathname,
+      url.search,
+    ].join(':');
+
+    function render(data) {
+      if (!data || !data.success) return;
+      const counts = data.counts || {};
+      Object.entries(counts).forEach(([name, value]) => {
+        sidebars.forEach((sidebar) => {
+          const target = sidebar.querySelector(`[data-numoj-nav-count="${name}"]`);
+          if (!target) return;
+          target.textContent = String(value);
+          target.classList.remove('d-none');
+        });
+      });
+      sidebars.forEach((sidebar) => {
+        sidebar
+          .querySelector('[data-numoj-agent-active]')
+          ?.classList.toggle('d-none', !data.agent_active);
+      });
+    }
+
+    function readCache() {
+      try {
+        const entry = JSON.parse(window.sessionStorage.getItem(cacheKey) || 'null');
+        if (!entry || !entry.savedAt || !entry.data?.success) return null;
+        return entry;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function writeCache(data) {
+      try {
+        window.sessionStorage.setItem(cacheKey, JSON.stringify({
+          savedAt: Date.now(),
+          data,
+        }));
+      } catch (_error) {
+        // 隐私模式或容量受限时退化为普通请求，不影响导航。
+      }
+    }
+
+    const cached = readCache();
+    if (cached) render(cached.data);
+    if (cached && Date.now() - cached.savedAt < CACHE_TTL_MS) return;
+
+    const refresh = () => fetch(url.toString(), {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+      mathCurveLoader: false,
+    })
       .then((response) => response.json())
       .then((data) => {
         if (!data.success) return;
-        const counts = data.counts || {};
-        Object.entries(counts).forEach(([name, value]) => {
-          sidebars.forEach((sidebar) => {
-            const target = sidebar.querySelector(`[data-numoj-nav-count="${name}"]`);
-            if (!target) return;
-            target.textContent = String(value);
-            target.classList.remove('d-none');
-          });
-        });
-        sidebars.forEach((sidebar) => {
-          sidebar
-            .querySelector('[data-numoj-agent-active]')
-            ?.classList.toggle('d-none', !data.agent_active);
-        });
+        writeCache(data);
+        render(data);
       })
       .catch(() => {});
+
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(refresh, { timeout: 800 });
+    } else {
+      window.setTimeout(refresh, 0);
+    }
   }
 
   function initAdaptiveNavigation() {

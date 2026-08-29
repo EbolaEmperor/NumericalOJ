@@ -449,17 +449,19 @@ def test_ranking_description_reuses_problem_detail_markdown_renderer():
     assert "from oj_modules.shared.markdown import render_rich_markdown" in presentation
     assert "return render_rich_markdown(text)" in presentation
 
-    shared_assets = (
+    assert template.count("app/markdown-rendering.js") == 1
+    assert "mathjax_lazy=true" in template
+    mathjax_component = _read(
+        ROOT / "templates" / "components" / "layout" / "mathjax.html"
+    )
+    assert "app/rich-content-assets.js" in mathjax_component
+    for lazy_asset in (
         "app/editor-semantic-tokens.js",
         "vendor/mermaid/mermaid.min.js",
         "vendor/shiki-markdown/highlighter.js",
-        "app/markdown-rendering.js",
-    )
-    for asset in shared_assets:
-        assert template.count(asset) == 1
-    assert [template.index(asset) for asset in shared_assets] == sorted(
-        template.index(asset) for asset in shared_assets
-    )
+    ):
+        assert lazy_asset not in template
+        assert lazy_asset in mathjax_component
 
     assert (
         "numoj-markdown numoj-problem-code-rendering ranking-description"

@@ -39,6 +39,76 @@ def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypat
     assert lookups == ['alice', 'bob']
 
 
+def test_current_user_short_cache_reuses_normal_user_across_requests(monkeypatch):
+    from oj_modules.security import auth
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    lookups = []
+
+    def load_user(username):
+        lookups.append(username)
+        return {'id': 7, 'username': username, 'is_admin': 0}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    for _ in range(2):
+        with app.test_request_context('/'):
+            session['username'] = 'alice'
+            user = auth.current_user()
+            user['username'] = 'mutated-locally'
+
+    assert lookups == ['alice']
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth.current_user()['username'] == 'alice'
+
+
+def test_current_user_does_not_cross_request_cache_admin(monkeypatch):
+    from oj_modules.security import auth
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    lookups = []
+
+    def load_user(username):
+        lookups.append(username)
+        return {'id': 1, 'username': username, 'is_admin': 1}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    for _ in range(2):
+        with app.test_request_context('/'):
+            session['username'] = 'admin'
+            assert auth.current_user()['is_admin'] == 1
+
+    assert lookups == ['admin', 'admin']
+
+
+def test_current_user_cache_can_be_invalidated_by_user_id(monkeypatch):
+    from oj_modules.security import auth
+
+    app = Flask(__name__)
+    app.secret_key = 'test'
+    roles = [0, 1]
+
+    def load_user(username):
+        return {'id': 7, 'username': username, 'is_admin': roles.pop(0)}
+
+    auth.invalidate_cached_browser_user()
+    monkeypatch.setattr(auth, 'get_user_by_username', load_user)
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth.current_user()['is_admin'] == 0
+
+    auth.invalidate_cached_browser_user(user_id=7)
+    with app.test_request_context('/'):
+        session['username'] = 'alice'
+        assert auth.current_user()['is_admin'] == 1
+
+    assert roles == []
+
+
 # ---------------- safe_table_name ----------------
 def test_safe_table_name_accepts_valid():
     from oj_modules.infrastructure.mysql import safe_table_name

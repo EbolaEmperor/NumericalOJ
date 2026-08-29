@@ -24,6 +24,7 @@ from oj_modules.db_services import (
     get_submission_by_id,
     save_submission_ai_code_marks_json,
 )
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted
 from oj_modules.problems.context import build_problem_detail_context
 from oj_modules.repository.includes import (
     extract_includes_from_code,
@@ -33,6 +34,11 @@ from oj_modules.submissions.repository_snapshots import (
     resolve_submission_repository_user_id,
 )
 from oj_modules.security.throttling import rate_limit_hit
+from oj_modules.shared.sse import (
+    guard_sse_stream,
+    sse_capacity_response,
+    try_acquire_sse_slot,
+)
 
 
 ai_bp = Blueprint('ai', __name__)
@@ -311,6 +317,9 @@ def ask_ai_code_marks():
         return jsonify(**result)
     except _AiRequestError as error:
         return _json_error_from_ai_request_error(error)
+    except MySQLPoolExhausted:
+        # 由应用级处理器返回统一的可重试 503，避免池背压被误报为 500。
+        raise
     except Exception as e:
         return jsonify(success=False, message=f"标注生成失败：{str(e)}"), 500
 
@@ -322,8 +331,15 @@ def ask_ai_code_marks_stream():
     except _AiRequestError as error:
         return _json_error_from_ai_request_error(error)
 
+    lease = try_acquire_sse_slot()
+    if lease is None:
+        return sse_capacity_response()
+
     response = Response(
-        stream_with_context(_stream_prepared_ai_code_marks(prepared)),
+        guard_sse_stream(
+            stream_with_context(_stream_prepared_ai_code_marks(prepared)),
+            lease,
+        ),
         mimetype="text/event-stream",
     )
     response.headers["Cache-Control"] = "no-cache, no-transform"

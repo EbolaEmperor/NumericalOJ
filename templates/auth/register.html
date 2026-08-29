@@ -80,7 +80,11 @@
           <strong data-class-select-current-label>请选择班级</strong>
           <small data-class-select-current-code>REQUIRED</small>
         </span>
-        <i class="fas fa-chevron-down numoj-class-select-chevron" aria-hidden="true"></i>
+        <svg class="numoj-class-select-chevron" width="10" height="6"
+          viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m1 1 4 4 4-4"/>
+        </svg>
       </button>
       <div class="numoj-class-select-menu" id="registerClassOptions"
         role="listbox" aria-label="可注册的班级" data-class-select-menu hidden>
@@ -111,4 +115,9 @@
   <span>已有账户？</span>
   <a href="{{ url_for('auth.login') }}">返回登录</a>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='app/class-select.js') }}"></script>
 {% endblock %}

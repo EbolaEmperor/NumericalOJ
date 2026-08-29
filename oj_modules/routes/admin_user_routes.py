@@ -80,7 +80,11 @@ def _audit_user_admin_action(action, outcome, admin, target_user, **details):
         current_app.logger.exception('用户管理审计事件写入失败')
 
 
-from oj_modules.security.auth import current_user, is_admin
+from oj_modules.security.auth import (
+    current_user,
+    invalidate_cached_browser_user,
+    is_admin,
+)
 
 
 @admin_user_bp.route('/admin/users')
@@ -245,6 +249,10 @@ def grant_user_admin_ajax():
         conn.close()
 
     if granted:
+        invalidate_cached_browser_user(
+            username=target_user.get('username'),
+            user_id=user_id,
+        )
         _invalidate_problem_list_cache_for_user(
             user_id=user_id,
             username=target_user.get('username'),
@@ -287,6 +295,8 @@ def edit_username_ajax():
     if session.get('username') == old_username:
         session['username'] = new_username
 
+    invalidate_cached_browser_user(username=old_username, user_id=user_id)
+    invalidate_cached_browser_user(username=new_username, user_id=user_id)
     _invalidate_problem_list_cache_for_user(user_id=user_id, username=old_username)
     _invalidate_problem_list_cache_for_user(username=new_username)
 
@@ -346,6 +356,11 @@ def set_user_email_ajax():
         target_user,
         changed=changed,
     )
+    if changed:
+        invalidate_cached_browser_user(
+            username=target_user.get('username'),
+            user_id=user_id,
+        )
     return jsonify({
         'success': True,
         'message': '邮箱已更新' if changed else '邮箱未发生变化',
@@ -433,6 +448,10 @@ def send_password_reset_email_ajax():
     _audit_user_admin_action(
         'reset_password_email', 'success', admin, target_user,
         delivery='email',
+    )
+    invalidate_cached_browser_user(
+        username=target_user.get('username'),
+        user_id=user_id,
     )
     return jsonify({
         'success': True,

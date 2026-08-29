@@ -1,7 +1,7 @@
 {% extends "layouts/site.html" %}
 {% from 'components/problem_macros.html' import language_label %}
 {% block title %}{{ problem.title }} - {{ super() }}{% endblock %}
-{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block mathjax %}{% with mathjax_lazy=true %}{% include 'components/layout/mathjax.html' %}{% endwith %}{% endblock %}
 {% block head %}
   {{ super() }}
   <link rel="stylesheet" href="{{ url_for('static', filename='app/markdown-rendering.css') }}">
@@ -471,7 +471,7 @@
      tabindex="-1"
      aria-labelledby="homeworkDeadlineWarningModalLabel"
      aria-hidden="true"
-     data-submit-context-url="{{ url_for('problem_api.submit_context', problem_id=problem.id) }}">
+     data-submit-context-url="{{ url_for('problem_api.deadline_warning', problem_id=problem.id) }}">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
@@ -987,7 +987,9 @@
 </style>
 
 {% if problem.type == 1 and programming_mode != 3 %}
+{% with monaco_fetch_priority='low' %}
 {% include 'components/editor/monaco.html' %}
+{% endwith %}
 {% if is_lean4 %}
 <script defer src="{{ url_for('static', filename='app/lean-workbench.js') }}"></script>
 {% endif %}
@@ -1199,12 +1201,6 @@
   {% if user and user.is_admin == 1 and problem.type == 1 %}
   <script src="{{ url_for('static', filename='app/problem-agent-launch.js') }}"></script>
   {% endif %}
-  {# 标准编程题由上方 Monaco 组件加载语义客户端；其余分支在这里补齐一次。 #}
-  {% if problem.type != 1 or (problem.programming_grading_mode or 1)|int == 3 %}
-  <script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
-  {% endif %}
-  <script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
   <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
   {% if user and user.is_admin != 1 %}
   <script src="{{ url_for('static', filename='app/problem-deadline-warning.js') }}"></script>

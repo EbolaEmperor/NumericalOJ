@@ -13,7 +13,7 @@ from oj_modules.classroom.dashboard import (
 )
 from oj_modules.classroom.logos import attach_class_logos
 from oj_modules.db_services import (
-    can_submit,
+    can_submit,  # 兼容既有测试/扩展 monkeypatch；详情热路径不再重复调用。
     get_all_problems,
     get_last_10_days_counts_from_counter,
     get_problem,
@@ -23,6 +23,7 @@ from oj_modules.db_services import (
 from oj_modules.problems.catalog import (
     _get_homeworks_for_classes,
     get_homeworks_and_grades_map,
+    get_problem_homework_deadline_state,
     get_today_submission_counts,
     get_user_classes_cached,
 )
@@ -37,6 +38,7 @@ SUBMISSION_LIMIT_MESSAGE = "提交次数已达到上限，你已经无法提交"
 
 __all__ = (
     "build_problem_detail_context",
+    "build_problem_deadline_warning_context",
     "build_problem_library_context",
     "build_problem_list_context",
     "HOMEWORK_DEADLINE_WARNING_CODE",
@@ -47,17 +49,28 @@ __all__ = (
 )
 
 
-def _base_problem_list_context():
-    total_submissions, total_accepted = get_today_submission_counts()
-    last_10_days, daily_counts = get_last_10_days_counts_from_counter()
-    return {
-        "total_submissions": total_submissions,
-        "total_accepted": total_accepted,
+def _base_problem_list_context(*, include_statistics=False):
+    """返回题目列表的通用上下文；统计数据只在 JSON API 按需加载。
+
+    HTML 题目页已经不展示全站今日提交量与十日趋势。此前仍会为每次页面请求
+    执行三条聚合 SQL；把统计读取变成显式 opt-in，可直接移出最常用页面热路径。
+    """
+    context = {
         "total_grade": 100,
-        "last_10_days": last_10_days,
-        "daily_counts": daily_counts,
         "now": datetime.now(),
     }
+    if not include_statistics:
+        return context
+
+    total_submissions, total_accepted = get_today_submission_counts()
+    last_10_days, daily_counts = get_last_10_days_counts_from_counter()
+    context.update({
+        "total_submissions": total_submissions,
+        "total_accepted": total_accepted,
+        "last_10_days": last_10_days,
+        "daily_counts": daily_counts,
+    })
+    return context
 
 
 def _numoj_cli_resource(user):
@@ -84,35 +97,64 @@ def _deadline_is_expired(deadline):
     return deadline < now
 
 
-def get_problem_homework_assignments(user, problem_id):
-    """返回当前用户可见班级中包含指定题目的全部作业，不受页面入口影响。"""
+def _load_problem_homework_assignments(user, problem_id, *, verify_problem=False):
+    """返回轻量作业截止上下文及题目存在性，不加载用户全量提交历史。"""
     classes = visible_classes_for_user_cached(user)
     class_en_list = [item.get("class_en") for item in classes if item.get("class_en")]
-    if not class_en_list:
-        return []
     class_names = {
         item.get("class_en"): item.get("class_cn") or item.get("class_en")
         for item in classes
     }
-    homeworks_by_class = _get_homeworks_for_classes(
-        user["id"], class_en_list, username=user.get("username")
+    state = get_problem_homework_deadline_state(
+        problem_id,
+        class_en_list,
+        verify_problem=verify_problem,
     )
     assignments = []
-    for class_en in class_en_list:
-        for homework in homeworks_by_class.get(class_en, []):
-            if (
-                homework.get("kind") != "problem"
-                or int(homework.get("problem_id") or 0) != int(problem_id)
-            ):
-                continue
-            assignment = dict(homework)
-            assignment.update({
-                "class_en": class_en,
-                "class_cn": class_names.get(class_en) or class_en,
-                "is_expired": _deadline_is_expired(homework.get("ddl")),
-            })
-            assignments.append(assignment)
+    for homework in state.get("rows") or []:
+        class_en = homework.get("class_en")
+        assignment = dict(homework)
+        assignment.update({
+            "class_en": class_en,
+            "class_cn": class_names.get(class_en) or class_en,
+            "is_expired": _deadline_is_expired(homework.get("ddl")),
+        })
+        assignments.append(assignment)
+    return assignments, bool(state.get("problem_exists"))
+
+
+def get_problem_homework_assignments(user, problem_id):
+    """返回当前用户可见班级中包含指定题目的全部作业，不受页面入口影响。"""
+    assignments, _ = _load_problem_homework_assignments(user, problem_id)
     return assignments
+
+
+def build_problem_deadline_warning_context(user, problem_id):
+    """构建提交按钮所需的最小上下文，不加载题面、历史提交、Lean 或配额。"""
+    scoped_agent_access = (
+        user.get("agent_access_role") == "user"
+        and user.get("agent_task_kind") in {"solve", "testdata"}
+        and int(user.get("agent_problem_id") or 0) == int(problem_id)
+    )
+    if user.get("agent_access_role") == "user" and not scoped_agent_access:
+        return None, "forbidden"
+
+    assignments, problem_exists = _load_problem_homework_assignments(
+        user,
+        problem_id,
+        verify_problem=True,
+    )
+    if not problem_exists:
+        return None, "not_found"
+    warning = (
+        None
+        if int(user.get("is_admin") or 0) == 1 or scoped_agent_access
+        else build_homework_deadline_warning(assignments)
+    )
+    return {
+        "problem_id": int(problem_id),
+        "submit_warning": warning,
+    }, None
 
 
 def build_homework_deadline_warning(assignments):
@@ -167,12 +209,13 @@ def build_problem_list_context(
     selected_class_en=None,
     include_dashboard=False,
     include_class_activity=True,
+    include_statistics=False,
 ):
     """
     组装题库页的完整数据上下文。
     HTML 页面和 JSON API 共用这里，避免 CLI 再从模板 HTML 里反向解析信息。
     """
-    context = _base_problem_list_context()
+    context = _base_problem_list_context(include_statistics=include_statistics)
     context["user"] = user
     context["numoj_cli_resource"] = _numoj_cli_resource(user)
 
@@ -290,9 +333,9 @@ def build_problem_list_context(
     return context
 
 
-def build_problem_library_context(user):
+def build_problem_library_context(user, *, include_statistics=False):
     """构造所有登录用户可见的总题库视图，不混入班级 DDL。"""
-    context = _base_problem_list_context()
+    context = _base_problem_list_context(include_statistics=include_statistics)
     context["numoj_cli_resource"] = _numoj_cli_resource(user)
     problems = [dict(problem) for problem in (get_all_problems() or [])]
     metrics = get_problem_submission_metrics(
@@ -366,8 +409,10 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
         if user['is_admin'] != 1
         else None
     )
+    # remaining_submissions 与 can_submit 原先各自查询一次 submission_limits；
+    # 两个展示值来自同一计数，直接从剩余次数推导，避免详情页重复 SQL。
     can_submit_by_quota = (
-        can_submit(user['username'], problem_id, submission_limit)
+        remaining_submissions > 0
         if user['is_admin'] != 1
         else True
     )

@@ -1,6 +1,6 @@
 {% extends "layouts/site.html" %}
 {% block title %}{{ competition.title }} - 打榜赛 - {{ super() }}{% endblock %}
-{% block mathjax %}{% include 'components/layout/mathjax.html' %}{% endblock %}
+{% block mathjax %}{% with mathjax_lazy=true %}{% include 'components/layout/mathjax.html' %}{% endwith %}{% endblock %}
 {% block head %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='app/ranking/settings.css') }}">
@@ -1830,9 +1830,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"></script>
-<script src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"></script>
-<script src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"></script>
 <script src="{{ url_for('static', filename='app/markdown-rendering.js') }}"></script>
 <script src="{{ url_for('static', filename='app/ranking/elo-trajectories.js') }}"></script>
 <script src="{{ url_for('static', filename='app/ranking/detail-v2.js') }}"></script>

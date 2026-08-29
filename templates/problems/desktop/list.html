@@ -181,6 +181,7 @@
         class="numoj-panel numoj-activity-card"
         data-numoj-class-activity
         data-activity-url="{{ url_for('problem_core.class_activity_data', class_en=selected_class_en) }}"
+        data-activity-cache-key="{{ user.username if user else 'guest' }}"
       >
         <header><h2>班级活跃度</h2><span>近 12 周</span></header>
         <div class="numoj-heatmap-frame">

@@ -25,9 +25,11 @@ JAVASCRIPT_ASSETS = (
     "static/app/lean-workbench.js",
     "static/app/markdown-rendering.js",
     "static/app/model-family.js",
+    "static/app/problem-dashboard.js",
     "static/app/problem-detail-layout.js",
     "static/app/problem-editor.js",
     "static/app/problem-form-editors.js",
+    "static/app/rich-content-assets.js",
     "static/app/repository/workbench.js",
     "static/app/sidebar-state.js",
     "static/app/forum.js",
@@ -52,6 +54,169 @@ def test_frontend_javascript_has_valid_syntax(relative_path):
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_lazy_rich_assets_skip_plain_content_and_fail_open():
+    asset = ROOT / "static" / "app" / "rich-content-assets.js"
+    script = f"""
+global.window = global;
+global.Node = {{TEXT_NODE: 3}};
+global.NodeFilter = {{SHOW_TEXT: 4}};
+const appended = [];
+function scriptElement() {{
+  const listeners = Object.create(null);
+  return {{
+    dataset: {{}},
+    addEventListener: function(name, callback) {{ listeners[name] = callback; }},
+    fire: function(name) {{ listeners[name](); }}
+  }};
+}}
+global.document = {{
+  currentScript: {{dataset: {{
+    highlighterSrc: "/highlighter.js",
+    mathjaxSrc: "/mathjax.js",
+    mermaidSrc: "/mermaid.js",
+    semanticTokensSrc: "/semantic-tokens.js"
+  }}}},
+  createTreeWalker: function(root) {{
+    let index = 0;
+    return {{
+      nextNode: function() {{ return (root._nodes || [])[index++] || null; }}
+    }};
+  }},
+  createElement: function() {{ return scriptElement(); }},
+  head: {{appendChild: function(script) {{ appended.push(script); }}}}
+}};
+function textNode(value) {{
+  return {{
+    data: value,
+    parentElement: {{closest: function() {{ return null; }}}}
+  }};
+}}
+function root(value, selectorNeedle) {{
+  return {{
+    nodeType: 1,
+    _nodes: value ? [textNode(value)] : [],
+    matches: function() {{ return false; }},
+    querySelector: function(selector) {{
+      return selectorNeedle && selector.includes(selectorNeedle) ? {{}} : null;
+    }}
+  }};
+}}
+require({str(asset)!r});
+(async function() {{
+  const plain = root("题目正文没有公式和结构化代码", "");
+  const skipped = await Promise.all([
+    NumOJRichContentAssets.ensureMathJax(plain),
+    NumOJRichContentAssets.ensureMermaid(plain),
+    NumOJRichContentAssets.ensureCodeAssets(plain)
+  ]);
+  if (skipped.some(Boolean) || appended.length !== 0) process.exit(1);
+
+  const mermaid = NumOJRichContentAssets.ensureMermaid(
+    root("graph TD", "language-mermaid")
+  );
+  if (appended.length !== 1 || appended[0].dataset.numojRichAsset !== "mermaid") {{
+    process.exit(2);
+  }}
+  appended[0].fire("error");
+  if (await mermaid) process.exit(3);
+
+  const structured = NumOJRichContentAssets.ensureCodeAssets(
+    root("int main() {{}}", "language-cpp")
+  );
+  if (
+    appended.length !== 3
+    || appended[1].dataset.numojRichAsset !== "highlighter"
+    || appended[2].dataset.numojRichAsset !== "semanticTokens"
+  ) process.exit(4);
+  appended[1].fire("error");
+  appended[2].fire("error");
+  if (await structured) process.exit(5);
+
+  const math = NumOJRichContentAssets.ensureMathJax(root("公式 $x + 1$", ""));
+  if (appended.length !== 4 || appended[3].dataset.numojRichAsset !== "mathjax") {{
+    process.exit(6);
+  }}
+  appended[3].fire("error");
+  if (await math) process.exit(7);
+}})().catch(function(error) {{
+  console.error(error);
+  process.exit(8);
+}});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
+def test_lazy_mathjax_waits_for_startup_before_typesetting():
+    asset = ROOT / "static" / "app" / "markdown-rendering.js"
+    script = f"""
+global.window = global;
+global.document = {{
+  readyState: "loading",
+  addEventListener: function() {{}}
+}};
+let releaseStartup = null;
+let typesetCalls = 0;
+let typesetTarget = null;
+global.MathJax = {{
+  startup: {{promise: new Promise(function(resolve) {{ releaseStartup = resolve; }})}},
+  typesetPromise: async function(targets) {{
+    typesetCalls += 1;
+    typesetTarget = targets[0];
+  }}
+}};
+global.NumOJRichContentAssets = {{
+  ensureCodeAssets: function() {{ return Promise.resolve(false); }},
+  ensureMathJax: function() {{ return Promise.resolve(true); }},
+  ensureMermaid: function() {{ return Promise.resolve(false); }}
+}};
+const root = {{
+  isConnected: true,
+  contains: function() {{ return true; }},
+  matches: function() {{ return false; }},
+  querySelectorAll: function() {{ return []; }}
+}};
+require({str(asset)!r});
+(async function() {{
+  const enhancement = NumericalOJMarkdownRenderer.enhance(root);
+  await new Promise(function(resolve) {{ setImmediate(resolve); }});
+  if (typesetCalls !== 0) process.exit(1);
+  releaseStartup();
+  await enhancement;
+  if (typesetCalls !== 1 || typesetTarget !== root) process.exit(2);
+}})().catch(function(error) {{
+  console.error(error);
+  process.exit(3);
+}});
+"""
+    subprocess.run(
+        [NODE, "-e", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_lazy_rich_asset_failures_preserve_renderer_fallbacks():
+    source = (ROOT / "static" / "app" / "markdown-rendering.js").read_text()
+
+    # 资源加载器以 false 结算时仍执行增强流程；缺少 Shiki 客户端会保留
+    # 服务端生成的 Pygments DOM，Mermaid 则展开并保留原始源码。
+    assert "const mermaidRendering = mermaidAssetReady.then(" in source
+    assert "() => renderMermaidDiagrams(root)," in source
+    assert 'block.dataset.numojBashState = "fallback";' in source
+    assert 'block.dataset.numojStructuredTextmateState = "fallback";' in source
+    assert "diagram.remove();" in source
+    assert "sourceDetails.open = true;" in source
+    assert 'container.dataset.numojMermaidState = "error";' in source
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
@@ -316,7 +481,7 @@ def test_lean4_workbench_separates_source_and_cursor_requests():
 
 def test_lean4_lexical_and_semantic_themes_use_the_same_core_colors():
     lexical_theme = (ROOT / "frontend" / "lean4-theme.js").read_text()
-    semantic_theme = (ROOT / "frontend" / "monaco" / "editor.js").read_text()
+    semantic_theme = (ROOT / "frontend" / "monaco" / "runtime.js").read_text()
 
     assert '"keyword.other.lean4"' in lexical_theme
     assert '"storage.modifier.lean4"' in lexical_theme
@@ -325,6 +490,49 @@ def test_lean4_lexical_and_semantic_themes_use_the_same_core_colors():
     assert '{ token: "lean4.modifier", foreground: "C586C0" }' in semantic_theme
     assert '{ token: "lean4.operator", foreground: "D7BA7D" }' in semantic_theme
     assert '{ token: "lean4.function", foreground: "DCDCAA" }' in semantic_theme
+
+
+def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
+    minimal_entry = (
+        ROOT / "frontend" / "monaco" / "editor-minimal.js"
+    ).read_text()
+    full_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text()
+    runtime = (ROOT / "frontend" / "monaco" / "runtime.js").read_text()
+    build_script = (ROOT / "scripts" / "build_monaco.mjs").read_text()
+
+    assert "@shikijs/" not in minimal_entry
+    assert 'definitions/cpp/register.js"' in minimal_entry
+    assert 'definitions/python/register.js"' in minimal_entry
+    assert 'from "../lean4-unicode-input.js"' in minimal_entry
+    for language in ("java", "javascript", "rust", "typescript"):
+        assert f'from "@shikijs/langs/{language}"' not in minimal_entry
+        assert f'from "@shikijs/langs/{language}"' in full_entry
+
+    assert 'monaco-editor/editor/editor.api.js' in minimal_entry
+    assert 'monaco-editor/editor/editor.main.js' not in minimal_entry
+    assert 'semanticTokens/browser/documentSemanticTokens.js' in minimal_entry
+    assert 'semanticTokens/browser/viewportSemanticTokens.js' in minimal_entry
+    assert "attachLean4UnicodeInput" in runtime
+    assert "getLean4UnicodeAbbreviations" in runtime
+    assert '["frontend/monaco/editor.js", "editor"]' in build_script
+    assert (
+        '["frontend/monaco/editor-minimal.js", "editor-minimal"]'
+        in build_script
+    )
+
+    full_asset = ROOT / "static" / "vendor" / "monaco" / "editor.js"
+    minimal_asset = (
+        ROOT / "static" / "vendor" / "monaco" / "editor-minimal.js"
+    )
+    assert minimal_asset.stat().st_size < full_asset.stat().st_size * 0.60
+    built_minimal = minimal_asset.read_text()
+    for symbol in (
+        "attachLean4UnicodeInput",
+        "getLean4UnicodeAbbreviations",
+        "registerDocumentSemanticTokensProvider",
+    ):
+        assert symbol in built_minimal
+    assert "prepareTextMateHighlighting" not in built_minimal
 
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")

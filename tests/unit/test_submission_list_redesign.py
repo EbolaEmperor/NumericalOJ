@@ -5,6 +5,7 @@ from flask import Flask
 
 from oj_modules import db_services
 from oj_modules.api import submission_api
+from oj_modules.routes import problem_core_routes
 from oj_modules.routes import rejudge_routes
 from oj_modules.routes import submission_routes
 
@@ -208,6 +209,86 @@ def test_panel_payload_excludes_source_and_truncates_test_output(monkeypatch):
     assert "content" not in payload["problem"]
     assert payload["status_stream_url"].endswith("?view=panel")
     assert payload["rejudge_url"].startswith("/rejudge.rejudge_submission/")
+
+
+def test_submission_list_embeds_authorized_first_panel_payload(monkeypatch):
+    app = Flask(__name__)
+    submission = {
+        "id": 9,
+        "username": "alice",
+        "problem_id": 3,
+        "problem_title": "「Tag」题目",
+        "current_problem_title": "「Tag」最新题目",
+        "problem_type": 1,
+        "status": "Wrong Answer",
+        "score": 1,
+        "created_at": None,
+        "test_points": [{
+            "test_index": 1,
+            "status": "Wrong Answer",
+            "stderr": "x" * 900,
+        }],
+        "test_points_count": 1,
+        "lang": "cpp",
+        "max_score": 2,
+    }
+    monkeypatch.setattr(
+        problem_core_routes,
+        "current_user",
+        lambda: {"username": "alice", "is_admin": 0},
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "get_filtered_submissions_paginated",
+        lambda **_kwargs: ([submission], 1, 1),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "get_submission_problem_options",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "url_for",
+        lambda endpoint, **values: (
+            f"/{endpoint}/{values.get('submission_id', '')}"
+        ),
+    )
+    monkeypatch.setattr(
+        problem_core_routes,
+        "render_template",
+        lambda _template, **context: context,
+    )
+
+    with app.test_request_context("/my_submissions"):
+        context = problem_core_routes.all_submissions()
+
+    payload = context["initial_submission_panel"]
+    assert payload["submission"]["id"] == 9
+    assert payload["submission"]["username"] == "alice"
+    assert payload["problem"] == {
+        "id": 3,
+        "title": "最新题目",
+        "lang": "cpp",
+        "max_score": 2,
+    }
+    assert len(payload["test_points"][0]["stderr"]) == 600
+    assert "code" not in payload["submission"]
+    assert "prompt_text" not in payload["submission"]
+
+
+def test_submission_list_consumes_embedded_first_panel_before_fetching():
+    template = (
+        ROOT / "templates" / "submissions" / "all.html"
+    ).read_text(encoding="utf-8")
+    script = (ROOT / "static" / "app" / "submissions.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "data-initial-submission-panel" in template
+    assert "initialPanelPayload = JSON.parse" in script
+    assert "renderPanel(prefetchedPayload);" in script
+    assert "requestPanel(row);" in script
 
 
 def test_panel_endpoint_uses_minimal_submission_loader(monkeypatch):

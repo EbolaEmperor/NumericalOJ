@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -28,6 +29,9 @@ LLM_TEST_GRANT_TTL_SECONDS = 10 * 60
 UNLOCK_CONFIRMATION = "我已阅读上述内容，我清楚后果，我坚持要解锁"
 ENDPOINT_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
 EMBEDDING_UNLOCK_CONFIRMATION = UNLOCK_CONFIRMATION
+_MAIL_SETTINGS_CACHE_TTL_SECONDS = 5.0
+_mail_settings_cache_lock = threading.Lock()
+_mail_settings_cache = None
 
 LLM_PROTOCOLS = ("openai", "anthropic")
 LLM_CATEGORIES = ("omni", "text", "vision", "embedding")
@@ -1296,15 +1300,34 @@ def _public_mail_settings(row, *, include_secret=False):
     return result
 
 
+def _invalidate_mail_settings_cache():
+    global _mail_settings_cache
+    with _mail_settings_cache_lock:
+        _mail_settings_cache = None
+
+
 def get_mail_settings(*, include_secret=False):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM site_mail_settings WHERE id=1")
-            row = cursor.fetchone()
-        return _public_mail_settings(row, include_secret=include_secret)
-    finally:
-        conn.close()
+    """读取低频全站邮件配置，并合并模板并发渲染产生的重复查询。"""
+    global _mail_settings_cache
+    now = time.monotonic()
+    with _mail_settings_cache_lock:
+        cached = _mail_settings_cache
+        if cached is not None and now < cached[0]:
+            row = cached[1]
+        else:
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT * FROM site_mail_settings WHERE id=1")
+                    loaded = cursor.fetchone()
+                row = dict(loaded) if loaded else None
+                _mail_settings_cache = (
+                    time.monotonic() + _MAIL_SETTINGS_CACHE_TTL_SECONDS,
+                    row,
+                )
+            finally:
+                conn.close()
+    return _public_mail_settings(row, include_secret=include_secret)
 
 
 def save_mail_settings(payload, *, user_id):
@@ -1339,6 +1362,7 @@ def save_mail_settings(payload, *, user_id):
         raise
     finally:
         conn.close()
+    _invalidate_mail_settings_cache()
     return get_mail_settings()
 
 
@@ -1377,6 +1401,7 @@ def test_mail_settings(payload, *, user_id, recipient_email, tester):
             raise
         finally:
             conn.close()
+        _invalidate_mail_settings_cache()
     if not result["passed"]:
         raise DynamicConfigTestFailedError(result["message"], result=result)
     return result
@@ -1393,6 +1418,7 @@ def clear_mail_settings():
         raise
     finally:
         conn.close()
+    _invalidate_mail_settings_cache()
 
 
 def normalize_web_search_settings_payload(payload, *, existing=None):

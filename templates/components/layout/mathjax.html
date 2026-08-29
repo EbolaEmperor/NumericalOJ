@@ -1,5 +1,9 @@
 <script>
 window.MathJax = {
+  startup: {
+    // 懒加载模式由正文增强器按根节点排版，避免载入后扫描整页。
+    typeset: {{ 'false' if mathjax_lazy|default(false) else 'true' }}
+  },
   loader: {
     // 只使用当前合并包内的显式 TeX 能力，禁止运行时自动加载扩展。
     load: []
@@ -15,4 +19,14 @@ window.MathJax = {
   }
 };
 </script>
+{% if mathjax_lazy|default(false) %}
+<script
+  src="{{ url_for('static', filename='app/rich-content-assets.js') }}"
+  data-mathjax-src="{{ url_for('static', filename='vendor/mathjax/tex-mml-chtml.js') }}"
+  data-mermaid-src="{{ url_for('static', filename='vendor/mermaid/mermaid.min.js') }}"
+  data-highlighter-src="{{ url_for('static', filename='vendor/shiki-markdown/highlighter.js') }}"
+  data-semantic-tokens-src="{{ url_for('static', filename='app/editor-semantic-tokens.js') }}"
+></script>
+{% else %}
 <script src="{{ url_for('static', filename='vendor/mathjax/tex-mml-chtml.js') }}"></script>
+{% endif %}

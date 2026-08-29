@@ -16,6 +16,8 @@ bleach 已加入 requirements/production.txt；生产安装后获得完整 Markd
 import html
 import re
 import secrets
+import threading
+from collections import OrderedDict
 
 from pygments.formatters import HtmlFormatter
 
@@ -87,6 +89,55 @@ _RICH_MARKDOWN_EXTENSION_CONFIGS = {
         "use_pygments": True,
     },
 }
+
+
+# 富 Markdown 会执行解析、Pygments 高亮和两轮 HTML 清洗，长题面单次即可占用
+# 数十毫秒 CPU。缓存以完整原文为键，因此内容更新后天然生成新条目，不需要写路径
+# 额外失效；条目数和近似字节数双重限制避免论坛/Agent 的大量唯一文本挤爆进程。
+_RICH_MARKDOWN_CACHE_MAX_ENTRIES = 256
+_RICH_MARKDOWN_CACHE_MAX_BYTES = 32 * 1024 * 1024
+_rich_markdown_cache: OrderedDict[str, tuple[str, int]] = OrderedDict()
+_rich_markdown_inflight: dict[str, threading.Event] = {}
+_rich_markdown_cache_bytes = 0
+_rich_markdown_cache_lock = threading.Lock()
+
+
+def _rich_markdown_weight(raw, rendered):
+    return len(raw.encode("utf-8")) + len(rendered.encode("utf-8"))
+
+
+def _clear_rich_markdown_cache():
+    """清空已完成的富 Markdown 缓存；主要供测试与受控维护使用。"""
+    global _rich_markdown_cache_bytes
+    with _rich_markdown_cache_lock:
+        _rich_markdown_cache.clear()
+        _rich_markdown_cache_bytes = 0
+
+
+def _publish_rich_markdown_cache(raw, rendered, pending):
+    global _rich_markdown_cache_bytes
+    weight = _rich_markdown_weight(raw, rendered)
+    with _rich_markdown_cache_lock:
+        if weight <= _RICH_MARKDOWN_CACHE_MAX_BYTES:
+            previous = _rich_markdown_cache.pop(raw, None)
+            if previous is not None:
+                _rich_markdown_cache_bytes -= previous[1]
+            _rich_markdown_cache[raw] = (rendered, weight)
+            _rich_markdown_cache_bytes += weight
+            while (
+                len(_rich_markdown_cache) > _RICH_MARKDOWN_CACHE_MAX_ENTRIES
+                or _rich_markdown_cache_bytes > _RICH_MARKDOWN_CACHE_MAX_BYTES
+            ):
+                _, (_, removed_weight) = _rich_markdown_cache.popitem(last=False)
+                _rich_markdown_cache_bytes -= removed_weight
+        _rich_markdown_inflight.pop(raw, None)
+        pending.set()
+
+
+def _cancel_rich_markdown_render(raw, pending):
+    with _rich_markdown_cache_lock:
+        _rich_markdown_inflight.pop(raw, None)
+        pending.set()
 
 
 def sanitize_html(html_str):
@@ -187,9 +238,7 @@ def _restore_rich_markdown_math(rendered, protected):
     return sanitize_html(restored)
 
 
-def render_rich_markdown(text):
-    """渲染支持代码高亮、Mermaid 源码标记与 LaTeX 的安全 Markdown。"""
-    raw = str(text or "")
+def _render_rich_markdown_uncached(raw):
     if not raw.strip():
         return ""
 
@@ -200,6 +249,34 @@ def render_rich_markdown(text):
         extension_configs=_RICH_MARKDOWN_EXTENSION_CONFIGS,
     )
     return _restore_rich_markdown_math(rendered, protected)
+
+
+def render_rich_markdown(text):
+    """渲染支持代码高亮、Mermaid 源码标记与 LaTeX 的安全 Markdown。"""
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+
+    while True:
+        with _rich_markdown_cache_lock:
+            cached = _rich_markdown_cache.get(raw)
+            if cached is not None:
+                _rich_markdown_cache.move_to_end(raw)
+                return cached[0]
+            pending = _rich_markdown_inflight.get(raw)
+            if pending is None:
+                pending = threading.Event()
+                _rich_markdown_inflight[raw] = pending
+                break
+        pending.wait()
+
+    try:
+        rendered = _render_rich_markdown_uncached(raw)
+    except BaseException:
+        _cancel_rich_markdown_render(raw, pending)
+        raise
+    _publish_rich_markdown_cache(raw, rendered, pending)
+    return rendered
 
 
 def render_rich_markdown_with_toc(text, *, toc_depth="2-3"):

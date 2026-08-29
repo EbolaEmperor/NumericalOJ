@@ -285,7 +285,9 @@
 </div>
 
 {% if submission.problem_type == 1 %}
+  {% with monaco_fetch_priority='low' %}
   {% include 'components/editor/monaco.html' %}
+  {% endwith %}
   <script src="{{ url_for('static', filename='app/submissions/detail.js') }}"></script>
 {% endif %}
 

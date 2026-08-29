@@ -1,8 +1,10 @@
 from types import SimpleNamespace
 
+import pytest
 from flask import Flask
 
 from oj_modules.agents.sessions import AgentSessionMessageConflictError
+from oj_modules.infrastructure.mysql import MySQLPoolExhausted
 from oj_modules.routes import problem_core_routes as routes
 
 
@@ -57,6 +59,37 @@ def _patch_common(monkeypatch, status="Running"):
         },
     )
     return session
+
+
+def test_message_snapshot_reuses_the_already_loaded_session(monkeypatch):
+    session = _session()
+    captured = {}
+
+    def queue_snapshot(session_id, *, loaded_session=None):
+        captured["session_id"] = session_id
+        captured["loaded_session"] = loaded_session
+        return {
+            "session_id": session_id,
+            "current_task_id": "task-1",
+            "status": "Running",
+            "running": True,
+            "messages": [],
+        }
+
+    monkeypatch.setattr(routes, "get_agent_session_queue_snapshot", queue_snapshot)
+    monkeypatch.setattr(
+        routes,
+        "read_agent_steer_capability",
+        lambda _session_id, _harness: (True, ""),
+    )
+
+    snapshot = routes._agent_session_message_snapshot(session)
+
+    assert snapshot["running"] is True
+    assert captured == {
+        "session_id": "session-1",
+        "loaded_session": session,
+    }
 
 
 def test_running_main_send_is_persisted_as_queue_and_wakes_dispatcher(monkeypatch):
@@ -594,6 +627,173 @@ def test_non_owner_admin_can_read_session_message_state(monkeypatch):
 
     assert response.status_code == 200
     assert response.get_json()["success"] is True
+
+
+def test_message_state_preserves_mysql_pool_backpressure(monkeypatch):
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_state",
+        lambda _task_id: (_ for _ in ()).throw(
+            MySQLPoolExhausted(1040, "pool busy")
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1/state",
+        method="GET",
+    ), pytest.raises(MySQLPoolExhausted):
+        routes.admin_agent_task_message_state("session-1")
+
+
+def test_message_stream_uses_slower_polling_and_quota_refresh(monkeypatch):
+    _patch_common(monkeypatch)
+    sequence = {"value": 0}
+    quota_calls = []
+
+    class Clock:
+        current = 100.0
+        sleeps = []
+
+        @classmethod
+        def monotonic(cls):
+            return cls.current
+
+        @classmethod
+        def sleep(cls, seconds):
+            cls.sleeps.append(seconds)
+            cls.current += seconds
+
+    def snapshot(_session, current_state=None):
+        sequence["value"] += 1
+        return {
+            "current_task_id": "task-1",
+            "status": "Running",
+            "running": True,
+            "messages": [],
+            "sequence": sequence["value"],
+        }
+
+    monkeypatch.setattr(routes, "_agent_session_message_snapshot", snapshot)
+    monkeypatch.setattr(
+        routes,
+        "get_agent_runtime_quota_summary",
+        lambda *_args, **_kwargs: quota_calls.append(Clock.current) or {},
+    )
+    monkeypatch.setattr(
+        routes,
+        "time",
+        SimpleNamespace(monotonic=Clock.monotonic, sleep=Clock.sleep),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1/stream",
+        method="GET",
+    ):
+        response = routes.admin_agent_task_message_stream("session-1")
+        chunks = [next(response.response) for _ in range(6)]
+        response.response.close()
+
+    assert all(chunk.startswith("event: session") for chunk in chunks)
+    assert Clock.sleeps == [
+        routes._AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
+    ] * 5
+    assert Clock.sleeps[0] == 2.0
+    assert quota_calls == [100.0, 110.0]
+    assert routes._AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS == 10.0
+
+
+def test_message_stream_checks_initial_snapshot_before_sending_200(monkeypatch):
+    _patch_common(monkeypatch)
+    released = []
+    lease = SimpleNamespace(release=lambda: released.append(True))
+    monkeypatch.setattr(routes, "try_acquire_sse_slot", lambda: lease)
+    monkeypatch.setattr(
+        routes,
+        "_agent_session_message_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            MySQLPoolExhausted(1040, "pool busy")
+        ),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1/stream",
+        method="GET",
+    ), pytest.raises(MySQLPoolExhausted):
+        routes.admin_agent_task_message_stream("session-1")
+    assert released == [True]
+
+
+def test_message_stream_keeps_connection_and_backs_off_when_pool_is_busy(
+    monkeypatch,
+):
+    _patch_common(monkeypatch)
+    snapshots = iter((
+        {
+            "current_task_id": "task-1",
+            "status": "Running",
+            "running": True,
+            "messages": [],
+            "sequence": 1,
+        },
+        MySQLPoolExhausted(1040, "pool busy"),
+        {
+            "current_task_id": "task-1",
+            "status": "Running",
+            "running": True,
+            "messages": [],
+            "sequence": 2,
+        },
+    ))
+
+    def snapshot(_session, current_state=None):
+        item = next(snapshots)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    sleeps = []
+    clock = {"now": 100.0}
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(routes, "_agent_session_message_snapshot", snapshot)
+    monkeypatch.setattr(
+        routes,
+        "get_agent_runtime_quota_summary",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        routes,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock["now"], sleep=sleep),
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1/stream",
+        method="GET",
+    ):
+        response = routes.admin_agent_task_message_stream("session-1")
+        first = next(response.response)
+        overloaded = next(response.response)
+        recovered = next(response.response)
+        response.response.close()
+
+    assert first.startswith("event: session")
+    assert "event: overloaded" in overloaded
+    assert "retry: 5000" in overloaded
+    assert '"retry_after_ms": 5000' in overloaded
+    assert recovered.startswith("event: session")
+    assert sleeps == [
+        routes._AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS,
+        routes._AGENT_MESSAGE_STREAM_OVERLOAD_RETRY_SECONDS,
+    ]
 
 
 def test_non_owner_admin_cannot_mutate_session_queue(monkeypatch):

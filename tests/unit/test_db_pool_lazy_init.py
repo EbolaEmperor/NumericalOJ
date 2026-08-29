@@ -1,3 +1,5 @@
+import threading
+
 from oj_modules import db_services
 from oj_modules.infrastructure import mysql
 
@@ -70,3 +72,152 @@ def test_db_services_business_functions_keep_connection_monkeypatch_seam(monkeyp
     monkeypatch.setattr(db_services, "get_db_connection", replacement)
 
     assert db_services.get_user_by_username.__globals__["get_db_connection"] is replacement
+
+
+class _FakeRawConnection:
+    def __init__(self):
+        self.ping_count = 0
+        self.rollback_count = 0
+        self.close_count = 0
+
+    def ping(self, reconnect=False):
+        assert reconnect is True
+        self.ping_count += 1
+
+    def rollback(self):
+        self.rollback_count += 1
+
+    def close(self):
+        self.close_count += 1
+
+
+def test_recently_successful_pool_connection_skips_redundant_ping(monkeypatch):
+    raw = _FakeRawConnection()
+    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", lambda: raw)
+    pool = mysql._MySQLConnectionPool(
+        min_size=1,
+        max_size=1,
+        health_check_interval_seconds=30,
+    )
+
+    first = pool.acquire()
+    first.close()
+    second = pool.acquire()
+    second.close()
+
+    assert raw.ping_count == 0
+    assert raw.rollback_count == 2
+    pool.close_idle_connections()
+
+
+def test_zero_health_check_interval_preserves_checkout_ping(monkeypatch):
+    raw = _FakeRawConnection()
+    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", lambda: raw)
+    pool = mysql._MySQLConnectionPool(
+        min_size=1,
+        max_size=1,
+        health_check_interval_seconds=0,
+    )
+
+    connection = pool.acquire()
+    connection.close()
+
+    assert raw.ping_count == 1
+    pool.close_idle_connections()
+
+
+def test_slow_connection_creation_does_not_block_reusing_idle_connection(monkeypatch):
+    initial = _FakeRawConnection()
+    created = _FakeRawConnection()
+    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", lambda: initial)
+    pool = mysql._MySQLConnectionPool(min_size=1, max_size=2)
+    held = pool.acquire()
+
+    creation_started = threading.Event()
+    allow_creation = threading.Event()
+
+    def slow_create():
+        creation_started.set()
+        assert allow_creation.wait(2)
+        return created
+
+    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", slow_create)
+    acquired = []
+    first_thread = threading.Thread(target=lambda: acquired.append(pool.acquire()))
+    first_thread.start()
+    assert creation_started.wait(1)
+
+    held.close()
+    reuse_finished = threading.Event()
+
+    def reuse_idle():
+        acquired.append(pool.acquire())
+        reuse_finished.set()
+
+    second_thread = threading.Thread(target=reuse_idle)
+    second_thread.start()
+    try:
+        assert reuse_finished.wait(0.5)
+    finally:
+        allow_creation.set()
+        first_thread.join(2)
+        second_thread.join(2)
+        for connection in acquired:
+            connection.close()
+        pool.close_idle_connections()
+
+
+def test_web_process_uses_independent_high_concurrency_pool_settings(monkeypatch):
+    created = []
+
+    def pool_factory(**settings):
+        pool = _FakePool(**settings)
+        created.append(pool)
+        return pool
+
+    monkeypatch.setenv("NUMOJ_SERVICE_NAME", "web")
+    monkeypatch.setattr(mysql, "_db_pool", None)
+    monkeypatch.setattr(mysql, "_MySQLConnectionPool", pool_factory)
+    monkeypatch.setattr(mysql, "MYSQL_WEB_POOL_MAX_SIZE", 24)
+    monkeypatch.setattr(mysql, "MYSQL_WEB_POOL_WAIT_TIMEOUT_SECONDS", 0.05)
+
+    mysql.get_db_connection()
+
+    assert created[0].settings["max_size"] == 24
+    assert created[0].settings["wait_timeout"] == 0.05
+
+
+def test_pool_exhaustion_uses_retryable_specific_error(monkeypatch):
+    raw = _FakeRawConnection()
+    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", lambda: raw)
+    pool = mysql._MySQLConnectionPool(
+        min_size=1,
+        max_size=1,
+        wait_timeout=0.01,
+    )
+    held = pool.acquire()
+    try:
+        try:
+            pool.acquire()
+        except mysql.MySQLPoolExhausted as error:
+            assert error.args[0] == 1040
+        else:
+            raise AssertionError("连接池耗尽必须抛出 MySQLPoolExhausted")
+    finally:
+        held.close()
+        pool.close_idle_connections()
+
+
+def test_mysql_server_connection_limit_is_translated_to_backpressure(monkeypatch):
+    def reject_connection():
+        raise mysql.pymysql.err.OperationalError(1040, "too many connections")
+
+    monkeypatch.setattr(mysql, "_create_raw_mysql_connection", reject_connection)
+    pool = mysql._MySQLConnectionPool(min_size=1, max_size=1)
+
+    try:
+        pool.acquire()
+    except mysql.MySQLPoolExhausted as error:
+        assert error.args[0] == 1040
+    else:
+        raise AssertionError("MySQL 连接上限必须转换为可重试背压")
