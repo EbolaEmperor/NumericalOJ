@@ -1,5 +1,6 @@
 """黑盒数据结构示例的算法、会话与 Unix Socket 契约。"""
 
+from collections import Counter
 from contextlib import contextmanager
 import http.client
 import importlib.util
@@ -89,24 +90,29 @@ def _clear_sessions():
     "kind,factory",
     tuple(guess_app.STRUCTURE_FACTORIES.items()),
 )
-def test_all_structures_match_set_semantics_over_deterministic_trace(kind, factory):
+def test_all_structures_match_multiset_semantics_over_deterministic_trace(
+    kind, factory,
+):
     structure = factory()
-    reference = set()
+    reference = Counter()
     randomizer = random.Random(20260830)
 
     for _index in range(800):
         operation = randomizer.choice(("insert", "erase", "contains", "minimum"))
         value = randomizer.randint(-40, 40)
         if operation == "insert":
-            expected = value not in reference
+            expected = True
             result, steps = structure.insert(value)
-            reference.add(value)
+            reference[value] += 1
         elif operation == "erase":
-            expected = value in reference
+            expected = reference[value] > 0
             result, steps = structure.erase(value)
-            reference.discard(value)
+            if expected:
+                reference[value] -= 1
+                if reference[value] == 0:
+                    del reference[value]
         elif operation == "contains":
-            expected = value in reference
+            expected = reference[value] > 0
             result, steps = structure.contains(value)
         else:
             expected = min(reference) if reference else None
@@ -114,17 +120,54 @@ def test_all_structures_match_set_semantics_over_deterministic_trace(kind, facto
 
         assert result == expected, kind
         assert type(steps) is int and steps >= 0, kind
-        assert sorted(structure.items()) == sorted(reference), kind
-        assert len(structure) == len(reference), kind
+        assert sorted(structure.items()) == sorted(reference.elements()), kind
+        assert len(structure) == sum(reference.values()), kind
+
+
+@pytest.mark.parametrize(
+    "kind,factory",
+    tuple(guess_app.STRUCTURE_FACTORIES.items()),
+)
+def test_all_structures_keep_duplicate_items_and_erase_one_at_a_time(
+    kind, factory,
+):
+    structure = factory()
+
+    for _index in range(3):
+        inserted, steps = structure.insert(7)
+        assert inserted is True, kind
+        assert steps >= 1, kind
+    assert sorted(structure.items()) == [7, 7, 7], kind
+    assert len(structure) == 3, kind
+
+    for remaining in (2, 1):
+        removed, steps = structure.erase(7)
+        assert removed is True and steps >= 1, kind
+        assert structure.contains(7)[0] is True, kind
+        assert structure.minimum()[0] == 7, kind
+        assert len(structure) == remaining, kind
+
+    assert structure.erase(7)[0] is True, kind
+    assert structure.contains(7)[0] is False, kind
+    assert structure.erase(7)[0] is False, kind
+    assert structure.minimum()[0] is None, kind
+    assert structure.items() == [], kind
+
+
+def test_unordered_array_insert_is_one_step_even_with_duplicates():
+    structure = guess_app.UnorderedArray()
+
+    for value in (*range(32), 7, 7, 31):
+        assert structure.insert(value) == (True, 1)
 
 
 def _assert_bst(node, low=None, high=None):
     if node is None:
         return 0
     if low is not None:
-        assert node.value > low
+        assert node.value >= low
     if high is not None:
-        assert node.value < high
+        assert node.value <= high
     left_height = _assert_bst(node.left, low, node.value)
     right_height = _assert_bst(node.right, node.value, high)
     return 1 + max(left_height, right_height)
@@ -134,9 +177,9 @@ def _assert_avl(node, low=None, high=None):
     if node is None:
         return 0
     if low is not None:
-        assert node.value > low
+        assert node.value >= low
     if high is not None:
-        assert node.value < high
+        assert node.value <= high
     left_height = _assert_avl(node.left, low, node.value)
     right_height = _assert_avl(node.right, node.value, high)
     assert abs(left_height - right_height) <= 1
@@ -145,7 +188,9 @@ def _assert_avl(node, low=None, high=None):
 
 
 def test_each_structure_preserves_its_own_representation_invariants():
-    values = (32, 8, 56, 4, 16, 40, 72, 2, 6, 12, 24, 36, 48, 64, 80)
+    values = (
+        32, 8, 56, 4, 16, 40, 72, 2, 6, 12, 24, 36, 48, 64, 80, 16, 16,
+    )
 
     unordered = guess_app.UnorderedArray()
     linked = guess_app.LinkedList()
@@ -158,10 +203,10 @@ def test_each_structure_preserves_its_own_representation_invariants():
     for structure in structures:
         for value in values:
             assert structure.insert(value)[0] is True
-        for value in (8, 56, 2, 72):
+        for value in (8, 56, 2, 72, 16):
             assert structure.erase(value)[0] is True
 
-    assert len(set(unordered._data)) == len(unordered._data)
+    assert Counter(unordered._data)[16] == 2
     assert sorted_array._data == sorted(sorted_array._data)
 
     linked_values = []
@@ -191,9 +236,29 @@ def test_each_structure_preserves_its_own_representation_invariants():
         if slot is not guess_app._EMPTY and slot is not guess_app._DELETED
     ]
     assert len(active_hash_slots) == table._size
-    assert len(set(active_hash_slots)) == table._size
+    assert Counter(active_hash_slots)[16] == 2
     for value in active_hash_slots:
         assert table.contains(value)[0] is True
+
+
+def test_linear_probing_hash_keeps_duplicates_across_resize_and_tombstones():
+    table = guess_app.LinearProbingHash()
+
+    for _index in range(48):
+        assert table.insert(8)[0] is True
+    assert len(table._slots) > table.INITIAL_CAPACITY
+    assert table.items().count(8) == 48
+
+    for _index in range(19):
+        assert table.erase(8)[0] is True
+    for _index in range(12):
+        assert table.insert(264)[0] is True
+
+    assert table.items().count(8) == 29
+    assert table.items().count(264) == 12
+    assert table.contains(8)[0] is True
+    assert table.contains(264)[0] is True
+    assert len(table) == 41
 
 
 def _run_hash_tombstone_churn():
@@ -436,7 +501,7 @@ def test_unix_socket_api_keeps_sessions_isolated_and_hides_answer_until_guess(
     assert "guess" not in state_a
     assert "unordered_array" not in json.dumps(state_a, ensure_ascii=False)
 
-    for value in (9, -2, 5):
+    for value in (9, -2, 5, 5):
         status, inserted = _request(
             running_api,
             "POST",
@@ -446,7 +511,7 @@ def test_unix_socket_api_keeps_sessions_isolated_and_hides_answer_until_guess(
         )
         assert status == 200
         assert inserted["result"] is True
-    assert inserted["items"] == [-2, 5, 9]
+    assert inserted["items"] == [-2, 5, 5, 9]
 
     status, state_b = _request(
         running_api, "GET", "/api/state", session_id=player_b,
@@ -463,7 +528,29 @@ def test_unix_socket_api_keeps_sessions_isolated_and_hides_answer_until_guess(
     )
     assert status == 200
     assert contained["result"] is True
-    assert contained["items"] == [-2, 5, 9]
+    assert contained["items"] == [-2, 5, 5, 9]
+
+    status, erased = _request(
+        running_api,
+        "POST",
+        "/api/action",
+        {"operation": "erase", "value": 5},
+        session_id=player_a,
+    )
+    assert status == 200
+    assert erased["result"] is True
+    assert erased["items"] == [-2, 5, 9]
+
+    status, duplicate_remains = _request(
+        running_api,
+        "POST",
+        "/api/action",
+        {"operation": "contains", "value": 5},
+        session_id=player_a,
+    )
+    assert status == 200
+    assert duplicate_remains["result"] is True
+    assert duplicate_remains["items"] == [-2, 5, 9]
 
     original_kind = guess_app._sessions[player_a].kind
     status, reset = _request(
@@ -591,18 +678,17 @@ def test_minimum_and_capacity_limit_have_bounded_normal_responses(monkeypatch):
     assert empty["result"] is None and empty["steps"] == 0
 
     assert guess_app._perform_action(
-        session, {"operation": "insert", "value": 2},
+        session, {"operation": "insert", "value": 1},
     )["result"] is True
     assert guess_app._perform_action(
         session, {"operation": "insert", "value": 1},
     )["result"] is True
-    duplicate = guess_app._perform_action(
-        session, {"operation": "insert", "value": 1},
-    )
-    assert duplicate["result"] is False
+    assert session.structure.items() == [1, 1]
     with pytest.raises(guess_app.GameError) as caught:
         guess_app._perform_action(
-            session, {"operation": "insert", "value": 3},
+            session, {"operation": "insert", "value": 1},
         )
     assert caught.value.status == 409
-    assert caught.value.steps > 0
+    assert caught.value.steps == 0
+    assert session.structure.items() == [1, 1]
+    assert len(session.structure) == 2

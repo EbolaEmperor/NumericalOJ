@@ -39,7 +39,7 @@ class GameError(RuntimeError):
 
 
 class UnorderedArray:
-    """以连续数组保存、用末项覆盖删除位置的无序集合。"""
+    """以连续数组保存、用末项覆盖删除位置的无序多重集合。"""
 
     def __init__(self):
         self._data = []
@@ -59,11 +59,8 @@ class UnorderedArray:
         return False, steps
 
     def insert(self, value):
-        exists, steps = self.contains(value)
-        if exists:
-            return False, steps
         self._data.append(value)
-        return True, steps + 1
+        return True, 1
 
     def erase(self, value):
         steps = 0
@@ -92,7 +89,7 @@ class UnorderedArray:
 
 
 class SortedArray:
-    """用二分定位、移动尾部元素维持有序的连续数组集合。"""
+    """用二分定位、移动尾部元素维持有序的连续数组多重集合。"""
 
     def __init__(self):
         self._data = []
@@ -103,7 +100,7 @@ class SortedArray:
     def items(self):
         return list(self._data)
 
-    def _locate(self, value):
+    def _lower_bound(self, value):
         low = 0
         high = len(self._data)
         steps = 0
@@ -114,6 +111,10 @@ class SortedArray:
                 low = middle + 1
             else:
                 high = middle
+        return low, steps
+
+    def _locate(self, value):
+        low, steps = self._lower_bound(value)
         found = False
         if low < len(self._data):
             steps += 1
@@ -125,9 +126,7 @@ class SortedArray:
         return found, steps
 
     def insert(self, value):
-        index, found, steps = self._locate(value)
-        if found:
-            return False, steps
+        index, steps = self._lower_bound(value)
         # Python 的 list.insert 完成了这些移动；计数显式反映实际算法工作量。
         steps += len(self._data) - index
         self._data.insert(index, value)
@@ -152,7 +151,7 @@ class _ListNode:
 
 
 class LinkedList:
-    """每次在表头插入的单向链表集合。"""
+    """每次在表头插入的单向链表多重集合。"""
 
     def __init__(self):
         self._head = None
@@ -180,12 +179,9 @@ class LinkedList:
         return False, steps
 
     def insert(self, value):
-        exists, steps = self.contains(value)
-        if exists:
-            return False, steps
         self._head = _ListNode(value, self._head)
         self._size += 1
-        return True, steps + 1
+        return True, 1
 
     def erase(self, value):
         previous = None
@@ -219,7 +215,7 @@ class LinkedList:
 
 
 class BinaryMinHeap:
-    """数组实现的二叉最小堆；集合查找仍需线性扫描。"""
+    """数组实现的二叉最小堆；查找仍需线性扫描。"""
 
     def __init__(self):
         self._heap = []
@@ -279,11 +275,8 @@ class BinaryMinHeap:
         return steps
 
     def insert(self, value):
-        exists, steps = self.contains(value)
-        if exists:
-            return False, steps
         self._heap.append(value)
-        steps += 1
+        steps = 1
         steps += self._sift_up(len(self._heap) - 1)
         return True, steps
 
@@ -327,7 +320,7 @@ class _BSTNode:
 
 
 class BinarySearchTree:
-    """不做平衡调整的普通二叉搜索树集合。"""
+    """不做平衡调整、相等值向右插入的普通 BST 多重集合。"""
 
     def __init__(self):
         self._root = None
@@ -368,8 +361,6 @@ class BinarySearchTree:
         steps = 0
         while True:
             steps += 1
-            if value == node.value:
-                return False, steps
             if value < node.value:
                 if node.left is None:
                     node.left = _BSTNode(value)
@@ -449,7 +440,7 @@ class _StepCounter:
 
 
 class AVLTree:
-    """维护节点高度并在更新后旋转的 AVL 集合。"""
+    """维护节点高度并在更新后旋转的 AVL 多重集合。"""
 
     def __init__(self):
         self._root = None
@@ -522,8 +513,6 @@ class AVLTree:
             counter.add()
             return _AVLNode(value), True
         counter.add()
-        if value == node.value:
-            return node, False
         if value < node.value:
             node.left, inserted = cls._insert(node.left, value, counter)
         else:
@@ -622,7 +611,7 @@ _DELETED = object()
 
 
 class LinearProbingHash:
-    """开放寻址、线性探测并用墓碑删除的整数哈希集合。"""
+    """开放寻址、线性探测并用墓碑删除的整数哈希多重集合。"""
 
     INITIAL_CAPACITY = 8
     LOAD_NUMERATOR = 7
@@ -654,25 +643,29 @@ class LinearProbingHash:
     def _locate(self, value):
         capacity = len(self._slots)
         start = self._home(value, capacity)
-        first_deleted = None
         steps = 0
         for offset in range(capacity):
             index = (start + offset) % capacity
             slot = self._slots[index]
             steps += 1
             if slot is _EMPTY:
-                return (
-                    first_deleted if first_deleted is not None else index,
-                    False,
-                    steps,
-                )
+                return None, False, steps
             if slot is _DELETED:
-                if first_deleted is None:
-                    first_deleted = index
                 continue
             if slot == value:
                 return index, True, steps
-        return first_deleted, False, steps
+        return None, False, steps
+
+    def _insertion_slot(self, value):
+        capacity = len(self._slots)
+        start = self._home(value, capacity)
+        steps = 0
+        for offset in range(capacity):
+            index = (start + offset) % capacity
+            steps += 1
+            if self._slots[index] is _EMPTY or self._slots[index] is _DELETED:
+                return index, steps
+        return None, steps
 
     def _resize(self, capacity):
         if (
@@ -707,9 +700,7 @@ class LinearProbingHash:
         return found, steps
 
     def insert(self, value):
-        index, found, steps = self._locate(value)
-        if found:
-            return False, steps
+        index, steps = self._insertion_slot(value)
 
         capacity = len(self._slots)
         projected_size = self._size + 1
@@ -732,18 +723,14 @@ class LinearProbingHash:
                     raise AssertionError("hash capacity is too small for MAX_ITEMS")
                 raise OverflowError("linear probing hash capacity limit reached")
             steps += self._resize(min(capacity * 2, self.MAX_CAPACITY))
-            index, found, located_steps = self._locate(value)
+            index, located_steps = self._insertion_slot(value)
             steps += located_steps
-            if found:
-                raise AssertionError("rehash introduced duplicate")
         elif tombstone_pressure:
             # 有效元素负载尚低，只需在相同容量中清除墓碑；绝不能因为
             # insert/erase churn 扩容。
             steps += self._resize(capacity)
-            index, found, located_steps = self._locate(value)
+            index, located_steps = self._insertion_slot(value)
             steps += located_steps
-            if found:
-                raise AssertionError("rehash introduced duplicate")
         if index is None:
             raise AssertionError("linear probing hash has no insertion slot")
         if self._slots[index] is _EMPTY:
@@ -910,10 +897,7 @@ def _perform_action(session, payload):
 
     value = _validate_integer(payload.get("value"))
     if operation == "insert" and len(session.structure) >= MAX_ITEMS:
-        exists, steps = session.structure.contains(value)
-        if exists:
-            return _state_payload(session, steps=steps, result=False)
-        raise GameError("黑盒已经装满。", 409, steps=steps)
+        raise GameError("黑盒已经装满。", 409)
     result, steps = getattr(session.structure, operation)(value)
     return _state_payload(session, steps=steps, result=result)
 

@@ -778,6 +778,12 @@
       animation: dialog-enter 150ms ease-out both;
     }
 
+    .rules-dialog form {
+      display: grid;
+      max-height: inherit;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
     .dialog-header {
       display: flex;
       align-items: center;
@@ -812,6 +818,8 @@
       gap: 11px;
       margin: 0;
       padding: 19px 24px 19px 40px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
       color: var(--numoj-ink-2);
       font-size: 0.78rem;
       line-height: 1.65;
@@ -1380,7 +1388,8 @@
       </header>
       <ol class="rules-list">
         <li>每一局会随机选定一种隐藏的数据结构。</li>
-        <li>执行操作，观察完整元素集合、返回结果与操作步数。</li>
+        <li>执行操作，观察全部元素、返回结果与操作步数。</li>
+        <li>允许插入重复元素；erase(x) 每次只删除一个。</li>
         <li>清空只移除元素，不会更换当前隐藏结构。</li>
         <li>选择一种结构并提交；提交后本局结束。</li>
       </ol>
@@ -1593,7 +1602,7 @@
       var structureNotes = {
         unordered_array: {
           feature: "不维持大小顺序，删除时会用末项补位。",
-          clue: "min 和未命中的 contain 通常随元素增多而变慢；连续插入后，查找最新值往往也要走到末尾。"
+          clue: "insert 通常固定为 1 步；min、未命中的 contain，以及命中位置靠后的 contain，通常都会随元素增多而变慢。"
         },
         sorted_array: {
           feature: "始终按大小排列，定位快，但插入和删除可能需要搬动元素。",
@@ -1601,7 +1610,7 @@
         },
         linked_list: {
           feature: "新值放在表头，删除只需改动相邻链接。",
-          clue: "连续插入后，最新值通常很快命中，最早值和未命中查询则会随元素增多而变慢。"
+          clue: "insert 通常固定为 1 步；连续插入后，最新值很快命中，较早值和未命中查询则会随元素增多而变慢。"
         },
         binary_heap: {
           feature: "最小值留在堆顶，插入和删除后通过上下调整恢复结构。",
@@ -1617,7 +1626,7 @@
         },
         linear_probing_hash: {
           feature: "从哈希位置开始逐格探测，并用墓碑保留删除后的探测路径。",
-          clue: "尝试 0、8、16、24 等同余值，碰撞时步数会逐渐增加；扩容或清理墓碑的某次插入还可能突然变慢。"
+          clue: "尝试重复值或 0、8、16、24 等同余值，碰撞时步数会逐渐增加；扩容或清理墓碑的某次插入还可能突然变慢。"
         }
       };
 
