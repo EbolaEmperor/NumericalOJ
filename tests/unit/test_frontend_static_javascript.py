@@ -513,11 +513,29 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
     full_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text()
     runtime = (ROOT / "frontend" / "monaco" / "runtime.js").read_text()
     build_script = (ROOT / "scripts" / "build_monaco.mjs").read_text()
+    component = (
+        ROOT / "templates" / "components" / "editor" / "monaco.html"
+    ).read_text()
+    problem_detail = (
+        ROOT / "templates" / "problems" / "detail.html"
+    ).read_text()
+    submission_detail = (
+        ROOT / "templates" / "submissions" / "detail.html"
+    ).read_text()
 
-    assert "@shikijs/" not in minimal_entry
+    assert "monaco_bundle|default('minimal')" in component
+    assert "components/editor/monaco.html" in problem_detail
+    assert "components/editor/monaco.html" in submission_detail
+
+    for language in ("c", "cpp", "python", "matlab"):
+        assert f'from "@shikijs/langs/{language}"' in minimal_entry
+    assert 'from "../lean4-grammar.js"' in minimal_entry
+    assert (
+        "configureTextMateLanguages([c, cpp, python, matlab, lean4])"
+        in minimal_entry
+    )
     assert 'definitions/cpp/register.js"' in minimal_entry
     assert 'definitions/python/register.js"' in minimal_entry
-    assert 'from "../lean4-unicode-input.js"' in minimal_entry
     for language in ("java", "javascript", "rust", "typescript"):
         assert f'from "@shikijs/langs/{language}"' not in minimal_entry
         assert f'from "@shikijs/langs/{language}"' in full_entry
@@ -543,10 +561,13 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
     for symbol in (
         "attachLean4UnicodeInput",
         "getLean4UnicodeAbbreviations",
+        "prepareTextMateHighlighting",
         "registerDocumentSemanticTokensProvider",
+        "dark-plus",
+        "4EC9B0",
+        "DCDCAA",
     ):
         assert symbol in built_minimal
-    assert "prepareTextMateHighlighting" not in built_minimal
 
 
 def test_monaco_distribution_carries_the_upstream_license():
@@ -703,7 +724,7 @@ require({str(asset)!r});
   await NumOJSemanticTokens.requestTokens({{
     context: "markdown",
     language: "cpp",
-    source: "std::vector<int> values;"
+    source: "std::vector<std::string> values;"
   }});
   await NumOJSemanticTokens.requestTokens({{
     context: "markdown",
@@ -735,7 +756,10 @@ require({str(asset)!r});
     .filter(function(call) {{ return call.options.method === "POST"; }})
     .map(function(call) {{ return JSON.parse(call.options.body); }});
   if (requests.length !== 6) process.exit(1);
-  if (requests[0].context !== "markdown") process.exit(2);
+  if (
+    requests[0].context !== "markdown" ||
+    requests[0].source !== "std::vector<std::string> values;"
+  ) process.exit(2);
   if (Object.prototype.hasOwnProperty.call(requests[0], "problem_id")) {{
     process.exit(3);
   }}

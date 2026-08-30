@@ -1,5 +1,10 @@
-// OJ 页面只需要五种提交语言。C/C++、Python 使用 Monaco Monarch，
-// Matlab、Lean4 由 code-editor-runtime 注册；语义 token 由站内 API 叠加。
+// OJ 页面只加载五种提交语言，同时保留与 Repository 工作台一致的
+// TextMate 词法着色和 Dark+ 语义 token 配色。
+import c from "@shikijs/langs/c";
+import cpp from "@shikijs/langs/cpp";
+import matlab from "@shikijs/langs/matlab";
+import python from "@shikijs/langs/python";
+import lean4 from "../lean4-grammar.js";
 import "monaco-editor/languages/definitions/cpp/register.js";
 import "monaco-editor/languages/definitions/python/register.js";
 import "monaco-editor/editor/browser/coreCommands.js";
@@ -31,14 +36,17 @@ import "monaco-editor/editor/contrib/wordOperations/browser/wordOperations.js";
 import "monaco-editor/editor/contrib/wordPartOperations/browser/wordPartOperations.js";
 import "monaco-editor/features/find/register.js";
 import {
-  attachLean4UnicodeInput as attachUnicodeInput,
+  attachLean4UnicodeInput,
+  configureTextMateLanguages,
   getLean4UnicodeAbbreviations,
-} from "../lean4-unicode-input.js";
-import * as monaco from "monaco-editor/editor/editor.api.js";
+  prepareTextMateHighlighting,
+} from "./runtime.js";
 
-export function attachLean4UnicodeInput(editor) {
-  return attachUnicodeInput(monaco, editor);
-}
+configureTextMateLanguages([c, cpp, python, matlab, lean4]);
 
-export { getLean4UnicodeAbbreviations };
+export {
+  attachLean4UnicodeInput,
+  getLean4UnicodeAbbreviations,
+  prepareTextMateHighlighting,
+};
 export * from "monaco-editor/editor/editor.api.js";
