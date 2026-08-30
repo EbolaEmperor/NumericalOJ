@@ -758,8 +758,8 @@
     }
 
     .rules-dialog {
-      width: min(calc(100% - 28px), 440px);
-      max-height: min(680px, calc(100dvh - 28px));
+      width: min(calc(100% - 28px), 860px);
+      max-height: min(780px, calc(100dvh - 28px));
       padding: 0;
       overflow: hidden;
       border: 1px solid var(--numoj-line);
@@ -782,6 +782,11 @@
       display: grid;
       max-height: inherit;
       grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .rules-dialog .dialog-header {
+      padding: 18px 24px;
+      border-bottom: 0;
     }
 
     .dialog-header {
@@ -813,16 +818,151 @@
       font-weight: 400;
     }
 
-    .rules-list {
-      display: grid;
-      gap: 11px;
-      margin: 0;
-      padding: 19px 24px 19px 40px;
+    .rules-content {
+      min-height: 0;
+      overflow-x: hidden;
       overflow-y: auto;
       overscroll-behavior: contain;
+      scrollbar-width: thin;
+    }
+
+    .rules-overview {
+      display: grid;
+      gap: 12px;
+      padding: 2px 24px 20px;
+    }
+
+    .rules-overview h3,
+    .structure-catalog h3 {
+      margin: 0;
+      color: var(--numoj-ink);
+      font-size: 0.9rem;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .rules-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0 10px 0 27px;
       color: var(--numoj-ink-2);
-      font-size: 0.78rem;
+      font-size: 0.76rem;
       line-height: 1.65;
+    }
+
+    .rules-list li::marker {
+      color: var(--numoj-brand-ink);
+      font-family: var(--numoj-mono);
+      font-size: 0.68rem;
+      font-weight: 700;
+    }
+
+    .rules-divider {
+      height: 1px;
+      margin: 0 24px;
+      background: var(--numoj-line);
+    }
+
+    .structure-catalog {
+      display: grid;
+      gap: 12px;
+      padding: 20px 24px 24px;
+    }
+
+    .structure-catalog-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .structure-catalog-count {
+      flex: 0 0 auto;
+      color: var(--numoj-ink-4);
+      font-size: 0.68rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .structure-card-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .structure-card {
+      --structure-accent: var(--numoj-brand-ink);
+      --structure-soft: var(--numoj-brand-soft);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 12px;
+      min-width: 0;
+      padding: 13px;
+      border: 1px solid #fed7aa;
+      border-radius: 10px;
+      background: #fffdf9;
+      box-shadow: 0 1px 1px rgb(24 24 27 / 2%);
+      transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+    }
+
+    .structure-card:hover {
+      border-color: #fb923c;
+      box-shadow: 0 8px 18px rgb(24 24 27 / 6%);
+      transform: translateY(-1px);
+    }
+
+    .structure-card-logo {
+      display: grid;
+      width: 46px;
+      height: 46px;
+      flex: 0 0 46px;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--structure-accent) 20%, transparent);
+      border-radius: 11px;
+      background: var(--structure-soft);
+      color: var(--structure-accent);
+    }
+
+    .structure-card-logo svg {
+      width: 36px;
+      height: 28px;
+      overflow: visible;
+    }
+
+    .structure-card-body {
+      display: grid;
+      align-content: start;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .structure-card-heading {
+      display: flex;
+      min-width: 0;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .structure-card-heading h4 {
+      min-width: 0;
+      margin: 0;
+      color: var(--numoj-ink);
+      font-size: 0.82rem;
+      font-weight: 720;
+      line-height: 1.35;
+    }
+
+    .structure-card p {
+      color: var(--numoj-ink-3);
+      font-size: 0.68rem;
+      line-height: 1.55;
+    }
+
+    .rules-dialog .dialog-footer {
+      padding: 13px 24px 18px;
+      border-top: 0;
     }
 
     .dialog-footer {
@@ -1254,6 +1394,31 @@
       .result-new-game {
         width: 100%;
       }
+
+      .rules-dialog .dialog-header {
+        padding: 16px 16px 8px;
+      }
+
+      .rules-overview,
+      .structure-catalog {
+        padding-right: 16px;
+        padding-left: 16px;
+      }
+
+      .rules-divider {
+        margin-right: 16px;
+        margin-left: 16px;
+      }
+
+      .structure-catalog-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 7px;
+      }
+
+      .rules-dialog .dialog-footer {
+        padding: 11px 16px 14px;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1386,13 +1551,156 @@
         <h2 id="rulesTitle">规则</h2>
         <button class="dialog-close" type="submit" value="close" aria-label="关闭规则">×</button>
       </header>
-      <ol class="rules-list">
-        <li>每一局会随机选定一种隐藏的数据结构。</li>
-        <li>执行操作，观察全部元素、返回结果与操作步数。</li>
-        <li>允许插入重复元素；erase(x) 每次只删除一个。</li>
-        <li>清空只移除元素，不会更换当前隐藏结构。</li>
-        <li>选择一种结构并提交；提交后本局结束。</li>
-      </ol>
+
+      <div class="rules-content">
+        <section class="rules-overview">
+          <ol class="rules-list">
+            <li>每一局会随机选定一种隐藏的数据结构。</li>
+            <li>执行 insert、erase、contains、min，观察全部元素、返回结果和这次操作的步数。</li>
+            <li>允许插入重复元素；erase(x) 每次只删除一个匹配元素。</li>
+            <li>清空只移除当前元素，不会更换结构；选择答案并提交后，本局结束。</li>
+          </ol>
+        </section>
+
+        <div class="rules-divider" role="separator"></div>
+
+        <section class="structure-catalog" aria-labelledby="structureCatalogTitle">
+          <header class="structure-catalog-header">
+            <div>
+              <h3 id="structureCatalogTitle">数据结构说明</h3>
+            </div>
+            <span class="structure-catalog-count">7 个候选</span>
+          </header>
+
+          <div class="structure-card-grid">
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" focusable="false">
+                  <rect x="2.5" y="11" width="6" height="6" rx="1" fill="currentColor" opacity="0.12"></rect>
+                  <rect x="9.5" y="3" width="6" height="6" rx="1" fill="currentColor" opacity="0.12"></rect>
+                  <rect x="17" y="14" width="6" height="6" rx="1" fill="currentColor" opacity="0.12"></rect>
+                  <rect x="24" y="7" width="5.5" height="5.5" rx="1" fill="currentColor" opacity="0.12"></rect>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>无序数组</h4>
+                </div>
+                <p>使用连续数组存储元素，不维护元素顺序。insert 直接在尾部追加元素；erase(x) 会找到数组里第一个 x，删去后将后面的元素依次往前移动一格。contains 和 min 按顺序访问数组元素，每访问一个元素计 1 步；insert 追加元素计 1 步；erase 时每移动一个元素、删除末项各计 1 步。</p>
+              </div>
+            </article>
+
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" focusable="false">
+                  <path d="M1.5 21.5h29"></path>
+                  <rect x="3" y="15" width="5" height="6" rx=".8" fill="currentColor" opacity="0.1"></rect>
+                  <rect x="10" y="12" width="5" height="9" rx=".8" fill="currentColor" opacity="0.1"></rect>
+                  <rect x="17" y="8" width="5" height="13" rx=".8" fill="currentColor" opacity="0.1"></rect>
+                  <rect x="24" y="3" width="5" height="18" rx=".8" fill="currentColor" opacity="0.1"></rect>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>有序数组</h4>
+                </div>
+                <p>使用按升序排列的连续数组。contains、insert 和 erase 使用二分查找定位；二分查找每检查一个中间位置计 1 步，元素移动、最终插入或删除也各按 1 步计。</p>
+              </div>
+            </article>
+
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <path d="M8 12h5m6 0h4"></path>
+                  <path d="m11.5 9.8 2.5 2.2-2.5 2.2m10-4.4L24 12l-2.5 2.2"></path>
+                  <circle cx="5" cy="12" r="3" fill="currentColor" opacity="0.12"></circle>
+                  <circle cx="16" cy="12" r="3" fill="currentColor" opacity="0.12"></circle>
+                  <circle cx="27" cy="12" r="3" fill="currentColor" opacity="0.12"></circle>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>链表</h4>
+                </div>
+                <p>使用单向链表，维护 head 和 tail 指针；insert 将新结点接到 tail。contains、erase 和 min 都从 head 开始顺序遍历。每访问一个结点计 1 步；新建结点和成功删除结点各计 1 步。</p>
+              </div>
+            </article>
+
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <path d="m16 5-8 6m8-6 8 6M8 11l-4 6m4-6 5 6m11-6-5 6m5-6 4 6"></path>
+                  <circle cx="16" cy="4.5" r="3" fill="currentColor" opacity="0.16"></circle>
+                  <circle cx="8" cy="11" r="2.5" fill="currentColor" opacity="0.1"></circle>
+                  <circle cx="24" cy="11" r="2.5" fill="currentColor" opacity="0.1"></circle>
+                  <circle cx="4" cy="19" r="2"></circle><circle cx="13" cy="19" r="2"></circle><circle cx="19" cy="19" r="2"></circle><circle cx="28" cy="19" r="2"></circle>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>二叉堆</h4>
+                </div>
+                <p>使用数组实现二叉最小堆，堆顶保存最小值。contains 进行线性扫描；insert 将元素加入数组末尾后上浮，erase 用末元素替换被删元素后，根据需要上浮或下沉。每次访问、比较、交换以及末元素的替换和删除按实际操作各计 1 步。</p>
+              </div>
+            </article>
+
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <path d="m12 5-7 7m7-7 10 6m0 0-5 7m5-7 7 7"></path>
+                  <rect x="9" y="2" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.13"></rect>
+                  <rect x="2" y="9" width="6" height="6" rx="1.5"></rect>
+                  <rect x="19" y="8" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.08"></rect>
+                  <rect x="14" y="16" width="5" height="5" rx="1.2"></rect>
+                  <rect x="26" y="16" width="5" height="5" rx="1.2"></rect>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>普通 BST</h4>
+                </div>
+                <p>普通 BST：小于当前结点的元素进入左子树，大于或等于当前结点的元素进入右子树，不进行平衡调整。每访问一个已有结点、到达空位置、新建结点、复制结点值或删除结点，各计 1 步。</p>
+              </div>
+            </article>
+
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <path d="m16 4-8 6m8-6 8 6M8 10l-4 6m4-6 4 6m12-6-4 6m4-6 4 6M3 22h26"></path>
+                  <circle cx="16" cy="4" r="2.5" fill="currentColor" opacity="0.14"></circle>
+                  <circle cx="8" cy="10" r="2.2"></circle><circle cx="24" cy="10" r="2.2"></circle>
+                  <circle cx="4" cy="17" r="1.8"></circle><circle cx="12" cy="17" r="1.8"></circle><circle cx="20" cy="17" r="1.8"></circle><circle cx="28" cy="17" r="1.8"></circle>
+                  <path d="M13.5 22h5"></path>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>AVL</h4>
+                </div>
+                <p>AVL 在 BST 基础上维护结点高度，并在插入或删除后进行平衡调整。结点访问、空位置、新建、复制结点值和删除按 BST 规则计步；单旋转计 1 步，双旋转计 2 步，高度和平衡因子的维护不计步。</p>
+              </div>
+            </article>
+
+            <article class="structure-card">
+              <div class="structure-card-logo" aria-hidden="true">
+                <svg viewBox="0 0 32 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                  <rect x="1.5" y="10" width="5.5" height="8" rx="1"></rect><rect x="7.5" y="10" width="5.5" height="8" rx="1"></rect>
+                  <rect x="13.5" y="10" width="5.5" height="8" rx="1" fill="currentColor" opacity="0.16"></rect><rect x="19.5" y="10" width="5.5" height="8" rx="1"></rect><rect x="25.5" y="10" width="5" height="8" rx="1"></rect>
+                  <path d="M16 7h10m-2.5-2.5L26 7l-2.5 2.5"></path>
+                  <circle cx="16" cy="7" r="1.2" fill="currentColor" stroke="none"></circle>
+                </svg>
+              </div>
+              <div class="structure-card-body">
+                <div class="structure-card-heading">
+                  <h4>线性探测哈希</h4>
+                </div>
+                <p>采用开放寻址和线性探测：先由哈希函数计算起始槽位，发生冲突时依次检查后续槽位；删除使用墓碑标记，必要时扩容或清理墓碑。每检查一个槽位计 1 步；插入和删除各计 1 步；扩容或清理时，槽位扫描、冲突处理和重新插入按实际操作计步。</p>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+
       <footer class="dialog-footer">
         <button class="dialog-button" type="submit" value="close">关闭</button>
       </footer>
@@ -1609,8 +1917,8 @@
           clue: "min 通常只需 1 步，contain 增长较慢；插入很小的值通常比插入很大的值多出明显的搬移步数。"
         },
         linked_list: {
-          feature: "新值放在表头，删除只需改动相邻链接。",
-          clue: "insert 通常固定为 1 步；连续插入后，最新值很快命中，较早值和未命中查询则会随元素增多而变慢。"
+          feature: "维护 head 和 tail，新值总接在尾部；查询、删除从 head 顺序扫描。",
+          clue: "insert 通常固定为 1 步；contains 和 erase 会随目标在链中的位置变慢，插入顺序不会倒置。"
         },
         binary_heap: {
           feature: "最小值留在堆顶，插入和删除后通过上下调整恢复结构。",
@@ -1622,7 +1930,7 @@
         },
         avl: {
           feature: "在 BST 的基础上维护高度，并通过旋转保持平衡。",
-          clue: "连续插入递增值后，查询步数通常仍较低；部分 insert 或 erase 会因高度更新和旋转出现额外步数。"
+          clue: "连续插入递增值后，查询步数通常仍较低；部分 insert 或 erase 会因单旋或双旋多出少量步数。"
         },
         linear_probing_hash: {
           feature: "从哈希位置开始逐格探测，并用墓碑保留删除后的探测路径。",

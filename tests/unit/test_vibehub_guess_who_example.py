@@ -73,6 +73,13 @@ def test_frontend_uses_custom_viewport_safe_structure_controls():
     assert 'id="resultActualIcon"' in html
     assert "structureNotes" in html
     assert "celebration-shard" in html
+    assert 'class="rules-content"' in html
+    assert 'class="rules-divider"' in html
+    assert html.count('class="structure-card"') == len(EXPECTED_KINDS)
+    assert html.count('class="structure-card-logo"') == len(EXPECTED_KINDS)
+    assert "head 和 tail" in html
+    assert "怎么存" not in html
+    assert "怎么算" not in html
     for kind in EXPECTED_KINDS:
         assert re.search(rf"^\s*{re.escape(kind)}:\s*{{", html, re.MULTILINE)
 
@@ -161,6 +168,61 @@ def test_unordered_array_insert_is_one_step_even_with_duplicates():
         assert structure.insert(value) == (True, 1)
 
 
+def test_unordered_array_erase_shifts_following_elements_and_counts_steps():
+    structure = guess_app.UnorderedArray()
+    for value in (1, 2, 3, 2):
+        structure.insert(value)
+
+    assert structure.erase(2) == (True, 5)  # 访问 2 个元素 + 左移 2 次 + 删除。
+    assert structure.items() == [1, 3, 2]
+
+
+def test_linked_list_inserts_at_tail_and_keeps_tail_after_erase():
+    structure = guess_app.LinkedList()
+
+    for value in (8, 3, 5):
+        assert structure.insert(value) == (True, 1)
+    assert structure.items() == [8, 3, 5]
+    assert structure._head.value == 8
+    assert structure._tail.value == 5
+    assert structure._tail.next is None
+
+    assert structure.erase(5) == (True, 4)
+    assert structure.items() == [8, 3]
+    assert structure._tail.value == 3
+    assert structure._tail.next is None
+
+    assert structure.erase(8) == (True, 2)
+    assert structure._head.value == structure._tail.value == 3
+    assert structure.erase(3) == (True, 2)
+    assert structure._head is None
+    assert structure._tail is None
+
+
+@pytest.mark.parametrize("factory", (guess_app.BinarySearchTree, guess_app.AVLTree))
+def test_search_tree_steps_count_structure_events_only(factory):
+    structure = factory()
+
+    assert structure.insert(20) == (True, 2)  # 空位置 + 新建节点。
+    assert structure.insert(10) == (True, 3)  # 访问根 + 空位置 + 新建节点。
+    assert structure.insert(30) == (True, 3)
+    assert structure.contains(20) == (True, 1)
+    assert structure.contains(99) == (False, 3)  # 两个已有节点 + 空位置。
+    assert structure.erase(20) == (True, 4)  # 访问后继、复制后继、删除后继。
+
+
+def test_avl_rotation_steps_are_one_for_single_and_two_for_double_rotation():
+    single = guess_app.AVLTree()
+    single.insert(10)
+    single.insert(20)
+    assert single.insert(30) == (True, 5)  # 基础 4 步 + 单旋 1 步。
+
+    double = guess_app.AVLTree()
+    double.insert(30)
+    double.insert(10)
+    assert double.insert(20) == (True, 6)  # 基础 4 步 + 双旋 2 步。
+
+
 def _assert_bst(node, low=None, high=None):
     if node is None:
         return 0
@@ -218,6 +280,9 @@ def test_each_structure_preserves_its_own_representation_invariants():
         linked_values.append(node.value)
         node = node.next
     assert len(linked_values) == linked._size
+    assert linked._tail is not None
+    assert linked._tail.value == linked_values[-1]
+    assert linked._tail.next is None
 
     for index, value in enumerate(heap._heap):
         left = index * 2 + 1

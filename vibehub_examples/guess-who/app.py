@@ -39,7 +39,7 @@ class GameError(RuntimeError):
 
 
 class UnorderedArray:
-    """以连续数组保存、用末项覆盖删除位置的无序多重集合。"""
+    """以连续数组保存、删除时依次左移后续元素的无序多重集合。"""
 
     def __init__(self):
         self._data = []
@@ -66,14 +66,12 @@ class UnorderedArray:
         steps = 0
         for index, item in enumerate(self._data):
             steps += 1
-            if item != value:
-                continue
-            last_index = len(self._data) - 1
-            if index != last_index:
-                self._data[index] = self._data[last_index]
-                steps += 1
-            self._data.pop()
-            return True, steps + 1
+            if item == value:
+                for shift_index in range(index, len(self._data) - 1):
+                    self._data[shift_index] = self._data[shift_index + 1]
+                    steps += 1
+                self._data.pop()
+                return True, steps + 1
         return False, steps
 
     def minimum(self):
@@ -151,10 +149,11 @@ class _ListNode:
 
 
 class LinkedList:
-    """每次在表头插入的单向链表多重集合。"""
+    """维护 head/tail 指针、总在尾部插入的单向链表多重集合。"""
 
     def __init__(self):
         self._head = None
+        self._tail = None
         self._size = 0
 
     def __len__(self):
@@ -179,7 +178,12 @@ class LinkedList:
         return False, steps
 
     def insert(self, value):
-        self._head = _ListNode(value, self._head)
+        node = _ListNode(value)
+        if self._tail is None:
+            self._head = node
+        else:
+            self._tail.next = node
+        self._tail = node
         self._size += 1
         return True, 1
 
@@ -194,6 +198,8 @@ class LinkedList:
                     self._head = node.next
                 else:
                     previous.next = node.next
+                if self._tail is node:
+                    self._tail = previous
                 self._size -= 1
                 return True, steps + 1
             previous = node
@@ -350,28 +356,35 @@ class BinarySearchTree:
             if value == node.value:
                 return True, steps
             node = node.left if value < node.value else node.right
-        return False, steps
+        # 查找沿指针走到空位置也算一步。
+        return False, steps + 1
 
     def insert(self, value):
+        steps = 0
         if self._root is None:
+            # 到达根部空位置 + 新建节点。
             self._root = _BSTNode(value)
             self._size = 1
-            return True, 1
+            return True, 2
         node = self._root
-        steps = 0
         while True:
+            # 访问一个已有节点。
             steps += 1
             if value < node.value:
                 if node.left is None:
+                    # 到达空位置 + 新建节点。
+                    steps += 2
                     node.left = _BSTNode(value)
                     self._size += 1
-                    return True, steps + 1
+                    return True, steps
                 node = node.left
             else:
                 if node.right is None:
+                    # 到达空位置 + 新建节点。
+                    steps += 2
                     node.right = _BSTNode(value)
                     self._size += 1
-                    return True, steps + 1
+                    return True, steps
                 node = node.right
 
     def erase(self, value):
@@ -385,7 +398,8 @@ class BinarySearchTree:
             parent = node
             node = node.left if value < node.value else node.right
         if node is None:
-            return False, steps
+            # 搜索沿指针走到空位置。
+            return False, steps + 1
 
         if node.left is not None and node.right is not None:
             successor_parent = node
@@ -395,6 +409,7 @@ class BinarySearchTree:
                 successor_parent = successor
                 successor = successor.left
                 steps += 1
+            # 将后继值复制到待删除节点。
             node.value = successor.value
             steps += 1
             parent = successor_parent
@@ -408,6 +423,7 @@ class BinarySearchTree:
         else:
             parent.right = child
         self._size -= 1
+        # 实际摘除一个节点。
         return True, steps + 1
 
     def minimum(self):
@@ -458,60 +474,60 @@ class AVLTree:
         return cls._height(node.left) - cls._height(node.right)
 
     @classmethod
-    def _update_height(cls, node, counter):
+    def _update_height(cls, node):
         node.height = 1 + max(cls._height(node.left), cls._height(node.right))
-        counter.add()
 
     @classmethod
-    def _rotate_left(cls, node, counter):
+    def _rotate_left(cls, node):
         pivot = node.right
         if pivot is None:
             raise AssertionError("left rotation without right child")
         transfer = pivot.left
         pivot.left = node
         node.right = transfer
-        cls._update_height(node, counter)
-        cls._update_height(pivot, counter)
-        counter.add(2)
+        cls._update_height(node)
+        cls._update_height(pivot)
         return pivot
 
     @classmethod
-    def _rotate_right(cls, node, counter):
+    def _rotate_right(cls, node):
         pivot = node.left
         if pivot is None:
             raise AssertionError("right rotation without left child")
         transfer = pivot.right
         pivot.right = node
         node.left = transfer
-        cls._update_height(node, counter)
-        cls._update_height(pivot, counter)
-        counter.add(2)
+        cls._update_height(node)
+        cls._update_height(pivot)
         return pivot
 
     @classmethod
     def _rebalance(cls, node, counter):
-        cls._update_height(node, counter)
+        cls._update_height(node)
         balance = cls._balance(node)
-        counter.add()
         if balance > 1:
-            counter.add()
             if cls._balance(node.left) < 0:
-                node.left = cls._rotate_left(node.left, counter)
-                counter.add()
-            return cls._rotate_right(node, counter)
-        if balance < -1:
+                node.left = cls._rotate_left(node.left)
+                counter.add(2)
+                return cls._rotate_right(node)
             counter.add()
+            return cls._rotate_right(node)
+        if balance < -1:
             if cls._balance(node.right) > 0:
-                node.right = cls._rotate_right(node.right, counter)
-                counter.add()
-            return cls._rotate_left(node, counter)
+                node.right = cls._rotate_right(node.right)
+                counter.add(2)
+                return cls._rotate_left(node)
+            counter.add()
+            return cls._rotate_left(node)
         return node
 
     @classmethod
     def _insert(cls, node, value, counter):
         if node is None:
-            counter.add()
+            # 到达空位置 + 新建节点。
+            counter.add(2)
             return _AVLNode(value), True
+        # 访问一个已有节点。
         counter.add()
         if value < node.value:
             node.left, inserted = cls._insert(node.left, value, counter)
@@ -519,38 +535,48 @@ class AVLTree:
             node.right, inserted = cls._insert(node.right, value, counter)
         if not inserted:
             return node, False
-        counter.add()
         return cls._rebalance(node, counter), True
+
+    @classmethod
+    def _extract_min(cls, node, counter):
+        """一次遍历提取子树最小节点，并在回溯时维持 AVL 性质。"""
+
+        if node is None:
+            raise AssertionError("extracting minimum from an empty subtree")
+        # 访问一个已有节点。
+        counter.add()
+        if node.left is None:
+            # 实际删除最小节点。
+            counter.add()
+            return node.right, node.value
+        node.left, value = cls._extract_min(node.left, counter)
+        return cls._rebalance(node, counter), value
 
     @classmethod
     def _delete(cls, node, value, counter):
         if node is None:
+            # 搜索沿指针走到空位置。
+            counter.add()
             return None, False
+        # 访问一个已有节点。
         counter.add()
         if value < node.value:
             node.left, removed = cls._delete(node.left, value, counter)
-            if removed:
-                counter.add()
         elif value > node.value:
             node.right, removed = cls._delete(node.right, value, counter)
-            if removed:
-                counter.add()
         else:
             removed = True
             if node.left is None:
+                # 实际删除一个节点。
                 counter.add()
                 return node.right, True
             if node.right is None:
+                # 实际删除一个节点。
                 counter.add()
                 return node.left, True
-            successor = node.right
-            counter.add()
-            while successor.left is not None:
-                successor = successor.left
-                counter.add()
-            node.value = successor.value
-            counter.add()
-            node.right, _ignored = cls._delete(node.right, successor.value, counter)
+            node.right, successor_value = cls._extract_min(node.right, counter)
+            # 将后继值复制到待删除节点。
+            node.value = successor_value
             counter.add()
         if not removed:
             return node, False
@@ -577,7 +603,8 @@ class AVLTree:
             if value == node.value:
                 return True, steps
             node = node.left if value < node.value else node.right
-        return False, steps
+        # 查找沿指针走到空位置也算一步。
+        return False, steps + 1
 
     def insert(self, value):
         counter = _StepCounter()
