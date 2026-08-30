@@ -100,9 +100,11 @@ oj.py 只负责把上述组件装配起来
 GitHub Actions 对每次 push/PR 执行语法、unit、DB 和 E2E。集成 job 使用 GitHub-hosted runner 上的一次性 MySQL 8.4/Redis 服务，构建 `numericaloj-judger-lite` 后运行真实 C/C++/Python/Octave 判题；JUnit 结果作为 artifact 保留。只有需要外部密钥的 live AI 测试默认跳过，平台具备 Node、loopback、符号链接、FIFO 与 Docker 的测试不得仅因运行在 GitHub 上而跳过。
 
 修改 `frontend/`、前端构建脚本或被打包的依赖后，执行 `npm run build:frontend`。该命令会重建
-Monaco、Markdown 高亮、Mermaid，并刷新大型静态资源的 `.br` / `.gz` 旁路文件；随后执行
-`npm run test:frontend` 和 unit 测试。禁止只提交源文件而保留旧旁路文件，静态分发的契约测试会逐个
-解压并与源文件比较。
+Monaco、Markdown 高亮和 Mermaid；随后执行 `npm run test:frontend` 和 unit 测试。`.br` / `.gz`
+预压缩旁路文件属于部署产物，Git 全局忽略且禁止追踪；`deploy.sh` 会在停服前通过已构建的
+Agent Judge 候选镜像运行 `npm run build:precompress` 的底层脚本。生成失败时部署立即停止，既有服务
+保持运行；清理只作用于 `.deploy/static-precompression/` 清单记录的上次生成物，不触碰生产
+`static/` 中额外资产。
 
 HTTP 延迟基准只允许对本地或明确隔离的测试 Web 执行。`scripts/benchmark_http.py` 只发送 GET，
 统计 TTFB、完整响应、状态码、压缩和缓存头；它不会使任意业务 URL 自动变成安全只读接口，调用者

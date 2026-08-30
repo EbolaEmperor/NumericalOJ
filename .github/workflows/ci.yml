@@ -29,6 +29,13 @@ jobs:
           npm run build:frontend
       - name: Verify generated assets are current
         run: |
+          tracked_compressed="$(
+            git ls-files -- ':(glob)**/*.br' ':(glob)**/*.gz'
+          )"
+          if [ -n "$tracked_compressed" ]; then
+            printf 'Git 禁止追踪预压缩旁路文件：\n%s\n' "$tracked_compressed"
+            exit 1
+          fi
           generated_status="$(
             git status --porcelain=v1 --untracked-files=all -- \
               static

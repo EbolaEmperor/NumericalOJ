@@ -10,7 +10,6 @@ from oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
 ROOT = Path(__file__).resolve().parents[2]
 PRECOMPRESS_MINIMUM_BYTES = 100 * 1024
-PRECOMPRESS_EXTENSIONS = {".css", ".html", ".js", ".json", ".svg"}
 
 
 def _write_asset(root, name, raw):
@@ -244,47 +243,18 @@ def test_static_delivery_does_not_probe_or_serve_outside_static_root(tmp_path):
     assert b"secret" not in response.data
 
 
-def test_checked_in_precompressed_assets_match_sources():
-    expected_sources = sorted(
-        path
-        for path in (ROOT / "static").rglob("*")
-        if path.is_file()
-        and path.suffix in PRECOMPRESS_EXTENSIONS
-        and path.stat().st_size >= PRECOMPRESS_MINIMUM_BYTES
-    )
-    brotli_sidecars = sorted((ROOT / "static").rglob("*.br"))
-    gzip_sidecars = sorted((ROOT / "static").rglob("*.gz"))
-    assert [Path(str(path)[:-3]) for path in brotli_sidecars] == expected_sources
-    assert [Path(str(path)[:-3]) for path in gzip_sidecars] == expected_sources
-    for gzip_path in gzip_sidecars:
-        source = Path(str(gzip_path)[:-3])
-        assert source.is_file(), source
-        raw = source.read_bytes()
-        assert gzip.decompress(gzip_path.read_bytes()) == raw
-
+def test_precompressed_assets_are_not_tracked():
     result = subprocess.run(
-        [
-            "node",
-            "-e",
-            (
-                "const fs=require('node:fs');"
-                "const z=require('node:zlib');"
-                "for(const p of process.argv.slice(1)){"
-                "const source=p.slice(0,-3);"
-                "if(!z.brotliDecompressSync(fs.readFileSync(p))"
-                ".equals(fs.readFileSync(source)))process.exit(1);"
-                "}"
-            ),
-            *(str(path) for path in brotli_sidecars),
-        ],
-        check=False,
+        ["git", "ls-files", "--", ":(glob)**/*.br", ":(glob)**/*.gz"],
+        cwd=ROOT,
+        check=True,
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
-def test_precompress_build_removes_only_orphaned_sidecars(tmp_path):
+def test_precompress_build_removes_only_manifest_managed_orphans(tmp_path):
     static_root = tmp_path / "static"
     static_root.mkdir()
     expected_source = static_root / "expected.js"
@@ -296,7 +266,7 @@ def test_precompress_build_removes_only_orphaned_sidecars(tmp_path):
 
     small_source = static_root / "small.js"
     small_source.write_bytes(b"small")
-    orphaned = (
+    unmanaged = (
         Path(f"{small_source}.br"),
         Path(f"{small_source}.gz"),
         static_root / "missing.js.br",
@@ -304,13 +274,15 @@ def test_precompress_build_removes_only_orphaned_sidecars(tmp_path):
         static_root / "large.bin.br",
         static_root / "large.bin.gz",
     )
-    for path in orphaned:
+    for path in unmanaged:
         path.write_bytes(b"orphaned")
     (static_root / "large.bin").write_bytes(b"x" * PRECOMPRESS_MINIMUM_BYTES)
+    manifest = tmp_path / "state" / "manifest.json"
 
     result = subprocess.run(
         ["node", str(ROOT / "scripts" / "precompress_static.mjs")],
         cwd=tmp_path,
+        env={**os.environ, "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest)},
         check=False,
         capture_output=True,
         text=True,
@@ -340,4 +312,18 @@ def test_precompress_build_removes_only_orphaned_sidecars(tmp_path):
         text=True,
     )
     assert brotli_result.returncode == 0, brotli_result.stderr
-    assert all(not path.exists() for path in orphaned)
+    assert all(path.exists() for path in unmanaged)
+
+    expected_source.write_bytes(b"small now")
+    second = subprocess.run(
+        ["node", str(ROOT / "scripts" / "precompress_static.mjs")],
+        cwd=tmp_path,
+        env={**os.environ, "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert second.returncode == 0, second.stderr
+    assert not expected_brotli.exists()
+    assert not expected_gzip.exists()
+    assert all(path.exists() for path in unmanaged)

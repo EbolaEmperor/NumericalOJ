@@ -12,6 +12,7 @@ CURRENT_EDITOR_TOOLCHAIN="$STATE_DIR/current-editor-toolchain"
 BACKUP_DIR="$STATE_DIR/backups"
 ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"
 ARC_CURRENT_SET="$ARC_DATA_ROOT/current"
+STATIC_PRECOMPRESSION_STATE_DIR="$STATE_DIR/static-precompression"
 VIBEHUB_BASE_OCI_LAYOUT_ROOT="$STATE_DIR/vibehub-base-oci"
 LOCK_FILE='/tmp/noj_deploy.lock'
 WEB_CONFIG="$ROOT_DIR/deploy/supervisor/web.conf"
@@ -202,6 +203,7 @@ trap 'exit 130' HUP INT TERM
 
 cd "$ROOT_DIR"
 install -d -m 0700 "$STATE_DIR" "$VENV_ROOT" "$EDITOR_TOOLCHAIN_ROOT"
+install -d -m 0700 "$STATIC_PRECOMPRESSION_STATE_DIR"
 
 for command_name in docker flock pgrep; do
   command -v "$command_name" >/dev/null || {
@@ -600,6 +602,22 @@ build_candidate_image \
   'node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5' \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
+
+phase='生成预压缩静态资源'
+docker run --rm \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --user "$(id -u):$(id -g)" \
+  --workdir /workspace \
+  --env NUMOJ_PRECOMPRESS_MANIFEST=/workspace/.precompress-state/manifest.json \
+  --mount "type=bind,src=$ROOT_DIR/static,dst=/workspace/static" \
+  --mount "type=bind,src=$ROOT_DIR/scripts/precompress_static.mjs,dst=/workspace/scripts/precompress_static.mjs,readonly" \
+  --mount "type=bind,src=$STATIC_PRECOMPRESSION_STATE_DIR,dst=/workspace/.precompress-state" \
+  --entrypoint node \
+  "$AGENT_JUDGE_CANDIDATE" \
+  scripts/precompress_static.mjs
 
 phase='准备判题器官方头文件工具链'
 "$CANDIDATE_PYTHON" -B deploy/prepare_editor_toolchain.py \

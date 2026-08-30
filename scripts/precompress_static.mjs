@@ -6,6 +6,7 @@ import {
   gzip,
 } from "node:zlib";
 import {
+  mkdir,
   readdir,
   readFile,
   rename,
@@ -13,7 +14,14 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { extname, join } from "node:path";
+import {
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+} from "node:path";
 import { promisify } from "node:util";
 
 const brotli = promisify(brotliCompress);
@@ -21,21 +29,14 @@ const gzipAsync = promisify(gzip);
 const staticRoot = "static";
 const minimumBytes = 100 * 1024;
 const compressibleExtensions = new Set([".css", ".html", ".js", ".json", ".svg"]);
+const manifestPath = process.env.NUMOJ_PRECOMPRESS_MANIFEST || "";
 
 async function collect(directory) {
   const sources = [];
-  const sidecars = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      const nested = await collect(path);
-      sources.push(...nested.sources);
-      sidecars.push(...nested.sidecars);
-    } else if (
-      entry.isFile()
-      && (entry.name.endsWith(".br") || entry.name.endsWith(".gz"))
-    ) {
-      sidecars.push(path);
+      sources.push(...await collect(path));
     } else if (
       entry.isFile()
       && compressibleExtensions.has(extname(entry.name))
@@ -44,13 +45,41 @@ async function collect(directory) {
       sources.push(path);
     }
   }
-  return { sources, sidecars };
+  return sources;
 }
 
 async function atomicWrite(path, bytes) {
+  await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}`;
   await writeFile(temporary, bytes, { mode: 0o644 });
   await rename(temporary, path);
+}
+
+function managedSidecarPath(value) {
+  if (typeof value !== "string" || isAbsolute(value)) return null;
+  const normalized = normalize(value);
+  if (
+    normalized.startsWith("..")
+    || (!normalized.endsWith(".br") && !normalized.endsWith(".gz"))
+  ) {
+    return null;
+  }
+  const path = join(staticRoot, normalized);
+  return relative(staticRoot, path).startsWith("..") ? null : path;
+}
+
+async function readManagedSidecars() {
+  if (!manifestPath) return [];
+  try {
+    const payload = JSON.parse(await readFile(manifestPath, "utf8"));
+    if (!payload || payload.version !== 1 || !Array.isArray(payload.sidecars)) {
+      throw new Error("manifest schema mismatch");
+    }
+    return payload.sidecars;
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    throw new Error(`无法读取预压缩资源清单 ${manifestPath}: ${error.message}`);
+  }
 }
 
 function makeGzipPortable(bytes) {
@@ -69,7 +98,7 @@ function makeGzipPortable(bytes) {
   return bytes;
 }
 
-const { sources, sidecars } = await collect(staticRoot);
+const sources = await collect(staticRoot);
 const expectedSidecars = new Set(
   sources.flatMap((path) => [`${path}.br`, `${path}.gz`]),
 );
@@ -95,13 +124,27 @@ for (const path of sources) {
   compressedBytes += brotliBytes.length;
   console.log(`${path}: ${source.length} -> br ${brotliBytes.length}, gzip ${gzipBytes.length}`);
 }
-let removedSidecars = 0;
-for (const path of sidecars) {
-  if (!expectedSidecars.has(path)) {
-    await unlink(path);
-    removedSidecars += 1;
+let removedManagedSidecars = 0;
+for (const entry of await readManagedSidecars()) {
+  const path = managedSidecarPath(entry);
+  if (path && !expectedSidecars.has(path)) {
+    try {
+      await unlink(path);
+      removedManagedSidecars += 1;
+    } catch (error) {
+      if (!error || error.code !== "ENOENT") throw error;
+    }
   }
 }
+if (manifestPath) {
+  const sidecars = [...expectedSidecars]
+    .map((path) => relative(staticRoot, path))
+    .sort();
+  await atomicWrite(
+    manifestPath,
+    Buffer.from(`${JSON.stringify({ version: 1, sidecars }, null, 2)}\n`),
+  );
+}
 console.log(
-  `precompressed ${sources.length} assets: ${rawBytes} raw bytes -> ${compressedBytes} Brotli bytes; removed ${removedSidecars} orphaned sidecars`,
+  `precompressed ${sources.length} assets: ${rawBytes} raw bytes -> ${compressedBytes} Brotli bytes; removed ${removedManagedSidecars} managed orphaned sidecars`,
 );

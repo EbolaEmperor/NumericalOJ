@@ -63,6 +63,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "phase='构建 VibeHub 受信基础候选镜像'",
         "phase='准备 ARC-AGI-3 公开游戏'",
         "phase='构建判题镜像'",
+        "phase='生成预压缩静态资源'",
         "phase='准备判题器官方头文件工具链'",
         "phase='核验编辑器语言服务'",
         "phase='准备数据库备份计划'",
@@ -172,6 +173,15 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     web_stop = script.index("  'Web' web", stop_phase)
     assert celery_stop < web_stop
     assert "CELERY_STOP_TIMEOUT_SECONDS=1960" in script
+    precompress = script.index("phase='生成预压缩静态资源'")
+    assert script.index("phase='构建判题镜像'") < precompress < stop_phase
+    assert '--network none' in script[precompress:]
+    assert '--read-only' in script[precompress:]
+    assert '--cap-drop ALL' in script[precompress:]
+    assert '--user "$(id -u):$(id -g)"' in script[precompress:]
+    assert 'NUMOJ_PRECOMPRESS_MANIFEST=' in script[precompress:]
+    assert '"$AGENT_JUDGE_CANDIDATE"' in script[precompress:]
+    assert "scripts/precompress_static.mjs" in script[precompress:]
     assert script.index("phase='确认全部服务状态'") > script.index(
         "phase='启动 Web 服务'"
     )
@@ -423,7 +433,12 @@ def test_deploy_fails_closed_without_private_production_config():
     service_stop = script.index("phase='停止现有服务'")
     builder_check = script.index("deploy/preflight.py ensure-vibehub-builder")
     assert builder_check < service_stop
-    assert "docker run --rm" not in script
+    assert script.count("docker run --rm") == 1
+    precompress = script.index("phase='生成预压缩静态资源'")
+    assert service_stop > precompress
+    assert "--network none" in script[precompress:service_stop]
+    assert "--read-only" in script[precompress:service_stop]
+    assert '"$AGENT_JUDGE_CANDIDATE"' in script[precompress:service_stop]
     assert 'getattr(config, "ENV_FILE_LOADED", False)' in preflight
     assert 'getattr(config, "ENV_FILE_KEYS", ())' in preflight
     assert "metadata.st_uid != os.geteuid()" in preflight

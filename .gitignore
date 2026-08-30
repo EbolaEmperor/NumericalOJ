@@ -24,6 +24,8 @@ coverage.xml
 htmlcov/
 .venv/
 .deploy/
+*.br
+*.gz
 
 # ===== Superpowers 产物（设计/计划/参考文档，非交付物，不入库）=====
 docs/superpowers/

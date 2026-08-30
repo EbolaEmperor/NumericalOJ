@@ -45,11 +45,13 @@ keep-alive 等待为 5 秒；gthread 会把空闲 keep-alive 放回事件循环�
 打榜赛正向/反向评测六类流。容量满时新流立即收到 `503` 与 `Retry-After: 1`；已有流结束、异常或
 客户端断开时归还槽位，避免长连接把普通页面和健康检查的线程全部占满。
 
-`npm run build:frontend` 会在前端打包结束后，为 `static/` 下不小于 100 KiB 的
-JS/CSS/HTML/JSON/SVG 同时生成 Brotli 与 Gzip 旁路文件。Web 只按客户端
+生产 `deploy.sh` 会在停服前为 `static/` 下不小于 100 KiB 的 JS/CSS/HTML/JSON/SVG
+同时生成 Brotli 与 Gzip 旁路文件；本地需要验证时可显式运行 `npm run build:precompress`。
+这些 `.br` / `.gz` 属于部署产物，不进入 Git。Web 只按客户端
 `Accept-Encoding` 发送构建期产物，不在请求线程中现场压缩；旁路文件缺失或比源文件旧时自动回退
-identity，并始终返回 `Vary: Accept-Encoding`。当前 14 个大型资源共 19,496,851 字节，Brotli
-表示合计 3,461,008 字节；更新这些资源后必须重跑构建并提交对应 `.br` / `.gz`。
+identity，并始终返回 `Vary: Accept-Encoding`。部署清单位于
+`.deploy/static-precompression/manifest.json`，只用于清理脚本此前生成、现已失去对应大文件源的旁路；
+未记录在清单中的生产额外资产不会被删除。
 
 只读 HTTP 基准脚本默认使用 256 条并发连接。256/512 指这里刻意制造的“同时请求”，不能把结果
 直接等同于在线用户数；实际 256 常态、512 峰值在线用户通常只有一部分人在同一瞬间点击或保持 SSE。
