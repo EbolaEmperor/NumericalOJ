@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from oj_modules.agents import messages
+from backend.oj_modules.agents import messages
 from tests.unit.test_agent_sessions import _ScriptedConnection
 
 

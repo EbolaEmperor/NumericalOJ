@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from oj_modules.editor.toolchain import (  # noqa: E402
+from backend.oj_modules.editor.toolchain import (  # noqa: E402
     MANIFEST_FILENAME,
     EditorToolchainError,
     build_editor_toolchain_manifest,

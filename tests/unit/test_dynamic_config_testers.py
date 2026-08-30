@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from oj_modules.site_config import testers
+from backend.oj_modules.site_config import testers
 
 
 def test_mail_tester_sends_message_to_current_admin(monkeypatch):

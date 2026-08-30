@@ -1,4 +1,4 @@
-from oj_modules.submissions import locks
+from backend.oj_modules.submissions import locks
 
 
 class _FakeRedis:

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import oj_modules.tasks.ranking.agent_judge as m
+import backend.oj_modules.tasks.ranking.agent_judge as m
 
 
 class _FakeProc:

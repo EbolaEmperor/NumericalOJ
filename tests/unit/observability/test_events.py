@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from oj_modules.observability import context
-from oj_modules.observability import events
+from backend.oj_modules.observability import context
+from backend.oj_modules.observability import events
 
 
 @pytest.fixture(autouse=True)

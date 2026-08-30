@@ -9,7 +9,7 @@ import pytest
 
 # ---------------- compare_float_strings ----------------
 def _cmp():
-    from oj_modules.tasks.evaluate_tasks import compare_float_strings
+    from backend.oj_modules.tasks.evaluate_tasks import compare_float_strings
     return compare_float_strings
 
 
@@ -55,7 +55,7 @@ def test_compare_zero_pair():
 
 # ---------------- 程序题终态快照 ----------------
 def test_finalize_terminal_programming_submission_preserves_terminal_status(monkeypatch):
-    from oj_modules.tasks import evaluate_tasks
+    from backend.oj_modules.tasks import evaluate_tasks
 
     captured = {}
 
@@ -90,7 +90,7 @@ def test_finalize_terminal_programming_submission_preserves_terminal_status(monk
 
 # ---------------- _parse_written_homework_grading_result ----------------
 def _parse():
-    from oj_modules.ai.grading import _parse_written_homework_grading_result
+    from backend.oj_modules.ai.grading import _parse_written_homework_grading_result
     return _parse_written_homework_grading_result
 
 

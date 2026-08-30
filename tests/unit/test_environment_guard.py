@@ -215,7 +215,7 @@ def test_live_e2e_web_entry_binds_only_loopback_without_reloader(monkeypatch):
     fake_app = FakeApp()
     monkeypatch.setitem(
         sys.modules,
-        "oj",
+        "backend.oj",
         SimpleNamespace(
             app=fake_app,
             ensure_background_schedulers=lambda: calls.append(("schedule", {})),
@@ -242,7 +242,7 @@ def test_live_e2e_web_entry_binds_only_loopback_without_reloader(monkeypatch):
 
 def test_live_reverse_cleanup_deletes_every_db_submission_and_verifies_state(
         monkeypatch):
-    from oj_modules.ranking import db as ranking_db
+    from backend.oj_modules.ranking import db as ranking_db
     from tests.e2e import test_reverse_judge_live_ui as live
 
     states = iter([
@@ -312,7 +312,7 @@ def test_live_reverse_cleanup_deletes_every_db_submission_and_verifies_state(
 
 
 def test_live_reverse_cleanup_falls_back_but_reports_cli_failures(monkeypatch):
-    from oj_modules.ranking import db as ranking_db
+    from backend.oj_modules.ranking import db as ranking_db
     from tests.e2e import test_reverse_judge_live_ui as live
 
     states = iter([

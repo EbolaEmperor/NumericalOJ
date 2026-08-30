@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules import db_services
-from oj_modules.judging import core as judger_core
-from oj_modules.submissions import archive as submission_archive
-from oj_modules.submissions import repository_snapshots as submission_repository_snapshots
-from oj_modules.submissions import written_artifacts as artifacts
+from backend.oj_modules import db_services
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.submissions import archive as submission_archive
+from backend.oj_modules.submissions import repository_snapshots as submission_repository_snapshots
+from backend.oj_modules.submissions import written_artifacts as artifacts
 
 
 class _DatabaseCursor:

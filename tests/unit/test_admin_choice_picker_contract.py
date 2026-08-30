@@ -4,7 +4,7 @@ from jinja2 import Environment, FileSystemLoader
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / "templates"
+TEMPLATES = ROOT / "backend" / "templates"
 
 
 def _read(relative_path):
@@ -15,7 +15,7 @@ def _read(relative_path):
 
 def test_ranking_endpoint_editor_uses_shared_picker_for_global_nodes():
     template = _read("ranking/settings/endpoint_pool.html")
-    script = (ROOT / "static/app/ranking/endpoints.js").read_text(encoding="utf-8")
+    script = (ROOT / "frontend/public/static/app/ranking/endpoints.js").read_text(encoding="utf-8")
 
     assert "choice_picker(" in template
     assert "'ajeEditGlobalEndpoint'" in template
@@ -26,7 +26,7 @@ def test_ranking_endpoint_editor_uses_shared_picker_for_global_nodes():
 def test_admin_class_pickers_keep_submission_and_required_contracts():
     homework = _read("admin/homework.html")
     users = _read("admin/users.html")
-    users_script = (ROOT / "static/app/admin-users.js").read_text(encoding="utf-8")
+    users_script = (ROOT / "frontend/public/static/app/admin-users.js").read_text(encoding="utf-8")
 
     assert "simple_choice(" in homework
     assert "'sclass'" in homework

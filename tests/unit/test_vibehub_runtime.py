@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from oj_modules.vibehub import runtime
+from backend.oj_modules.vibehub import runtime
 
 
 _BASE_ID = "sha256:" + "1" * 64

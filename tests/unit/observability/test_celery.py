@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from oj_modules.observability import celery as celery_observability
+from backend.oj_modules.observability import celery as celery_observability
 
 
 class _FakeSignal:

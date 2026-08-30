@@ -8,27 +8,32 @@ import pytest
 from flask import Flask, request
 from jinja2 import Environment
 
-from oj_modules.observability.events import build_payload
-from oj_modules.routes import vibehub_routes
-from oj_modules.routes.game_routes import game_bp
-from oj_modules.routes.vibehub_routes import vibehub_bp
-from oj_modules.security import auth as auth_module
-from oj_modules.vibehub import runtime as vibehub_runtime
-from oj_modules.vibehub import guide as guide_module
-from oj_modules.vibehub.guide import render_developer_guide
-from oj_modules.vibehub.storage import validate_manifest
+from backend.oj_modules.observability.events import build_payload
+from backend.oj_modules.routes import vibehub_routes
+from backend.oj_modules.routes.game_routes import game_bp
+from backend.oj_modules.routes.vibehub_routes import vibehub_bp
+from backend.oj_modules.security import auth as auth_module
+from backend.oj_modules.vibehub import runtime as vibehub_runtime
+from backend.oj_modules.vibehub import guide as guide_module
+from backend.oj_modules.vibehub.guide import render_developer_guide
+from backend.oj_modules.vibehub.storage import validate_manifest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _read(relative):
+    relative = Path(relative)
+    if relative.parts[0] == "templates":
+        relative = Path("backend") / relative
+    elif relative.parts[0] == "static":
+        relative = Path("frontend/public") / relative
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
 def test_vibehub_templates_parse_and_use_external_assets():
     environment = Environment()
-    for path in sorted((ROOT / "templates" / "vibehub").glob("*.html")):
+    for path in sorted((ROOT / "backend" / "templates" / "vibehub").glob("*.html")):
         environment.parse(path.read_text(encoding="utf-8"))
 
     site_templates = "\n".join(
@@ -475,7 +480,7 @@ def test_heartbeat_capacity_error_maps_to_http_429_without_lease_payload(
 
 def test_removed_auxiliary_pages_leave_gallery_and_play_routes(monkeypatch):
     for name in ("workspace.html", "detail.html", "admin_reviews.html"):
-        assert not (ROOT / "templates/vibehub" / name).exists()
+        assert not (ROOT / "backend/templates/vibehub" / name).exists()
     user = {"id": 7, "username": "alice", "is_admin": 0}
     seen = []
     monkeypatch.setattr(auth_module, "current_user", lambda: user)

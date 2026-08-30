@@ -6,7 +6,7 @@ from collections import deque
 
 import pytest
 
-from oj_modules.agents import sessions
+from backend.oj_modules.agents import sessions
 
 
 class _ScriptedCursor:

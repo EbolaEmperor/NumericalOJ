@@ -20,7 +20,7 @@ from flask import Flask, session
 
 # ---------------- 会话用户请求内复用 ----------------
 def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     app = Flask(__name__)
     app.secret_key = 'test'
@@ -42,7 +42,7 @@ def test_current_user_reuses_request_lookup_and_tracks_session_changes(monkeypat
 
 
 def test_current_user_short_cache_reuses_normal_user_across_requests(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     app = Flask(__name__)
     app.secret_key = 'test'
@@ -67,7 +67,7 @@ def test_current_user_short_cache_reuses_normal_user_across_requests(monkeypatch
 
 
 def test_current_user_does_not_cross_request_cache_admin(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     app = Flask(__name__)
     app.secret_key = 'test'
@@ -88,7 +88,7 @@ def test_current_user_does_not_cross_request_cache_admin(monkeypatch):
 
 
 def test_current_user_cache_can_be_invalidated_by_user_id(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     app = Flask(__name__)
     app.secret_key = 'test'
@@ -112,7 +112,7 @@ def test_current_user_cache_can_be_invalidated_by_user_id(monkeypatch):
 
 
 def test_current_user_cache_loader_identity_change_forces_reload(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     auth.invalidate_cached_browser_user()
     monkeypatch.setattr(
@@ -144,7 +144,7 @@ def test_current_user_cache_loader_identity_change_forces_reload(monkeypatch):
 
 
 def test_current_user_cache_does_not_negative_cache_missing_user(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     lookups = []
 
@@ -163,7 +163,7 @@ def test_current_user_cache_does_not_negative_cache_missing_user(monkeypatch):
 def test_current_user_cache_fans_out_one_loader_failure_without_retry_convoy(
     monkeypatch,
 ):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     worker_count = 8
     start = Barrier(worker_count)
@@ -239,8 +239,8 @@ def test_current_user_cache_fans_out_one_loader_failure_without_retry_convoy(
 def test_current_user_cache_waiter_timeout_uses_fast_mysql_backpressure(
     monkeypatch,
 ):
-    from oj_modules.infrastructure.mysql import MySQLPoolExhausted
-    from oj_modules.security import auth
+    from backend.oj_modules.infrastructure.mysql import MySQLPoolExhausted
+    from backend.oj_modules.security import auth
 
     loader_started = Event()
     release_loader = Event()
@@ -282,7 +282,7 @@ def test_current_user_cache_waiter_timeout_uses_fast_mysql_backpressure(
 
 
 def test_current_user_cache_invalidation_detaches_inflight_stale_load(monkeypatch):
-    from oj_modules.security import auth
+    from backend.oj_modules.security import auth
 
     first_started = Event()
     release_first = Event()
@@ -347,13 +347,13 @@ def test_current_user_cache_invalidation_detaches_inflight_stale_load(monkeypatc
 
 # ---------------- safe_table_name ----------------
 def test_safe_table_name_accepts_valid():
-    from oj_modules.infrastructure.mysql import safe_table_name
+    from backend.oj_modules.infrastructure.mysql import safe_table_name
     assert safe_table_name('C2024class') == 'C2024class'
     assert safe_table_name('abc_123') == 'abc_123'
 
 
 def test_safe_table_name_rejects_injection():
-    from oj_modules.infrastructure.mysql import safe_table_name
+    from backend.oj_modules.infrastructure.mysql import safe_table_name
     for bad in ['', 'a b', 'a;b', "a'", 'a-b', 'a.b', 'DROP TABLE x', '班级', 'x);--', None]:
         with pytest.raises(ValueError):
             safe_table_name(bad)
@@ -361,7 +361,7 @@ def test_safe_table_name_rejects_injection():
 
 # ---------------- 口令哈希 ----------------
 def test_legacy_sha256_verifies_and_flags_rehash():
-    from oj_modules.security.credentials import verify_password
+    from backend.oj_modules.security.credentials import verify_password
     pw = "secret123"
     legacy = hashlib.sha256(pw.encode()).hexdigest()
     ok, needs_rehash = verify_password(legacy, pw)
@@ -370,7 +370,7 @@ def test_legacy_sha256_verifies_and_flags_rehash():
 
 
 def test_werkzeug_hash_roundtrip_no_rehash():
-    from oj_modules.security.credentials import hash_password, verify_password
+    from backend.oj_modules.security.credentials import hash_password, verify_password
     h = hash_password("secret123")
     assert ':' in h                      # werkzeug 形如 pbkdf2:sha256:... / scrypt:...
     ok, needs_rehash = verify_password(h, "secret123")
@@ -379,7 +379,7 @@ def test_werkzeug_hash_roundtrip_no_rehash():
 
 
 def test_verify_password_empty_stored():
-    from oj_modules.security.credentials import verify_password
+    from backend.oj_modules.security.credentials import verify_password
     assert verify_password(None, "x") == (False, False)
     assert verify_password("", "x") == (False, False)
 
@@ -411,7 +411,7 @@ class _FakeRedis:
 
 
 def test_rate_limit_blocks_after_max():
-    from oj_modules.security.throttling import rate_limit_hit
+    from backend.oj_modules.security.throttling import rate_limit_hit
     r = _FakeRedis()
     for _ in range(3):
         assert rate_limit_hit(r, 'k', 3, 60)[0] is True
@@ -421,12 +421,12 @@ def test_rate_limit_blocks_after_max():
 
 
 def test_rate_limit_fail_open_without_redis():
-    from oj_modules.security.throttling import rate_limit_hit
+    from backend.oj_modules.security.throttling import rate_limit_hit
     assert rate_limit_hit(None, 'k', 1, 60)[0] is True
 
 
 def test_cooldown_blocks_second_call():
-    from oj_modules.security.throttling import cooldown_active
+    from backend.oj_modules.security.throttling import cooldown_active
     r = _FakeRedis()
     assert cooldown_active(r, 'cd', 60)[0] is True
     assert cooldown_active(r, 'cd', 60)[0] is False
@@ -434,7 +434,7 @@ def test_cooldown_blocks_second_call():
 
 # ---------------- sanitize_html ----------------
 def test_sanitize_strips_script_and_events_and_protocols():
-    from oj_modules.shared.markdown import sanitize_html
+    from backend.oj_modules.shared.markdown import sanitize_html
     out = sanitize_html('<script>alert(1)</script><b>hi</b>')
     assert '<script' not in out.lower()
     assert 'hi' in out
@@ -447,7 +447,7 @@ def test_sanitize_strips_script_and_events_and_protocols():
 
 
 def test_sanitize_keeps_benign_markup():
-    from oj_modules.shared.markdown import sanitize_html
+    from backend.oj_modules.shared.markdown import sanitize_html
     out = sanitize_html('<pre><code>vector&lt;int&gt;</code></pre>')
     assert '<code' in out.lower() or '&lt;code' in out.lower()
     out2 = sanitize_html('<a href="https://example.com">link</a>')
@@ -465,7 +465,7 @@ def test_sanitize_keeps_benign_markup():
     ),
 )
 def test_sanitize_fails_closed_when_bleach_is_unavailable(monkeypatch, payload):
-    from oj_modules.shared import markdown
+    from backend.oj_modules.shared import markdown
 
     monkeypatch.setattr(markdown, 'bleach', None)
     out = markdown.sanitize_html(payload)
@@ -478,7 +478,7 @@ def test_sanitize_fails_closed_when_bleach_is_unavailable(monkeypatch, payload):
 
 
 def test_sanitize_fails_closed_when_bleach_raises(monkeypatch):
-    from oj_modules.shared import markdown
+    from backend.oj_modules.shared import markdown
 
     class BrokenBleach:
         @staticmethod
@@ -495,7 +495,7 @@ def test_sanitize_fails_closed_when_bleach_raises(monkeypatch):
 
 # ---------------- 用户名白名单 / 管理员页 XSS 回归 ----------------
 def test_validate_username_accepts_safe_identifiers():
-    from oj_modules.security.credentials import validate_username
+    from backend.oj_modules.security.credentials import validate_username
     for username in ('alice', 'student_001', 'u-2026.07'):
         ok, cleaned, msg = validate_username(f' {username} ')
         assert ok is True
@@ -504,7 +504,7 @@ def test_validate_username_accepts_safe_identifiers():
 
 
 def test_validate_username_rejects_xss_and_paths():
-    from oj_modules.security.credentials import validate_username
+    from backend.oj_modules.security.credentials import validate_username
     for bad in (
         '',
         '-starts-with-dash',
@@ -520,7 +520,7 @@ def test_validate_username_rejects_xss_and_paths():
 
 
 def test_validate_email_accepts_deliverable_addresses_and_rejects_unsafe_values():
-    from oj_modules.security.credentials import validate_email
+    from backend.oj_modules.security.credentials import validate_email
 
     assert validate_email(' Alice.Tag+oj@example.edu ') == (
         True,
@@ -542,7 +542,7 @@ def test_validate_email_accepts_deliverable_addresses_and_rejects_unsafe_values(
 
 def test_admin_score_template_does_not_innerhtml_user_fields():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'templates' / 'problems' / 'detail.html').read_text(encoding='utf-8')
+    text = (root / 'backend' / 'templates' / 'problems' / 'detail.html').read_text(encoding='utf-8')
     assert '${score.username}' not in text
     assert '${score.classes_display}' not in text
     assert 'appendScoreCell(row, score.username' in text
@@ -551,8 +551,8 @@ def test_admin_score_template_does_not_innerhtml_user_fields():
 
 def test_admin_user_template_avoids_inline_user_data_handlers():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'templates' / 'admin' / 'users.html').read_text(encoding='utf-8')
-    script = (root / 'static' / 'app' / 'admin-users.js').read_text(encoding='utf-8')
+    text = (root / 'backend' / 'templates' / 'admin' / 'users.html').read_text(encoding='utf-8')
+    script = (root / 'frontend' / 'public' / 'static' / 'app' / 'admin-users.js').read_text(encoding='utf-8')
     assert 'onclick=' not in text
     assert 'data-username="{{ u.username }}"' in text
     assert 'data-classes="{{ u.classes|tojson|forceescape }}"' in text
@@ -565,14 +565,14 @@ def test_admin_user_template_avoids_inline_user_data_handlers():
 
 def test_class_membership_routes_never_change_admin_privileges():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
+    text = (root / 'backend' / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
     assert 'UPDATE users SET is_admin' not in text
     assert 'grant_user_admin_ajax' not in text
 
 
 def test_admin_privilege_grant_is_explicit_and_one_way():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'oj_modules' / 'routes' / 'admin_user_routes.py').read_text(encoding='utf-8')
+    text = (root / 'backend' / 'oj_modules' / 'routes' / 'admin_user_routes.py').read_text(encoding='utf-8')
     assert "def grant_user_admin_ajax" in text
     assert "UPDATE users SET is_admin=1" in text
     assert "SET is_admin=0" not in text
@@ -580,13 +580,13 @@ def test_admin_privilege_grant_is_explicit_and_one_way():
 
 def test_class_routes_do_not_contain_a_pseudo_admin_class():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
+    text = (root / 'backend' / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')
     assert 'Cadmin' not in text
 
 
 def test_register_offers_every_real_class_from_the_data_layer():
     root = Path(__file__).resolve().parents[2]
-    text = (root / 'oj_modules' / 'routes' / 'auth_routes.py').read_text(encoding='utf-8')
+    text = (root / 'backend' / 'oj_modules' / 'routes' / 'auth_routes.py').read_text(encoding='utf-8')
     assert 'attach_class_logos(get_all_classes())' in text
     assert 'get_all_classes_except_admin' not in text
     assert 'Cadmin' not in text
@@ -594,7 +594,7 @@ def test_register_offers_every_real_class_from_the_data_layer():
 
 # ---------------- 用户头文件名白名单 ----------------
 def test_safe_user_header_filename():
-    from oj_modules.judging import core as judger_core
+    from backend.oj_modules.judging import core as judger_core
     assert judger_core.safe_user_header_filename('mylib.h') == 'mylib.h'
     assert judger_core.safe_user_header_filename('include/helper.hpp') == 'include/helper.hpp'
     assert judger_core.safe_user_header_filename('notes/read me.inc') == 'notes/read me.inc'

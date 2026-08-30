@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from flask import Flask
 import pytest
 
-from oj_modules.agents.sessions import AgentSessionBusyError
-from oj_modules.routes import problem_core_routes as routes
+from backend.oj_modules.agents.sessions import AgentSessionBusyError
+from backend.oj_modules.routes import problem_core_routes as routes
 
 
 ADMIN = {"id": 7, "username": "admin", "is_admin": 1}

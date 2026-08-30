@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from oj_modules.vibehub import maintenance, quotas, storage
+from backend.oj_modules.vibehub import maintenance, quotas, storage
 
 
 def _snapshot(root: Path, version: int, *, slug: str = "demo-vibe") -> Path:

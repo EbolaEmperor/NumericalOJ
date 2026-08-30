@@ -10,24 +10,24 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RANKING = (ROOT / "templates" / "ranking" / "detail.html").read_text(encoding="utf-8")
+RANKING = (ROOT / "backend" / "templates" / "ranking" / "detail.html").read_text(encoding="utf-8")
 JUDGE_MODAL = (
-    ROOT / "templates" / "ranking" / "modals" / "judge_detail.html"
+    ROOT / "backend" / "templates" / "ranking" / "modals" / "judge_detail.html"
 ).read_text(encoding="utf-8")
 REVERSE_MODAL = (
-    ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
+    ROOT / "backend" / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
 ).read_text(encoding="utf-8")
 TRACE_ASSETS = (
-    ROOT / "templates" / "components" / "agents" / "execution_trace_assets.html"
+    ROOT / "backend" / "templates" / "components" / "agents" / "execution_trace_assets.html"
 ).read_text(encoding="utf-8")
-TRACE_RENDERER = (ROOT / "static" / "app" / "agents" / "execution-trace.js").read_text(
+TRACE_RENDERER = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "execution-trace.js").read_text(
     encoding="utf-8",
 )
-TRACE_STYLES = (ROOT / "static" / "app" / "agents" / "execution-trace.css").read_text(
+TRACE_STYLES = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "execution-trace.css").read_text(
     encoding="utf-8",
 )
 SUB_CARD = (
-    ROOT / "templates" / "ranking" / "components" / "submission_card.html"
+    ROOT / "backend" / "templates" / "ranking" / "components" / "submission_card.html"
 ).read_text(encoding="utf-8")
 
 
@@ -53,7 +53,7 @@ def test_reverse_and_agent_judge_use_one_shared_trace_renderer():
     assert trace_include in JUDGE_MODAL
     assert "app/agents/execution-trace.css" in TRACE_ASSETS
     assert "app/agents/execution-trace.js" in TRACE_ASSETS
-    assert not (ROOT / "templates" / "ranking" / "scripts" / "execution_trace.html").exists()
+    assert not (ROOT / "backend" / "templates" / "ranking" / "scripts" / "execution_trace.html").exists()
     assert "{% include 'ranking/modals/judge_detail.html' %}" in RANKING
     assert "{% include 'ranking/modals/reverse_judge_detail.html' %}" in RANKING
     assert "keyPrefix:'reverse-judge', showThinkingLoader:true" in REVERSE_MODAL

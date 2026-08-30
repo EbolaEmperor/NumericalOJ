@@ -24,9 +24,9 @@ import zipfile
 
 import pytest
 
-from oj_modules.tasks.ranking import elo
-from oj_modules.tasks.ranking import elo_container
-from oj_modules.tasks.ranking.elo_runtime import arbiter, elo_host_api
+from backend.oj_modules.tasks.ranking import elo
+from backend.oj_modules.tasks.ranking import elo_container
+from backend.oj_modules.tasks.ranking.elo_runtime import arbiter, elo_host_api
 
 
 RUNNER_PATH = arbiter.RUNNER_HOST_PATH
@@ -687,7 +687,7 @@ def test_run_scoring_script_routes_isolated_mode(tmp_path, monkeypatch):
         return 2, {"format": "text", "content": "isolated"}
 
     monkeypatch.setattr(
-        "oj_modules.tasks.ranking.elo_runtime.run_isolated_elo_match", fake_isolated)
+        "backend.oj_modules.tasks.ranking.elo_runtime.run_isolated_elo_match", fake_isolated)
     winner, details = elo._run_scoring_script(
         "script.py", "a.zip", "b.zip", timeout_seconds=33, runtime_mode="isolated")
     assert winner == 2
@@ -707,7 +707,7 @@ def test_run_scoring_script_legacy_mode_keeps_single_container(tmp_path, monkeyp
         raise AssertionError("legacy 模式不应走隔离运行时")
 
     monkeypatch.setattr(
-        "oj_modules.tasks.ranking.elo_runtime.run_isolated_elo_match",
+        "backend.oj_modules.tasks.ranking.elo_runtime.run_isolated_elo_match",
         _should_not_be_called)
     winner, _details = elo._run_scoring_script(
         "script.py", "a.zip", "b.zip", timeout_seconds=10, runtime_mode="legacy")

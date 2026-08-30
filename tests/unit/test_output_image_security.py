@@ -3,8 +3,8 @@
 
 from flask import Flask
 
-from oj_modules.judging import core as judger_core
-from oj_modules.routes import submission_routes
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.routes import submission_routes
 
 
 def _build_app(monkeypatch, submission):

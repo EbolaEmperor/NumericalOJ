@@ -11,11 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from oj_modules.editor.clangd import verify_clangd_runtime  # noqa: E402
-from oj_modules.editor.octave import (  # noqa: E402
+from backend.oj_modules.editor.clangd import verify_clangd_runtime  # noqa: E402
+from backend.oj_modules.editor.octave import (  # noqa: E402
     verify_octave_language_runtime,
 )
-from oj_modules.editor.python import (  # noqa: E402
+from backend.oj_modules.editor.python import (  # noqa: E402
     verify_python_language_runtime,
 )
 

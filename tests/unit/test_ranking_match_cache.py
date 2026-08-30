@@ -4,7 +4,7 @@ import fnmatch
 
 import pytest
 
-from oj_modules.ranking import matches
+from backend.oj_modules.ranking import matches
 
 
 class _FakeRedis:

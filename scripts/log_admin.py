@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from oj_modules.observability.collector import (  # noqa: E402
+from backend.oj_modules.observability.collector import (  # noqa: E402
     DATASET_PATHS,
     DEFAULT_BACKUPS,
     DEFAULT_MAX_BYTES,
@@ -28,7 +28,7 @@ from oj_modules.observability.collector import (  # noqa: E402
     init_log_tree,
     serve_collector,
 )
-from oj_modules.observability.events import (  # noqa: E402
+from backend.oj_modules.observability.events import (  # noqa: E402
     LOG_ROOT,
     SCHEMA_NAME,
     SCHEMA_VERSION,

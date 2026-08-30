@@ -11,12 +11,12 @@ import pytest
 from flask import Flask
 from werkzeug.exceptions import NotFound
 
-from oj_modules.api import ranking_api
-from oj_modules.ranking import artifacts as ranking_artifacts
-import oj_modules.ranking.reverse_judge.db as reverse_db
-import oj_modules.ranking.reverse_judge.service as reverse_service
-from oj_modules.routes import ranking_routes as routes
-import oj_modules.tasks.ranking.reverse_judge as reverse_tasks
+from backend.oj_modules.api import ranking_api
+from backend.oj_modules.ranking import artifacts as ranking_artifacts
+import backend.oj_modules.ranking.reverse_judge.db as reverse_db
+import backend.oj_modules.ranking.reverse_judge.service as reverse_service
+from backend.oj_modules.routes import ranking_routes as routes
+import backend.oj_modules.tasks.ranking.reverse_judge as reverse_tasks
 
 
 def _app():
@@ -771,12 +771,12 @@ def test_download_reverse_agent_answer_is_hidden_until_submission_finishes(
 def test_reverse_detail_template_shows_download_only_after_archive_is_available():
     root = Path(__file__).resolve().parents[2]
     modal = (
-        root / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
+        root / "backend" / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
     ).read_text(
         encoding="utf-8",
     )
     card = (
-        root / "templates" / "ranking" / "components" / "submission_card.html"
+        root / "backend" / "templates" / "ranking" / "components" / "submission_card.html"
     ).read_text(
         encoding="utf-8",
     )

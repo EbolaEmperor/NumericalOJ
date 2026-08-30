@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules.shared.sse import (
+from backend.oj_modules.shared.sse import (
     SSEConnectionLimiter,
     guard_sse_stream,
     sse_capacity_response,
@@ -84,12 +84,12 @@ def test_capacity_response_is_retryable_503():
 @pytest.mark.parametrize(
     ("relative_path", "function_name"),
     (
-        ("oj_modules/routes/submission_routes.py", "submission_status_stream"),
-        ("oj_modules/routes/problem_core_routes.py", "agent_run_stream"),
-        ("oj_modules/routes/problem_core_routes.py", "agent_task_message_stream"),
-        ("oj_modules/routes/ai_routes.py", "ask_ai_code_marks_stream"),
-        ("oj_modules/routes/ranking_routes.py", "ranking_judge_stream"),
-        ("oj_modules/routes/ranking_routes.py", "ranking_reverse_judge_stream"),
+        ("backend/oj_modules/routes/submission_routes.py", "submission_status_stream"),
+        ("backend/oj_modules/routes/problem_core_routes.py", "agent_run_stream"),
+        ("backend/oj_modules/routes/problem_core_routes.py", "agent_task_message_stream"),
+        ("backend/oj_modules/routes/ai_routes.py", "ask_ai_code_marks_stream"),
+        ("backend/oj_modules/routes/ranking_routes.py", "ranking_judge_stream"),
+        ("backend/oj_modules/routes/ranking_routes.py", "ranking_reverse_judge_stream"),
     ),
 )
 def test_hot_sse_routes_share_admission_guard(relative_path, function_name):

@@ -10,7 +10,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _read(relative_path):
-    return (ROOT / relative_path).read_text(encoding="utf-8")
+    relative = Path(relative_path)
+    if relative.parts[0] == "templates":
+        relative = Path("backend") / relative
+    elif relative.parts[0] == "static":
+        relative = Path("frontend/public") / relative
+    return (ROOT / relative).read_text(encoding="utf-8")
 
 
 def _css_rule(styles, selector):
@@ -228,7 +233,7 @@ def test_agent_detail_header_shows_requester_avatar_and_session_token_usage():
     template = _read("templates/admin/agent_task_detail.html")
     controller = _read("static/app/agents/conversation.js")
     styles = _read("static/app/agents/conversation.css")
-    routes = _read("oj_modules/routes/problem_core_routes.py")
+    routes = _read("backend/oj_modules/routes/problem_core_routes.py")
 
     header_start = template.index('<header class="agent-session-header">')
     header_end = template.index("</header>", header_start)
@@ -691,7 +696,7 @@ def test_agent_markdown_code_stays_compact_and_scrollable_in_narrow_panes():
 
 def test_agent_trace_prefers_server_normalized_titles():
     controller = _read("static/app/agents/conversation.js")
-    routes = _read("oj_modules/routes/problem_core_routes.py")
+    routes = _read("backend/oj_modules/routes/problem_core_routes.py")
 
     assert "message.title || message.name || message.tool_name" in controller
     assert "message.title || message.name || '子 Agent'" in controller
@@ -839,8 +844,9 @@ def test_agent_frontend_javascript_has_valid_syntax():
         "static/app/agents/conversation.js",
         "static/app/code-editor-runtime.js",
     ):
+        path = Path("frontend/public") / relative_path
         subprocess.run(
-            [node, "--check", str(ROOT / relative_path)],
+            [node, "--check", str(ROOT / path)],
             check=True,
             capture_output=True,
             text=True,

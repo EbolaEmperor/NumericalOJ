@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Task 16: ELO 评分函数单测（参考 §5c）。
 
-覆盖 oj_modules.tasks.ranking.elo 中不依赖 DB/Redis 的函数：
+覆盖 backend.oj_modules.tasks.ranking.elo 中不依赖 DB/Redis 的函数：
   - _run_scoring_script：保留显式 HTML 详情协议；
   - _expected_score：对称 / 单调。
   - _new_ratings：winner=1 升降且守恒；平局对等；K 越大变化越大。
@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from oj_modules.tasks.ranking import elo
+from backend.oj_modules.tasks.ranking import elo
 
 
 def test_scoring_script_preserves_explicit_html_detail_output(tmp_path, monkeypatch):

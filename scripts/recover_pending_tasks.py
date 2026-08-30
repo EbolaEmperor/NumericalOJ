@@ -26,7 +26,11 @@ def _local_numoj_celery_processes():
     return [
         line.strip()
         for line in completed.stdout.splitlines()
-        if "celery" in line and "-A oj.celery" in line and " worker" in line
+        if (
+            "celery" in line
+            and "-A backend.oj.celery" in line
+            and " worker" in line
+        )
     ]
 
 
@@ -57,7 +61,7 @@ def main(argv=None):
         raise SystemExit(f"拒绝恢复：检测到本机 Celery worker 仍在运行：\n{details}")
 
     # 延迟导入，确保在本机进程检查通过前不创建应用对象或连接 broker。
-    from oj import celery, recover_pending_after_all_workers_stopped
+    from backend.oj import celery, recover_pending_after_all_workers_stopped
 
     try:
         remote_workers = celery.control.ping(timeout=1.5) or []

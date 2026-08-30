@@ -36,3 +36,49 @@
   - 支持上传项目、提交 Git 仓库、按班级批量评测和批量重测。
 - **论坛**：题目讨论、回复、置顶等。
 - **VibeHub 作品**：支持创建或更新时预构建并自动送审、审核发布，以及隔离按需启动围住小猫、ARC-AGI-3、黑盒数据结构猜测等互动作品。
+
+## 项目结构
+
+NumericalOJ 采用前后端分离的代码结构，同时由 Flask 在生产环境同源分发构建后的 SPA，避免额外的
+跨域认证与部署复杂度：
+
+```text
+backend/
+├── oj.py                 # Flask / Celery 组合根
+├── oj_modules/           # API、路由、任务与领域逻辑
+├── templates/            # 兼容页面与复杂服务端流程
+├── database/             # 初始化 schema
+└── requirements/         # Python 精确依赖
+frontend/
+├── src/                  # React + React Router + TanStack Query SPA
+├── public/static/        # 原页面视觉资产与兼容浏览器运行时
+├── scripts/              # 前端构建和预压缩脚本
+└── tests/                # 前端测试
+```
+
+SPA 入口为 `/app/*`。主导航切换不会重新加载页面；路由模块会在鼠标悬停、键盘聚焦和浏览器闲时预取，
+读接口由 Query 缓存复用。生产构建使用内容指纹文件名并生成 Brotli/Gzip 旁路文件，指纹资源可长期
+immutable 缓存，`index.html` 保持重新验证，从而兼顾快速切换与版本更新安全。页面继续复用迁移前的
+DOM/CSS 视觉合同，技术栈迁移不改变既有视觉设计。
+
+## 本地开发
+
+Python 基线为 3.12，Node.js 版本见 `.node-version`。安装依赖后分别启动两个开发服务：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r backend/requirements/production.txt -r backend/requirements/test.txt
+
+cd frontend
+npm ci
+npm run dev
+```
+
+另一个终端在项目根目录启动后端：
+
+```bash
+.venv/bin/python -m backend.oj
+```
+
+Vite 默认运行在 `127.0.0.1:5173`，并把 API 和认证请求代理到 `127.0.0.1:2025`。生产发布仍只使用
+项目根目录的 `bash deploy.sh`；该脚本会在候选环境中构建 React 产物并预压缩静态资源。

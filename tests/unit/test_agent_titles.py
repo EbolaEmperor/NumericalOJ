@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from oj_modules.agents import sessions as agent_sessions
-from oj_modules.tasks.agent import titles
+from backend.oj_modules.agents import sessions as agent_sessions
+from backend.oj_modules.tasks.agent import titles
 
 
 EXPECTED_TITLE_SYSTEM_PROMPT = (

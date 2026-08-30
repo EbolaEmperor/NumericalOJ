@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.agents import runtime_checkpoints
-from oj_modules.agents import workspace
+from backend.oj_modules.agents import runtime_checkpoints
+from backend.oj_modules.agents import workspace
 
 
 @pytest.fixture

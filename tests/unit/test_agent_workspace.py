@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.agents import workspace
+from backend.oj_modules.agents import workspace
 
 
 class Upload:

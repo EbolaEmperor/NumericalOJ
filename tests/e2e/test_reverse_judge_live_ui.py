@@ -150,7 +150,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
     _assert_disposable_environment()
     _assert_port_free()
     secret = read_deepseek_api_key()
-    from oj_modules import config
+    from backend.oj_modules import config
     if shutil.which("docker") is None:
         _fail("真实反向评测 E2E 需要本地 Docker CLI")
     _assert_local_test_docker_daemon()
@@ -217,7 +217,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
             "-m",
             "celery",
             "-A",
-            "oj.celery",
+            "backend.oj.celery",
             "worker",
             "--loglevel=warning",
             "-Q",
@@ -558,7 +558,7 @@ def _wait_for_terminal_submission(
             "Pending", "Queued", "Judging",
         }:
             if last_row.get("status") != "Accepted":
-                from oj_modules.ranking.reverse_judge.service import (
+                from backend.oj_modules.ranking.reverse_judge.service import (
                     build_reverse_judge_snapshot,
                 )
 
@@ -817,8 +817,8 @@ def _assert_real_snapshot(
     harness: str,
     secret: str,
 ) -> dict[str, Any]:
-    from oj_modules.ranking.reverse_judge.db import list_reverse_judge_steps
-    from oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
+    from backend.oj_modules.ranking.reverse_judge.db import list_reverse_judge_steps
+    from backend.oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
 
     snapshot = build_reverse_judge_snapshot(submission_id)
     assert snapshot
@@ -872,7 +872,7 @@ def _assert_submission_card(
 def _reverse_cleanup_db_state(competition_id: int) -> dict[str, Any]:
     """只读取清理范围内的 ID/计数，绝不把端点 Key 取回测试进程。"""
 
-    from oj_modules.db_services import get_db_connection
+    from backend.oj_modules.db_services import get_db_connection
 
     conn = get_db_connection()
     try:
@@ -1022,15 +1022,15 @@ def _cleanup_reverse_live_state(
         # Web 接口失败时仍必须从一次性测试 DB 删除明文端点 Key。这个兜底再次
         # 经过环境护栏，且只调用生产已有的按 competition_id 精确删除事务。
         try:
-            from oj_modules.ranking.db import delete_competition
+            from backend.oj_modules.ranking.db import delete_competition
 
             _assert_disposable_environment()
             delete_competition(competition_id)
         except Exception as exc:
             errors.append(f"比赛 DB 兜底删除异常（{type(exc).__name__}）")
 
-    from oj_modules.ranking.db import competition_dir, submission_dir
-    from oj_modules.tasks.ranking.reverse_judge import REVERSE_WORKSPACE_ROOT
+    from backend.oj_modules.ranking.db import competition_dir, submission_dir
+    from backend.oj_modules.tasks.ranking.reverse_judge import REVERSE_WORKSPACE_ROOT
 
     submission_root = ROOT / "ranking_uploads" / "submissions"
     reverse_workspace_root = Path(REVERSE_WORKSPACE_ROOT)
@@ -1108,7 +1108,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
             from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import expect, sync_playwright
         except ImportError:
-            _fail("缺少 Playwright；请安装 requirements/test.txt")
+            _fail("缺少 Playwright；请安装 backend/requirements/test.txt")
 
         page_errors: list[str] = []
         sse_urls: set[str] = set()

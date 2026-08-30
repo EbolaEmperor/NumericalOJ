@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 from flask import Flask
 
-from oj_modules.problems import catalog as problem_catalog
-from oj_modules.problems import context as problem_context
-from oj_modules.api import problem_api
-from oj_modules.routes import problem_core_routes
+from backend.oj_modules.problems import catalog as problem_catalog
+from backend.oj_modules.problems import context as problem_context
+from backend.oj_modules.api import problem_api
+from backend.oj_modules.routes import problem_core_routes
 
 
 def _stub_base_context(monkeypatch):

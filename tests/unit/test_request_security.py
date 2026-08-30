@@ -1,6 +1,6 @@
 from flask import Flask
 
-from oj_modules.security.origin_guard import (
+from backend.oj_modules.security.origin_guard import (
     install_same_origin_protection,
     is_same_origin,
 )

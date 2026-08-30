@@ -1,4 +1,4 @@
-from oj_modules.classroom import logos as class_logo_services
+from backend.oj_modules.classroom import logos as class_logo_services
 
 
 class _Cursor:
@@ -122,7 +122,7 @@ def test_backfill_only_updates_missing_rows_and_commits(monkeypatch):
 def test_admin_class_creation_persists_generated_logo_seed(monkeypatch):
     from flask import Flask
 
-    from oj_modules.routes import admin_user_routes
+    from backend.oj_modules.routes import admin_user_routes
 
     cursor = _Cursor([])
     connection = _Connection(cursor)

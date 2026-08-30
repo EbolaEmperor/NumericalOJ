@@ -4,8 +4,8 @@ from pathlib import Path
 
 from flask import Flask
 
-from oj_modules.routes.auth_routes import auth_bp
-from oj_modules.routes.homework_routes import homework_bp
+from backend.oj_modules.routes.auth_routes import auth_bp
+from backend.oj_modules.routes.homework_routes import homework_bp
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,12 +28,12 @@ def test_checked_in_browser_and_cli_callers_use_post():
     layout = "\n".join(
         path.read_text(encoding='utf-8')
         for path in (
-            ROOT / 'templates' / 'layouts' / 'site.html',
-            ROOT / 'templates' / 'components' / 'layout' / 'navigation.html',
+            ROOT / 'backend' / 'templates' / 'layouts' / 'site.html',
+            ROOT / 'backend' / 'templates' / 'components' / 'layout' / 'navigation.html',
         )
     )
     homework_template = (
-        ROOT / 'templates' / 'admin' / 'homework.html'
+        ROOT / 'backend' / 'templates' / 'admin' / 'homework.html'
     ).read_text(encoding='utf-8')
     admin_auth = (
         ROOT / 'skills' / 'numoj-admin' / 'scripts' / 'numoj_admin_cli' / 'auth.py'

@@ -16,8 +16,8 @@ from tests.e2e.conftest import create_problem_with_homework, create_regular_user
 def _create_ai_detection_endpoint() -> int:
     """在一次性测试库中创建已通过暂存测试的文本端点。"""
 
-    from oj_modules.site_config import services as dynamic_config_services
-    from oj_modules.db_services import get_user_by_username
+    from backend.oj_modules.site_config import services as dynamic_config_services
+    from backend.oj_modules.db_services import get_user_by_username
 
     admin = get_user_by_username("admin")
     payload = {

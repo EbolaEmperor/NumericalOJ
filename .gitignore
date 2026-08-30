@@ -2,6 +2,8 @@
 .vscode/
 node_modules/
 npm-debug.log*
+/frontend/dist/
+/frontend/tsconfig.tsbuildinfo
 # macOS 文件系统元数据
 .DS_Store
 */.DS_Store
@@ -47,6 +49,8 @@ library/
 repository_storage/
 tmp/
 uploads/
+# 生产可能保留未纳入 Git 的历史静态附件；Flask 仅在新前端目录未命中时只读回退到这里。
+/static/
 # 统一结构化日志、轮转文件、采集器 socket 与状态文件均为运行时数据。
 /logs/
 # 判题运行目录（JUDGER_RUN_ROOT 默认 <OJ_ROOT>/judger）：每次评测的 eoj-* 子目录是

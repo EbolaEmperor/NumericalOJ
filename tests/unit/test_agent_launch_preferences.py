@@ -6,8 +6,8 @@ from datetime import datetime
 
 import pytest
 
-from oj_modules.problems import agent_preferences
-from oj_modules.problems.agent_launch import AgentLaunchValidationError
+from backend.oj_modules.problems import agent_preferences
+from backend.oj_modules.problems.agent_launch import AgentLaunchValidationError
 
 
 class _FakeCursor:

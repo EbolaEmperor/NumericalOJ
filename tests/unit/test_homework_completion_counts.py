@@ -1,4 +1,4 @@
-from oj_modules.routes import homework_routes
+from backend.oj_modules.routes import homework_routes
 
 
 class _Cursor:

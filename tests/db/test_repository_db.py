@@ -12,10 +12,10 @@
 """
 import json
 
-from oj_modules import db_services as db
-from oj_modules.repository import includes as rsvc
-from oj_modules.repository import index as ris
-from oj_modules.repository import tree as tree_services
+from backend.oj_modules import db_services as db
+from backend.oj_modules.repository import includes as rsvc
+from backend.oj_modules.repository import index as ris
+from backend.oj_modules.repository import tree as tree_services
 from tests import helpers as h
 
 

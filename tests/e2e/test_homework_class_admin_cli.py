@@ -107,7 +107,7 @@ def test_admin_can_grant_admin_privileges_idempotently(cli, unique_suffix):
 def test_homework_score_exports_exam_upload_and_export_artifact(cli, unique_suffix, tmp_path):
     import openpyxl
     import redis
-    from oj_modules import config
+    from backend.oj_modules import config
 
     username = f"cli_export_{unique_suffix}"
     create_regular_user(username=username, password="pw123456")

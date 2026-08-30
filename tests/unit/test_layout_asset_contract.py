@@ -5,71 +5,71 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASE_LAYOUT = (ROOT / "templates" / "layouts" / "base.html").read_text(
+BASE_LAYOUT = (ROOT / "backend" / "templates" / "layouts" / "base.html").read_text(
     encoding="utf-8"
 )
-SITE_LAYOUT = (ROOT / "templates" / "layouts" / "site.html").read_text(
+SITE_LAYOUT = (ROOT / "backend" / "templates" / "layouts" / "site.html").read_text(
     encoding="utf-8"
 )
 NAVIGATION = (
-    ROOT / "templates" / "components" / "layout" / "navigation.html"
+    ROOT / "backend" / "templates" / "components" / "layout" / "navigation.html"
 ).read_text(encoding="utf-8")
-EMBEDDED_LAYOUT = (ROOT / "templates" / "layouts" / "embedded.html").read_text(
+EMBEDDED_LAYOUT = (ROOT / "backend" / "templates" / "layouts" / "embedded.html").read_text(
     encoding="utf-8"
 )
 MATHJAX_COMPONENT = (
-    ROOT / "templates" / "components" / "layout" / "mathjax.html"
+    ROOT / "backend" / "templates" / "components" / "layout" / "mathjax.html"
 ).read_text(encoding="utf-8")
 LAYOUT_COMPONENTS = "\n".join(
     path.read_text(encoding="utf-8")
-    for path in sorted((ROOT / "templates" / "components" / "layout").glob("*.html"))
+    for path in sorted((ROOT / "backend" / "templates" / "components" / "layout").glob("*.html"))
 )
 PASSWORD_MODAL = (
-    ROOT / "templates" / "components" / "layout" / "password_modal.html"
+    ROOT / "backend" / "templates" / "components" / "layout" / "password_modal.html"
 ).read_text(encoding="utf-8")
 CLASS_MANAGER_MODAL = (
-    ROOT / "templates" / "components" / "layout" / "class_manager_modal.html"
+    ROOT / "backend" / "templates" / "components" / "layout" / "class_manager_modal.html"
 ).read_text(encoding="utf-8")
-ADMIN_USERS = (ROOT / "templates" / "admin" / "users.html").read_text(
+ADMIN_USERS = (ROOT / "backend" / "templates" / "admin" / "users.html").read_text(
     encoding="utf-8"
 )
-ADMIN_USERS_JS = (ROOT / "static" / "app" / "admin-users.js").read_text(
+ADMIN_USERS_JS = (ROOT / "frontend" / "public" / "static" / "app" / "admin-users.js").read_text(
     encoding="utf-8"
 )
-ADMIN_USERS_CSS = (ROOT / "static" / "app" / "admin-users.css").read_text(
+ADMIN_USERS_CSS = (ROOT / "frontend" / "public" / "static" / "app" / "admin-users.css").read_text(
     encoding="utf-8"
 )
-REGISTER = (ROOT / "templates" / "auth" / "register.html").read_text(
+REGISTER = (ROOT / "backend" / "templates" / "auth" / "register.html").read_text(
     encoding="utf-8"
 )
-AUTH_BASE = (ROOT / "templates" / "auth" / "base.html").read_text(
+AUTH_BASE = (ROOT / "backend" / "templates" / "auth" / "base.html").read_text(
     encoding="utf-8"
 )
 AUTH_TEMPLATES = "\n".join(
-    (ROOT / "templates" / "auth" / name).read_text(encoding="utf-8")
+    (ROOT / "backend" / "templates" / "auth" / name).read_text(encoding="utf-8")
     for name in ("login.html", "register.html", "forgot_password.html")
 )
-AUTH_CSS = (ROOT / "static" / "app" / "auth.css").read_text(encoding="utf-8")
-AUTH_JS = (ROOT / "static" / "app" / "auth.js").read_text(encoding="utf-8")
+AUTH_CSS = (ROOT / "frontend" / "public" / "static" / "app" / "auth.css").read_text(encoding="utf-8")
+AUTH_JS = (ROOT / "frontend" / "public" / "static" / "app" / "auth.js").read_text(encoding="utf-8")
 CLASS_LOGO = (
-    ROOT / "templates" / "components" / "layout" / "class_logo.html"
+    ROOT / "backend" / "templates" / "components" / "layout" / "class_logo.html"
 ).read_text(encoding="utf-8")
-LAYOUT_CSS = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
-LAYOUT_JS = (ROOT / "static" / "app" / "layout.js").read_text(encoding="utf-8")
+LAYOUT_CSS = (ROOT / "frontend" / "public" / "static" / "app" / "layout.css").read_text(encoding="utf-8")
+LAYOUT_JS = (ROOT / "frontend" / "public" / "static" / "app" / "layout.js").read_text(encoding="utf-8")
 SIDEBAR_STATE_JS = (
-    ROOT / "static" / "app" / "sidebar-state.js"
+    ROOT / "frontend" / "public" / "static" / "app" / "sidebar-state.js"
 ).read_text(encoding="utf-8")
 IDENTICON_JS = (
-    ROOT / "static" / "app" / "identicon.js"
+    ROOT / "frontend" / "public" / "static" / "app" / "identicon.js"
 ).read_text(encoding="utf-8")
 CLASS_SELECT_JS = (
-    ROOT / "static" / "app" / "class-select.js"
+    ROOT / "frontend" / "public" / "static" / "app" / "class-select.js"
 ).read_text(encoding="utf-8")
 AUTH_ROUTES = (
-    ROOT / "oj_modules" / "routes" / "auth_routes.py"
+    ROOT / "backend" / "oj_modules" / "routes" / "auth_routes.py"
 ).read_text(encoding="utf-8")
 CLASS_MANAGEMENT_ROUTES = (
-    ROOT / "oj_modules" / "routes" / "class_management_routes.py"
+    ROOT / "backend" / "oj_modules" / "routes" / "class_management_routes.py"
 ).read_text(encoding="utf-8")
 
 
@@ -153,7 +153,7 @@ def test_mathjax_is_an_explicit_page_level_capability():
     }
     include = "{% include 'components/layout/mathjax.html' %}"
     for name in consumers:
-        source = (ROOT / "templates" / name).read_text(encoding="utf-8")
+        source = (ROOT / "backend" / "templates" / name).read_text(encoding="utf-8")
         assert source.count(include) == 1
 
     lazy_rich_content_consumers = {
@@ -172,7 +172,7 @@ def test_mathjax_is_an_explicit_page_level_capability():
     for asset in lazy_assets:
         assert asset in MATHJAX_COMPONENT
     for name in lazy_rich_content_consumers:
-        source = (ROOT / "templates" / name).read_text(encoding="utf-8")
+        source = (ROOT / "backend" / "templates" / name).read_text(encoding="utf-8")
         assert "mathjax_lazy=true" in source
         assert "app/markdown-rendering.js" in source
         for asset in lazy_assets:
@@ -344,7 +344,7 @@ def test_auth_pages_share_the_ui_v2_card_and_homepage_logo_contract():
     assert "M4 20Q8 4 12 12T20 4" in AUTH_BASE
 
     for template_name in ("login.html", "register.html", "forgot_password.html"):
-        source = (ROOT / "templates" / "auth" / template_name).read_text(
+        source = (ROOT / "backend" / "templates" / "auth" / template_name).read_text(
             encoding="utf-8"
         )
         assert '{% extends "auth/base.html" %}' in source

@@ -48,8 +48,8 @@ JAVASCRIPT_ASSETS = (
 
 def test_frontend_node_runtime_is_pinned_consistently():
     expected = (ROOT / ".node-version").read_text().strip()
-    package = json.loads((ROOT / "package.json").read_text())
-    lock = json.loads((ROOT / "package-lock.json").read_text())
+    package = json.loads((ROOT / "frontend" / "package.json").read_text())
+    lock = json.loads((ROOT / "frontend" / "package-lock.json").read_text())
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
     assert expected == "22.23.2"
@@ -62,8 +62,11 @@ def test_frontend_node_runtime_is_pinned_consistently():
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 @pytest.mark.parametrize("relative_path", JAVASCRIPT_ASSETS)
 def test_frontend_javascript_has_valid_syntax(relative_path):
+    path = Path(relative_path)
+    if path.parts[0] == "static":
+        path = Path("frontend/public") / path
     subprocess.run(
-        [NODE, "--check", str(ROOT / relative_path)],
+        [NODE, "--check", str(ROOT / path)],
         check=True,
         capture_output=True,
         text=True,
@@ -72,7 +75,7 @@ def test_frontend_javascript_has_valid_syntax(relative_path):
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_lazy_rich_assets_skip_plain_content_and_fail_open():
-    asset = ROOT / "static" / "app" / "rich-content-assets.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "rich-content-assets.js"
     script = f"""
 global.window = global;
 global.Node = {{TEXT_NODE: 3}};
@@ -170,7 +173,7 @@ require({str(asset)!r});
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_lazy_mathjax_waits_for_startup_before_typesetting():
-    asset = ROOT / "static" / "app" / "markdown-rendering.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "markdown-rendering.js"
     script = f"""
 global.window = global;
 global.document = {{
@@ -220,7 +223,7 @@ require({str(asset)!r});
 
 
 def test_lazy_rich_asset_failures_preserve_renderer_fallbacks():
-    source = (ROOT / "static" / "app" / "markdown-rendering.js").read_text()
+    source = (ROOT / "frontend" / "public" / "static" / "app" / "markdown-rendering.js").read_text()
 
     # 资源加载器以 false 结算时仍执行增强流程；缺少 Shiki 客户端会保留
     # 服务端生成的 Pygments DOM，Mermaid 则展开并保留原始源码。
@@ -235,7 +238,7 @@ def test_lazy_rich_asset_failures_preserve_renderer_fallbacks():
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_markdown_highlighter_bundle_uses_github_light_for_rich_languages():
-    asset = ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
+    asset = ROOT / "frontend" / "public" / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
     script = f"""
 const fs = require("fs");
 const vm = require("vm");
@@ -299,7 +302,7 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_lean4_monarch_fallback_enables_unicode_identifiers():
-    asset = ROOT / "static" / "app" / "code-editor-runtime.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     script = f"""
 global.window = global;
 let leanDefinition = null;
@@ -351,7 +354,7 @@ const {{ pathToFileURL }} = require("url");
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_lean4_semantic_token_bridge_tracks_monaco_model_version():
-    asset = ROOT / "static" / "app" / "lean-workbench.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "lean-workbench.js"
     script = f"""
 global.window = global;
 require({str(asset)!r});
@@ -474,7 +477,7 @@ if (!registrationDisposed) process.exit(12);
 
 def test_lean4_workbench_separates_source_and_cursor_requests():
     source = (
-        ROOT / "static" / "app" / "lean-workbench.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "lean-workbench.js"
     ).read_text()
 
     assert 'request_kind: kind' in source
@@ -512,15 +515,15 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
     ).read_text()
     full_entry = (ROOT / "frontend" / "monaco" / "editor.js").read_text()
     runtime = (ROOT / "frontend" / "monaco" / "runtime.js").read_text()
-    build_script = (ROOT / "scripts" / "build_monaco.mjs").read_text()
+    build_script = (ROOT / "frontend" / "scripts" / "build_monaco.mjs").read_text()
     component = (
-        ROOT / "templates" / "components" / "editor" / "monaco.html"
+        ROOT / "backend" / "templates" / "components" / "editor" / "monaco.html"
     ).read_text()
     problem_detail = (
-        ROOT / "templates" / "problems" / "detail.html"
+        ROOT / "backend" / "templates" / "problems" / "detail.html"
     ).read_text()
     submission_detail = (
-        ROOT / "templates" / "submissions" / "detail.html"
+        ROOT / "backend" / "templates" / "submissions" / "detail.html"
     ).read_text()
 
     assert "monaco_bundle|default('minimal')" in component
@@ -546,15 +549,15 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
     assert 'semanticTokens/browser/viewportSemanticTokens.js' in minimal_entry
     assert "attachLean4UnicodeInput" in runtime
     assert "getLean4UnicodeAbbreviations" in runtime
-    assert '["frontend/monaco/editor.js", "editor"]' in build_script
+    assert '["monaco/editor.js", "editor"]' in build_script
     assert (
-        '["frontend/monaco/editor-minimal.js", "editor-minimal"]'
+        '["monaco/editor-minimal.js", "editor-minimal"]'
         in build_script
     )
 
-    full_asset = ROOT / "static" / "vendor" / "monaco" / "editor.js"
+    full_asset = ROOT / "frontend" / "public" / "static" / "vendor" / "monaco" / "editor.js"
     minimal_asset = (
-        ROOT / "static" / "vendor" / "monaco" / "editor-minimal.js"
+        ROOT / "frontend" / "public" / "static" / "vendor" / "monaco" / "editor-minimal.js"
     )
     assert minimal_asset.stat().st_size < full_asset.stat().st_size * 0.60
     built_minimal = minimal_asset.read_text()
@@ -571,8 +574,8 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
 
 
 def test_monaco_distribution_carries_the_upstream_license():
-    build_script = (ROOT / "scripts" / "build_monaco.mjs").read_text()
-    license_asset = ROOT / "static" / "vendor" / "monaco" / "LICENSE"
+    build_script = (ROOT / "frontend" / "scripts" / "build_monaco.mjs").read_text()
+    license_asset = ROOT / "frontend" / "public" / "static" / "vendor" / "monaco" / "LICENSE"
 
     assert '"node_modules/monaco-editor/LICENSE"' in build_script
     assert '`${outputDirectory}/LICENSE`' in build_script
@@ -582,7 +585,7 @@ def test_monaco_distribution_carries_the_upstream_license():
     assert "The above copyright notice and this permission notice" in license_text
 
     notices_asset = (
-        ROOT / "static" / "vendor" / "monaco" / "ThirdPartyNotices.txt"
+        ROOT / "frontend" / "public" / "static" / "vendor" / "monaco" / "ThirdPartyNotices.txt"
     )
     assert '"node_modules/monaco-editor/ThirdPartyNotices.txt"' in build_script
     assert '`${outputDirectory}/ThirdPartyNotices.txt`' in build_script
@@ -594,7 +597,7 @@ def test_monaco_distribution_carries_the_upstream_license():
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_lean4_markdown_highlighter_uses_structural_scopes():
-    asset = ROOT / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
+    asset = ROOT / "frontend" / "public" / "static" / "vendor" / "shiki-markdown" / "highlighter.js"
     script = f"""
 const fs = require("fs");
 const vm = require("vm");
@@ -651,7 +654,7 @@ vm.runInThisContext(fs.readFileSync({str(asset)!r}, "utf8"));
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_rule_topology_factory_is_deterministic_and_rejects_cycles():
-    asset = ROOT / "static" / "app" / "ranking" / "topology.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "topology.js"
     script = f"""
 global.window = global;
 require({str(asset)!r});
@@ -694,7 +697,7 @@ if (cycle !== null) process.exit(5);
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_semantic_token_client_separates_editor_and_markdown_payloads():
-    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "editor-semantic-tokens.js"
     script = f"""
 global.window = global;
 const calls = [];
@@ -805,7 +808,7 @@ require({str(asset)!r});
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_shared_code_editor_runtime_has_one_language_and_theme_mapping():
-    asset = ROOT / "static" / "app" / "code-editor-runtime.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     script = f"""
 global.window = global;
 require({str(asset)!r});
@@ -841,7 +844,7 @@ if (
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_code_editor_runtime_upgrades_delayed_textmate_theme_once_ready():
-    asset = ROOT / "static" / "app" / "code-editor-runtime.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     script = f"""
 global.window = global;
 let resolvePreparation = null;
@@ -889,7 +892,7 @@ require({str(asset)!r});
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_semantic_requests_retry_service_busy_but_not_rate_limits():
-    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "editor-semantic-tokens.js"
     script = f"""
 global.window = global;
 Math.random = function() {{ return 0; }};
@@ -972,7 +975,7 @@ require({str(asset)!r});
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_semantic_provider_derives_repository_entry_id_from_model():
-    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "editor-semantic-tokens.js"
     script = f"""
 global.window = global;
 let provider = null;
@@ -1044,7 +1047,7 @@ require({str(asset)!r});
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_cpp_semantic_provider_tracks_inactive_regions_as_model_decorations():
-    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "editor-semantic-tokens.js"
     script = f"""
 global.window = global;
 console.warn = function() {{}};
@@ -1403,7 +1406,7 @@ require({str(asset)!r});
 
 
 def test_inactive_code_style_dims_without_replacing_syntax_colors():
-    stylesheet = (ROOT / "static" / "styles" / "code-editor.css").read_text()
+    stylesheet = (ROOT / "frontend" / "public" / "static" / "styles" / "code-editor.css").read_text()
     match = re.search(
         r"\.monaco-editor \.numoj-clangd-inactive-code\s*\{([^}]*)\}",
         stylesheet,
@@ -1415,7 +1418,7 @@ def test_inactive_code_style_dims_without_replacing_syntax_colors():
 
 @pytest.mark.skipif(NODE is None, reason="当前环境未安装 Node.js")
 def test_markdown_semantic_client_retries_busy_but_not_rate_limits():
-    asset = ROOT / "static" / "app" / "editor-semantic-tokens.js"
+    asset = ROOT / "frontend" / "public" / "static" / "app" / "editor-semantic-tokens.js"
     script = f"""
 global.window = global;
 Math.random = function() {{ return 0; }};

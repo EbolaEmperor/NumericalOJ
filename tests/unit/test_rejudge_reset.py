@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-from oj_modules import db_services
-from oj_modules.routes import rejudge_routes
+from backend.oj_modules import db_services
+from backend.oj_modules.routes import rejudge_routes
 
 
 class _FakeCursor:

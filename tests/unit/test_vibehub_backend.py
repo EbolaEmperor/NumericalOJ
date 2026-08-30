@@ -15,8 +15,8 @@ from PIL import Image
 import pytest
 from werkzeug.datastructures import MultiDict
 
-from oj_modules.api import vibehub_api
-from oj_modules.vibehub import quotas, services, storage
+from backend.oj_modules.api import vibehub_api
+from backend.oj_modules.vibehub import quotas, services, storage
 
 
 USER = {"id": 7, "username": "viber", "is_admin": 0}
@@ -1427,7 +1427,12 @@ def test_api_serves_the_tracked_developer_guide():
 
 
 def test_schema_contains_vibehub_project_and_immutable_version_tables():
-    sql = (Path(__file__).resolve().parents[2] / "database" / "bootstrap.sql").read_text(encoding="utf-8")
+    sql = (
+        Path(__file__).resolve().parents[2]
+        / "backend"
+        / "database"
+        / "bootstrap.sql"
+    ).read_text(encoding="utf-8")
 
     assert "CREATE TABLE `vibehub_projects`" in sql
     assert "CREATE TABLE `vibehub_versions`" in sql

@@ -2092,7 +2092,7 @@ def test_pi_rpc_projects_retry_errors_and_omits_orphan_zero_usage(
     assert stderr.strip() == "模型请求失败：HTTP 429：上游仍在限流，请稍后重试"
     assert "internal-user-id" not in stderr
 
-    from oj_modules.tasks.agent import harness_runtime as runtime
+    from backend.oj_modules.tasks.agent import harness_runtime as runtime
 
     journal = tmp_path / "canonical.jsonl"
     observer = runtime._CanonicalJournalObserver(journal)
@@ -2737,7 +2737,7 @@ def test_opencode_v2_normalizer_keeps_text_tools_and_incremental_usage(monkeypat
 
 def test_trace_emitter_bounds_large_tool_before_canonical_journal(
         monkeypatch, tmp_path):
-    from oj_modules.tasks.agent import harness_runtime as runtime
+    from backend.oj_modules.tasks.agent import harness_runtime as runtime
 
     module = _load_run_harness()
     emitted = []

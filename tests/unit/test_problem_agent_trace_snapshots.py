@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from oj_modules.problems import agent_runs
+from backend.oj_modules.problems import agent_runs
 
 
 @pytest.fixture(autouse=True)

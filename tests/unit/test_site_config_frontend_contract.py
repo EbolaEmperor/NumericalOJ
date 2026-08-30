@@ -2,18 +2,18 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE = ROOT / "templates/admin/site_config.html"
-SCRIPT = ROOT / "static/app/site-config.js"
-STYLESHEET = ROOT / "static/app/site-config.css"
-ENDPOINT_EDITOR_TEMPLATE = ROOT / "templates/components/endpoint_editor.html"
-ENDPOINT_EDITOR_SCRIPT = ROOT / "static/app/endpoint-editor.js"
-ENDPOINT_EDITOR_STYLESHEET = ROOT / "static/app/endpoint-editor.css"
-CHOICE_PICKER = ROOT / "static/app/choice-picker.js"
-CHOICE_PICKER_TEMPLATE = ROOT / "templates/components/choice_picker.html"
-PROBLEM_ENDPOINT_SELECT = ROOT / "templates/problems/components/llm_endpoint_select.html"
-AI_DETECTION_TEMPLATE = ROOT / "templates/admin/ai_detection.html"
-RANKING_ENDPOINTS_SCRIPT = ROOT / "static/app/ranking/endpoints.js"
-RANKING_DETAIL_STYLESHEET = ROOT / "static/app/ranking/detail-v2.css"
+TEMPLATE = ROOT / "backend/templates/admin/site_config.html"
+SCRIPT = ROOT / "frontend/public/static/app/site-config.js"
+STYLESHEET = ROOT / "frontend/public/static/app/site-config.css"
+ENDPOINT_EDITOR_TEMPLATE = ROOT / "backend/templates/components/endpoint_editor.html"
+ENDPOINT_EDITOR_SCRIPT = ROOT / "frontend/public/static/app/endpoint-editor.js"
+ENDPOINT_EDITOR_STYLESHEET = ROOT / "frontend/public/static/app/endpoint-editor.css"
+CHOICE_PICKER = ROOT / "frontend/public/static/app/choice-picker.js"
+CHOICE_PICKER_TEMPLATE = ROOT / "backend/templates/components/choice_picker.html"
+PROBLEM_ENDPOINT_SELECT = ROOT / "backend/templates/problems/components/llm_endpoint_select.html"
+AI_DETECTION_TEMPLATE = ROOT / "backend/templates/admin/ai_detection.html"
+RANKING_ENDPOINTS_SCRIPT = ROOT / "frontend/public/static/app/ranking/endpoints.js"
+RANKING_DETAIL_STYLESHEET = ROOT / "frontend/public/static/app/ranking/detail-v2.css"
 
 
 def _read(path):

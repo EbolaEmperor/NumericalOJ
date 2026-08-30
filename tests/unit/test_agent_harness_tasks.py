@@ -4,10 +4,10 @@ from string import Formatter
 
 import pytest
 
-from oj_modules.problems import agent_launch
-from oj_modules.tasks.agent import generate_testdata as data_task
-from oj_modules.tasks.agent import solve as solve_task
-from oj_modules.tasks.agent.harness_runtime import HarnessRunResult
+from backend.oj_modules.problems import agent_launch
+from backend.oj_modules.tasks.agent import generate_testdata as data_task
+from backend.oj_modules.tasks.agent import solve as solve_task
+from backend.oj_modules.tasks.agent.harness_runtime import HarnessRunResult
 
 
 class _FakeCelery:

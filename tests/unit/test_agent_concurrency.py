@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.tasks.agent import concurrency
+from backend.oj_modules.tasks.agent import concurrency
 
 
 class _Autoscaler:

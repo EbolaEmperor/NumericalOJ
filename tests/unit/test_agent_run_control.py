@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.tasks.agent import control
+from backend.oj_modules.tasks.agent import control
 
 
 def test_terminator_persists_before_revoke_and_force_remove(monkeypatch):

@@ -2,10 +2,10 @@
 
 from flask import Flask
 
-from oj_modules.api import admin_api
-from oj_modules.api.helpers import public_user
-from oj_modules.classroom.membership import LastMembershipError
-from oj_modules.routes import admin_user_routes, class_management_routes
+from backend.oj_modules.api import admin_api
+from backend.oj_modules.api.helpers import public_user
+from backend.oj_modules.classroom.membership import LastMembershipError
+from backend.oj_modules.routes import admin_user_routes, class_management_routes
 
 
 class _Cursor:
@@ -146,7 +146,7 @@ def test_admin_email_update_rejects_duplicate(monkeypatch):
 
 
 def test_admin_password_reset_generates_password_and_sends_email_before_commit(monkeypatch):
-    from oj_modules.security.credentials import verify_password
+    from backend.oj_modules.security.credentials import verify_password
 
     app = _app()
     updates = []
@@ -198,7 +198,7 @@ def test_admin_password_reset_generates_password_and_sends_email_before_commit(m
 
 
 def test_admin_password_reset_rolls_back_when_mail_fails(monkeypatch):
-    from oj_modules.integrations.mail import MailDeliveryError
+    from backend.oj_modules.integrations.mail import MailDeliveryError
 
     app = _app()
 

@@ -4,7 +4,7 @@ import pytest
 from decimal import Decimal
 from datetime import datetime, timezone
 
-from oj_modules.site_config import services
+from backend.oj_modules.site_config import services
 
 
 def llm_payload(**overrides):

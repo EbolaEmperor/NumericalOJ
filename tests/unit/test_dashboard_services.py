@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from oj_modules.classroom import dashboard as dashboard_services
+from backend.oj_modules.classroom import dashboard as dashboard_services
 
 
 @pytest.fixture(autouse=True)

@@ -538,7 +538,7 @@ rm -rf -- "$CANDIDATE_VENV"
 "$BOOTSTRAP_PYTHON" -m venv "$CANDIDATE_VENV"
 "$CANDIDATE_PYTHON" -m pip install \
   --disable-pip-version-check \
-  --requirement requirements/production.txt
+  --requirement backend/requirements/production.txt
 
 phase='构建 VibeHub 受信基础候选镜像'
 DOCKER_BUILDKIT=1 docker build \
@@ -603,6 +603,21 @@ build_candidate_image \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
 
+phase='构建 React 前端'
+docker run --rm \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --user "$(id -u):$(id -g)" \
+  --workdir /workspace \
+  --env HOME=/tmp/numoj-frontend \
+  --env npm_config_cache=/tmp/numoj-npm-cache \
+  --env npm_config_registry=https://registry.npmmirror.com \
+  --mount "type=bind,src=$ROOT_DIR/frontend,dst=/workspace" \
+  --mount "type=volume,dst=/workspace/node_modules" \
+  --entrypoint /bin/sh \
+  "$AGENT_JUDGE_CANDIDATE" \
+  -c 'npm ci --no-audit --no-fund && npm run build'
+
 phase='生成预压缩静态资源'
 docker run --rm \
   --network none \
@@ -610,10 +625,25 @@ docker run --rm \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --user "$(id -u):$(id -g)" \
-  --workdir /workspace \
-  --env NUMOJ_PRECOMPRESS_MANIFEST=/workspace/.precompress-state/manifest.json \
-  --mount "type=bind,src=$ROOT_DIR/static,dst=/workspace/static" \
-  --mount "type=bind,src=$ROOT_DIR/scripts/precompress_static.mjs,dst=/workspace/scripts/precompress_static.mjs,readonly" \
+  --workdir /workspace/frontend \
+  --env NUMOJ_STATIC_ROOT=public/static \
+  --env NUMOJ_PRECOMPRESS_MANIFEST=/workspace/.precompress-state/legacy-manifest.json \
+  --mount "type=bind,src=$ROOT_DIR/frontend,dst=/workspace/frontend" \
+  --mount "type=bind,src=$STATIC_PRECOMPRESSION_STATE_DIR,dst=/workspace/.precompress-state" \
+  --entrypoint node \
+  "$AGENT_JUDGE_CANDIDATE" \
+  scripts/precompress_static.mjs
+
+docker run --rm \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --user "$(id -u):$(id -g)" \
+  --workdir /workspace/frontend \
+  --env NUMOJ_STATIC_ROOT=dist/assets \
+  --env NUMOJ_PRECOMPRESS_MANIFEST=/workspace/.precompress-state/spa-manifest.json \
+  --mount "type=bind,src=$ROOT_DIR/frontend,dst=/workspace/frontend" \
   --mount "type=bind,src=$STATIC_PRECOMPRESSION_STATE_DIR,dst=/workspace/.precompress-state" \
   --entrypoint node \
   "$AGENT_JUDGE_CANDIDATE" \

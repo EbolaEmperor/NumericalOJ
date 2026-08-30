@@ -14,7 +14,7 @@
 
 约定：autouse 的 db_reset 每个测试前 truncate+reseed；用 tests.helpers 工厂造数据。
 """
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 from tests import helpers as h
 
 

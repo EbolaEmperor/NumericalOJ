@@ -1,8 +1,8 @@
 import ast
 from pathlib import Path
 
-from oj_modules.homework import progress, records, runtime, targets
-from oj_modules.routes import homework_routes
+from backend.oj_modules.homework import progress, records, runtime, targets
+from backend.oj_modules.routes import homework_routes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -10,14 +10,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_homework_api_task_and_domain_do_not_import_routes():
     relative_paths = (
-        "oj_modules/api/homework_api.py",
-        "oj_modules/tasks/homework_admin_tasks.py",
-        "oj_modules/homework/plagiarism.py",
-        "oj_modules/homework/progress.py",
-        "oj_modules/homework/records.py",
-        "oj_modules/homework/repository.py",
-        "oj_modules/homework/runtime.py",
-        "oj_modules/homework/targets.py",
+        "backend/oj_modules/api/homework_api.py",
+        "backend/oj_modules/tasks/homework_admin_tasks.py",
+        "backend/oj_modules/homework/plagiarism.py",
+        "backend/oj_modules/homework/progress.py",
+        "backend/oj_modules/homework/records.py",
+        "backend/oj_modules/homework/repository.py",
+        "backend/oj_modules/homework/runtime.py",
+        "backend/oj_modules/homework/targets.py",
     )
 
     for relative_path in relative_paths:
@@ -35,8 +35,8 @@ def test_homework_api_task_and_domain_do_not_import_routes():
         )
 
         assert not any(
-            module == "oj_modules.routes"
-            or module.startswith("oj_modules.routes.")
+            module == "backend.oj_modules.routes"
+            or module.startswith("backend.oj_modules.routes.")
             for module in imported_modules
         ), relative_path
 

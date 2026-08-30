@@ -61,19 +61,19 @@ def _imported_modules(relative_path):
 
 
 def test_rejudge_route_does_not_import_task_adapters():
-    imported_modules = _imported_modules("oj_modules/routes/rejudge_routes.py")
+    imported_modules = _imported_modules("backend/oj_modules/routes/rejudge_routes.py")
 
     assert not any(
-        module == "oj_modules.tasks" or module.startswith("oj_modules.tasks.")
+        module == "backend.oj_modules.tasks" or module.startswith("backend.oj_modules.tasks.")
         for module in imported_modules
     )
 
 
 def test_composition_root_uses_canonical_task_registry():
-    imported_modules = _imported_modules("oj.py")
+    imported_modules = _imported_modules("backend/oj.py")
 
-    assert "oj_modules.tasks.registry" in imported_modules
-    assert "oj_modules.tasks" not in imported_modules
+    assert "backend.oj_modules.tasks.registry" in imported_modules
+    assert "backend.oj_modules.tasks" not in imported_modules
 
 
 def test_real_oj_import_preserves_runtime_ports_and_task_topology():
@@ -82,12 +82,12 @@ def test_real_oj_import_preserves_runtime_ports_and_task_topology():
         import inspect
         import json
 
-        from oj_modules import config
-        from oj_modules import db_services
-        from oj_modules.infrastructure import mysql as mysql_infrastructure
-        from oj_modules.infrastructure import redis as redis_infrastructure
-        from oj_modules.runtime import pending_recovery
-        from oj_modules.tasks import registry as task_registry
+        from backend.oj_modules import config
+        from backend.oj_modules import db_services
+        from backend.oj_modules.infrastructure import mysql as mysql_infrastructure
+        from backend.oj_modules.infrastructure import redis as redis_infrastructure
+        from backend.oj_modules.runtime import pending_recovery
+        from backend.oj_modules.tasks import registry as task_registry
 
 
         class NoIORedisClient:
@@ -132,12 +132,12 @@ def test_real_oj_import_preserves_runtime_ports_and_task_topology():
             "requeue_pending_on_startup"
         )
 
-        import oj
-        from oj_modules.homework import runtime as homework_runtime
-        from oj_modules.judging import core as judging_core
-        from oj_modules.problems import catalog as problem_catalog
-        from oj_modules.routes import ranking_routes, rejudge_routes, submission_routes
-        from oj_modules.tasks import evaluate_tasks
+        from backend import oj
+        from backend.oj_modules.homework import runtime as homework_runtime
+        from backend.oj_modules.judging import core as judging_core
+        from backend.oj_modules.problems import catalog as problem_catalog
+        from backend.oj_modules.routes import ranking_routes, rejudge_routes, submission_routes
+        from backend.oj_modules.tasks import evaluate_tasks
 
         assert homework_runtime._text_redis_client is oj.rds is text_redis
         assert homework_runtime._binary_redis_client is oj.rds_binary is binary_redis

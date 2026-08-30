@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from oj_modules.vibehub import quotas
+from backend.oj_modules.vibehub import quotas
 
 
 def _try_nonblocking_flock(lock_path: str, connection) -> None:

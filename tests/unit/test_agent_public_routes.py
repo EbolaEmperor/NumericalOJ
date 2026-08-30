@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from flask import Flask
 
-from oj_modules.routes import problem_core_routes as routes
+from backend.oj_modules.routes import problem_core_routes as routes
 
 
 ADMIN = {"id": 1, "username": "admin", "is_admin": 1}

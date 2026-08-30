@@ -2,7 +2,7 @@
 """测试数据工厂。所有写库走 db_services / 直接 SQL，配合 conftest 的 reset。"""
 import hashlib
 
-from oj_modules import db_services
+from backend.oj_modules import db_services
 
 _counter = {'n': 0}
 

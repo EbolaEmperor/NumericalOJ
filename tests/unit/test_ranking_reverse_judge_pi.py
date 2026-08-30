@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import oj_modules.tasks.ranking.reverse_judge as rj
-import oj_modules.tasks.ranking.agent_judge as aj
-from oj_modules.ranking.reverse_judge import trace_sync
+import backend.oj_modules.tasks.ranking.reverse_judge as rj
+import backend.oj_modules.tasks.ranking.agent_judge as aj
+from backend.oj_modules.ranking.reverse_judge import trace_sync
 
 
 _SESSION_ID = "12345678-1234-1234-1234-123456789abc"

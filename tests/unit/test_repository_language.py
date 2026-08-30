@@ -9,10 +9,10 @@ import uuid
 
 import pytest
 
-from oj_modules.editor import clangd as clangd_services
-from oj_modules.repository import language as repository_language
-from oj_modules.repository import storage
-from oj_modules.repository import tree
+from backend.oj_modules.editor import clangd as clangd_services
+from backend.oj_modules.repository import language as repository_language
+from backend.oj_modules.repository import storage
+from backend.oj_modules.repository import tree
 
 
 def test_repository_language_pool_has_a_separate_bounded_capacity():

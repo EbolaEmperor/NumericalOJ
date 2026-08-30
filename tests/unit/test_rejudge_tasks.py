@@ -1,6 +1,6 @@
 from unittest.mock import Mock, call
 
-from oj_modules.tasks import rejudge_tasks
+from backend.oj_modules.tasks import rejudge_tasks
 
 
 class _FakeCelery:

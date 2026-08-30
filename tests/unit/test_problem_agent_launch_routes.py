@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from flask import Flask
 import pytest
 
-from oj_modules.problems import agent_runs
-from oj_modules.routes import problem_core_routes as routes
+from backend.oj_modules.problems import agent_runs
+from backend.oj_modules.routes import problem_core_routes as routes
 
 
 class _Task:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules.tasks.ranking import evaluate
-from oj_modules.tasks.ranking import standard_container
+from backend.oj_modules.tasks.ranking import evaluate
+from backend.oj_modules.tasks.ranking import standard_container
 
 
 def test_standard_scoring_uses_agent_judge_container_and_copied_inputs(

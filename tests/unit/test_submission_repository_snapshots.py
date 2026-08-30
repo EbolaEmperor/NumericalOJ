@@ -6,9 +6,9 @@ import os
 
 import pytest
 
-from oj_modules.repository import storage as repository_storage
-from oj_modules.submissions import repository_snapshots as snapshots
-from oj_modules.tasks import evaluate_tasks
+from backend.oj_modules.repository import storage as repository_storage
+from backend.oj_modules.submissions import repository_snapshots as snapshots
+from backend.oj_modules.tasks import evaluate_tasks
 
 
 class _FakeCelery:

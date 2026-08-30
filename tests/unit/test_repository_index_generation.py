@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.ai.endpoints import LLMEndpointSnapshot
-from oj_modules.repository import index as index_services
+from backend.oj_modules.ai.endpoints import LLMEndpointSnapshot
+from backend.oj_modules.repository import index as index_services
 
 
 def _endpoint(category, endpoint_id):
@@ -480,7 +480,7 @@ def test_running_job_redelivery_is_claimed_even_when_update_rowcount_is_zero(
 
 
 def test_terminal_index_lease_rejects_late_worker_publish(monkeypatch):
-    from oj_modules.repository import tree as repository_tree
+    from backend.oj_modules.repository import tree as repository_tree
 
     @contextmanager
     def no_op_repository_lock(_user_id, *, exclusive):
@@ -693,7 +693,7 @@ def test_retry_discards_only_its_unpublished_generation(monkeypatch):
 
 def test_build_route_terminates_created_job_when_dispatch_fails(monkeypatch):
     from flask import Flask
-    from oj_modules.routes import repository_routes
+    from backend.oj_modules.routes import repository_routes
 
     class BrokenTask:
         @staticmethod

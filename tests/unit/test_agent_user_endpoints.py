@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from oj_modules.agents import user_endpoints
+from backend.oj_modules.agents import user_endpoints
 
 
 def test_agent_user_endpoint_schema_and_source_columns_are_declared():
@@ -197,8 +197,8 @@ def test_personal_endpoint_test_rejects_private_target_before_custom_tester():
 
 def test_default_personal_endpoint_tester_pins_target_and_refuses_redirects(
         monkeypatch):
-    from oj_modules.ai import endpoints as ai_endpoints
-    from oj_modules.security import outbound
+    from backend.oj_modules.ai import endpoints as ai_endpoints
+    from backend.oj_modules.security import outbound
 
     target = outbound.ResolvedPublicTarget(
         scheme="https",

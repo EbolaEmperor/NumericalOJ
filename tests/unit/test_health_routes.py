@@ -1,6 +1,6 @@
 from flask import Flask
 
-from oj_modules.routes.health_routes import create_health_blueprint
+from backend.oj_modules.routes.health_routes import create_health_blueprint
 
 
 class _FakeCursor:

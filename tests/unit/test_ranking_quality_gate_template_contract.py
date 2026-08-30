@@ -7,27 +7,28 @@ ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = "\n".join(
     path.read_text(encoding="utf-8")
     for path in (
-        ROOT / "templates" / "ranking" / "settings" / "endpoint_pool.html",
-        ROOT / "static" / "app" / "ranking" / "endpoints.js",
+        ROOT / "backend" / "templates" / "ranking" / "settings" / "endpoint_pool.html",
+        ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "endpoints.js",
     )
 )
 MODAL_TEMPLATE = (
     ROOT
+    / "backend"
     / "templates"
     / "ranking"
     / "modals"
     / "reverse_judge_detail.html"
 ).read_text(encoding="utf-8")
 SETTINGS_STYLESHEET = (
-    ROOT / "static" / "app" / "ranking" / "settings.css"
+    ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "settings.css"
 ).read_text(encoding="utf-8")
 HARNESS_STYLESHEET = (
-    ROOT / "static" / "app" / "ranking" / "harness-logos.css"
+    ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "harness-logos.css"
 ).read_text(encoding="utf-8")
 HARNESS_MACROS = (
-    ROOT / "templates" / "ranking" / "components" / "harness_logo.html"
+    ROOT / "backend" / "templates" / "ranking" / "components" / "harness_logo.html"
 ).read_text(encoding="utf-8")
-HARNESS_LOGOS = ROOT / "static" / "app" / "ranking" / "harness-logos"
+HARNESS_LOGOS = ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "harness-logos"
 
 
 def test_shared_endpoint_modal_uses_one_endpoint_interface_for_all_harnesses():

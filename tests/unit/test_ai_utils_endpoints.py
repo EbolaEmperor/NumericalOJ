@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.ai import client, code_feedback
-from oj_modules.ai.endpoints import LLMEndpointCategory, LLMEndpointSnapshot
+from backend.oj_modules.ai import client, code_feedback
+from backend.oj_modules.ai.endpoints import LLMEndpointCategory, LLMEndpointSnapshot
 
 
 def endpoint_mapping(*, endpoint_id=7, category="text", protocol="openai"):
@@ -52,7 +52,7 @@ def test_endpoint_source_must_be_unambiguous():
 
 
 def test_feature_binding_resolves_once(monkeypatch):
-    from oj_modules.site_config import services as dynamic_config_services
+    from backend.oj_modules.site_config import services as dynamic_config_services
 
     calls = []
 
@@ -77,7 +77,7 @@ def test_feature_binding_resolves_once(monkeypatch):
 
 
 def test_dangling_feature_binding_preserves_deleted_endpoint_id(monkeypatch):
-    from oj_modules.site_config import services as dynamic_config_services
+    from backend.oj_modules.site_config import services as dynamic_config_services
 
     def missing(_feature_key):
         raise dynamic_config_services.DynamicConfigNotFoundError(
@@ -94,7 +94,7 @@ def test_dangling_feature_binding_preserves_deleted_endpoint_id(monkeypatch):
 
 
 def test_dangling_problem_endpoint_reports_id(monkeypatch):
-    from oj_modules.site_config import services as dynamic_config_services
+    from backend.oj_modules.site_config import services as dynamic_config_services
 
     def missing(_endpoint_id, *, include_secret=False):
         del include_secret

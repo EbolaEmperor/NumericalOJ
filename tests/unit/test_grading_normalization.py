@@ -5,7 +5,7 @@
 本文件只覆盖仍由题目表直接保存的输出图片文件名。
 """
 
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 import pytest
 
 

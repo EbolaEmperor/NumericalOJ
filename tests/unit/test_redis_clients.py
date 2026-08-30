@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.infrastructure.redis import (
+from backend.oj_modules.infrastructure.redis import (
     DEFAULT_BLOCKING_SOCKET_TIMEOUT_SECONDS,
     DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS,
     RedisClientProfile,
@@ -151,9 +151,9 @@ def test_optional_client_returns_none_when_cache_is_unavailable():
 
 
 def test_production_modules_do_not_construct_redis_clients_outside_factory():
-    allowed_file = PROJECT_ROOT / "oj_modules" / "infrastructure" / "redis.py"
-    production_files = [PROJECT_ROOT / "oj.py"]
-    production_files.extend((PROJECT_ROOT / "oj_modules").rglob("*.py"))
+    allowed_file = PROJECT_ROOT / "backend" / "oj_modules" / "infrastructure" / "redis.py"
+    production_files = [PROJECT_ROOT / "backend" / "oj.py"]
+    production_files.extend((PROJECT_ROOT / "backend" / "oj_modules").rglob("*.py"))
     violations = []
 
     for path in production_files:
@@ -172,7 +172,7 @@ def test_production_modules_do_not_construct_redis_clients_outside_factory():
 
 
 def test_app_wires_blocking_profile_into_all_pubsub_caches():
-    source = (PROJECT_ROOT / "oj.py").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "backend" / "oj.py").read_text(encoding="utf-8")
 
     assert "rds = create_text_redis_client()" in source
     assert "rds_binary = create_binary_redis_client()" in source

@@ -3,8 +3,8 @@ import zipfile
 
 from flask import Flask
 
-from oj_modules.problems import context as problem_context
-from oj_modules.routes import problem_core_routes
+from backend.oj_modules.problems import context as problem_context
+from backend.oj_modules.routes import problem_core_routes
 
 
 def _archive_names(response):

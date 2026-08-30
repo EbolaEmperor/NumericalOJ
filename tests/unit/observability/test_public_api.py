@@ -9,7 +9,7 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
-from oj_modules import observability
+from backend.oj_modules import observability
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -27,14 +27,14 @@ def test_package_import_does_not_load_framework_integrations_or_config():
     script = """
 import json
 import sys
-import oj_modules.observability
+import backend.oj_modules.observability
 
 names = (
     "flask",
     "celery",
     "config",
-    "oj_modules.observability.web",
-    "oj_modules.observability.celery",
+    "backend.oj_modules.observability.web",
+    "backend.oj_modules.observability.celery",
 )
 print(json.dumps({name: name in sys.modules for name in names}, sort_keys=True))
 """
@@ -51,15 +51,15 @@ print(json.dumps({name: name in sys.modules for name in names}, sort_keys=True))
         "celery": False,
         "config": False,
         "flask": False,
-        "oj_modules.observability.celery": False,
-        "oj_modules.observability.web": False,
+        "backend.oj_modules.observability.celery": False,
+        "backend.oj_modules.observability.web": False,
     }
 
 
 def test_install_celery_observability_delegates_lazily(monkeypatch):
     install = _fake_module(
         monkeypatch,
-        "oj_modules.observability.celery",
+        "backend.oj_modules.observability.celery",
         "install_celery_observability",
         "celery-installed",
     )
@@ -76,7 +76,7 @@ def test_install_celery_observability_delegates_lazily(monkeypatch):
 def test_install_flask_observability_delegates_lazily(monkeypatch):
     install = _fake_module(
         monkeypatch,
-        "oj_modules.observability.web",
+        "backend.oj_modules.observability.web",
         "install_flask_observability",
         "flask-installed",
     )
@@ -96,7 +96,7 @@ def test_install_flask_observability_delegates_lazily(monkeypatch):
 def test_client_ip_delegates_arguments_to_web_module(monkeypatch):
     resolve = _fake_module(
         monkeypatch,
-        "oj_modules.observability.web",
+        "backend.oj_modules.observability.web",
         "client_ip",
         "192.0.2.7",
     )
@@ -110,7 +110,7 @@ def test_client_ip_delegates_arguments_to_web_module(monkeypatch):
 def test_client_source_delegates_arguments_to_web_module(monkeypatch):
     resolve = _fake_module(
         monkeypatch,
-        "oj_modules.observability.web",
+        "backend.oj_modules.observability.web",
         "client_source",
         {"client_ip": "192.0.2.7"},
     )
@@ -124,7 +124,7 @@ def test_client_source_delegates_arguments_to_web_module(monkeypatch):
 def test_request_audit_fields_delegates_arguments_to_web_module(monkeypatch):
     resolve = _fake_module(
         monkeypatch,
-        "oj_modules.observability.web",
+        "backend.oj_modules.observability.web",
         "request_audit_fields",
         {"request": {"method": "POST"}},
     )
@@ -138,7 +138,7 @@ def test_request_audit_fields_delegates_arguments_to_web_module(monkeypatch):
 def test_user_agent_metadata_delegates_arguments_to_web_module(monkeypatch):
     resolve = _fake_module(
         monkeypatch,
-        "oj_modules.observability.web",
+        "backend.oj_modules.observability.web",
         "user_agent_metadata",
         {"user_agent": "Browser/1.0"},
     )

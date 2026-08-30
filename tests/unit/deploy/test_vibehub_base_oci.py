@@ -8,7 +8,7 @@ import tarfile
 
 import pytest
 
-from oj_modules.vibehub import runtime
+from backend.oj_modules.vibehub import runtime
 
 
 ROOT = Path(__file__).resolve().parents[3]

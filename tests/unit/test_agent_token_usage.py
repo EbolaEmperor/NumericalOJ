@@ -1,6 +1,6 @@
 import json
 
-from oj_modules.ranking.reverse_judge.traces import (
+from backend.oj_modules.ranking.reverse_judge.traces import (
     calculate_agent_token_cost_rmb,
     collect_agent_token_usage,
 )

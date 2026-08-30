@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.tasks.agent import generic
-from oj_modules.tasks.agent.harness_runtime import (
+from backend.oj_modules.tasks.agent import generic
+from backend.oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
     HarnessRunResult,
 )
@@ -330,7 +330,7 @@ def test_unhandled_failure_returns_cancellation_without_failed_write(monkeypatch
 
 
 def test_unhandled_failure_falls_back_to_direct_session_projection(monkeypatch):
-    from oj_modules.agents import sessions as agent_sessions
+    from backend.oj_modules.agents import sessions as agent_sessions
 
     projected = []
     state = generic._initial_generic_state(

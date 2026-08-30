@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from oj_modules.agents import quota
+from backend.oj_modules.agents import quota
 
 
 def test_agent_quota_schema_is_part_of_incremental_schema_source():

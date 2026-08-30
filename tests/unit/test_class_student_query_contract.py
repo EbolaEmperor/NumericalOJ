@@ -3,13 +3,13 @@
 import re
 from pathlib import Path
 
-from oj_modules import db_services
+from backend.oj_modules import db_services
 
 
 ROOT = Path(__file__).resolve().parents[2]
 HOMEWORK_QUERY_SOURCE = '\n'.join(
     (
-        ROOT / 'oj_modules' / relative_path
+        ROOT / 'backend' / 'oj_modules' / relative_path
     ).read_text(encoding='utf-8')
     for relative_path in (
         'routes/homework_routes.py',

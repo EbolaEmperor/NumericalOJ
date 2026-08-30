@@ -14,7 +14,7 @@
 """
 import pytest
 
-from oj_modules.ai_detection import detector
+from backend.oj_modules.ai_detection import detector
 
 
 # detector.RISK_HIGH / RISK_MEDIUM 是源码常量；这里读出来供分级断言使用，

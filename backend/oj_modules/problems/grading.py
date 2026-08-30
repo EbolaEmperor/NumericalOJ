@@ -1,0 +1,9 @@
+"""题目管理页与 JSON API 共用的评分提示默认值。"""
+
+from backend.oj_modules.ai.grading import DEFAULT_WRITTEN_GRADING_RULES_TEXT
+
+
+DEFAULT_WRITTEN_GRADING_PROMPT = DEFAULT_WRITTEN_GRADING_RULES_TEXT
+
+
+__all__ = ["DEFAULT_WRITTEN_GRADING_PROMPT"]

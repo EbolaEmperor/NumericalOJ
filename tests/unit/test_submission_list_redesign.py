@@ -3,11 +3,11 @@ from pathlib import Path
 
 from flask import Flask
 
-from oj_modules import db_services
-from oj_modules.api import submission_api
-from oj_modules.routes import problem_core_routes
-from oj_modules.routes import rejudge_routes
-from oj_modules.routes import submission_routes
+from backend.oj_modules import db_services
+from backend.oj_modules.api import submission_api
+from backend.oj_modules.routes import problem_core_routes
+from backend.oj_modules.routes import rejudge_routes
+from backend.oj_modules.routes import submission_routes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,25 +60,25 @@ def test_output_limit_filter_is_first_class_and_not_grouped_as_other():
 
 
 def test_output_limit_status_has_failure_styles_and_compact_labels():
-    list_js = (ROOT / "static" / "app" / "submissions.js").read_text(
+    list_js = (ROOT / "frontend" / "public" / "static" / "app" / "submissions.js").read_text(
         encoding="utf-8"
     )
-    list_css = (ROOT / "static" / "app" / "submissions.css").read_text(
+    list_css = (ROOT / "frontend" / "public" / "static" / "app" / "submissions.css").read_text(
         encoding="utf-8"
     )
     list_page = (
-        ROOT / "templates" / "submissions" / "all.html"
+        ROOT / "backend" / "templates" / "submissions" / "all.html"
     ).read_text(encoding="utf-8")
     list_component = (
-        ROOT / "templates" / "submissions" / "components" / "table.html"
+        ROOT / "backend" / "templates" / "submissions" / "components" / "table.html"
     ).read_text(encoding="utf-8")
     submission_detail = (
-        ROOT / "templates" / "submissions" / "detail.html"
+        ROOT / "backend" / "templates" / "submissions" / "detail.html"
     ).read_text(encoding="utf-8")
     problem_detail = (
-        ROOT / "templates" / "problems" / "detail.html"
+        ROOT / "backend" / "templates" / "problems" / "detail.html"
     ).read_text(encoding="utf-8")
-    layout_css = (ROOT / "static" / "app" / "layout.css").read_text(
+    layout_css = (ROOT / "frontend" / "public" / "static" / "app" / "layout.css").read_text(
         encoding="utf-8"
     )
 
@@ -279,9 +279,9 @@ def test_submission_list_embeds_authorized_first_panel_payload(monkeypatch):
 
 def test_submission_list_consumes_embedded_first_panel_before_fetching():
     template = (
-        ROOT / "templates" / "submissions" / "all.html"
+        ROOT / "backend" / "templates" / "submissions" / "all.html"
     ).read_text(encoding="utf-8")
-    script = (ROOT / "static" / "app" / "submissions.js").read_text(
+    script = (ROOT / "frontend" / "public" / "static" / "app" / "submissions.js").read_text(
         encoding="utf-8"
     )
 

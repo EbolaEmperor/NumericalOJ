@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 import pytest
 from flask import Flask
 
-from oj_modules import db_services
-from oj_modules.submissions import repository_snapshots as submission_repository_snapshots
-from oj_modules.routes import problem_core_routes
+from backend.oj_modules import db_services
+from backend.oj_modules.submissions import repository_snapshots as submission_repository_snapshots
+from backend.oj_modules.routes import problem_core_routes
 
 
 class _QuotaStore:

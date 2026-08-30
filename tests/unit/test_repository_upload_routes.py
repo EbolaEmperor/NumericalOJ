@@ -3,7 +3,7 @@ import io
 from flask import Flask
 import pytest
 
-from oj_modules.routes import repository_routes
+from backend.oj_modules.routes import repository_routes
 
 
 @pytest.mark.parametrize(

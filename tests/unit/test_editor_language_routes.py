@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from flask import Flask
 
-from oj_modules.security import auth
-from oj_modules.editor.language_server import LanguageServiceBusyError
-from oj_modules.repository import tree as repository_tree
-from oj_modules.repository.language import RepositorySemanticTarget
-from oj_modules.routes import editor_language_routes
+from backend.oj_modules.security import auth
+from backend.oj_modules.editor.language_server import LanguageServiceBusyError
+from backend.oj_modules.repository import tree as repository_tree
+from backend.oj_modules.repository.language import RepositorySemanticTarget
+from backend.oj_modules.routes import editor_language_routes
 
 
 class _FakeService:

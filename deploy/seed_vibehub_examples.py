@@ -22,9 +22,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from deploy.prepare_arc_agi_3 import ArcPublicSetError, _validate_cached_set
-from oj_modules.infrastructure.mysql import get_db_connection
-from oj_modules.vibehub import services, storage
-from oj_modules.vibehub.runtime import get_runtime_manager
+from backend.oj_modules.infrastructure.mysql import get_db_connection
+from backend.oj_modules.vibehub import services, storage
+from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
 EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3", "guess-who")

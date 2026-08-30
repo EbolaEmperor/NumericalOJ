@@ -1,7 +1,7 @@
 """ELO 在役提交搜索与历史轨迹查询的数据库契约。"""
 
-from oj_modules.ranking import db as ranking_db
-from oj_modules.ranking import trajectories
+from backend.oj_modules.ranking import db as ranking_db
+from backend.oj_modules.ranking import trajectories
 
 
 class _Cursor:

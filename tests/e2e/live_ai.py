@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from oj_modules import config
+from backend.oj_modules import config
 
 
 ROOT = Path(__file__).resolve().parents[2]

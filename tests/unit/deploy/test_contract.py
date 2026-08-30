@@ -433,7 +433,7 @@ def test_deploy_fails_closed_without_private_production_config():
     service_stop = script.index("phase='停止现有服务'")
     builder_check = script.index("deploy/preflight.py ensure-vibehub-builder")
     assert builder_check < service_stop
-    assert script.count("docker run --rm") == 1
+    assert script.count("docker run --rm") == 3
     precompress = script.index("phase='生成预压缩静态资源'")
     assert service_stop > precompress
     assert "--network none" in script[precompress:service_stop]

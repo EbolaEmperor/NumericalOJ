@@ -1,0 +1,28 @@
+/*
+ * SPA 只补充路由运行时需要的行为样式。视觉令牌、布局和业务页面样式继续
+ * 由 public/static 中的原站 CSS 提供，避免技术栈迁移改变既有界面。
+ */
+
+#root {
+  min-height: 100vh;
+}
+
+.numoj-spa-state {
+  display: grid;
+  min-height: 240px;
+  place-items: center;
+}
+
+.numoj-spa-route {
+  min-height: 1px;
+  animation: numoj-spa-enter 100ms ease-out both;
+}
+
+@keyframes numoj-spa-enter {
+  from { opacity: 0.82; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .numoj-spa-route { animation: none; }
+}

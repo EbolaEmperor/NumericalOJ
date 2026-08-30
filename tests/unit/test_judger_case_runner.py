@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from oj_modules.judging import case_runner as judger_case_runner
-from oj_modules.judging import sandbox as docker_sandbox
+from backend.oj_modules.judging import case_runner as judger_case_runner
+from backend.oj_modules.judging import sandbox as docker_sandbox
 
 
 def _protocol_payload(

@@ -1,8 +1,8 @@
 from flask import Flask, session
 
-from oj_modules.security import auth
-from oj_modules.security import agent_identity
-from oj_modules.security.agent_identity import (
+from backend.oj_modules.security import auth
+from backend.oj_modules.security import agent_identity
+from backend.oj_modules.security.agent_identity import (
     AGENT_IDENTITY_HEADER,
     create_agent_identity_capability,
     resolve_agent_identity_capability,
@@ -107,7 +107,7 @@ def test_task_capability_authenticates_only_its_active_database_binding(monkeypa
         "status": "Running",
     }
     monkeypatch.setattr(
-        "oj_modules.agents.sessions.get_agent_session",
+        "backend.oj_modules.agents.sessions.get_agent_session",
         lambda session_id: active if session_id == "session-1" else None,
     )
     token = create_agent_identity_capability(
@@ -170,7 +170,7 @@ def test_user_task_capability_exposes_only_its_scoped_problem(monkeypatch):
         lambda username: {"id": 7, "username": username, "is_admin": 1},
     )
     monkeypatch.setattr(
-        "oj_modules.agents.sessions.get_agent_session",
+        "backend.oj_modules.agents.sessions.get_agent_session",
         lambda _session_id: {
             "current_task_id": "task-2",
             "requested_by": "admin",
@@ -209,7 +209,7 @@ def test_task_capability_rechecks_current_admin_permission(monkeypatch):
         lambda username: {"id": 7, "username": username, "is_admin": 0},
     )
     monkeypatch.setattr(
-        "oj_modules.agents.sessions.get_agent_session",
+        "backend.oj_modules.agents.sessions.get_agent_session",
         lambda _session_id: {
             "current_task_id": "task-2",
             "requested_by": "admin",

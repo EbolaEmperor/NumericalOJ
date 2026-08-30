@@ -3,9 +3,9 @@ from types import SimpleNamespace
 import pytest
 from flask import Flask
 
-from oj_modules.agents.sessions import AgentSessionMessageConflictError
-from oj_modules.infrastructure.mysql import MySQLPoolExhausted
-from oj_modules.routes import problem_core_routes as routes
+from backend.oj_modules.agents.sessions import AgentSessionMessageConflictError
+from backend.oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from backend.oj_modules.routes import problem_core_routes as routes
 
 
 ADMIN = {"id": 7, "username": "admin", "is_admin": 1}

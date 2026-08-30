@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Flask
 
-from oj_modules.routes import admin_problem_routes
+from backend.oj_modules.routes import admin_problem_routes
 
 
 def _upload_app():

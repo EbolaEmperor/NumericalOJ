@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from oj_modules.ai import endpoints as adapter
+from backend.oj_modules.ai import endpoints as adapter
 
 
 class FakeResponse:

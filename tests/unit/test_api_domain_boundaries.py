@@ -1,13 +1,13 @@
 import ast
 from pathlib import Path
 
-from oj_modules.ai_detection.presentation import (
+from backend.oj_modules.ai_detection.presentation import (
     decode_detection_result_details,
     serialize_detection_result,
 )
-from oj_modules.problems.agent_runs import decorate_agent_run_summaries
-from oj_modules.problems.presentation import strip_problem_title_tags
-from oj_modules.submissions.presentation import (
+from backend.oj_modules.problems.agent_runs import decorate_agent_run_summaries
+from backend.oj_modules.problems.presentation import strip_problem_title_tags
+from backend.oj_modules.submissions.presentation import (
     load_written_submission_latex_and_error,
     render_written_markdown_to_html,
     summarize_panel_test_points,
@@ -122,18 +122,18 @@ def test_scoped_api_modules_do_not_depend_upward_on_routes():
         "submission_api.py",
     ):
         tree = ast.parse(
-            (ROOT / "oj_modules" / "api" / filename).read_text(encoding="utf-8")
+            (ROOT / "backend" / "oj_modules" / "api" / filename).read_text(encoding="utf-8")
         )
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (
                 node.module or ""
-            ).startswith("oj_modules.routes"):
+            ).startswith("backend.oj_modules.routes"):
                 found.update((node.module, alias.name) for alias in node.names)
             elif isinstance(node, ast.Import):
                 found.update(
                     (alias.name, "")
                     for alias in node.names
-                    if alias.name.startswith("oj_modules.routes")
+                    if alias.name.startswith("backend.oj_modules.routes")
                 )
 
     assert found == set()
@@ -141,7 +141,7 @@ def test_scoped_api_modules_do_not_depend_upward_on_routes():
 
 def test_problem_route_keeps_task_dependencies_injected():
     tree = ast.parse(
-        (ROOT / "oj_modules" / "routes" / "problem_core_routes.py").read_text(
+        (ROOT / "backend" / "oj_modules" / "routes" / "problem_core_routes.py").read_text(
             encoding="utf-8"
         )
     )
@@ -158,27 +158,27 @@ def test_problem_route_keeps_task_dependencies_injected():
     )
 
     assert not any(
-        module == "oj_modules.tasks" or module.startswith("oj_modules.tasks.")
+        module == "backend.oj_modules.tasks" or module.startswith("backend.oj_modules.tasks.")
         for module in imported_modules
     )
 
 
 def test_extracted_domain_helpers_do_not_import_flask():
     for relative_path in (
-        "oj_modules/ai_detection/presentation.py",
-        "oj_modules/homework/plagiarism.py",
-        "oj_modules/homework/progress.py",
-        "oj_modules/homework/records.py",
-        "oj_modules/homework/repository.py",
-        "oj_modules/homework/runtime.py",
-        "oj_modules/homework/targets.py",
-        "oj_modules/problems/agent_runs.py",
-        "oj_modules/problems/catalog.py",
-        "oj_modules/problems/context.py",
-        "oj_modules/problems/grading.py",
-        "oj_modules/problems/presentation.py",
-        "oj_modules/repository/settings.py",
-        "oj_modules/submissions/presentation.py",
+        "backend/oj_modules/ai_detection/presentation.py",
+        "backend/oj_modules/homework/plagiarism.py",
+        "backend/oj_modules/homework/progress.py",
+        "backend/oj_modules/homework/records.py",
+        "backend/oj_modules/homework/repository.py",
+        "backend/oj_modules/homework/runtime.py",
+        "backend/oj_modules/homework/targets.py",
+        "backend/oj_modules/problems/agent_runs.py",
+        "backend/oj_modules/problems/catalog.py",
+        "backend/oj_modules/problems/context.py",
+        "backend/oj_modules/problems/grading.py",
+        "backend/oj_modules/problems/presentation.py",
+        "backend/oj_modules/repository/settings.py",
+        "backend/oj_modules/submissions/presentation.py",
     ):
         tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
         imported_modules = {

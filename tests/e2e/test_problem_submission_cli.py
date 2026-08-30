@@ -117,7 +117,7 @@ def test_problem_create_edit_testdata_submit_and_submission_views(cli, unique_su
         forbidden_keys=PROBLEM_SECRET_KEYS,
         forbidden_terms=secret_terms,
     )
-    from oj_modules.db_services import save_submission_ai_code_marks_json
+    from backend.oj_modules.db_services import save_submission_ai_code_marks_json
 
     assert save_submission_ai_code_marks_json(
         sid,

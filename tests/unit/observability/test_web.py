@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask, Response, g, request, session
 
-from oj_modules.observability import web
-from oj_modules.observability.context import (
+from backend.oj_modules.observability import web
+from backend.oj_modules.observability.context import (
     current_context,
     replace_context,
     reset_context,

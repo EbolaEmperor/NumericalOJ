@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RANKING_ROOT = ROOT / "oj_modules" / "ranking"
+RANKING_ROOT = ROOT / "backend" / "oj_modules" / "ranking"
 
 
 def test_ranking_package_initializers_are_explicit_and_lightweight():
@@ -47,27 +47,27 @@ def test_reverse_judge_modules_follow_one_way_responsibility_dependencies():
         }
 
     assert not any(
-        module.startswith("oj_modules.ranking.reverse_judge")
+        module.startswith("backend.oj_modules.ranking.reverse_judge")
         for module in imports_by_file["db.py"]
     )
     assert not any(
-        module.startswith("oj_modules.ranking.reverse_judge")
+        module.startswith("backend.oj_modules.ranking.reverse_judge")
         for module in imports_by_file["traces.py"]
     )
     assert {
-        "oj_modules.ranking.reverse_judge.db",
-        "oj_modules.ranking.reverse_judge.traces",
+        "backend.oj_modules.ranking.reverse_judge.db",
+        "backend.oj_modules.ranking.reverse_judge.traces",
     }.issubset(imports_by_file["service.py"])
 
 
 def test_ranking_http_adapters_do_not_import_each_other_or_task_implementations():
     api_tree = ast.parse(
-        (ROOT / "oj_modules" / "api" / "ranking_api.py").read_text(
+        (ROOT / "backend" / "oj_modules" / "api" / "ranking_api.py").read_text(
             encoding="utf-8"
         )
     )
     route_tree = ast.parse(
-        (ROOT / "oj_modules" / "routes" / "ranking_routes.py").read_text(
+        (ROOT / "backend" / "oj_modules" / "routes" / "ranking_routes.py").read_text(
             encoding="utf-8"
         )
     )
@@ -82,11 +82,11 @@ def test_ranking_http_adapters_do_not_import_each_other_or_task_implementations(
         return modules
 
     assert not any(
-        module.startswith("oj_modules.routes")
+        module.startswith("backend.oj_modules.routes")
         for module in imported_modules(api_tree)
     )
     assert not any(
-        module.startswith("oj_modules.tasks")
+        module.startswith("backend.oj_modules.tasks")
         for module in imported_modules(route_tree)
     )
 
@@ -94,7 +94,7 @@ def test_ranking_http_adapters_do_not_import_each_other_or_task_implementations(
 def test_shared_ranking_helpers_preserve_format_and_validation_contracts():
     from datetime import datetime
 
-    from oj_modules.ranking import artifacts, batch, presentation
+    from backend.oj_modules.ranking import artifacts, batch, presentation
 
     assert presentation.normalize_answer_format(" ZIP ") == "zip"
     assert presentation.normalize_answer_format("invalid") == "json"
@@ -117,7 +117,7 @@ def test_shared_ranking_helpers_preserve_format_and_validation_contracts():
 
 def test_init_ranking_module_keeps_old_positionals_and_injects_runtime_ports(
         monkeypatch):
-    from oj_modules.routes import ranking_routes
+    from backend.oj_modules.routes import ranking_routes
 
     positional = [object() for _ in range(8)]
     runtime_ports = [lambda *_args: index for index in range(8)]

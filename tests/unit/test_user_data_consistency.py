@@ -5,8 +5,8 @@ import json
 import pytest
 from flask import Flask
 
-from oj_modules import db_services
-from oj_modules.routes import admin_user_routes, submission_routes
+from backend.oj_modules import db_services
+from backend.oj_modules.routes import admin_user_routes, submission_routes
 
 
 class _FakeCursor:

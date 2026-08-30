@@ -1,4 +1,4 @@
-from oj_modules.tasks import class_activity_tasks
+from backend.oj_modules.tasks import class_activity_tasks
 
 
 class _FakeRedis:

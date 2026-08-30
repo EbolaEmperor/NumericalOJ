@@ -3,8 +3,8 @@ import json
 import os
 from datetime import datetime
 
-from oj_modules.judging import core as judger_core
-from oj_modules.submissions import archive as submission_archive
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.submissions import archive as submission_archive
 
 
 def test_archive_programming_submission_keeps_code_and_meta(tmp_path, monkeypatch):

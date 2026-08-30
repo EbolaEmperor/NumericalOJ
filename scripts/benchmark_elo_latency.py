@@ -74,7 +74,7 @@ class DirectWorker:
     """直接以 docker run -i 起一个工作容器并说帧协议（等价仲裁者对 worker 的部分）。"""
 
     def __init__(self, image, bot_source, workspace, extra_env=None):
-        from oj_modules.tasks.ranking.elo_runtime import arbiter
+        from backend.oj_modules.tasks.ranking.elo_runtime import arbiter
         self.arbiter = arbiter
         self.container_name = f"elo-bench-{os.getpid()}-{int(time.time() * 1000) % 100000}"
         submission_dir = os.path.join(workspace, "submission")
@@ -315,7 +315,7 @@ print(json.dumps({{"winner": 0, "details": {{"format": "text", "content": "bench
 
 def bench_full(args):
     os.environ.setdefault("AGENT_JUDGE_WORKSPACE_ROOT", tempfile.mkdtemp(prefix="elo-bench-root-", dir=BENCH_BASE))
-    from oj_modules.tasks.ranking.elo_runtime import arbiter
+    from backend.oj_modules.tasks.ranking.elo_runtime import arbiter
     # 镜像常量在模块导入时读取，这里直接覆盖，保证 --image 始终生效。
     arbiter.elo_container.AGENT_JUDGE_IMAGE = args.image
 

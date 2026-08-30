@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from oj_modules.observability import collector
+from backend.oj_modules.observability import collector
 
 
 def _event(dataset: str = "numoj.runtime.application", **fields):

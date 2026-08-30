@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_student_homework_query_avoids_redundant_ranking_aggregation():
-    source = (ROOT / "oj_modules/problems/catalog.py").read_text(encoding="utf-8")
+    source = (ROOT / "backend/oj_modules/problems/catalog.py").read_text(encoding="utf-8")
     score_query_source = source.split(
         "def _get_homeworks_for_classes", 1,
     )[1].split("def get_class_grades_map", 1)[0]
@@ -19,7 +19,7 @@ def test_student_homework_query_avoids_redundant_ranking_aggregation():
 
 
 def test_homework_submission_indexes_cover_user_deadline_lookups():
-    schema = (ROOT / "database/bootstrap.sql").read_text(encoding="utf-8")
+    schema = (ROOT / "backend/database/bootstrap.sql").read_text(encoding="utf-8")
     normalized = schema.replace("`", "")
 
     assert (

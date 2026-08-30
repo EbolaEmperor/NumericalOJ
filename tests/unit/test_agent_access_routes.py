@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from flask import Flask
 
-from oj_modules.routes import agent_access_routes as routes
-from oj_modules.security import auth
+from backend.oj_modules.routes import agent_access_routes as routes
+from backend.oj_modules.security import auth
 
 
 def _app(monkeypatch, user, *, concurrency_runtime_applier=None):

@@ -25,7 +25,7 @@ import pytest
 OJ_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OJ_ROOT))
 
-from oj_modules import config  # noqa: E402
+from backend.oj_modules import config  # noqa: E402
 from tests.environment_guard import (  # noqa: E402
     DestructiveTestTarget,
     UnsafeTestEnvironmentError,
@@ -127,7 +127,7 @@ def _ensure_schema():
     conn.close()
 
     if need_load:
-        dump = OJ_ROOT / 'database' / 'bootstrap.sql'
+        dump = OJ_ROOT / 'backend' / 'database' / 'bootstrap.sql'
         # 优先用 mysql CLI 导入（镜像内已装 default-mysql-client）
         with open(dump, 'rb') as fh:
             subprocess.run(
@@ -245,7 +245,7 @@ def _infra():
 @pytest.fixture(scope='session')
 def app(_infra):
     # `oj` 导入只做应用装配；恢复/调度任务由显式启动入口负责，不会在测试中投递。
-    import oj as ojmod
+    from backend import oj as ojmod
     ojmod.app.config.update(TESTING=True)
     return ojmod.app
 

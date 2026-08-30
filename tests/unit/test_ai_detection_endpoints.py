@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.ai_detection import detector, llm_detector
-from oj_modules.tasks import ai_detection_tasks
+from backend.oj_modules.ai_detection import detector, llm_detector
+from backend.oj_modules.tasks import ai_detection_tasks
 
 
 def _snapshot(endpoint_id=7):
@@ -14,7 +14,7 @@ def _snapshot(endpoint_id=7):
 
 def test_available_detection_endpoints_filters_categories_and_secrets(monkeypatch):
     monkeypatch.setattr(
-        "oj_modules.site_config.services.list_llm_endpoints",
+        "backend.oj_modules.site_config.services.list_llm_endpoints",
         lambda **_kwargs: [
             {"id": 1, "protocol": "anthropic", "category": "text", "model": "t", "api_key": "secret"},
             {"id": 2, "protocol": "openai", "category": "omni", "model": "o", "api_key": "secret"},
@@ -125,7 +125,7 @@ def test_detection_endpoint_resolver_restricts_text_or_omni(monkeypatch):
 @pytest.mark.parametrize("payload", [{}, {"endpoint_id": ""}, {"endpoint_id": "x"}])
 def test_route_requires_explicit_detection_endpoint(monkeypatch, payload):
     from flask import Flask
-    from oj_modules.routes import ai_detection_routes
+    from backend.oj_modules.routes import ai_detection_routes
 
     app = Flask(__name__)
     monkeypatch.setattr(

@@ -4,8 +4,8 @@ import zipfile
 
 import pytest
 
-from oj_modules.shared.archive import ArchiveExtractionError
-from oj_modules.tasks.ranking import elo_container
+from backend.oj_modules.shared.archive import ArchiveExtractionError
+from backend.oj_modules.tasks.ranking import elo_container
 
 
 def _write_zip(path, files):

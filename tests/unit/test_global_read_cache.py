@@ -3,10 +3,10 @@ import threading
 
 import pytest
 
-from oj_modules import db_services
-from oj_modules.infrastructure.mysql import MySQLPoolExhausted
-from oj_modules.shared.singleflight_cache import BoundedSingleFlightTTLCache
-from oj_modules.site_config import services
+from backend.oj_modules import db_services
+from backend.oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from backend.oj_modules.shared.singleflight_cache import BoundedSingleFlightTTLCache
+from backend.oj_modules.site_config import services
 
 
 class _MailCursor:

@@ -35,13 +35,13 @@ RUN test "$(command -v python3)" = "/usr/local/bin/python3"; \
     pip3 --version | grep -F '(python 3.12)'
 
 WORKDIR /app
-COPY requirements/production.txt requirements/test.txt /app/requirements/
+COPY backend/requirements/production.txt backend/requirements/test.txt /app/backend/requirements/
 # pip 走清华镜像（IPv4 可达），避免 pypi.org IPv6 超时。
 RUN python3 -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-        -r requirements/production.txt -r requirements/test.txt
+        -r backend/requirements/production.txt -r backend/requirements/test.txt
 
 # 复制仓库代码；运行拓扑由 Compose 通过环境变量注入，始终保留并测试
-# tracked oj_modules/config.py 的解析逻辑、代码默认值和文档契约。
+# tracked backend/oj_modules/config.py 的解析逻辑、代码默认值和文档契约。
 COPY . /app/
 
 CMD ["bash", "tests/ci/run-ci.sh"]

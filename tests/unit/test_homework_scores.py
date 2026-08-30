@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from oj_modules.homework.scores import homework_score_snapshot
+from backend.oj_modules.homework.scores import homework_score_snapshot
 
 
 def _submission(submission_id, score, created_at, status="Accepted"):

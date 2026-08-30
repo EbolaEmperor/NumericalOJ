@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from oj_modules.agents import runtime_settings
+from backend.oj_modules.agents import runtime_settings
 
 
 class _Cursor:

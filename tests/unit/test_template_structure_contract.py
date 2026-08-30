@@ -8,7 +8,7 @@ from jinja2 import Environment, FileSystemLoader, meta
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / "templates"
+TEMPLATES = ROOT / "backend" / "templates"
 
 
 def _environment():
@@ -45,7 +45,10 @@ def test_all_jinja_templates_compile_and_static_references_exist():
 def test_literal_render_template_targets_exist():
     environment = _environment()
     names = _template_names(environment)
-    python_files = [ROOT / "oj.py", *(ROOT / "oj_modules").rglob("*.py")]
+    python_files = [
+        ROOT / "backend" / "oj.py",
+        *(ROOT / "backend" / "oj_modules").rglob("*.py"),
+    ]
 
     for path in python_files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -64,7 +67,7 @@ def test_literal_render_template_targets_exist():
 
 
 def test_literal_static_asset_targets_exist():
-    static_root = ROOT / "static"
+    static_root = ROOT / "frontend" / "public" / "static"
     pattern = re.compile(r"url_for\(['\"]static['\"],\s*filename=['\"]([^'\"]+)['\"]\)")
     for path in TEMPLATES.rglob("*.html"):
         source = path.read_text(encoding="utf-8")
@@ -148,7 +151,7 @@ def test_shared_layout_and_editor_fragments_have_one_canonical_source():
     assert not (TEMPLATES / "components" / "editor" / "codemirror.html").exists()
     assert not any(
         path.is_file()
-        for path in (ROOT / "static" / "codemirror").rglob("*")
+        for path in (ROOT / "frontend" / "public" / "static" / "codemirror").rglob("*")
     )
 
 
@@ -208,31 +211,31 @@ def test_all_code_surfaces_share_monaco_at_every_breakpoint():
         encoding="utf-8"
     )
     form_editor = (
-        ROOT / "static" / "app" / "problem-form-editors.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "problem-form-editors.js"
     ).read_text(encoding="utf-8")
     editor_runtime = (
-        ROOT / "static" / "app" / "code-editor-runtime.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     ).read_text(encoding="utf-8")
     problem_editor = (
-        ROOT / "static" / "app" / "problem-editor.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "problem-editor.js"
     ).read_text(encoding="utf-8")
     submission_editor = (
-        ROOT / "static" / "app" / "submissions" / "detail.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "submissions" / "detail.js"
     ).read_text(encoding="utf-8")
     repository_editor = (
-        ROOT / "static" / "app" / "repository" / "workbench.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "repository" / "workbench.js"
     ).read_text(encoding="utf-8")
     monaco_component = (
         TEMPLATES / "components" / "editor" / "monaco.html"
     ).read_text(encoding="utf-8")
     editor_styles = (
-        ROOT / "static" / "styles" / "code-editor.css"
+        ROOT / "frontend" / "public" / "static" / "styles" / "code-editor.css"
     ).read_text(encoding="utf-8")
     submission_styles = (
-        ROOT / "static" / "app" / "submissions" / "detail.css"
+        ROOT / "frontend" / "public" / "static" / "app" / "submissions" / "detail.css"
     ).read_text(encoding="utf-8")
     repository_styles = (
-        ROOT / "static" / "styles" / "repository" / "workbench.css"
+        ROOT / "frontend" / "public" / "static" / "styles" / "repository" / "workbench.css"
     ).read_text(encoding="utf-8")
 
     for source in (create, edit):
@@ -258,10 +261,10 @@ def test_non_credential_text_fields_opt_out_of_password_managers():
         encoding="utf-8"
     )
     workbench = (
-        ROOT / "static" / "app" / "repository" / "workbench.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "repository" / "workbench.js"
     ).read_text(encoding="utf-8")
     editor_runtime = (
-        ROOT / "static" / "app" / "code-editor-runtime.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     ).read_text(encoding="utf-8")
 
     assert 'name="user_search"' in users
@@ -282,10 +285,10 @@ def test_problem_dashboard_defers_class_activity_until_after_first_render():
     desktop_list = (TEMPLATES / "problems" / "desktop" / "list.html").read_text(
         encoding="utf-8"
     )
-    dashboard = (ROOT / "static" / "app" / "problem-dashboard.js").read_text(
+    dashboard = (ROOT / "frontend" / "public" / "static" / "app" / "problem-dashboard.js").read_text(
         encoding="utf-8"
     )
-    layout = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
+    layout = (ROOT / "frontend" / "public" / "static" / "app" / "layout.css").read_text(encoding="utf-8")
 
     assert "filename='app/problem-dashboard.js'" in problem_list
     assert "data-numoj-class-activity" in desktop_list
@@ -302,12 +305,12 @@ def test_problem_dashboard_defers_class_activity_until_after_first_render():
 
 def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     detail = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
-    layout = (ROOT / "static" / "app" / "layout.css").read_text(encoding="utf-8")
-    editor = (ROOT / "static" / "app" / "problem-editor.js").read_text(
+    layout = (ROOT / "frontend" / "public" / "static" / "app" / "layout.css").read_text(encoding="utf-8")
+    editor = (ROOT / "frontend" / "public" / "static" / "app" / "problem-editor.js").read_text(
         encoding="utf-8"
     )
     semantic_tokens = (
-        ROOT / "static" / "app" / "editor-semantic-tokens.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "editor-semantic-tokens.js"
     ).read_text(encoding="utf-8")
     monaco_component = (
         TEMPLATES / "components" / "editor" / "monaco.html"
@@ -319,7 +322,7 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
         ROOT / "frontend" / "monaco" / "runtime.js"
     ).read_text(encoding="utf-8")
     editor_runtime = (
-        ROOT / "static" / "app" / "code-editor-runtime.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     ).read_text(encoding="utf-8")
 
     assert "problem-detail-content-shell" in detail
@@ -418,8 +421,8 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
 
 def test_unified_submission_list_owns_one_component_and_asset_pair():
     component = TEMPLATES / "submissions" / "components" / "table.html"
-    stylesheet = ROOT / "static" / "app" / "submissions.css"
-    script = ROOT / "static" / "app" / "submissions.js"
+    stylesheet = ROOT / "frontend" / "public" / "static" / "app" / "submissions.css"
+    script = ROOT / "frontend" / "public" / "static" / "app" / "submissions.js"
     page = TEMPLATES / "submissions" / "all.html"
     assert component.is_file()
     assert stylesheet.is_file()
@@ -443,21 +446,21 @@ def test_submission_detail_uses_equal_split_workspace_and_shared_editor_contract
         encoding="utf-8"
     )
     detail_css = (
-        ROOT / "static" / "app" / "submissions" / "detail.css"
+        ROOT / "frontend" / "public" / "static" / "app" / "submissions" / "detail.css"
     ).read_text(encoding="utf-8")
     detail_js = (
-        ROOT / "static" / "app" / "submissions" / "detail.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "submissions" / "detail.js"
     ).read_text(encoding="utf-8")
     editor_runtime = (
-        ROOT / "static" / "app" / "code-editor-runtime.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     ).read_text(encoding="utf-8")
     list_component = (
         TEMPLATES / "submissions" / "components" / "table.html"
     ).read_text(encoding="utf-8")
-    list_css = (ROOT / "static" / "app" / "submissions.css").read_text(
+    list_css = (ROOT / "frontend" / "public" / "static" / "app" / "submissions.css").read_text(
         encoding="utf-8"
     )
-    list_js = (ROOT / "static" / "app" / "submissions.js").read_text(
+    list_js = (ROOT / "frontend" / "public" / "static" / "app" / "submissions.js").read_text(
         encoding="utf-8"
     )
 
@@ -531,7 +534,7 @@ def test_ranking_list_uses_admin_create_fab_without_intro_hero():
 
 
 def test_rule_topology_algorithm_has_one_parameterized_source():
-    algorithm = (ROOT / "static" / "app" / "ranking" / "topology.js").read_text(
+    algorithm = (ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "topology.js").read_text(
         encoding="utf-8"
     )
     assert "global.RuleTopology" in algorithm
@@ -541,7 +544,7 @@ def test_rule_topology_algorithm_has_one_parameterized_source():
     consumers = {
         TEMPLATES / "ranking" / "appeal_review.html": (46, 18),
         TEMPLATES / "ranking" / "modals" / "judge_detail.html": (46, 18),
-        ROOT / "static" / "app" / "ranking" / "rules-editor.js": (42, 17),
+        ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "rules-editor.js": (42, 17),
     }
     for path, geometry in consumers.items():
         source = path.read_text(encoding="utf-8")
@@ -563,9 +566,9 @@ def test_ranking_settings_are_split_by_cohesive_responsibility():
 
     assert len(settings.splitlines()) < 700
     rules_script = (
-        ROOT / "static" / "app" / "ranking" / "rules-editor.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "rules-editor.js"
     ).read_text(encoding="utf-8")
     endpoint_script = (
-        ROOT / "static" / "app" / "ranking" / "endpoints.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "endpoints.js"
     ).read_text(encoding="utf-8")
     assert "window.ChoicePicker.create" in endpoint_script

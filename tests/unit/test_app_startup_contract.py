@@ -20,19 +20,19 @@ from flask import (
 )
 from flask.globals import request_ctx as _flask_request_ctx
 
-from oj_modules import config as app_config
-from oj_modules.infrastructure.mysql import (
+from backend.oj_modules import config as app_config
+from backend.oj_modules.infrastructure.mysql import (
     MySQLPoolExhausted,
     begin_mysql_pool_exhaustion_tracking,
     current_mysql_pool_exhaustion,
     end_mysql_pool_exhaustion_tracking,
 )
-from oj_modules.security.login_guard import is_api_request
-from oj_modules.shared.static_delivery import PrecompressedStaticFlask
+from backend.oj_modules.security.login_guard import is_api_request
+from backend.oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
 
 ROOT = Path(__file__).resolve().parents[2]
-OJ_PATH = ROOT / 'oj.py'
+OJ_PATH = ROOT / 'backend' / 'oj.py'
 
 
 def _called_name(node):
@@ -78,7 +78,7 @@ def _logging_bootstrap_statements():
 
 
 def test_importing_oj_does_not_run_recovery_or_scheduling_jobs():
-    tree = ast.parse((ROOT / 'oj.py').read_text(encoding='utf-8'))
+    tree = ast.parse((ROOT / 'backend' / 'oj.py').read_text(encoding='utf-8'))
     forbidden_top_level_calls = {
         'seed_elo_matchmaker_tick',
         'requeue_pending_on_startup',
@@ -153,7 +153,7 @@ def test_production_web_uses_central_gunicorn_config_without_schema_side_effects
 
 
 def test_destructive_recovery_is_separate_from_safe_scheduler_bootstrap():
-    tree = ast.parse((ROOT / 'oj.py').read_text(encoding='utf-8'))
+    tree = ast.parse((ROOT / 'backend' / 'oj.py').read_text(encoding='utf-8'))
     functions = {
         node.name: node
         for node in tree.body
@@ -179,7 +179,7 @@ def test_destructive_recovery_is_separate_from_safe_scheduler_bootstrap():
 
 def test_pending_watchdog_also_reclaims_expired_repository_upload_staging():
     source = (
-        ROOT / "oj_modules" / "runtime" / "pending_recovery.py"
+        ROOT / "backend" / "oj_modules" / "runtime" / "pending_recovery.py"
     ).read_text(encoding="utf-8")
 
     register_start = source.index("def register_pending_requeue_watchdog_task")
@@ -191,7 +191,7 @@ def test_pending_watchdog_also_reclaims_expired_repository_upload_staging():
 
 
 def test_repository_domain_modules_live_in_the_repository_package():
-    modules_root = ROOT / "oj_modules"
+    modules_root = ROOT / "backend" / "oj_modules"
     package_root = modules_root / "repository"
 
     assert not list(modules_root.glob("repository_*.py"))
@@ -284,14 +284,14 @@ def _static_cache_app():
     )
     app = PrecompressedStaticFlask(
         __name__,
-        static_folder=str(ROOT / 'static'),
+        static_folder=str(ROOT / 'frontend' / 'public' / 'static'),
         static_url_path='/static',
     )
 
     @app.get('/download')
     def download():
         return send_from_directory(
-            ROOT / 'static' / 'app',
+            ROOT / 'frontend' / 'public' / 'static' / 'app',
             'layout.js',
             conditional=True,
         )
@@ -686,11 +686,11 @@ def test_copied_request_context_thread_cannot_reset_parent_scope():
 def test_gunicorn_worker_only_ensures_safe_schedulers_after_import(monkeypatch):
     settings = runpy.run_path(str(ROOT / 'deploy' / 'gunicorn.py'))
     calls = []
-    fake_oj = types.ModuleType('oj')
+    fake_oj = types.ModuleType('backend.oj')
     fake_oj.ensure_background_schedulers = lambda: calls.append('schedulers')
     fake_oj.ensure_vibehub_runtime_reaper = lambda: calls.append('vibehub-reaper')
     fake_oj.ensure_vibehub_storage_gc = lambda: calls.append('vibehub-storage-gc')
-    monkeypatch.setitem(sys.modules, 'oj', fake_oj)
+    monkeypatch.setitem(sys.modules, 'backend.oj', fake_oj)
 
     logged = []
     worker = types.SimpleNamespace(
@@ -856,17 +856,17 @@ def test_logging_bootstrap_precedes_all_business_module_imports():
         node
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == 'oj_modules.observability'
+        and node.module == 'backend.oj_modules.observability'
     )
     first_business_import = next(
         node
         for node in tree.body
             if isinstance(node, ast.ImportFrom)
             and node.module
-            and node.module.startswith('oj_modules.')
+            and node.module.startswith('backend.oj_modules.')
             and node.module not in {
-                'oj_modules.config',
-                'oj_modules.observability',
+                'backend.oj_modules.config',
+                'backend.oj_modules.observability',
             }
         )
     bootstrap = _logging_bootstrap_statements()

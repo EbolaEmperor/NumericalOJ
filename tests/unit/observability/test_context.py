@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from oj_modules.observability import context
+from backend.oj_modules.observability import context
 
 
 @pytest.fixture(autouse=True)

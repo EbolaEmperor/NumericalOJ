@@ -9,13 +9,13 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODAL = (ROOT / "templates" / "ranking" / "modals" / "reverse_judge_detail.html").read_text(
+MODAL = (ROOT / "backend" / "templates" / "ranking" / "modals" / "reverse_judge_detail.html").read_text(
     encoding="utf-8",
 )
-TRACE_RENDERER = (ROOT / "static" / "app" / "agents" / "execution-trace.js").read_text(
+TRACE_RENDERER = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "execution-trace.js").read_text(
     encoding="utf-8",
 )
-TRACE_STYLES = (ROOT / "static" / "app" / "agents" / "execution-trace.css").read_text(
+TRACE_STYLES = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "execution-trace.css").read_text(
     encoding="utf-8",
 )
 

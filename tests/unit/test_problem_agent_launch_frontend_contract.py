@@ -2,12 +2,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE = ROOT / "templates/problems/detail.html"
-SCRIPT = ROOT / "static/app/problem-agent-launch.js"
-STYLESHEET = ROOT / "static/app/problem-agent-launch.css"
-CHOICE_PICKER = ROOT / "static/app/choice-picker.js"
-CHOICE_STYLESHEET = ROOT / "static/app/choice-picker.css"
-SITE_LAYOUT = ROOT / "templates/layouts/site.html"
+TEMPLATE = ROOT / "backend/templates/problems/detail.html"
+SCRIPT = ROOT / "frontend/public/static/app/problem-agent-launch.js"
+STYLESHEET = ROOT / "frontend/public/static/app/problem-agent-launch.css"
+CHOICE_PICKER = ROOT / "frontend/public/static/app/choice-picker.js"
+CHOICE_STYLESHEET = ROOT / "frontend/public/static/app/choice-picker.css"
+SITE_LAYOUT = ROOT / "backend/templates/layouts/site.html"
 
 
 def _read(path):

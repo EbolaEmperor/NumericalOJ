@@ -1,8 +1,8 @@
-from oj_modules.classroom.logos import (
+from backend.oj_modules.classroom.logos import (
     backfill_missing_class_logo_seeds,
     is_valid_class_logo_seed,
 )
-from oj_modules.infrastructure.mysql import get_db_connection
+from backend.oj_modules.infrastructure.mysql import get_db_connection
 
 
 def _class_logo_seeds():

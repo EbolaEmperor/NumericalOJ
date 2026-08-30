@@ -2,7 +2,7 @@
 
 import pytest
 
-from oj_modules.problems.llm_bindings import (
+from backend.oj_modules.problems.llm_bindings import (
     CODE_GENERATION_ENDPOINT_ID,
     DIRECT_IMAGE_GRADING_ENDPOINT_ID,
     OCR_ENDPOINT_ID,

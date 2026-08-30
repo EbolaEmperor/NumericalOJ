@@ -1,4 +1,4 @@
-"""CI 调用方负责注入网络拓扑，测试入口不得改写 oj_modules/config.py。"""
+"""CI 调用方负责注入网络拓扑，测试入口不得改写 backend/oj_modules/config.py。"""
 
 from pathlib import Path
 
@@ -63,7 +63,7 @@ def test_ci_runner_never_rewrites_tracked_config():
     source = (ROOT / "tests/ci/run-ci.sh").read_text(encoding="utf-8")
 
     assert "config.ci.py" not in source
-    assert "cp oj_modules/config.py" not in source
+    assert "cp backend/oj_modules/config.py" not in source
     assert "cp tests/ci" not in source
     assert "tests/e2e*)" in source
     assert "numericaloj-judger-lite:latest" in source

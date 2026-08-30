@@ -11,8 +11,8 @@ import stat
 
 import pytest
 
-from oj_modules.repository import storage
-from oj_modules.repository import tree as tree_services
+from backend.oj_modules.repository import storage
+from backend.oj_modules.repository import tree as tree_services
 
 
 @pytest.fixture
@@ -97,7 +97,10 @@ def test_repository_user_lock_rejects_hardlinked_lock(isolated_storage, tmp_path
 
 def test_repository_metadata_namespace_uses_binary_collation():
     bootstrap = (
-        Path(__file__).resolve().parents[2] / "database" / "bootstrap.sql"
+        Path(__file__).resolve().parents[2]
+        / "backend"
+        / "database"
+        / "bootstrap.sql"
     ).read_text(encoding="utf-8")
     assert (
         "`name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL"
@@ -124,7 +127,10 @@ def test_upload_session_target_is_not_cascade_bound_to_repository_entry():
     但宿主机 staging 仍存在且从此无法被会话清理器发现。
     """
     bootstrap = (
-        Path(__file__).resolve().parents[2] / "database" / "bootstrap.sql"
+        Path(__file__).resolve().parents[2]
+        / "backend"
+        / "database"
+        / "bootstrap.sql"
     ).read_text(encoding="utf-8")
     assert "fk_repository_upload_sessions_parent_owner" not in bootstrap
 

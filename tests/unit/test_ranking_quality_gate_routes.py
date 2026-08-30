@@ -2,10 +2,10 @@ from types import SimpleNamespace
 
 from flask import Flask
 
-from oj_modules.api import ranking_api
-from oj_modules.api.ranking_api import _public_answer_endpoints, _safe_competition
-from oj_modules.ranking import presentation, readiness
-from oj_modules.routes import ranking_routes as routes
+from backend.oj_modules.api import ranking_api
+from backend.oj_modules.api.ranking_api import _public_answer_endpoints, _safe_competition
+from backend.oj_modules.ranking import presentation, readiness
+from backend.oj_modules.routes import ranking_routes as routes
 
 
 def _app():

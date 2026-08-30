@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from oj_modules.runtime import pending_recovery as startup_requeue
-from oj_modules.tasks.ranking import (
+from backend.oj_modules.runtime import pending_recovery as startup_requeue
+from backend.oj_modules.tasks.ranking import (
     agent_judge as ranking_agent_judge_tasks,
     elo as ranking_elo_tasks,
 )
@@ -285,7 +285,7 @@ def test_recovery_cli_rejects_live_local_worker(monkeypatch):
     monkeypatch.setattr(
         recover_pending_tasks,
         '_local_numoj_celery_processes',
-        lambda: ['123 celery -A oj.celery worker -Q celery'],
+        lambda: ['123 celery -A backend.oj.celery worker -Q celery'],
     )
 
     with pytest.raises(SystemExit, match='本机 Celery worker 仍在运行'):
@@ -306,14 +306,14 @@ def test_recovery_cli_fails_closed_when_local_process_check_fails(monkeypatch):
 def test_recovery_cli_rejects_remote_worker_ping(monkeypatch):
     monkeypatch.setattr(recover_pending_tasks, '_local_numoj_celery_processes', lambda: [])
     recovered = []
-    fake_oj = types.ModuleType('oj')
+    fake_oj = types.ModuleType('backend.oj')
     fake_oj.celery = types.SimpleNamespace(
         control=types.SimpleNamespace(
             ping=lambda timeout: [{'celery@remote': {'ok': 'pong'}}],
         ),
     )
     fake_oj.recover_pending_after_all_workers_stopped = lambda: recovered.append(True)
-    monkeypatch.setitem(sys.modules, 'oj', fake_oj)
+    monkeypatch.setitem(sys.modules, 'backend.oj', fake_oj)
 
     with pytest.raises(SystemExit, match='celery@remote'):
         recover_pending_tasks.main(['--confirm-celery-stopped'])
@@ -324,12 +324,12 @@ def test_recovery_cli_rejects_remote_worker_ping(monkeypatch):
 def test_recovery_cli_runs_only_after_both_liveness_checks_pass(monkeypatch, capsys):
     monkeypatch.setattr(recover_pending_tasks, '_local_numoj_celery_processes', lambda: [])
     recovered = []
-    fake_oj = types.ModuleType('oj')
+    fake_oj = types.ModuleType('backend.oj')
     fake_oj.celery = types.SimpleNamespace(
         control=types.SimpleNamespace(ping=lambda timeout: []),
     )
     fake_oj.recover_pending_after_all_workers_stopped = lambda: recovered.append(True)
-    monkeypatch.setitem(sys.modules, 'oj', fake_oj)
+    monkeypatch.setitem(sys.modules, 'backend.oj', fake_oj)
 
     assert recover_pending_tasks.main(['--confirm-celery-stopped']) == 0
     assert recovered == [True]
@@ -339,7 +339,7 @@ def test_recovery_cli_runs_only_after_both_liveness_checks_pass(monkeypatch, cap
 def test_local_worker_detection_uses_process_listing(monkeypatch):
     output = "\n".join([
         '11 python app.py',
-        '12 celery -A oj.celery worker -Q celery',
+        '12 celery -A backend.oj.celery worker -Q celery',
         '13 celery -A another.app worker',
     ])
     monkeypatch.setattr(
@@ -349,5 +349,5 @@ def test_local_worker_detection_uses_process_listing(monkeypatch):
     )
 
     assert recover_pending_tasks._local_numoj_celery_processes() == [
-        '12 celery -A oj.celery worker -Q celery',
+        '12 celery -A backend.oj.celery worker -Q celery',
     ]

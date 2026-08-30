@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.editor import language_server as language_server_services
-from oj_modules.editor import python as python_language_services
+from backend.oj_modules.editor import language_server as language_server_services
+from backend.oj_modules.editor import python as python_language_services
 
 
 def test_basedpyright_service_uses_stdio_entrypoint(monkeypatch, tmp_path):

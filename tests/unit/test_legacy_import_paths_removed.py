@@ -9,70 +9,70 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 LEGACY_MODULES = (
-    "oj_modules.ai_utils",
-    "oj_modules.archive_utils",
-    "oj_modules.auth_helpers",
-    "oj_modules.clangd_services",
-    "oj_modules.class_logo_services",
-    "oj_modules.class_membership_services",
-    "oj_modules.dashboard_services",
-    "oj_modules.dynamic_config_services",
-    "oj_modules.dynamic_config_testers",
-    "oj_modules.docker_sandbox",
-    "oj_modules.editor_toolchain",
-    "oj_modules.forum_identity_services",
-    "oj_modules.forum_services",
-    "oj_modules.grading_services",
-    "oj_modules.idempotency_utils",
-    "oj_modules.identicon_utils",
-    "oj_modules.judger_case_runner",
-    "oj_modules.judger_core",
-    "oj_modules.language_server_services",
-    "oj_modules.llm_endpoints",
-    "oj_modules.markdown_utils",
-    "oj_modules.modelscope_web_search_mcp",
-    "oj_modules.integrations.modelscope_web_search",
-    "oj_modules.octave_language_services",
-    "oj_modules.promptly_guard",
-    "oj_modules.python_language_services",
-    "oj_modules.problem_llm_bindings",
-    "oj_modules.ranking_agent_judge",
-    "oj_modules.ranking_agent_judge_db",
-    "oj_modules.ranking_db",
-    "oj_modules.ranking_reverse_judge_db",
-    "oj_modules.redis_clients",
-    "oj_modules.request_auth",
-    "oj_modules.request_security",
-    "oj_modules.security_utils",
-    "oj_modules.semantic_token_cache",
-    "oj_modules.startup_requeue",
-    "oj_modules.submission_archive",
-    "oj_modules.submission_repository_snapshots",
-    "oj_modules.testdata_services",
-    "oj_modules.written_submission_artifacts",
-    "oj_modules.tasks.agent_generate_helpers",
-    "oj_modules.tasks.agent_generate_testdata_task",
-    "oj_modules.tasks.agent_shared",
-    "oj_modules.tasks.agent_solve_helpers",
-    "oj_modules.tasks.agent_solve_task",
-    "oj_modules.tasks.agent_tasks",
-    "oj_modules.tasks.agent.generate_helpers",
-    "oj_modules.tasks.agent.solve_helpers",
-    "oj_modules.tasks.ranking_agent_judge_tasks",
-    "oj_modules.tasks.ranking_batch_pull_tasks",
-    "oj_modules.tasks.ranking_bulk_rejudge_tasks",
-    "oj_modules.tasks.ranking_elo_tasks",
-    "oj_modules.tasks.ranking_evaluate_tasks",
-    "oj_modules.tasks.ranking_reverse_judge_tasks",
+    "backend.oj_modules.ai_utils",
+    "backend.oj_modules.archive_utils",
+    "backend.oj_modules.auth_helpers",
+    "backend.oj_modules.clangd_services",
+    "backend.oj_modules.class_logo_services",
+    "backend.oj_modules.class_membership_services",
+    "backend.oj_modules.dashboard_services",
+    "backend.oj_modules.dynamic_config_services",
+    "backend.oj_modules.dynamic_config_testers",
+    "backend.oj_modules.docker_sandbox",
+    "backend.oj_modules.editor_toolchain",
+    "backend.oj_modules.forum_identity_services",
+    "backend.oj_modules.forum_services",
+    "backend.oj_modules.grading_services",
+    "backend.oj_modules.idempotency_utils",
+    "backend.oj_modules.identicon_utils",
+    "backend.oj_modules.judger_case_runner",
+    "backend.oj_modules.judger_core",
+    "backend.oj_modules.language_server_services",
+    "backend.oj_modules.llm_endpoints",
+    "backend.oj_modules.markdown_utils",
+    "backend.oj_modules.modelscope_web_search_mcp",
+    "backend.oj_modules.integrations.modelscope_web_search",
+    "backend.oj_modules.octave_language_services",
+    "backend.oj_modules.promptly_guard",
+    "backend.oj_modules.python_language_services",
+    "backend.oj_modules.problem_llm_bindings",
+    "backend.oj_modules.ranking_agent_judge",
+    "backend.oj_modules.ranking_agent_judge_db",
+    "backend.oj_modules.ranking_db",
+    "backend.oj_modules.ranking_reverse_judge_db",
+    "backend.oj_modules.redis_clients",
+    "backend.oj_modules.request_auth",
+    "backend.oj_modules.request_security",
+    "backend.oj_modules.security_utils",
+    "backend.oj_modules.semantic_token_cache",
+    "backend.oj_modules.startup_requeue",
+    "backend.oj_modules.submission_archive",
+    "backend.oj_modules.submission_repository_snapshots",
+    "backend.oj_modules.testdata_services",
+    "backend.oj_modules.written_submission_artifacts",
+    "backend.oj_modules.tasks.agent_generate_helpers",
+    "backend.oj_modules.tasks.agent_generate_testdata_task",
+    "backend.oj_modules.tasks.agent_shared",
+    "backend.oj_modules.tasks.agent_solve_helpers",
+    "backend.oj_modules.tasks.agent_solve_task",
+    "backend.oj_modules.tasks.agent_tasks",
+    "backend.oj_modules.tasks.agent.generate_helpers",
+    "backend.oj_modules.tasks.agent.solve_helpers",
+    "backend.oj_modules.tasks.ranking_agent_judge_tasks",
+    "backend.oj_modules.tasks.ranking_batch_pull_tasks",
+    "backend.oj_modules.tasks.ranking_bulk_rejudge_tasks",
+    "backend.oj_modules.tasks.ranking_elo_tasks",
+    "backend.oj_modules.tasks.ranking_evaluate_tasks",
+    "backend.oj_modules.tasks.ranking_reverse_judge_tasks",
 )
 
 PACKAGE_ONLY_EXPORTS = {
-    "oj_modules.api": {"API_BLUEPRINTS", "admin_api_bp"},
-    "oj_modules.tasks": {
+    "backend.oj_modules.api": {"API_BLUEPRINTS", "admin_api_bp"},
+    "backend.oj_modules.tasks": {
         "register_evaluate_submission_task",
         "register_ranking_evaluate_task",
     },
-    "oj_modules.ai_detection": {"run_detection"},
+    "backend.oj_modules.ai_detection": {"run_detection"},
 }
 
 
@@ -86,7 +86,7 @@ def test_legacy_module_paths_are_absent():
 def test_oj_modules_root_only_keeps_explicit_transition_seams():
     root_modules = {
         path.name
-        for path in (ROOT / "oj_modules").glob("*.py")
+        for path in (ROOT / "backend" / "oj_modules").glob("*.py")
     }
     assert root_modules == {
         "__init__.py",
@@ -98,8 +98,8 @@ def test_oj_modules_root_only_keeps_explicit_transition_seams():
 
 
 def test_python_sources_use_the_packaged_config_module():
-    candidates = [ROOT / "oj.py"]
-    for directory in ("oj_modules", "deploy", "scripts", "tests"):
+    candidates = [ROOT / "backend" / "oj.py"]
+    for directory in ("backend/oj_modules", "deploy", "scripts", "tests"):
         candidates.extend((ROOT / directory).rglob("*.py"))
 
     legacy_imports = []

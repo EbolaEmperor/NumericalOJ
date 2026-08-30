@@ -1,5 +1,5 @@
 def test_pending_watchdog_registration_keeps_wire_name_and_is_idempotent():
-    from oj_modules.runtime import pending_recovery
+    from backend.oj_modules.runtime import pending_recovery
 
     class FakeCelery:
         def __init__(self):

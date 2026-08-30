@@ -36,7 +36,7 @@ def _text_endpoint(endpoint_id=1):
 
 
 def test_parse_promptly_review_config_json():
-    from oj_modules.problems.promptly import parse_promptly_review_config
+    from backend.oj_modules.problems.promptly import parse_promptly_review_config
 
     config = parse_promptly_review_config({"programming_grading_prompt": _promptly_review_config()})
 
@@ -47,7 +47,7 @@ def test_parse_promptly_review_config_json():
 
 
 def test_parse_promptly_review_config_plain_text_as_brief():
-    from oj_modules.problems.promptly import parse_promptly_review_config
+    from backend.oj_modules.problems.promptly import parse_promptly_review_config
 
     config = parse_promptly_review_config({"programming_grading_prompt": "Only a brief."})
 
@@ -58,7 +58,7 @@ def test_parse_promptly_review_config_plain_text_as_brief():
 
 
 def test_problem_api_returns_promptly_review_config():
-    from oj_modules.api.problem_api import _promptly_review_config_from_prompt
+    from backend.oj_modules.api.problem_api import _promptly_review_config_from_prompt
 
     config = _promptly_review_config_from_prompt(_promptly_review_config())
 
@@ -143,7 +143,7 @@ def test_admin_cli_edit_preserves_unspecified_promptly_fields():
 
 
 def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
-    from oj_modules.ai import promptly as promptly_ai
+    from backend.oj_modules.ai import promptly as promptly_ai
 
     def fake_call_llm_text(_prompt_text, _endpoint, **_kwargs):
         return '{"nice": true}'
@@ -161,7 +161,7 @@ def test_review_promptly_student_prompt_accepts_nice(monkeypatch):
 
 
 def test_review_promptly_student_prompt_rejects_with_reply(monkeypatch):
-    from oj_modules.ai import promptly as promptly_ai
+    from backend.oj_modules.ai import promptly as promptly_ai
 
     def fake_call_llm_text(prompt_text, _endpoint, **kwargs):
         return '{"nice": false, "reply": "请说明具体使用的数据结构和更新规则。"}'
@@ -179,7 +179,7 @@ def test_review_promptly_student_prompt_rejects_with_reply(monkeypatch):
 
 
 def test_review_promptly_student_prompt_fake_env(monkeypatch):
-    from oj_modules.ai import promptly as promptly_ai
+    from backend.oj_modules.ai import promptly as promptly_ai
 
     monkeypatch.setenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REQUIRED_TERMS", '["monotonic deque", "expired index"]')
     monkeypatch.setenv("NUMOJ_FAKE_PROMPTLY_REVIEW_REPLY", "Please explain the required algorithm.")
@@ -202,7 +202,7 @@ def test_review_promptly_student_prompt_fake_env(monkeypatch):
 
 
 def test_submission_status_snapshot_exposes_promptly_reply():
-    from oj_modules import db_services
+    from backend.oj_modules import db_services
 
     snapshot = db_services._build_submission_status_snapshot_from_row(
         {
@@ -224,7 +224,7 @@ def test_submission_status_snapshot_exposes_promptly_reply():
 
 
 def test_submission_detail_payload_exposes_promptly_reply_alias():
-    from oj_modules.api.submission_api import _submission_detail_payload
+    from backend.oj_modules.api.submission_api import _submission_detail_payload
 
     payload = _submission_detail_payload(
         {
@@ -399,7 +399,7 @@ def test_numoj_admin_wait_promptly_review_result_treats_judge_failure_as_review_
 
 
 def test_promptly_task_does_not_regenerate_pending_submission(monkeypatch):
-    import oj_modules.tasks.promptly_tasks as promptly_tasks
+    import backend.oj_modules.tasks.promptly_tasks as promptly_tasks
 
     monkeypatch.setattr(
         promptly_tasks,
@@ -420,7 +420,7 @@ def test_promptly_task_does_not_regenerate_pending_submission(monkeypatch):
 
 
 def test_promptly_task_keeps_pending_submission_when_evaluation_enqueue_fails(monkeypatch):
-    import oj_modules.tasks.promptly_tasks as promptly_tasks
+    import backend.oj_modules.tasks.promptly_tasks as promptly_tasks
 
     generated_updates = []
     prompt_errors = []
@@ -492,7 +492,7 @@ def test_promptly_task_keeps_pending_submission_when_evaluation_enqueue_fails(mo
 
 
 def test_promptly_generation_returns_generated_code_after_review(monkeypatch):
-    from oj_modules.ai import promptly as promptly_ai
+    from backend.oj_modules.ai import promptly as promptly_ai
 
     def fake_call_llm_text(_prompt_text, _endpoint, **_kwargs):
         return "int main() { return 0; }"

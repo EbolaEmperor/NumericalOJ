@@ -6,11 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_INITIALIZERS = (
-    "oj_modules/api/__init__.py",
-    "oj_modules/tasks/__init__.py",
-    "oj_modules/tasks/agent/__init__.py",
-    "oj_modules/ai_detection/__init__.py",
-    "oj_modules/site_config/__init__.py",
+    "backend/oj_modules/api/__init__.py",
+    "backend/oj_modules/tasks/__init__.py",
+    "backend/oj_modules/tasks/agent/__init__.py",
+    "backend/oj_modules/ai_detection/__init__.py",
+    "backend/oj_modules/site_config/__init__.py",
 )
 
 
@@ -29,7 +29,7 @@ def test_package_initializers_do_not_eagerly_import_implementations():
             for alias in node.names
         )
         assert not any(
-            module == "oj_modules" or module.startswith("oj_modules.")
+            module == "backend.oj_modules" or module.startswith("backend.oj_modules.")
             for module in imported_modules
         ), relative_path
 
@@ -37,17 +37,17 @@ def test_package_initializers_do_not_eagerly_import_implementations():
 def test_isolated_package_imports_leave_registries_and_implementations_unloaded():
     code = """
 import sys
-import oj_modules.api
-import oj_modules.tasks
-import oj_modules.tasks.agent
-import oj_modules.ai_detection
-import oj_modules.site_config
+import backend.oj_modules.api
+import backend.oj_modules.tasks
+import backend.oj_modules.tasks.agent
+import backend.oj_modules.ai_detection
+import backend.oj_modules.site_config
 for name in (
-    'oj_modules.api.registry',
-    'oj_modules.tasks.registry',
-    'oj_modules.tasks.agent.registry',
-    'oj_modules.tasks.agent.solve',
-    'oj_modules.ai_detection.detector',
+    'backend.oj_modules.api.registry',
+    'backend.oj_modules.tasks.registry',
+    'backend.oj_modules.tasks.agent.registry',
+    'backend.oj_modules.tasks.agent.solve',
+    'backend.oj_modules.ai_detection.detector',
 ):
     assert name not in sys.modules, name
 """
@@ -63,10 +63,10 @@ for name in (
 
 def test_legacy_package_initializers_have_no_lazy_compatibility_hook():
     for relative_path in (
-        "oj_modules/api/__init__.py",
-        "oj_modules/tasks/__init__.py",
-        "oj_modules/ai_detection/__init__.py",
-        "oj_modules/site_config/__init__.py",
+        "backend/oj_modules/api/__init__.py",
+        "backend/oj_modules/tasks/__init__.py",
+        "backend/oj_modules/ai_detection/__init__.py",
+        "backend/oj_modules/site_config/__init__.py",
     ):
         tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
         assert not any(

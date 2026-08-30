@@ -4,11 +4,11 @@ NumericalOJ 把配置分成两类：
 
 - `.env.tmpl` 只列出新部署必须明确填写的九项启动配置：`SECRET_KEY`、五项
   `MYSQL_*` 和三项 `REDIS_*`。
-- 本文列出的高级运行参数在 `oj_modules/config.py` 中有类型化默认值。只有需要覆盖默认行为时，
+- 本文列出的高级运行参数在 `backend/oj_modules/config.py` 中有类型化默认值。只有需要覆盖默认行为时，
   才把同名键写入 `.env` 或进程环境；修改后需要重启对应 Web/Celery 进程。
 
 优先级为“进程环境变量 > `.env` > 代码默认值”。字符串使用 JSON 双引号，布尔值使用
-`true` / `false`，字符串列表使用 JSON 数组。未在本文和 `oj_modules/config.py` 中声明的键不会被
+`true` / `false`，字符串列表使用 JSON 数组。未在本文和 `backend/oj_modules/config.py` 中声明的键不会被
 自动导出为应用配置。
 
 LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启动配置。它们只从
@@ -45,8 +45,9 @@ keep-alive 等待为 5 秒；gthread 会把空闲 keep-alive 放回事件循环�
 打榜赛正向/反向评测六类流。容量满时新流立即收到 `503` 与 `Retry-After: 1`；已有流结束、异常或
 客户端断开时归还槽位，避免长连接把普通页面和健康检查的线程全部占满。
 
-生产 `deploy.sh` 会在停服前为 `static/` 下不小于 100 KiB 的 JS/CSS/HTML/JSON/SVG
-同时生成 Brotli 与 Gzip 旁路文件；本地需要验证时可显式运行 `npm run build:precompress`。
+生产 `deploy.sh` 会在停服前为 `frontend/public/static/`、`frontend/dist/assets/`，以及存在时的生产根目录
+`static/` 下不小于 100 KiB 的 JS/CSS/HTML/JSON/SVG 同时生成 Brotli 与 Gzip 旁路文件；本地需要验证时可在 `frontend/` 内显式运行
+`npm run build:precompress`。
 这些 `.br` / `.gz` 属于部署产物，不进入 Git。Web 只按客户端
 `Accept-Encoding` 发送构建期产物，不在请求线程中现场压缩；旁路文件缺失或比源文件旧时自动回退
 identity，并始终返回 `Vary: Accept-Encoding`。部署清单位于

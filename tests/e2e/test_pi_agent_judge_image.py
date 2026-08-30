@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from oj_modules.ranking.reverse_judge import traces as reverse_db
-from oj_modules.tasks.ranking import reverse_judge as reverse_tasks
+from backend.oj_modules.ranking.reverse_judge import traces as reverse_db
+from backend.oj_modules.tasks.ranking import reverse_judge as reverse_tasks
 from tests.e2e.live_ai import (
     DEEPSEEK_MODEL,
     DEEPSEEK_OPENAI_BASE_URL,

@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from oj_modules.problems import agent_launch
+from backend.oj_modules.problems import agent_launch
 
 
 def _endpoint(endpoint_id, *, protocol, category="text"):

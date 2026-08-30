@@ -13,9 +13,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 NODE = shutil.which("node")
 
-MODEL_FAMILY_JAVASCRIPT = ROOT / "static" / "app" / "model-family.js"
-MODEL_FAMILY_STYLESHEET = ROOT / "static" / "app" / "model-family-logos.css"
-MODEL_FAMILY_ASSET_DIRECTORY = ROOT / "static" / "app" / "model-family-logos"
+MODEL_FAMILY_JAVASCRIPT = ROOT / "frontend" / "public" / "static" / "app" / "model-family.js"
+MODEL_FAMILY_STYLESHEET = ROOT / "frontend" / "public" / "static" / "app" / "model-family-logos.css"
+MODEL_FAMILY_ASSET_DIRECTORY = ROOT / "frontend" / "public" / "static" / "app" / "model-family-logos"
 
 MODEL_FAMILIES = frozenset(
     {
@@ -186,7 +186,7 @@ def test_every_supported_family_has_one_parseable_svg_asset():
 def test_global_layout_and_model_logo_macro_keep_the_fallback_contract():
     """所有站点页面都应加载共享资源，宏在识别前使用安全的芯片回退。"""
 
-    layout = (ROOT / "templates" / "layouts" / "base.html").read_text(
+    layout = (ROOT / "backend" / "templates" / "layouts" / "base.html").read_text(
         encoding="utf-8"
     )
     stylesheet_reference = "filename='app/model-family-logos.css'"
@@ -196,7 +196,7 @@ def test_global_layout_and_model_logo_macro_keep_the_fallback_contract():
     assert layout.index(stylesheet_reference) < layout.index("{% block head %}")
     assert layout.index(javascript_reference) < layout.index("{% block head %}")
 
-    macro = (ROOT / "templates" / "components" / "model_logo.html").read_text(
+    macro = (ROOT / "backend" / "templates" / "components" / "model_logo.html").read_text(
         encoding="utf-8"
     )
     assert re.search(r"macro\s+model_logo\(model_name(?:,|\))", macro)
@@ -208,7 +208,7 @@ def test_global_layout_and_model_logo_macro_keep_the_fallback_contract():
 def test_choice_picker_propagates_model_names_to_options_and_trigger():
     """服务端与动态选项都应把模型名传到图标和当前选中状态。"""
 
-    template = (ROOT / "templates" / "components" / "choice_picker.html").read_text(
+    template = (ROOT / "backend" / "templates" / "components" / "choice_picker.html").read_text(
         encoding="utf-8"
     )
     assert "model_name=''" in template
@@ -226,7 +226,7 @@ def test_choice_picker_propagates_model_names_to_options_and_trigger():
 def test_agent_history_avatar_keeps_its_identicon_grid_below_desktop_width():
     """历史列表不能依赖只在桌面侧栏媒体查询中生效的头像样式。"""
 
-    stylesheet = (ROOT / "static" / "app" / "agents" / "task-list.css").read_text(
+    stylesheet = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "task-list.css").read_text(
         encoding="utf-8"
     )
     avatar_rule = re.search(
@@ -238,7 +238,7 @@ def test_agent_history_avatar_keeps_its_identicon_grid_below_desktop_width():
     assert "grid-template-columns: repeat(8, 1fr)" in body
     assert ".agent-history-avatar > span.is-filled" in stylesheet
 
-    javascript = (ROOT / "static" / "app" / "choice-picker.js").read_text(
+    javascript = (ROOT / "frontend" / "public" / "static" / "app" / "choice-picker.js").read_text(
         encoding="utf-8"
     )
     assert re.search(r"entry\.model\s*\|\|\s*['\"]['\"]", javascript)
@@ -264,7 +264,7 @@ def _css_block_end(source: str, opening_brace: int) -> int:
 def test_file_preview_hides_header_side_only_at_the_desktop_breakpoint():
     """三栏模式只在桌面隐藏右上信息，窄屏仍保留移动端控制。"""
 
-    stylesheet = (ROOT / "static" / "app" / "agents" / "conversation.css").read_text(
+    stylesheet = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "conversation.css").read_text(
         encoding="utf-8"
     )
     selector_pattern = re.compile(

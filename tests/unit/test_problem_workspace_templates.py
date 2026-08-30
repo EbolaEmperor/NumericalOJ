@@ -20,12 +20,12 @@ def _braced_block(source, marker):
 
 def test_desktop_problem_templates_preserve_class_list_and_unify_problem_detail_entry():
     repo = Path(__file__).resolve().parents[2]
-    problem_list = (repo / "templates/problems/list.html").read_text()
-    desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
-    detail = (repo / "templates/problems/detail.html").read_text()
-    navigation = (repo / "templates/components/layout/navigation.html").read_text()
+    problem_list = (repo / "backend/templates/problems/list.html").read_text()
+    desktop_list = (repo / "backend/templates/problems/desktop/list.html").read_text()
+    detail = (repo / "backend/templates/problems/detail.html").read_text()
+    navigation = (repo / "backend/templates/components/layout/navigation.html").read_text()
     class_logo = (
-        repo / "templates/components/layout/class_logo.html"
+        repo / "backend/templates/components/layout/class_logo.html"
     ).read_text()
 
     assert "problem_core.problem_library" in navigation
@@ -58,8 +58,8 @@ def test_desktop_problem_templates_preserve_class_list_and_unify_problem_detail_
 
 def test_problem_list_uses_one_canonical_v2_dashboard_at_every_breakpoint():
     repo = Path(__file__).resolve().parents[2]
-    problem_list = (repo / "templates/problems/list.html").read_text()
-    dashboard = (repo / "templates/problems/desktop/list.html").read_text()
+    problem_list = (repo / "backend/templates/problems/list.html").read_text()
+    dashboard = (repo / "backend/templates/problems/desktop/list.html").read_text()
 
     assert "{% include 'problems/desktop/list.html' %}" in problem_list
     assert '<section class="numoj-problem-dashboard"' in dashboard
@@ -69,8 +69,8 @@ def test_problem_list_uses_one_canonical_v2_dashboard_at_every_breakpoint():
 
 def test_mobile_assignment_deadline_keeps_only_the_relative_status_visible():
     repo = Path(__file__).resolve().parents[2]
-    dashboard = (repo / "templates/problems/desktop/list.html").read_text()
-    layout_css = (repo / "static/app/layout.css").read_text()
+    dashboard = (repo / "backend/templates/problems/desktop/list.html").read_text()
+    layout_css = (repo / "frontend/public/static/app/layout.css").read_text()
 
     assert 'class="numoj-row-deadline-absolute"' in dashboard
     assert 'class="numoj-row-deadline-relative expired"' in dashboard
@@ -87,9 +87,9 @@ def test_mobile_assignment_deadline_keeps_only_the_relative_status_visible():
 
 def test_problem_detail_mobile_workspace_keeps_the_complete_monaco_surface():
     repo = Path(__file__).resolve().parents[2]
-    detail = (repo / "templates/problems/detail.html").read_text()
-    layout_css = (repo / "static/app/layout.css").read_text()
-    lean_css = (repo / "static/app/lean-workbench.css").read_text()
+    detail = (repo / "backend/templates/problems/detail.html").read_text()
+    layout_css = (repo / "frontend/public/static/app/layout.css").read_text()
+    lean_css = (repo / "frontend/public/static/app/lean-workbench.css").read_text()
 
     assert 'id="problemEditorShell"' in detail
     assert 'id="monacoEditorLoading"' in detail
@@ -141,10 +141,10 @@ def test_problem_detail_mobile_workspace_keeps_the_complete_monaco_surface():
 
 def test_problem_detail_desktop_splitters_share_pointer_keyboard_and_aria_contract():
     repo = Path(__file__).resolve().parents[2]
-    detail = (repo / "templates/problems/detail.html").read_text()
-    layout_css = (repo / "static/app/layout.css").read_text()
-    lean_css = (repo / "static/app/lean-workbench.css").read_text()
-    controller = (repo / "static/app/problem-detail-layout.js").read_text()
+    detail = (repo / "backend/templates/problems/detail.html").read_text()
+    layout_css = (repo / "frontend/public/static/app/layout.css").read_text()
+    lean_css = (repo / "frontend/public/static/app/lean-workbench.css").read_text()
+    controller = (repo / "frontend/public/static/app/problem-detail-layout.js").read_text()
 
     assert "data-problem-detail-splitter" in detail
     assert "data-lean-workbench-splitter" in detail
@@ -188,8 +188,8 @@ def test_problem_detail_desktop_splitters_share_pointer_keyboard_and_aria_contra
 
 def test_problem_resources_link_to_the_repository_instead_of_the_retired_zju_site():
     repo = Path(__file__).resolve().parents[2]
-    problem_list = (repo / "templates/problems/list.html").read_text()
-    desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
+    problem_list = (repo / "backend/templates/problems/list.html").read_text()
+    desktop_list = (repo / "backend/templates/problems/desktop/list.html").read_text()
     repository_url = "https://github.com/EbolaEmperor/NumericalOJ"
 
     for source in (problem_list, desktop_list):
@@ -205,8 +205,8 @@ def test_problem_resources_link_to_the_repository_instead_of_the_retired_zju_sit
 
 def test_problem_resource_cards_share_the_same_leading_logo_treatment():
     repo = Path(__file__).resolve().parents[2]
-    dashboard = (repo / "templates/problems/desktop/list.html").read_text()
-    layout_css = (repo / "static/app/layout.css").read_text()
+    dashboard = (repo / "backend/templates/problems/desktop/list.html").read_text()
+    layout_css = (repo / "frontend/public/static/app/layout.css").read_text()
 
     assert "Insights Everyday" in dashboard
     assert "C++ 编程小贴士" not in dashboard
@@ -219,7 +219,10 @@ def test_problem_resource_cards_share_the_same_leading_logo_treatment():
 
 def test_submission_metric_renders_empty_and_cpp_values_without_undefined_errors():
     repo = Path(__file__).resolve().parents[2]
-    environment = Environment(loader=FileSystemLoader(repo / "templates"), autoescape=True)
+    environment = Environment(
+        loader=FileSystemLoader(repo / "backend" / "templates"),
+        autoescape=True,
+    )
     macros = environment.get_template("problems/desktop/macros.html").module
     problem_macros = environment.get_template("components/problem_macros.html").module
 
@@ -238,8 +241,8 @@ def test_submission_metric_renders_empty_and_cpp_values_without_undefined_errors
 
 def test_problem_heading_keeps_kickers_and_problem_number_left_aligned():
     repo = Path(__file__).resolve().parents[2]
-    detail = (repo / "templates/problems/detail.html").read_text()
-    layout_css = (repo / "static/app/layout.css").read_text()
+    detail = (repo / "backend/templates/problems/detail.html").read_text()
+    layout_css = (repo / "frontend/public/static/app/layout.css").read_text()
 
     assert 'class="problem-number"' in detail
     assert 'class="problem-title-text"' in detail
@@ -251,8 +254,8 @@ def test_problem_heading_keeps_kickers_and_problem_number_left_aligned():
 
 def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     repo = Path(__file__).resolve().parents[2]
-    detail = (repo / "templates/problems/detail.html").read_text()
-    markdown_css = (repo / "static/app/markdown-rendering.css").read_text()
+    detail = (repo / "backend/templates/problems/detail.html").read_text()
+    markdown_css = (repo / "frontend/public/static/app/markdown-rendering.css").read_text()
 
     assert (
         'class="problem-content numoj-markdown '
@@ -266,9 +269,9 @@ def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
     assert detail.count("app/editor-semantic-tokens.js") == 0
     assert detail.count("app/markdown-rendering.js") == 1
 
-    loader = (repo / "static/app/rich-content-assets.js").read_text()
+    loader = (repo / "frontend/public/static/app/rich-content-assets.js").read_text()
     mathjax_component = (
-        repo / "templates/components/layout/mathjax.html"
+        repo / "backend/templates/components/layout/mathjax.html"
     ).read_text()
     for asset in (
         "vendor/mathjax/tex-mml-chtml.js",
@@ -290,9 +293,9 @@ def test_problem_detail_uses_the_shared_rich_markdown_renderer_assets():
 
 def test_written_problem_upload_keeps_the_file_contract_with_drag_drop_ui():
     repo = Path(__file__).resolve().parents[2]
-    detail = (repo / "templates/problems/detail.html").read_text()
-    stylesheet = (repo / "static/app/problem-written-submit.css").read_text()
-    script = (repo / "static/app/problem-written-submit.js").read_text()
+    detail = (repo / "backend/templates/problems/detail.html").read_text()
+    stylesheet = (repo / "frontend/public/static/app/problem-written-submit.css").read_text()
+    script = (repo / "frontend/public/static/app/problem-written-submit.js").read_text()
 
     file_input = detail.split("data-written-file-input", 1)[0].rsplit("<input", 1)[1]
     assert 'id="file"' in file_input
@@ -314,8 +317,8 @@ def test_written_problem_upload_keeps_the_file_contract_with_drag_drop_ui():
 
 def test_failed_homework_cross_is_geometrically_centered_in_status_circle():
     repo = Path(__file__).resolve().parents[2]
-    desktop_list = (repo / "templates/problems/desktop/list.html").read_text()
-    layout_css = (repo / "static/app/layout.css").read_text()
+    desktop_list = (repo / "backend/templates/problems/desktop/list.html").read_text()
+    layout_css = (repo / "frontend/public/static/app/layout.css").read_text()
 
     failed_state = desktop_list.split(
         'class="numoj-row-state failed"',

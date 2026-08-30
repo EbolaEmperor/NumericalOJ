@@ -2,7 +2,7 @@
 
 import pytest
 
-from oj_modules.problems.agent_launch import (
+from backend.oj_modules.problems.agent_launch import (
     AGENT_DEFAULT_REASONING_EFFORT,
     AgentLaunchValidationError,
     default_reasoning_effort_for_harness,

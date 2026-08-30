@@ -3,8 +3,8 @@ import json
 import pytest
 from flask import Flask
 
-from oj_modules.infrastructure.mysql import MySQLPoolExhausted
-from oj_modules.routes import ai_routes
+from backend.oj_modules.infrastructure.mysql import MySQLPoolExhausted
+from backend.oj_modules.routes import ai_routes
 
 
 def decode_sse(chunks):

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from oj_modules.judging import case_runner, sandbox
+from backend.oj_modules.judging import case_runner, sandbox
 
 
 def test_sandbox_mounts_the_canonical_sibling_case_runner():

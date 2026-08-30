@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from oj_modules import db_services
-from oj_modules.agents import sessions as agent_sessions
-from oj_modules.tasks.agent import shared
+from backend.oj_modules import db_services
+from backend.oj_modules.agents import sessions as agent_sessions
+from backend.oj_modules.tasks.agent import shared
 
 
 class _FakeRedis:

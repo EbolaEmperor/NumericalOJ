@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from oj_modules.judging import core as judger_core
+from backend.oj_modules.judging import core as judger_core
 from tests.e2e.conftest import (
     create_problem,
     require_docker_judger_image,

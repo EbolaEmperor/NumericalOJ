@@ -372,7 +372,7 @@ def judger_image_name() -> str:
     if env_value:
         return env_value
     try:
-        from oj_modules import config
+        from backend.oj_modules import config
         return getattr(config, "JUDGER_DOCKER_IMAGE", "numericaloj-judger:latest")
     except Exception:
         return "numericaloj-judger:latest"
@@ -396,7 +396,7 @@ def require_docker_judger_image() -> None:
 
 
 def _assert_disposable_environment() -> None:
-    from oj_modules import config
+    from backend.oj_modules import config
 
     target = DestructiveTestTarget(
         test_env=os.environ.get("NUMOJ_TEST_ENV"),
@@ -529,7 +529,7 @@ def local_numoj_server(tmp_path: Path) -> str:
             "-m",
             "celery",
             "-A",
-            "oj.celery",
+            "backend.oj.celery",
             "worker",
             "--loglevel=warning",
             "-Q",
@@ -665,7 +665,7 @@ def create_regular_user(username: str, password: str = "pw123456", email: Option
 
 
 def get_user_id(username: str) -> int:
-    from oj_modules import db_services
+    from backend.oj_modules import db_services
 
     user = db_services.get_user_by_username(username)
     if not user:
@@ -674,7 +674,7 @@ def get_user_id(username: str) -> int:
 
 
 def seed_verification_code(email: str, code: str = "123456") -> str:
-    from oj_modules import db_services
+    from backend.oj_modules import db_services
 
     expires_at = datetime.now() + timedelta(minutes=10)
     conn = db_services.get_db_connection()
@@ -712,7 +712,7 @@ def ranking_id_from_create(payload: dict[str, Any]) -> int:
 
 
 def get_ranking_appeal_id(submission_id: int) -> int:
-    from oj_modules import db_services
+    from backend.oj_modules import db_services
 
     conn = db_services.get_db_connection()
     try:
@@ -731,7 +731,7 @@ def get_ranking_appeal_id(submission_id: int) -> int:
 
 def count_ranking_endpoints(competition_id: int) -> int:
     """仅供删除比赛 e2e 断言：确认含密钥的端点行没有成为孤儿。"""
-    from oj_modules import db_services
+    from backend.oj_modules import db_services
 
     conn = db_services.get_db_connection()
     try:
@@ -755,7 +755,7 @@ def thread_id_from_create(payload: dict[str, Any]) -> int:
 
 
 def find_forum_thread_id(cli: CliRunner, title: str, *, admin: bool = False) -> int:
-    from oj_modules import db_services
+    from backend.oj_modules import db_services
 
     conn = db_services.get_db_connection()
     try:

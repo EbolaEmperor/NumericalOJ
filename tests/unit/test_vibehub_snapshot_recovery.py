@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules.vibehub import quotas, storage
+from backend.oj_modules.vibehub import quotas, storage
 
 
 def _snapshot(root: Path, version: int, *, slug="demo-vibe", content=None) -> Path:

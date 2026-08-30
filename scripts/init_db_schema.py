@@ -34,7 +34,7 @@ from scripts.mysql_admin import (  # noqa: E402
     settings_from_config,
 )
 
-DATABASE_BOOTSTRAP_SQL = ROOT / "database" / "bootstrap.sql"
+DATABASE_BOOTSTRAP_SQL = ROOT / "backend" / "database" / "bootstrap.sql"
 SKIP_DUMP_TABLES = {"Cdemo2024", "Ctest"}
 SCHEMA_LOCK_NAME = "numericaloj:init_db_schema"
 SCHEMA_LOCK_TIMEOUT_SECONDS = 120

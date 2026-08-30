@@ -1,7 +1,7 @@
 import threading
 
-from oj_modules import db_services
-from oj_modules.infrastructure import mysql
+from backend.oj_modules import db_services
+from backend.oj_modules.infrastructure import mysql
 
 
 class _FakePool:

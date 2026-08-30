@@ -2,8 +2,8 @@
 
 from flask import Flask
 
-from oj_modules.security import auth as auth_helpers
-from oj_modules.routes import admin_dynamic_config_routes as routes
+from backend.oj_modules.security import auth as auth_helpers
+from backend.oj_modules.routes import admin_dynamic_config_routes as routes
 
 
 ADMIN = {

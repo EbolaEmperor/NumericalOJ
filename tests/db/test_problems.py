@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """DB 层测试：题目 CRUD、LLM 端点软绑定与 ensure_*_column 幂等。
 
-被测函数（oj_modules/db_services.py）：
+被测函数（backend/oj_modules/db_services.py）：
 - create_problem  : type1 → max_score=0；type2 → max_score=5；输出文件名/端点绑定归一化；commit。
 - get_problem     : 返回整行（含 content/initial_code/test_code/forbidden_func/submission_limit
                     及运行所需 grading 列和端点绑定）；不存在→None。
@@ -9,7 +9,7 @@
 - update_problem  : 普通字段直接写入；mode/filename 归一化，端点绑定按显式输入替换。
 - ensure_problem_*_column / ensure_problem_grading_columns: 借助模块级 _*_ready 标志做幂等，连调两次不报错。
 """
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 from tests import helpers as h
 
 

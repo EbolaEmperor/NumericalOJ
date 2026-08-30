@@ -3,8 +3,8 @@
 
 import os
 
-from oj_modules.judging import sandbox as docker_sandbox
-from oj_modules.tasks import written_homework_tasks
+from backend.oj_modules.judging import sandbox as docker_sandbox
+from backend.oj_modules.tasks import written_homework_tasks
 
 
 def test_tex_pipeline_runs_once_in_tmpfs_and_exports_only_pdf(

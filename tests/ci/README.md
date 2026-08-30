@@ -12,7 +12,7 @@ GitHub Actions 直接在 GitHub-hosted runner 上连接一次性 MySQL 8.4/Redis
 
 - 本地开发机或非生产服务器已安装 Docker + Compose 插件。
 - 当前用户可以运行 `docker` 和 `docker compose`。
-- 运行环境不能是 `why-server` / host `computing`，也不能挂载或读取生产 `/home/ebola/oj/oj_modules/config.py`。
+- 运行环境不能是 `why-server` / host `computing`，也不能挂载或读取生产 `/home/ebola/oj/backend/oj_modules/config.py`。
 
 本地检查：
 
@@ -99,7 +99,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 | `Dockerfile` | 基于 `python:3.12-slim-bookworm` 构建测试镜像：安装 `gcc/g++/build-essential`、`octave`、`coreutils`、`default-mysql-client`、`ca-certificates` 和 Python 依赖，并校验 Python/pip 基线。镜像不会复制本地 `.env`。 |
 | `docker-compose.local.yml` | 推荐的本地/非生产 CI compose 文件；编排独立 `mysql`、`redis`、`test`，不挂载生产路径。 |
 | `docker-compose.ci.yml` | 历史主机专用 compose 文件，包含宿主 MKL 挂载；日常 CI 优先使用 `docker-compose.local.yml`，且任何 compose 文件都不能在 `why-server` / host `computing` 上运行。 |
-| `run-ci.sh` | 在容器或 GitHub runner 上逐模块顺序跑 pytest（默认 unit -> db -> CLI e2e，也可传入模块路径），始终读取 tracked `oj_modules/config.py`，由调用方通过环境变量注入网络拓扑；逐模块打印结果并写 JUnit XML，任一模块失败则整体非零退出。 |
+| `run-ci.sh` | 在容器或 GitHub runner 上逐模块顺序跑 pytest（默认 unit -> db -> CLI e2e，也可传入模块路径），始终读取 tracked `backend/oj_modules/config.py`，由调用方通过环境变量注入网络拓扑；逐模块打印结果并写 JUnit XML，任一模块失败则整体非零退出。 |
 | `INSTALL-DOCKER.md` | Docker 安装记录和排错参考；不要把 `why-server` / `computing` 作为 CI 运行目标。 |
 
 构建上下文排除项在仓库根的 `.dockerignore`，用于减少 Docker build 上下文。
@@ -110,7 +110,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 
 - 禁止在 `why-server` / host `computing` 上运行任何 CI/test 命令、compose 命令、pytest 命令或测试容器。
 - CI 只能使用本地或非生产服务器上的一次性 MySQL/Redis；不得连接生产 MySQL/Redis。
-- DB/E2E 运行配置由 GitHub Actions 或测试 Compose 显式注入环境变量；不得读取、挂载或复制生产 `.env`，也不得改写 tracked `oj_modules/config.py`。
+- DB/E2E 运行配置由 GitHub Actions 或测试 Compose 显式注入环境变量；不得读取、挂载或复制生产 `.env`，也不得改写 tracked `backend/oj_modules/config.py`。
 - 不得删除或绕过 `NUMOJ_TEST_ENV=1`、专用测试库、非零 Redis DB、主机和路径的 fail-closed 校验。
 - `down -v` 会删除测试数据卷；只允许对明确的测试 compose project 使用。
 - 如果无法证明当前主机、目录、数据库和 Redis 都不是生产环境，停止运行并先确认。
@@ -124,7 +124,7 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
   docker compose -f tests/ci/docker-compose.local.yml logs mysql
   ```
 - 报“拒绝执行可能清空 MySQL/Redis 的测试”：先检查 test 容器中 `NUMOJ_TEST_ENV=1`、`MYSQL_DB='myojdb_test'` 和 `REDIS_DB=15`，不要通过放宽 `tests/environment_guard.py` 绕过。
-- schema 未灌入 / 改了 `database/bootstrap.sql` 不生效：该基线只在 MySQL 数据卷首次初始化时执行；卷里有旧数据就不会重灌。用下面命令删卷后重跑：
+- schema 未灌入 / 改了 `backend/database/bootstrap.sql` 不生效：该基线只在 MySQL 数据卷首次初始化时执行；卷里有旧数据就不会重灌。用下面命令删卷后重跑：
   ```bash
   docker compose -f tests/ci/docker-compose.local.yml down -v --remove-orphans
   ```
@@ -133,5 +133,5 @@ docker compose -f tests/ci/docker-compose.local.yml run --rm test \
 - 进容器手动调试：
   ```bash
   docker compose -f tests/ci/docker-compose.local.yml run --rm test bash
-  # 容器内: python3 -m pytest tests/... -v、查 /app/oj_modules/config.py、连 mysql/redis
+  # 容器内: python3 -m pytest tests/... -v、查 /app/backend/oj_modules/config.py、连 mysql/redis
   ```

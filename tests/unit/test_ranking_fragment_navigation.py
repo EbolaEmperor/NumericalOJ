@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from oj_modules.ranking import db as ranking_db
-from oj_modules.routes import ranking_routes
+from backend.oj_modules.ranking import db as ranking_db
+from backend.oj_modules.routes import ranking_routes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -126,8 +126,8 @@ def _competition(**overrides):
 def _app(monkeypatch, *, user=None, competition=None, state=None):
     app = Flask(
         __name__,
-        template_folder=str(ROOT / 'templates'),
-        static_folder=str(ROOT / 'static'),
+        template_folder=str(ROOT / 'backend' / 'templates'),
+        static_folder=str(ROOT / 'frontend' / 'public' / 'static'),
     )
     app.config.update(TESTING=True, SECRET_KEY='ranking-fragment-test')
     app.register_blueprint(ranking_routes.ranking_bp)
@@ -686,7 +686,7 @@ def test_navigation_state_hides_admin_quota_and_exposes_mode_permissions(monkeyp
 
 def test_detail_panel_dispatches_each_tab_once():
     source = (
-        ROOT / 'templates' / 'ranking' / 'components' / 'detail_panel.html'
+        ROOT / 'backend' / 'templates' / 'ranking' / 'components' / 'detail_panel.html'
     ).read_text(encoding='utf-8')
     assert 'data-ranking-panel' in source
     assert 'data-ranking-tab="{{ tab }}"' in source

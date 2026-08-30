@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT_SOURCE = (
-    ROOT / "static/app/github-projects.js"
+    ROOT / "frontend/public/static/app/github-projects.js"
 ).read_text(encoding="utf-8")
 
 

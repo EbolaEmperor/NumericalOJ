@@ -2,8 +2,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKBENCH_JS = ROOT / "static" / "app" / "repository" / "workbench.js"
-WORKBENCH_CSS = ROOT / "static" / "styles" / "repository" / "workbench.css"
+WORKBENCH_JS = ROOT / "frontend" / "public" / "static" / "app" / "repository" / "workbench.js"
+WORKBENCH_CSS = ROOT / "frontend" / "public" / "static" / "styles" / "repository" / "workbench.css"
 
 
 def test_folder_drop_reader_drains_every_webkit_directory_batch():
@@ -98,10 +98,10 @@ def test_save_conflict_backup_uses_the_latest_local_buffer():
 def test_repository_uses_the_shared_monaco_dark_plus_semantic_stack():
     source = WORKBENCH_JS.read_text(encoding="utf-8")
     template = (
-        ROOT / "templates" / "repository" / "index.html"
+        ROOT / "backend" / "templates" / "repository" / "index.html"
     ).read_text(encoding="utf-8")
     runtime = (
-        ROOT / "static" / "app" / "code-editor-runtime.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "code-editor-runtime.js"
     ).read_text(encoding="utf-8")
 
     assert "{% include 'components/editor/monaco.html' %}" in template
@@ -239,7 +239,7 @@ def test_upload_manifest_failure_reaches_a_visible_terminal_state():
 def test_repository_upload_has_an_http_sha256_fallback():
     source = WORKBENCH_JS.read_text(encoding="utf-8")
     template = (
-        ROOT / "templates" / "repository" / "index.html"
+        ROOT / "backend" / "templates" / "repository" / "index.html"
     ).read_text(encoding="utf-8")
 
     digest_start = source.index("function digestSha256")
@@ -313,7 +313,7 @@ def test_index_progress_bar_is_only_visible_while_a_job_is_active():
 def test_hidden_index_progress_cannot_leave_a_focusable_cancel_button():
     source = WORKBENCH_JS.read_text(encoding="utf-8")
     template = (
-        ROOT / "templates" / "repository" / "index.html"
+        ROOT / "backend" / "templates" / "repository" / "index.html"
     ).read_text(encoding="utf-8")
 
     hide_start = source.index("function hideIndexProgress")

@@ -6,10 +6,10 @@ import zipfile
 
 import pytest
 
-import oj_modules.ranking.reverse_judge.db as reverse_db
-import oj_modules.ranking.reverse_judge.traces as rjdb
-import oj_modules.tasks.ranking.reverse_judge as rj
-from oj_modules.ranking.reverse_judge import trace_sync
+import backend.oj_modules.ranking.reverse_judge.db as reverse_db
+import backend.oj_modules.ranking.reverse_judge.traces as rjdb
+import backend.oj_modules.tasks.ranking.reverse_judge as rj
+from backend.oj_modules.ranking.reverse_judge import trace_sync
 
 
 def _without_trace_identity(messages):

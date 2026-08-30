@@ -8,7 +8,12 @@ ENDPOINT_EDITOR_STYLESHEET = "static/app/endpoint-editor.css"
 
 
 def _read(path):
-    return (ROOT / path).read_text(encoding="utf-8")
+    relative = Path(path)
+    if relative.parts[0] == "templates":
+        relative = Path("backend") / relative
+    elif relative.parts[0] == "static":
+        relative = Path("frontend/public") / relative
+    return (ROOT / relative).read_text(encoding="utf-8")
 
 
 def test_agent_navigation_is_visible_in_workspace_for_every_logged_in_user():

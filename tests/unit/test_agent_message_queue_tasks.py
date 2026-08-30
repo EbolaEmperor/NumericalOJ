@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.tasks.agent import queue
+from backend.oj_modules.tasks.agent import queue
 
 
 class _FakeCelery:

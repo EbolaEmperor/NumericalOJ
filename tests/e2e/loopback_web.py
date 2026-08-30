@@ -51,7 +51,7 @@ def _configure_fake_dynamic_config_testers() -> None:
             "OJ_LIVE_AI 真实 E2E 禁止启用动态配置测试替身"
         )
 
-    from oj_modules.routes.admin_dynamic_config_routes import (
+    from backend.oj_modules.routes.admin_dynamic_config_routes import (
         configure_dynamic_config_testers,
     )
 
@@ -61,7 +61,7 @@ def _configure_fake_dynamic_config_testers() -> None:
 
 
 def main() -> None:
-    from oj import app, ensure_background_schedulers
+    from backend.oj import app, ensure_background_schedulers
 
     _configure_fake_dynamic_config_testers()
     app.config["DEBUG"] = False

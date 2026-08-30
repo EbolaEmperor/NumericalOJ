@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from oj_modules.judging import core as judger_core
+from backend.oj_modules.judging import core as judger_core
 
 
 def test_check_forbidden_blocks_listed_call():

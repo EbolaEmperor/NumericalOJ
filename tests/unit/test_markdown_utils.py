@@ -5,8 +5,8 @@
 import pytest
 from threading import Event, Thread
 
-from oj_modules.shared import markdown as markdown_module
-from oj_modules.shared.markdown import render_rich_markdown
+from backend.oj_modules.shared import markdown as markdown_module
+from backend.oj_modules.shared.markdown import render_rich_markdown
 
 
 def test_rich_markdown_is_sanitized_and_external_images_are_allowed():

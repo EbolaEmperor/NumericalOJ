@@ -5,14 +5,14 @@ from types import SimpleNamespace
 from flask import Flask
 import pytest
 
-from oj_modules.editor.language_server import LanguageServiceProtocolError
-from oj_modules.editor.lean import (
+from backend.oj_modules.editor.language_server import LanguageServiceProtocolError
+from backend.oj_modules.editor.lean import (
     LeanLanguageServerSession,
     LeanSourceStateError,
     _incremental_content_change,
 )
-from oj_modules.routes import lean_routes
-from oj_modules.security import auth
+from backend.oj_modules.routes import lean_routes
+from backend.oj_modules.security import auth
 
 
 class _FakeLeanSession(LeanLanguageServerSession):

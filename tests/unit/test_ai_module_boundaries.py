@@ -11,8 +11,8 @@ def _module_tree(module_path):
 
 def test_ai_and_integrations_package_initializers_stay_lightweight():
     for relative_path in (
-        "oj_modules/ai/__init__.py",
-        "oj_modules/integrations/__init__.py",
+        "backend/oj_modules/ai/__init__.py",
+        "backend/oj_modules/integrations/__init__.py",
     ):
         tree = _module_tree(relative_path)
         assert not any(
@@ -22,7 +22,7 @@ def test_ai_and_integrations_package_initializers_stay_lightweight():
 
 
 def test_promptly_canonical_patch_point_controls_review(monkeypatch):
-    from oj_modules.ai import promptly
+    from backend.oj_modules.ai import promptly
 
     def fake_call(_prompt_text, _endpoint, **_kwargs):
         return '{"nice": true}'

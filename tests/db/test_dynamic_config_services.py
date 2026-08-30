@@ -2,9 +2,9 @@
 
 import pytest
 
-from oj_modules.site_config import services
-from oj_modules.db_services import get_db_connection, get_user_by_username
-from oj_modules.security.credentials import hash_password
+from backend.oj_modules.site_config import services
+from backend.oj_modules.db_services import get_db_connection, get_user_by_username
+from backend.oj_modules.security.credentials import hash_password
 
 
 def endpoint_payload(**overrides):

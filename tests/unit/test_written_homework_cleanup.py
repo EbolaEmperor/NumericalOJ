@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules.tasks import written_homework_tasks as written_tasks
+from backend.oj_modules.tasks import written_homework_tasks as written_tasks
 
 
 class _FakeCelery:

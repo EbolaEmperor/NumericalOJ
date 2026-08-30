@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.tasks.agent import secret_relay as relay
+from backend.oj_modules.tasks.agent import secret_relay as relay
 
 
 def _headers(**values):

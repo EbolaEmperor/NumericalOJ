@@ -9,7 +9,7 @@ import zipfile
 from PIL import Image
 import pytest
 
-from oj_modules.vibehub import quotas, services, storage
+from backend.oj_modules.vibehub import quotas, services, storage
 
 
 USER = {"id": 7, "username": "viber", "is_admin": 0}

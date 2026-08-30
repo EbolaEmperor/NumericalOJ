@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 from flask import Flask
 
-from oj_modules import db_services
-from oj_modules.judging import core as judger_core
-from oj_modules.project_paths import PROJECT_ROOT
-from oj_modules.submissions import archive as submission_archive
-from oj_modules.submissions import written_artifacts as artifacts
-from oj_modules.routes import problem_core_routes
+from backend.oj_modules import db_services
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.project_paths import PROJECT_ROOT
+from backend.oj_modules.submissions import archive as submission_archive
+from backend.oj_modules.submissions import written_artifacts as artifacts
+from backend.oj_modules.routes import problem_core_routes
 
 
 class _UploadedFile:
@@ -433,7 +433,7 @@ def test_manual_overwrite_route_passes_expected_snapshot_to_cas(monkeypatch):
 
 
 def test_watchdog_and_stopped_worker_recovery_both_include_publication_recovery():
-    source = PROJECT_ROOT / "oj_modules" / "runtime" / "pending_recovery.py"
+    source = PROJECT_ROOT / "backend" / "oj_modules" / "runtime" / "pending_recovery.py"
     text = source.read_text(encoding="utf-8")
     assert "recover_written_submission_publications" in text
     assert "min_age_seconds=0" in text

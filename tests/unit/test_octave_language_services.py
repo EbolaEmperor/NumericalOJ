@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from oj_modules.editor.octave import (
+from backend.oj_modules.editor.octave import (
     OctaveTreeSitterService,
     verify_octave_language_runtime,
 )

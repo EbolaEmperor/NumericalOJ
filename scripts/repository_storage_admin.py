@@ -19,13 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from oj_modules.db_services import get_db_connection  # noqa: E402
-from oj_modules.repository.admin import (  # noqa: E402
+from backend.oj_modules.db_services import get_db_connection  # noqa: E402
+from backend.oj_modules.repository.admin import (  # noqa: E402
     doctor_repository_storage,
     quarantine_repository_orphans,
     quarantine_repository_snapshot_orphans,
 )
-from oj_modules.repository.tree import (  # noqa: E402
+from backend.oj_modules.repository.tree import (  # noqa: E402
     cleanup_expired_repository_upload_sessions,
     repository_user_lock,
 )

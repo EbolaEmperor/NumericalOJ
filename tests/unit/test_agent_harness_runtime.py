@@ -5,18 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from oj_modules.agents import workspace as agent_workspace
-from oj_modules.agents import runtime_checkpoints
-from oj_modules.problems import agent_runs
-from oj_modules.ranking.reverse_judge import traces as reverse_traces
-from oj_modules.ranking.reverse_judge.traces import (
+from backend.oj_modules.agents import workspace as agent_workspace
+from backend.oj_modules.agents import runtime_checkpoints
+from backend.oj_modules.problems import agent_runs
+from backend.oj_modules.ranking.reverse_judge import traces as reverse_traces
+from backend.oj_modules.ranking.reverse_judge.traces import (
     collect_agent_token_usage,
     collect_agent_trace_messages,
 )
-from oj_modules.tasks.agent import harness_runtime as runtime
-from oj_modules.tasks.agent import identity_relay
-from oj_modules.tasks.agent import secret_relay
-from oj_modules.tasks.agent import traces as agent_traces
+from backend.oj_modules.tasks.agent import harness_runtime as runtime
+from backend.oj_modules.tasks.agent import identity_relay
+from backend.oj_modules.tasks.agent import secret_relay
+from backend.oj_modules.tasks.agent import traces as agent_traces
 
 
 def _endpoint(protocol="openai"):

@@ -3,17 +3,17 @@
 
 import inspect
 
-from oj_modules.tasks import agent
-from oj_modules.tasks.agent.generate_testdata import (
+from backend.oj_modules.tasks import agent
+from backend.oj_modules.tasks.agent.generate_testdata import (
     register_agent_generate_testdata_task,
 )
-from oj_modules.tasks.agent.generic import register_agent_run_turn_task
-from oj_modules.tasks.agent.shared import (
+from backend.oj_modules.tasks.agent.generic import register_agent_run_turn_task
+from backend.oj_modules.tasks.agent.shared import (
     AGENT_GENERATE_TESTDATA_TASK_NAME,
     AGENT_RUN_TURN_TASK_NAME,
     AGENT_SOLVE_TASK_NAME,
 )
-from oj_modules.tasks.agent.solve import register_agent_solve_problem_task
+from backend.oj_modules.tasks.agent.solve import register_agent_solve_problem_task
 
 
 def test_agent_package_preserves_public_task_contract():

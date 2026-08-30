@@ -32,7 +32,7 @@ LLM_PRICE_ARGS = (
 
 
 def _db_rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-    from oj_modules.db_services import get_db_connection
+    from backend.oj_modules.db_services import get_db_connection
 
     conn = get_db_connection()
     try:

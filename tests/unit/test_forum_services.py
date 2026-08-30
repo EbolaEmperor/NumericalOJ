@@ -9,9 +9,9 @@ import pymysql
 import pytest
 from flask import Flask
 
-from oj_modules.forum import services as forum_services
-from oj_modules.api import forum_api
-from oj_modules.forum.services import (
+from backend.oj_modules.forum import services as forum_services
+from backend.oj_modules.api import forum_api
+from backend.oj_modules.forum.services import (
     ForumConflictError,
     ForumValidationError,
     _claim_create_receipt,

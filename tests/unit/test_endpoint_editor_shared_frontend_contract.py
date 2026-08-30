@@ -2,13 +2,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SHARED_TEMPLATE = ROOT / "templates/components/endpoint_editor.html"
-SHARED_SCRIPT = ROOT / "static/app/endpoint-editor.js"
-SHARED_STYLESHEET = ROOT / "static/app/endpoint-editor.css"
-SITE_TEMPLATE = ROOT / "templates/admin/site_config.html"
-AGENT_COMPONENT = ROOT / "templates/agents/components/access_control.html"
-AGENT_HOME_PAGE = ROOT / "templates/admin/agent_tasks.html"
-AGENT_DETAIL_PAGE = ROOT / "templates/admin/agent_task_detail.html"
+SHARED_TEMPLATE = ROOT / "backend/templates/components/endpoint_editor.html"
+SHARED_SCRIPT = ROOT / "frontend/public/static/app/endpoint-editor.js"
+SHARED_STYLESHEET = ROOT / "frontend/public/static/app/endpoint-editor.css"
+SITE_TEMPLATE = ROOT / "backend/templates/admin/site_config.html"
+AGENT_COMPONENT = ROOT / "backend/templates/agents/components/access_control.html"
+AGENT_HOME_PAGE = ROOT / "backend/templates/admin/agent_tasks.html"
+AGENT_DETAIL_PAGE = ROOT / "backend/templates/admin/agent_task_detail.html"
 
 
 def _read(path):
@@ -97,8 +97,8 @@ def test_shared_controller_owns_choices_thinking_validation_and_values():
 
 
 def test_host_adapters_ignore_stale_editor_requests():
-    site_script = _read(ROOT / "static/app/site-config.js")
-    agent_script = _read(ROOT / "static/app/agents/access-control.js")
+    site_script = _read(ROOT / "frontend/public/static/app/site-config.js")
+    agent_script = _read(ROOT / "frontend/public/static/app/agents/access-control.js")
 
     assert "const testedFingerprint = fingerprint(payload)" in site_script
     assert "fingerprint(endpointPayload()) !== testedFingerprint" in site_script
@@ -130,8 +130,8 @@ def test_personal_editor_keeps_shared_fields_but_omits_platform_prices():
 
 def test_shared_endpoint_controls_use_one_rounded_focus_ring():
     endpoint_styles = _read(SHARED_STYLESHEET)
-    choice_styles = _read(ROOT / "static/app/choice-picker.css")
-    site_styles = _read(ROOT / "static/app/site-config.css")
+    choice_styles = _read(ROOT / "frontend/public/static/app/choice-picker.css")
+    site_styles = _read(ROOT / "frontend/public/static/app/site-config.css")
 
     endpoint_input_focus = endpoint_styles.split(
         '.numoj-endpoint-editor input:not([type="hidden"]):focus {', 1

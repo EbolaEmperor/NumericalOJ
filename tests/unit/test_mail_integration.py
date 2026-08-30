@@ -3,7 +3,7 @@ from email.parser import Parser
 
 import pytest
 
-from oj_modules.integrations import mail
+from backend.oj_modules.integrations import mail
 
 
 def test_plain_text_mail_uses_dynamic_smtp_settings(monkeypatch):

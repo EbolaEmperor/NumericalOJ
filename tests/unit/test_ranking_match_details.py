@@ -2,7 +2,7 @@
 
 import json
 
-from oj_modules.ranking.match_details import normalize_match_detail_output
+from backend.oj_modules.ranking.match_details import normalize_match_detail_output
 
 
 def test_explicit_text_output_accepts_stored_json_string():

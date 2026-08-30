@@ -4,8 +4,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / "templates"
-LOADER_JS = (ROOT / "static" / "math-curve-loaders" / "loader.js").read_text(
+TEMPLATES = ROOT / "backend" / "templates"
+LOADER_JS = (ROOT / "frontend" / "public" / "static" / "math-curve-loaders" / "loader.js").read_text(
     encoding="utf-8"
 )
 
@@ -49,7 +49,7 @@ def test_loader_covers_navigation_fetch_and_dynamic_content():
     assert "clearNavigationPending()" in LOADER_JS
     assert "data-numoj-navigation-pending" in LOADER_JS
     assert "prefers-reduced-motion: reduce" in (
-        ROOT / "static" / "math-curve-loaders" / "loader.css"
+        ROOT / "frontend" / "public" / "static" / "math-curve-loaders" / "loader.css"
     ).read_text(encoding="utf-8")
 
 
@@ -82,7 +82,7 @@ def test_lean_workspace_export_is_marked_as_a_download_navigation():
 def test_problem_detail_only_warns_about_expired_homework_on_submit():
     detail = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
     deadline_script = (
-        ROOT / "static" / "app" / "problem-deadline-warning.js"
+        ROOT / "frontend" / "public" / "static" / "app" / "problem-deadline-warning.js"
     ).read_text(encoding="utf-8")
 
     assert 'class="problem-homework-statuses"' not in detail
@@ -105,7 +105,7 @@ def test_dynamic_and_ranking_downloads_opt_out_of_page_navigation_loader():
         encoding="utf-8"
     )
     homework = (TEMPLATES / "admin" / "homework.html").read_text(encoding="utf-8")
-    agent_controller = (ROOT / "static" / "app" / "agents" / "conversation.js").read_text(
+    agent_controller = (ROOT / "frontend" / "public" / "static" / "app" / "agents" / "conversation.js").read_text(
         encoding="utf-8"
     )
 

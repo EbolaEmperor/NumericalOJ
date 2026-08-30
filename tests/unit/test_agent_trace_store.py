@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from oj_modules.agents import trace_store
+from backend.oj_modules.agents import trace_store
 
 
 class _Cursor:

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask, g
 
-from oj_modules.routes import auth_routes
+from backend.oj_modules.routes import auth_routes
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -29,7 +29,7 @@ COOKIE_SECRET = "audit-cookie-secret"
 
 @pytest.fixture
 def app():
-    application = Flask(__name__, template_folder=str(ROOT / "templates"))
+    application = Flask(__name__, template_folder=str(ROOT / "backend" / "templates"))
     application.config.update(SECRET_KEY="test-secret", TESTING=True)
     application.extensions["numericaloj_observability"] = {
         "trusted_proxy_networks": (ipaddress.ip_network("127.0.0.0/8"),),
@@ -302,7 +302,7 @@ def test_login_success_upgrades_legacy_hash_and_audits_safe_metadata(app, audit_
         )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/problems")
+    assert response.headers["Location"].endswith("/app")
     update_hash.assert_called_once_with(user_id=37, new_hash=new_hash)
     with client.session_transaction() as persisted_session:
         assert persisted_session["username"] == "legacy-user"

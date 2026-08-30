@@ -14,9 +14,9 @@ import sys
 
 import pytest
 
-from oj_modules.judging import core as judger_core
-from oj_modules.judging import sandbox as docker_sandbox
-from oj_modules.project_paths import PROJECT_ROOT
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.judging import sandbox as docker_sandbox
+from backend.oj_modules.project_paths import PROJECT_ROOT
 
 
 # ============== check_forbidden ==============

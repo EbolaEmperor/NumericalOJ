@@ -3,8 +3,8 @@
 
 import pytest
 
-from oj_modules.judging import core as judger_core
-from oj_modules.repository.workspace import (
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.repository.workspace import (
     InvalidRepositoryPath,
     materialize_repository_tree,
     normalize_repository_relative_path,

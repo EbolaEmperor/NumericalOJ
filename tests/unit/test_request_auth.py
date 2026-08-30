@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from flask import Flask, session
 
-from oj_modules.security.login_guard import install_global_login_guard, safe_local_next
-from oj_modules.routes import auth_routes
+from backend.oj_modules.security.login_guard import install_global_login_guard, safe_local_next
+from backend.oj_modules.routes import auth_routes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -199,7 +199,7 @@ def test_safe_local_next_accepts_path_and_query_only():
 
 
 def _login_app():
-    app = Flask(__name__, template_folder=str(ROOT / 'templates'))
+    app = Flask(__name__, template_folder=str(ROOT / 'backend' / 'templates'))
     app.config.update(SECRET_KEY='test-secret', TESTING=True)
     app.add_url_rule(
         '/problems',
@@ -261,9 +261,9 @@ def test_login_success_ignores_malicious_next(monkeypatch, target):
     )
 
     assert response.status_code == 302
-    assert response.headers['Location'].endswith('/problems')
+    assert response.headers['Location'].endswith('/app')
 
 
 def test_login_form_carries_the_validated_next_target():
-    template = (ROOT / 'templates' / 'auth' / 'login.html').read_text(encoding='utf-8')
+    template = (ROOT / 'backend' / 'templates' / 'auth' / 'login.html').read_text(encoding='utf-8')
     assert 'name="next" value="{{ next_url }}"' in template

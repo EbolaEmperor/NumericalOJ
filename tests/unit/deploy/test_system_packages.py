@@ -135,7 +135,7 @@ def test_deploy_calls_clangd_provisioner_before_candidate_images():
 
 def test_deploy_verifies_editor_runtime_against_candidate_judge_headers():
     script = (Path(__file__).resolve().parents[3] / "deploy.sh").read_text()
-    install = script.index("--requirement requirements/production.txt")
+    install = script.index("--requirement backend/requirements/production.txt")
     images = script.index("phase='构建判题镜像'")
     prepare = script.index("deploy/prepare_editor_toolchain.py")
     verify = script.index("deploy/verify_editor_runtime.py")

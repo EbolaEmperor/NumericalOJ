@@ -6,10 +6,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / "templates" / "ranking"
-STATIC = ROOT / "static" / "app" / "ranking"
-SORA_STATIC = ROOT / "static" / "vendor" / "sora"
-ROUTES = ROOT / "oj_modules" / "routes"
+TEMPLATES = ROOT / "backend" / "templates" / "ranking"
+STATIC = ROOT / "frontend" / "public" / "static" / "app" / "ranking"
+SORA_STATIC = ROOT / "frontend" / "public" / "static" / "vendor" / "sora"
+ROUTES = ROOT / "backend" / "oj_modules" / "routes"
 
 
 def _read(path):
@@ -416,7 +416,7 @@ def test_harness_logos_follow_selected_endpoints_across_ranking_surfaces():
     batch = _read(TEMPLATES / "tabs" / "batch_evaluate.html")
     card = _read(TEMPLATES / "components" / "submission_card.html")
     leaderboard = _read(TEMPLATES / "tabs" / "leaderboard.html")
-    choice_picker = _read(ROOT / "static" / "app" / "choice-picker.js")
+    choice_picker = _read(ROOT / "frontend" / "public" / "static" / "app" / "choice-picker.js")
 
     assert "app/ranking/harness-logos.css" in detail
     assert 'data-choice-icon="{{ harness_logo_class(ep.harness) }}"' in submit
@@ -457,19 +457,19 @@ def test_ranking_description_reuses_problem_detail_markdown_renderer():
     route = _read(ROUTES / "ranking_routes.py")
     template = _read(TEMPLATES / "detail.html")
     description = _read(TEMPLATES / "tabs" / "description.html")
-    problem_template = _read(ROOT / "templates" / "problems" / "detail.html")
-    shared_stylesheet = _read(ROOT / "static" / "app" / "markdown-rendering.css")
-    layout_stylesheet = _read(ROOT / "static" / "app" / "layout.css")
+    problem_template = _read(ROOT / "backend" / "templates" / "problems" / "detail.html")
+    shared_stylesheet = _read(ROOT / "frontend" / "public" / "static" / "app" / "markdown-rendering.css")
+    layout_stylesheet = _read(ROOT / "frontend" / "public" / "static" / "app" / "layout.css")
     stylesheet = _read(STATIC / "detail-v2.css")
 
-    presentation = _read(ROOT / "oj_modules" / "ranking" / "presentation.py")
-    assert "from oj_modules.shared.markdown import render_rich_markdown" in presentation
+    presentation = _read(ROOT / "backend" / "oj_modules" / "ranking" / "presentation.py")
+    assert "from backend.oj_modules.shared.markdown import render_rich_markdown" in presentation
     assert "return render_rich_markdown(text)" in presentation
 
     assert template.count("app/markdown-rendering.js") == 1
     assert "mathjax_lazy=true" in template
     mathjax_component = _read(
-        ROOT / "templates" / "components" / "layout" / "mathjax.html"
+        ROOT / "backend" / "templates" / "components" / "layout" / "mathjax.html"
     )
     assert "app/rich-content-assets.js" in mathjax_component
     for lazy_asset in (

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """DB 层测试：users / 班级 / site_settings（参考计划 Task 19 + 契约 §1a）。
 
-被测函数（oj_modules/db_services.py）：
+被测函数（backend/oj_modules/db_services.py）：
 - create_user：插 users + class_table.class_cnt+1 + user_class_map
 - get_user_by_username / get_user_by_id / get_user_by_email
 - get_user_classes：只读 user_class_map，按 class_en ASC 稳定排序
@@ -12,7 +12,7 @@
 DB 由 conftest 的 autouse db_reset 在每个测试前 truncate+reseed
 （种子：admin 用户、Cclass1 班级、site_settings class_adjust_enabled='1'）。
 """
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 from tests import helpers as h
 
 

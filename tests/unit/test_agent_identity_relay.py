@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 import pytest
 import requests
 
-from oj_modules.tasks.agent import identity_relay as relay
+from backend.oj_modules.tasks.agent import identity_relay as relay
 
 
 def _headers(**values):

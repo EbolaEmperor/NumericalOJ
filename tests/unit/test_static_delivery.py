@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from oj_modules.shared.static_delivery import PrecompressedStaticFlask
+from backend.oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -243,6 +243,49 @@ def test_static_delivery_does_not_probe_or_serve_outside_static_root(tmp_path):
     assert b"secret" not in response.data
 
 
+def test_static_delivery_falls_back_to_untracked_legacy_assets(tmp_path):
+    primary = tmp_path / "frontend-static"
+    legacy = tmp_path / "legacy-static"
+    primary.mkdir()
+    legacy.mkdir()
+    _write_asset(legacy, "articles/handout.pdf", b"legacy-pdf" * 100)
+    app = PrecompressedStaticFlask(
+        __name__,
+        static_folder=str(primary),
+        legacy_static_folder=str(legacy),
+        static_url_path="/static",
+    )
+
+    response = app.test_client().get(
+        "/static/articles/handout.pdf",
+        headers={"Accept-Encoding": "gzip"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Encoding"] == "gzip"
+    assert gzip.decompress(response.data) == b"legacy-pdf" * 100
+
+
+def test_tracked_frontend_asset_wins_over_legacy_fallback(tmp_path):
+    primary = tmp_path / "frontend-static"
+    legacy = tmp_path / "legacy-static"
+    primary.mkdir()
+    legacy.mkdir()
+    _write_asset(primary, "app/layout.css", b"new-layout" * 100)
+    _write_asset(legacy, "app/layout.css", b"old-layout" * 100)
+    app = PrecompressedStaticFlask(
+        __name__,
+        static_folder=str(primary),
+        legacy_static_folder=str(legacy),
+        static_url_path="/static",
+    )
+
+    response = app.test_client().get("/static/app/layout.css")
+
+    assert response.status_code == 200
+    assert response.data == b"new-layout" * 100
+
+
 def test_precompressed_assets_are_not_tracked():
     result = subprocess.run(
         ["git", "ls-files", "--", ":(glob)**/*.br", ":(glob)**/*.gz"],
@@ -280,9 +323,13 @@ def test_precompress_build_removes_only_manifest_managed_orphans(tmp_path):
     manifest = tmp_path / "state" / "manifest.json"
 
     result = subprocess.run(
-        ["node", str(ROOT / "scripts" / "precompress_static.mjs")],
+        ["node", str(ROOT / "frontend" / "scripts" / "precompress_static.mjs")],
         cwd=tmp_path,
-        env={**os.environ, "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest)},
+        env={
+            **os.environ,
+            "NUMOJ_STATIC_ROOT": str(static_root),
+            "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest),
+        },
         check=False,
         capture_output=True,
         text=True,
@@ -316,9 +363,13 @@ def test_precompress_build_removes_only_manifest_managed_orphans(tmp_path):
 
     expected_source.write_bytes(b"small now")
     second = subprocess.run(
-        ["node", str(ROOT / "scripts" / "precompress_static.mjs")],
+        ["node", str(ROOT / "frontend" / "scripts" / "precompress_static.mjs")],
         cwd=tmp_path,
-        env={**os.environ, "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest)},
+        env={
+            **os.environ,
+            "NUMOJ_STATIC_ROOT": str(static_root),
+            "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest),
+        },
         check=False,
         capture_output=True,
         text=True,

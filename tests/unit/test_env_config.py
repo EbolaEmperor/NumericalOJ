@@ -10,7 +10,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "oj_modules" / "config.py"
+CONFIG_PATH = ROOT / "backend" / "oj_modules" / "config.py"
 
 
 def _template_keys():
@@ -31,7 +31,7 @@ def _code_default_keys():
             and node.target.id == "_CODE_DEFAULTS"
         ):
             return set(ast.literal_eval(node.value))
-    raise AssertionError("oj_modules/config.py 缺少 _CODE_DEFAULTS")
+    raise AssertionError("backend/oj_modules/config.py 缺少 _CODE_DEFAULTS")
 
 
 def test_runtime_configuration_documents_every_advanced_default():
@@ -54,12 +54,14 @@ def _run_config_import(
     process_overrides=None,
     expression="None",
 ):
-    package_root = tmp_path / "oj_modules"
-    package_root.mkdir()
+    backend_root = tmp_path / "backend"
+    package_root = backend_root / "oj_modules"
+    package_root.mkdir(parents=True)
+    (backend_root / "__init__.py").write_text("", encoding="utf-8")
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     shutil.copy2(CONFIG_PATH, package_root / "config.py")
     shutil.copy2(
-        ROOT / "oj_modules" / "project_paths.py",
+        ROOT / "backend" / "oj_modules" / "project_paths.py",
         package_root / "project_paths.py",
     )
     shutil.copy2(ROOT / ".env.tmpl", tmp_path / ".env.tmpl")
@@ -81,7 +83,7 @@ def _run_config_import(
             sys.executable,
             "-B",
             "-c",
-            f"from oj_modules import config; print({expression})",
+            f"from backend.oj_modules import config; print({expression})",
         ],
         cwd=tmp_path,
         env=environment,
@@ -282,7 +284,7 @@ def test_logging_process_environment_has_priority_over_env_file(tmp_path):
     ),
 )
 def test_env_str_list_accepts_only_string_arrays(monkeypatch, raw_value):
-    from oj_modules import config
+    from backend.oj_modules import config
 
     monkeypatch.setitem(config._config_values, "TEST_LOG_CIDRS", raw_value)
 
@@ -291,7 +293,7 @@ def test_env_str_list_accepts_only_string_arrays(monkeypatch, raw_value):
 
 @pytest.mark.parametrize("raw_value", ('"10.0.0.0/8"', '["10.0.0.0/8", 7]', '{}'))
 def test_env_str_list_rejects_non_string_arrays(monkeypatch, raw_value):
-    from oj_modules import config
+    from backend.oj_modules import config
 
     monkeypatch.setitem(config._config_values, "TEST_LOG_CIDRS", raw_value)
 

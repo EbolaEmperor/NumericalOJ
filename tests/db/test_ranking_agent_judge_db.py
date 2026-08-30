@@ -2,8 +2,8 @@
 """agent_judge DB 层：规则保存(含 DAG 校验)、结果 upsert、快照构造。"""
 import pytest
 
-from oj_modules.ranking import db as ranking_db
-from oj_modules.ranking.agent_judge import db as ajdb
+from backend.oj_modules.ranking import db as ranking_db
+from backend.oj_modules.ranking.agent_judge import db as ajdb
 
 
 def _make_comp():

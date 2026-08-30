@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 
 
 def _fetch_raw(task_id):

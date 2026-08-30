@@ -10,9 +10,9 @@ NumericalOJ 保持模块化单体，不因文件较大就拆微服务。只有�
 
 | 边界 | 位置 | 职责 | 不应承担 |
 | --- | --- | --- | --- |
-| 组合根 | `oj.py` | 创建 Flask/Celery、注册 Blueprint/任务、注入依赖、显式启动工作 | 业务规则、复杂 SQL、请求级流程 |
-| HTTP 适配层 | `oj_modules/routes/`、`oj_modules/api/` | 解析请求、鉴权、校验、调用服务、返回响应 | 后台任务实现、跨功能 SQL、可复用算法 |
-| 后台适配层 | `oj_modules/tasks/` | Celery 重试、幂等锁、进度、超时、任务编排 | Flask request/session、页面响应 |
+| 组合根 | `backend/oj.py` | 创建 Flask/Celery、注册 Blueprint/任务、注入依赖、显式启动工作 | 业务规则、复杂 SQL、请求级流程 |
+| HTTP 适配层 | `backend/oj_modules/routes/`、`backend/oj_modules/api/` | 解析请求、鉴权、校验、调用服务、返回响应 | 后台任务实现、跨功能 SQL、可复用算法 |
+| 后台适配层 | `backend/oj_modules/tasks/` | Celery 重试、幂等锁、进度、超时、任务编排 | Flask request/session、页面响应 |
 | 领域/应用服务 | `classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/` 等领域包 | 可复用业务规则、事务用例、纯计算 | Blueprint 注册、Celery 装饰器 |
 | 数据访问层 | 各领域包中的 `db.py`，以及尚在渐进收口的 `db_services.py` | 查询、持久化、事务和行锁 | HTTP/Celery 对象、模板 |
 | 基础设施层 | `infrastructure/` | MySQL/Redis 客户端、连接池和通用连接原语 | 业务查询、HTTP/Celery 对象 |
@@ -20,7 +20,8 @@ NumericalOJ 保持模块化单体，不因文件较大就拆微服务。只有�
 | 外部能力 | `ai/`、`integrations/` | 模型应用流程与第三方服务协议适配 | Blueprint/Celery 注册、领域持久化 |
 | 跨域公共层 | `security/`、`shared/` | 安全策略和经确认的通用 helper | 某一个业务域的专有规则 |
 | 运行期编排 | `runtime/` | 显式恢复、watchdog 和进程运行期协调 | import-time 写入、领域业务算法 |
-| 展示层 | `templates/`、`static/` | HTML、样式、浏览器交互 | SQL、任务注册、服务端业务规则 |
+| SPA 展示层 | `frontend/src/`、`frontend/public/static/` | React 页面、客户端路由、查询缓存、原视觉资产 | SQL、任务注册、服务端业务规则 |
+| 兼容展示层 | `backend/templates/` | 复杂服务端流程与兼容页面 | 新的 SPA 主导航页面、业务规则 |
 
 期望依赖方向：
 
@@ -31,7 +32,7 @@ Celery tasks ─┘
 
 evaluate task ─> judging.core ─> judging.sandbox ─> Docker
 
-oj.py 只负责把上述组件装配起来
+backend/oj.py 只负责把上述组件装配起来
 ```
 
 该方向用于约束新增代码和高频修改点的渐进收口。不要为了“分层”创建只转发一次调用的空壳类。
@@ -42,7 +43,7 @@ oj.py 只负责把上述组件装配起来
 - `routes/`、`api/` 与 `tasks/` 是并列适配层，不允许相互导入实现；需要共享的逻辑下沉到领域包。
 - 数据连接统一从 `get_db_connection()` 获取；一个业务用例需要原子性时，在同一个连接与事务中完成。
 - 动态 SQL 标识符必须用 `safe_table_name()`；值始终使用参数化 SQL。
-- 新任务使用 `register_xxx_task -> oj.py 注入 -> init_xxx_module`，避免路由导入绑定任务。
+- 新任务使用 `register_xxx_task -> backend/oj.py 注入 -> init_xxx_module`，避免路由导入绑定任务。
 - Blueprint/任务的全量聚合只放在 `api/registry.py`、`tasks/registry.py` 并由组合根导入；包级 `__init__.py` 必须保持轻量，不承担历史路径重导出。
 - 归档解压统一使用 `shared/archive.py` 的策略与校验，不自行调用 `ZipFile.extractall()`。
 - Markdown 配合模板 `| safe` 前必须经过 `shared/markdown.py` 清洗。
@@ -74,7 +75,7 @@ oj.py 只负责把上述组件装配起来
 
 ### 依赖与配置
 
-- 默认运行路径所需包进入 `requirements/production.txt`，测试工具进入 `requirements/test.txt`，重量级非默认能力进入 `requirements/optional.txt`。
+- 默认运行路径所需包进入 `backend/requirements/production.txt`，测试工具进入 `backend/requirements/test.txt`，重量级非默认能力进入 `backend/requirements/optional.txt`。
 - 直接依赖必须精确 pin；在 Python 3.12 上生成并校验完整传递依赖 lock 之前，不得宣称构建已位级可复现。升级时记录原因与兼容验证，不在生产临时 `pip install`。
 - 新配置必须定义来源、类型、默认值、敏感性和是否需要重启；环境覆盖规则要有测试。
 - 密钥不得写入仓库、日志、测试 fixture、镜像层或示例输出。
@@ -91,7 +92,7 @@ oj.py 只负责把上述组件装配起来
 
 | 层级 | 基础设施 | 是否破坏数据 | 典型命令 | 使用场景 |
 | --- | --- | --- | --- | --- |
-| 语法 | 无 | 否 | `python -m compileall -q oj.py oj_modules deploy scripts skills tests && python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness` | 所有受版本控制的 Python 源码变更 |
+| 语法 | 无 | 否 | `python -m compileall -q backend deploy scripts skills tests && python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness` | 所有受版本控制的 Python 源码变更 |
 | 单元 | 无 | 否 | `python -m pytest -q tests/unit` | 所有逻辑、边界和回归变更 |
 | DB | 一次性 MySQL + Redis | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/db` | 查询、事务、schema、缓存一致性 |
 | E2E | 一次性 MySQL + Redis，本地 Flask/Celery，部分场景需 Docker | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/e2e` | 路由、CLI、跨进程工作流 |
@@ -99,12 +100,12 @@ oj.py 只负责把上述组件装配起来
 
 GitHub Actions 对每次 push/PR 执行语法、unit、DB 和 E2E。集成 job 使用 GitHub-hosted runner 上的一次性 MySQL 8.4/Redis 服务，构建 `numericaloj-judger-lite` 后运行真实 C/C++/Python/Octave 判题；JUnit 结果作为 artifact 保留。只有需要外部密钥的 live AI 测试默认跳过，平台具备 Node、loopback、符号链接、FIFO 与 Docker 的测试不得仅因运行在 GitHub 上而跳过。
 
-修改 `frontend/`、前端构建脚本或被打包的依赖后，执行 `npm run build:frontend`。该命令会重建
-Monaco、Markdown 高亮和 Mermaid；随后执行 `npm run test:frontend` 和 unit 测试。`.br` / `.gz`
+修改 `frontend/`、前端构建脚本或被打包的依赖后，在 `frontend/` 内执行 `npm run build:frontend`。
+该命令会重建 Monaco、Markdown 高亮和 Mermaid；随后执行 `npm run typecheck`、`npm test` 和 unit 测试。`.br` / `.gz`
 预压缩旁路文件属于部署产物，Git 全局忽略且禁止追踪；`deploy.sh` 会在停服前通过已构建的
-Agent Judge 候选镜像运行 `npm run build:precompress` 的底层脚本。生成失败时部署立即停止，既有服务
+Agent Judge 候选镜像在 `frontend/` 内运行 `npm run build:precompress` 的底层脚本。生成失败时部署立即停止，既有服务
 保持运行；清理只作用于 `.deploy/static-precompression/` 清单记录的上次生成物，不触碰生产
-`static/` 中额外资产。
+`frontend/public/static/` 中受 Git 管理的资产，也不会覆盖生产根目录 `static/` 中的未跟踪历史附件。
 
 HTTP 延迟基准只允许对本地或明确隔离的测试 Web 执行。`scripts/benchmark_http.py` 只发送 GET，
 统计 TTFB、完整响应、状态码、压缩和缓存头；它不会使任意业务 URL 自动变成安全只读接口，调用者
@@ -123,7 +124,7 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live \
 脚本默认拒绝非回环地址；只有明确隔离的测试网络才可加 `--allow-non-loopback-test-host`。
 上述基准属于测试，**不得在生产主机或生产服务上运行**，也不得加入 `deploy.sh`。
 
-真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再通过测试专用环境变量 `NUMOJ_REVERSE_LIVE_API_KEY` 提供密钥（不要写入站点 `.env`），最后运行：
+真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `backend/requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再通过测试专用环境变量 `NUMOJ_REVERSE_LIVE_API_KEY` 提供密钥（不要写入站点 `.env`），最后运行：
 
 ```bash
 NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 NUMOJ_REVERSE_LIVE_API_KEY='...' python -m pytest -q \
@@ -137,7 +138,7 @@ NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 NUMOJ_REVERSE_LIVE_API_KEY='...' python -m pytest 
 
 生产健康检查不属于测试矩阵，也不得嵌入 `deploy.sh`。部署完成后，运维人员可以在生产主机人工执行只读的 `curl -f http://127.0.0.1:2025/health/live` 与 `curl -f http://127.0.0.1:2025/health/ready`；前者只证明 Web 可响应，后者还检查 MySQL 与 Redis。它们不能替代发布前测试。
 
-DB/E2E 命令只有在 `oj_modules/config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量或测试 `.env`，不得为测试手工改写受版本控制的生产配置桥接层。GitHub Actions 与测试 Compose 均通过显式环境变量注入各自网络拓扑。安全门同时要求：
+DB/E2E 命令只有在 `backend/oj_modules/config.py` 加载后的有效配置明确指向一次性测试服务时才能执行；配置来源可以是显式环境变量或测试 `.env`，不得为测试手工改写受版本控制的生产配置桥接层。GitHub Actions 与测试 Compose 均通过显式环境变量注入各自网络拓扑。安全门同时要求：
 
 - `NUMOJ_TEST_ENV=1`；
 - MySQL 库名为 `*_test`、`test_*` 或含 `_test_`，且绝不能是 `myojdb`；
@@ -161,14 +162,14 @@ DB/E2E 命令只有在 `oj_modules/config.py` 加载后的有效配置明确指�
 
 ### 同步器支持范围
 
-仓库以 `database/bootstrap.sql` 为新安装结构与开发种子基线，`scripts/init_db_schema.py` 在显式调用时补齐缺失库/表/列/索引，并同步可识别的列类型。它使用 advisory lock，但**没有版本化 migration、迁移历史或自动 down migration**，也不表达删除、重命名、数据回填和复杂约束演进。生产 Supervisor 不执行结构同步；生产中只有部署状态机拥有这一职责。
+仓库以 `backend/database/bootstrap.sql` 为新安装结构与开发种子基线，`scripts/init_db_schema.py` 在显式调用时补齐缺失库/表/列/索引，并同步可识别的列类型。它使用 advisory lock，但**没有版本化 migration、迁移历史或自动 down migration**，也不表达删除、重命名、数据回填和复杂约束演进。生产 Supervisor 不执行结构同步；生产中只有部署状态机拥有这一职责。
 
 因此，“启动成功”不等于所有历史数据库都完成了语义迁移，`--dry-run` 也只能显示当前同步器能识别的 DDL。
 
 ### 数据库变更流程
 
 1. 先选择兼容策略，优先 expand-contract：新增兼容结构，双读/双写或回填，切换读取，最后在后续版本清理旧结构。
-2. 更新 `database/bootstrap.sql` 作为新安装基线。
+2. 更新 `backend/database/bootstrap.sql` 作为新安装基线。
 3. 只涉及缺失列/索引或列类型时，验证 `python3 scripts/init_db_schema.py --dry-run` 与实际执行结果。
 4. 涉及重命名、删除、回填、约束或大表操作时，新增独立迁移脚本，包含前置检查、幂等判断、分批策略和失败恢复。
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
@@ -178,7 +179,7 @@ DB/E2E 命令只有在 `oj_modules/config.py` 加载后的有效配置明确指�
 
 `llm_endpoints.id` 是端点的唯一身份；`model` 只是发给供应商的模型标识，
 允许同一模型通过不同 Base URL、账号、区域、协议或思考配置建立多个端点。
-`llm_endpoints` 不保留独立 `name`，新安装由 `database/bootstrap.sql` 为 `model`
+`llm_endpoints` 不保留独立 `name`，新安装由 `backend/database/bootstrap.sql` 为 `model`
 创建普通索引 `idx_llm_endpoint_model`，不创建唯一约束。
 历史 `name` 字段和 `model` 唯一约束的一次性生产迁移已完成，相关脚本不再属于
 持续部署流程。后续若再改变端点约束，仍必须按本节上方的数据库变更流程新建显式迁移；
@@ -207,7 +208,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 ### 发布原则
 
 - 发布对象必须对应已知提交；禁止把未记录的远端手改当作新基线。
-- `.env`、`static/` 的生产额外资产、上传、运行目录和密钥不随代码全量覆盖。
+- `.env`、根目录 `static/` 的生产额外资产、上传、运行目录和密钥不随代码全量覆盖。
 - Web 与 Celery 是两个发布边界；Python 变更按项目既定顺序完成显式停机恢复后再启动 `celery -> web`，避免 Web 在 worker 尚不可用时接受新任务。
 - Gunicorn worker 重建、Web-only 重启和 HUP reload 只能执行幂等调度引导；清锁、重置 Running 或重投任务的恢复必须确认全部 Celery worker 已停止，并由独立命令触发。
 - schema 先采用向后兼容扩展，再发布读取新结构的代码；没有验证兼容窗口时不做不可逆 DDL。
@@ -225,7 +226,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步。结构就绪后，把 Git 跟踪的示例通过普通创建、发布和管理员精品设置链路同步为 admin 的个人作品；仓库包变化时创建并发布新版本，slug 属于其他用户时失败关闭。随后显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程使用普通作品版本内的本地数据，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
 7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 `latest`/`public` 别名或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
 
-`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。`vibehub_examples/` 会通过普通作品链路同步为 admin 的个人作品；同名公开包与仓库内容不同时创建并发布新版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、`static/` 额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
+`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。`vibehub_examples/` 会通过普通作品链路同步为 admin 的个人作品；同名公开包与仓库内容不同时创建并发布新版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、根目录 `static/` 的未跟踪额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；根目录 `static/` 完全不由部署脚本写入，仅由 Flask 在新前端静态目录未命中时只读回退。显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
 
 VibeHub 候选基础镜像在停服前完成静态供应链核验：只读证明生产专属 Buildx builder 是
 `docker-container` driver、全部节点为 running，且逐节点容器使用 `NetworkMode=bridge`；再将
@@ -330,26 +331,32 @@ sudo /usr/bin/systemctl start mysql
 - 日常用 `scripts/log_admin.py status|tail|find|validate|doctor` 检查。轮转上限是容量边界，
   不是合规留存承诺；若有固定留存期或跨主机灾备要求，应接入外部不可变日志平台。
 
-## 7. 前端模板结构
+## 7. 前端结构与视觉合同
 
-模板按“布局 → 跨域组件 → 业务域页面 → 业务域局部组件”组织：
+SPA 和兼容页面按以下结构组织：
 
 ```text
-templates/
-├── layouts/                 # 页面骨架，不包含具体业务流程
-├── components/              # 跨业务域复用的导航、编辑器、全局弹窗
-├── shared/                  # 错误页等通用完整页面
-├── auth|admin|problems|…/   # 路由直接渲染的业务页面
-└── ranking/
-    ├── tabs/                # 打榜详情各独立功能面板
-    ├── components/          # AJAX 与页面共用的行、卡片、分页
-    ├── modals/              # 页面级单例弹窗
-    ├── settings/            # 比赛设置中的端点、规则等职责片段
-    └── scripts/             # 同一业务域内复用且幂等的浏览器模块
+frontend/
+├── src/
+│   ├── pages/               # `/app/*` 路由页面
+│   ├── components/          # SPA 外壳、状态与跨页面组件
+│   └── api/                 # JSON 客户端与类型合同
+└── public/static/           # 原页面 CSS、图标、字体和兼容运行时
+backend/templates/
+├── layouts/                 # 兼容页面骨架
+├── components/              # 服务端复用组件与全局弹窗
+├── auth|admin|problems|…/   # 仍由 Jinja 承载的流程
+└── ranking/                 # 打榜赛兼容 partial 与 modal
 ```
 
 维护规则：
 
+- 主工作区的新导航页面进入 React SPA；不得另起视觉系统。迁移页面要复用原 DOM class、静态 CSS、
+  用户可见文案和响应式断点，并以浏览器截图和关键交互核对迁移前后的视觉合同。
+- React Router 只接管声明为 SPA 的入口；尚未迁移的复杂管理流程保留普通 `<a>` 回退到 Flask 路由，
+  不能用不存在的客户端路由占位。读请求可以预取和缓存，写请求必须显式触发并在成功后失效相关查询。
+- Vite 内容指纹资产长期 immutable 缓存，SPA `index.html` 必须 `no-cache` 重新验证；不得给会话化 JSON、
+  权限结果或写响应配置公共共享缓存。闲时预热必须尊重 `Save-Data` 和慢速网络信号。
 - 路由始终用完整域路径调用 `render_template()`；常规业务页面从 `layouts/site.html` 或 `layouts/embedded.html` 继承，不依赖根目录兼容别名。partial 不继承布局，独立完整错误页等明确例外保持自包含。
 - 跨页面且不包含业务分支的 UI 才进入 `components/`；只被一个页面使用的片段留在该业务域，避免制造全局碎片。
 - AJAX 返回的 HTML 与首屏必须复用同一 component，不能复制第二套行/卡片实现。

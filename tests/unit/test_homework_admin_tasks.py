@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from oj_modules.homework import plagiarism, repository, targets
-from oj_modules.tasks import homework_admin_tasks
+from backend.oj_modules.homework import plagiarism, repository, targets
+from backend.oj_modules.tasks import homework_admin_tasks
 
 
 class _FakeCelery:

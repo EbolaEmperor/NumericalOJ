@@ -13,12 +13,12 @@ from uuid import uuid4
 
 import pytest
 
-from oj_modules.problems import agent_runs
-from oj_modules.problems.agent_runs import build_agent_execution_trace
-from oj_modules.agents import workspace as agent_workspace
-from oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
-from oj_modules.tasks.agent import harness_runtime as runtime
-from oj_modules.tasks.agent import identity_relay
+from backend.oj_modules.problems import agent_runs
+from backend.oj_modules.problems.agent_runs import build_agent_execution_trace
+from backend.oj_modules.agents import workspace as agent_workspace
+from backend.oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages
+from backend.oj_modules.tasks.agent import harness_runtime as runtime
+from backend.oj_modules.tasks.agent import identity_relay
 from tests.e2e.live_ai import (
     DEEPSEEK_MODEL,
     DEEPSEEK_OPENAI_BASE_URL,

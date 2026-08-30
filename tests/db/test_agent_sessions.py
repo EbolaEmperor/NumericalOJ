@@ -6,7 +6,7 @@ from threading import Barrier
 
 import pytest
 
-from oj_modules.agents.sessions import (
+from backend.oj_modules.agents.sessions import (
     AgentSessionBusyError,
     AgentSessionMessageConflictError,
     begin_agent_session_retry,
@@ -33,8 +33,8 @@ from oj_modules.agents.sessions import (
     sync_agent_session_state,
     update_queued_agent_session_message,
 )
-from oj_modules.db_services import upsert_agent_run_snapshot
-from oj_modules.infrastructure.mysql import get_db_connection
+from backend.oj_modules.db_services import upsert_agent_run_snapshot
+from backend.oj_modules.infrastructure.mysql import get_db_connection
 
 
 def test_agent_session_round_trip_resume_and_atomic_state_projection():

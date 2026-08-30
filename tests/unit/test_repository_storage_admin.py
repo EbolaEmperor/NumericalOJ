@@ -7,8 +7,8 @@ import os
 from pathlib import Path
 import stat
 
-from oj_modules.repository import admin as admin_services
-from oj_modules.repository import storage
+from backend.oj_modules.repository import admin as admin_services
+from backend.oj_modules.repository import storage
 
 
 def _state(*, entry_count, total_size):

@@ -2,7 +2,7 @@
 
 import zipfile
 
-from oj_modules.homework import plagiarism as homework_plagiarism
+from backend.oj_modules.homework import plagiarism as homework_plagiarism
 
 
 def _item(username, code, problem_id=1, submission_id=1):

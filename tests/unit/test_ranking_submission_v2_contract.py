@@ -5,8 +5,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEMPLATES = ROOT / "templates" / "ranking"
-STYLESHEET = ROOT / "static" / "app" / "ranking" / "content-v2.css"
+TEMPLATES = ROOT / "backend" / "templates" / "ranking"
+STYLESHEET = ROOT / "frontend" / "public" / "static" / "app" / "ranking" / "content-v2.css"
 
 
 def _read(path: Path) -> str:

@@ -2,7 +2,8 @@
 
 本文件只记录维护 NumericalOJ 时必须先知道的约束。系统概览见 `README.md`，运行参数见
 `docs/runtime-configuration.md`，测试、数据库和生产运维细节统一见 `docs/maintenance.md`。
-Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modules/agents/AGENTS.md`。
+Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和
+`backend/oj_modules/agents/AGENTS.md`。
 
 ## 不可违反的边界
 
@@ -11,7 +12,7 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modul
 - 生产部署位于 `why-server:/home/ebola/oj/`，主机 hostname 为 `computing`。
 - 未经用户明确要求，不得部署生产、写生产数据、运行迁移或重启服务。
 - **生产主机禁止运行任何测试**，包括单测、pytest、Compose、CI 脚本和测试容器。
-- 生产 `.env`、`static/` 的额外资产、上传和运行数据可能不在 Git 中，禁止全量覆盖或删除。
+- 生产 `.env`、根目录 `static/` 的额外资产、上传和运行数据可能不在 Git 中，禁止全量覆盖或删除。
 
 ## 架构与代码边界
 
@@ -21,21 +22,24 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modul
 - `agent`：通用 Agent 等长任务，单 worker 按全站设置动态伸缩（默认 8，最高 100）；
 - `judge`：打榜赛 Agent-as-Judge 和反向评测。
 
-普通判题调用链为 `tasks/evaluate_tasks.py -> judging/core.py -> judging/sandbox.py -> Docker`。
+普通判题调用链为
+`backend/oj_modules/tasks/evaluate_tasks.py -> backend/oj_modules/judging/core.py -> backend/oj_modules/judging/sandbox.py -> Docker`。
 用户代码只在 Docker 中执行；不得恢复旧的 `5050` HTTP 判题服务或宿主 RLIMIT 沙箱。
 
-`oj.py` 是应用组合根，只负责创建对象、注册 Blueprint/任务和显式启动工作，不承载业务逻辑。
+`backend/oj.py` 是应用组合根，只负责创建对象、注册 Blueprint/任务和显式启动工作，不承载业务逻辑。
 模块导入不得执行外部写操作。会清锁、改状态或重投任务的恢复操作，只能在全部 Celery worker
 停止后通过 `scripts/recover_pending_tasks.py --confirm-celery-stopped` 显式执行。
 
-主要模块职责：
+主要后端模块均位于 `backend/oj_modules/`，职责如下：
 
 - `routes/`、`api/`：HTTP 解析、鉴权和响应；
 - `tasks/`：Celery 重试、进度、锁和工作流适配；复杂任务放入相应子包；
 - `classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/`：领域逻辑和事务；
 - `ai/`、`integrations/`：模型协议与外部服务，统一 LLM 协议在 `ai/endpoints.py`；
 - `infrastructure/`：MySQL、Redis 等连接原语；`security/`、`shared/`：跨域安全与通用能力；
-- `templates/`、`static/`：服务端页面及前端资源，避免继续堆积巨型单文件。
+- `backend/templates/`：保留的服务端页面与复杂兼容流程；
+- `frontend/src/`：React SPA 页面、路由和数据状态；`frontend/public/static/`：沿用的受 Git 管理视觉资产与兼容运行时。
+  生产根目录 `static/` 仅作为未跟踪历史附件的只读 URL 回退，不得迁入、覆盖或清理。
 
 新增后台任务沿用 `register -> init` 模式，由 `tasks/registry.py` 聚合，路由不得导入任务私有实现。
 新增能力前先复用规范入口：认证用 `security/auth.py`，Markdown 清洗用 `shared/markdown.py`，
@@ -46,23 +50,25 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和 `oj_modul
 
 ## 配置、依赖与数据库
 
-- 直接依赖使用精确版本：生产、测试、可选依赖分别写入 `requirements/production.txt`、
-  `requirements/test.txt`、`requirements/optional.txt`；不要用文档里的零散 `pip install` 代替。
-- 配置优先级是“进程环境变量 > `.env` > `oj_modules/config.py` 默认值”。密钥不得写入 tracked 文件。
+- 直接依赖使用精确版本：生产、测试、可选依赖分别写入 `backend/requirements/production.txt`、
+  `backend/requirements/test.txt`、`backend/requirements/optional.txt`；不要用文档里的零散 `pip install` 代替。
+- 配置优先级是“进程环境变量 > `.env` > `backend/oj_modules/config.py` 默认值”。密钥不得写入 tracked 文件。
 - LLM、Embedding、SMTP 和 WebSearch MCP 只从 MySQL 动态配置读取，不得增加环境变量回退。
-- Redis 客户端只能由 `oj_modules/infrastructure/redis.py` 创建。
+- Redis 客户端只能由 `backend/oj_modules/infrastructure/redis.py` 创建。
 
-`database/bootstrap.sql` 与 `scripts/init_db_schema.py` 可创建缺失对象、添加列/索引并调整识别到的
+`backend/database/bootstrap.sql` 与 `scripts/init_db_schema.py` 可创建缺失对象、添加列/索引并调整识别到的
 列类型，但仓库**没有版本化迁移系统**，也不会自动删除、重命名或回填。涉及这些语义变化时，
 必须提供可审计迁移、备份和回滚方案。业务连接统一经
-`oj_modules.infrastructure.mysql.get_db_connection()`；动态表名必须先用 `safe_table_name()` 校验。
+`backend.oj_modules.infrastructure.mysql.get_db_connection()`；动态表名必须先用 `safe_table_name()` 校验。
 
 ## 测试与数据安全
 
 日常最低门禁：
 
 ```bash
-python3 -m compileall -q oj.py oj_modules deploy tests
+python3 -m compileall -q backend deploy tests
+cd frontend && npm run typecheck && npm test && npm run build
+cd ..
 python3 -m pytest -q tests/unit
 ```
 
@@ -90,13 +96,16 @@ bash deploy.sh
 
 ## 日志与前端
 
-日志统一走 `oj_modules/observability/`，管理入口为 `scripts/log_admin.py`。新增事件沿用版本化 schema、
+日志统一走 `backend/oj_modules/observability/`，管理入口为 `scripts/log_admin.py`。新增事件沿用版本化 schema、
 递归脱敏和 request/task 上下文，不自行创建共享文件 handler。默认不信任 `X-Forwarded-For`；可信
 代理只由 `LOG_TRUSTED_PROXY_CIDRS` 配置。
 
-页面从 `templates/layouts/base.html` 的 site/embedded 布局派生。MathJax 必须按页面显式 opt-in；
-复用现有 Markdown、编辑器、选择器和提交组件，不复制私有版本。仅模板改动可在生产 `git pull` 后
-依靠 `TEMPLATES_AUTO_RELOAD=True` 生效；只要涉及 Python、schema 或部署流程，就不属于此前端快速路径。
+用户主工作区由 `frontend/src/` 下的 React SPA 提供，路由统一位于 `/app/*`；视觉必须继续复用
+`frontend/public/static/` 中的既有 DOM/CSS 契约，不得因技术栈迁移重新设计页面。React 查询缓存、
+路由预取和闲时预热不得绕过权限或把写请求缓存为读响应。复杂兼容流程仍可从
+`backend/templates/layouts/base.html` 的 site/embedded 布局派生；MathJax 必须按页面显式 opt-in，
+复用现有 Markdown、编辑器、选择器和提交组件，不复制私有版本。React 或静态资源改动必须重新构建，
+只有纯 Jinja 模板改动可以依靠 `TEMPLATES_AUTO_RELOAD=True` 走原前端快速路径。
 
 ## 领域不变量
 

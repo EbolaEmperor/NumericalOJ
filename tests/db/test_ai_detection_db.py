@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""DB 层测试：AI 检测结果 / 任务持久化（oj_modules/db_services.py）。
+"""DB 层测试：AI 检测结果 / 任务持久化（backend/oj_modules/db_services.py）。
 
 覆盖（参考计划 Task 24 / 契约 §1c）：
 - upsert_ai_detection_result（REPLACE，必填键 + 可选键 + 同 submission_id 覆盖）
@@ -14,7 +14,7 @@
 所有提交用真实 helpers.make_submission（写入 problems/submissions 真实行），
 检测结果 submission_id 引用真实提交 id。autouse 的 db_reset 保证隔离。
 """
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 from tests import helpers as h
 
 

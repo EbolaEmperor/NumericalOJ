@@ -2,8 +2,8 @@
 
 import pytest
 
-from oj_modules.classroom import logos as class_logo_services
-from oj_modules.shared import identicon
+from backend.oj_modules.classroom import logos as class_logo_services
+from backend.oj_modules.shared import identicon
 
 
 def test_legacy_5x5_helper_preserves_exact_class_logo_cell_order():

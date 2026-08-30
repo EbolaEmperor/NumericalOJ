@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from oj_modules.judging import core as judger_core
-from oj_modules.judging import sandbox as docker_sandbox
+from backend.oj_modules.judging import core as judger_core
+from backend.oj_modules.judging import sandbox as docker_sandbox
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -418,7 +418,7 @@ def test_docker_oom_kill_returns_mle(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "oj_modules.judging.core.run_case_in_container",
+        "backend.oj_modules.judging.core.run_case_in_container",
         fake_run_in_container,
     )
     monkeypatch.setattr(judger_core, "JUDGER_RUN_ROOT", "/tmp/test_jr")
@@ -442,7 +442,7 @@ def test_docker_oom_kill_returns_mle(monkeypatch):
 
 def test_user_self_sigkill_is_not_misclassified_as_mle(monkeypatch):
     monkeypatch.setattr(
-        "oj_modules.judging.core.run_case_in_container",
+        "backend.oj_modules.judging.core.run_case_in_container",
         lambda *_args, **_kwargs: docker_sandbox._RunResult(
             -9,
             "",

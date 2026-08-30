@@ -52,7 +52,7 @@ def _load_project_config() -> ModuleType:
     os.environ.setdefault("NUMOJ_ENVIRONMENT", "production")
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    return importlib.import_module("oj_modules.config")
+    return importlib.import_module("backend.oj_modules.config")
 
 
 def _metadata_fingerprint(metadata: os.stat_result) -> tuple[int, ...]:

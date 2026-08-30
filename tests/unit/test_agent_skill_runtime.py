@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from oj_modules.tasks.agent import skill_runtime
+from backend.oj_modules.tasks.agent import skill_runtime
 
 
 _TARGETS = {

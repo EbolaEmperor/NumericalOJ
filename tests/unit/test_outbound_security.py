@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from oj_modules.security import outbound
+from backend.oj_modules.security import outbound
 
 
 def _answer(address):

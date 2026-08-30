@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """DB 层测试：ac_record / max_score 的写入与读回（参考 §1b / Task 22）。
 
-被测函数（oj_modules/db_services.py）：
+被测函数（backend/oj_modules/db_services.py）：
 - insert_user_problem_ac_record_if_absent(user_id, problem_id) -> bool
     INSERT IGNORE INTO ac_record(userid, problem_id, is_ac) VALUES(..,..,1)；
     首次插入返回 True，重复（已存在主键）返回 False。
@@ -15,7 +15,7 @@
 无 public getter，全部用直接 SQL 读回校验。
 表列：ac_record(userid, problem_id, is_ac)、max_score(userid, problem_id, score)。
 """
-from oj_modules import db_services as db
+from backend.oj_modules import db_services as db
 from tests import helpers as h
 
 

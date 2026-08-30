@@ -9,10 +9,10 @@ from types import SimpleNamespace
 import pytest
 from flask import Flask
 
-import oj_modules.ranking.agent_judge.db as db
-import oj_modules.ranking.reverse_judge.traces as reverse_db
-import oj_modules.routes.ranking_routes as routes
-import oj_modules.tasks.ranking.agent_judge as tasks
+import backend.oj_modules.ranking.agent_judge.db as db
+import backend.oj_modules.ranking.reverse_judge.traces as reverse_db
+import backend.oj_modules.routes.ranking_routes as routes
+import backend.oj_modules.tasks.ranking.agent_judge as tasks
 
 
 def _app():

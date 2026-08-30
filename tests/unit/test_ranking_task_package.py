@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TASKS_ROOT = ROOT / "oj_modules" / "tasks"
+TASKS_ROOT = ROOT / "backend" / "oj_modules" / "tasks"
 
 EXPECTED_TASK_NAMES = {
     "ranking.evaluate": {
@@ -36,7 +36,7 @@ EXPECTED_TASK_NAMES = {
 
 def test_ranking_task_names_remain_wire_compatible():
     for module_name, expected in EXPECTED_TASK_NAMES.items():
-        module = importlib.import_module(f"oj_modules.tasks.{module_name}")
+        module = importlib.import_module(f"backend.oj_modules.tasks.{module_name}")
         assert {name: getattr(module, name) for name in expected} == expected
 
 

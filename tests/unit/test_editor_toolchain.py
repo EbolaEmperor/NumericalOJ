@@ -7,8 +7,8 @@ import subprocess
 import pytest
 
 from deploy import export_editor_headers, prepare_editor_toolchain
-from oj_modules.editor import toolchain as editor_toolchain
-from oj_modules.project_paths import PROJECT_ROOT
+from backend.oj_modules.editor import toolchain as editor_toolchain
+from backend.oj_modules.project_paths import PROJECT_ROOT
 
 
 def test_default_toolchain_path_uses_stable_project_root():
