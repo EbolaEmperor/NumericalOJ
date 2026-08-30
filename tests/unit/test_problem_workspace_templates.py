@@ -37,7 +37,8 @@ def test_desktop_problem_templates_preserve_class_list_and_unify_problem_detail_
     assert "source='library'" in desktop_list
     assert "class_en=selected_class_en" in desktop_list
     assert "request.args.get('class_en')" not in detail
-    assert 'class="problem-homework-statuses"' in detail
+    assert 'class="problem-homework-statuses"' not in detail
+    assert "本次提交不计入作业成绩" not in detail
     assert 'id="homeworkDeadlineWarningModal"' in detail
     assert "data-numoj-class-picker" in desktop_list
     assert 'role="listbox"' in desktop_list

@@ -2568,6 +2568,7 @@ html.is-problem-pane-resizing * {
   }
 
   .problem-detail-page .problem-header {
+    margin-bottom: 0 !important;
     padding: 26px 30px 0;
   }
 
@@ -2770,6 +2771,13 @@ html.is-problem-pane-resizing * {
     color: var(--numoj-ink);
     font-size: 0.93rem;
     font-weight: 680;
+  }
+
+  .problem-detail-page .problem-content > h1:first-child,
+  .problem-detail-page .problem-content > h2:first-child,
+  .problem-detail-page .problem-content > h3:first-child,
+  .problem-detail-page .problem-content > h4:first-child {
+    margin-top: 10px;
   }
 
   .problem-detail-page .problem-content h1::before,

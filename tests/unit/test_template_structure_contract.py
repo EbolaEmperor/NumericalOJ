@@ -369,6 +369,8 @@ def test_problem_detail_uses_full_width_split_workspace_and_vscode_theme():
     assert ".submission-status.compile-error" in layout
     assert ".recent-submissions-card" in layout
     assert ".problem-heading-layout.has-recent-submissions" in layout
+    assert ".problem-content > h1:first-child" in layout
+    assert "margin-top: 10px;" in layout
     assert ".problem-prompt-submit-form" in layout
     assert ".problem-editor-loading-state" in layout
     assert 'data-editor-state="ready"' in layout

@@ -1,47 +1,3 @@
-.problem-detail-page .problem-homework-statuses {
-  display: grid;
-  width: 100%;
-  gap: 6px;
-  margin-top: 14px;
-}
-
-.problem-detail-page .problem-homework-status {
-  display: grid;
-  grid-template-columns: 8px auto minmax(0, 1fr);
-  align-items: baseline;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--numoj-line);
-  border-radius: 7px;
-  background: #fafafa;
-  color: var(--numoj-ink-3);
-  font-size: 0.72rem;
-  line-height: 1.45;
-}
-
-.problem-detail-page .problem-homework-status strong {
-  color: var(--numoj-ink);
-  font-weight: 680;
-  white-space: nowrap;
-}
-
-.problem-detail-page .problem-homework-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--numoj-success);
-}
-
-.problem-detail-page .problem-homework-status.is-expired {
-  border-color: #f0d6d1;
-  background: #fff9f7;
-  color: #8d4539;
-}
-
-.problem-detail-page .problem-homework-status.is-expired .problem-homework-status-dot {
-  background: var(--numoj-danger);
-}
-
 .problem-deadline-modal .modal-content {
   overflow: hidden;
   border: 1px solid var(--numoj-line);
@@ -139,14 +95,6 @@
 }
 
 @media (max-width: 768px) {
-  .problem-detail-page .problem-homework-status {
-    grid-template-columns: 8px minmax(0, 1fr);
-  }
-
-  .problem-detail-page .problem-homework-status > span:last-child {
-    grid-column: 2;
-  }
-
   .problem-deadline-modal-list li {
     align-items: flex-start;
     flex-direction: column;

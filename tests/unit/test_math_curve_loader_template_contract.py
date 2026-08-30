@@ -79,13 +79,14 @@ def test_lean_workspace_export_is_marked_as_a_download_navigation():
     )
 
 
-def test_problem_detail_has_deadline_status_and_non_native_confirmation_modal():
+def test_problem_detail_only_warns_about_expired_homework_on_submit():
     detail = (TEMPLATES / "problems" / "detail.html").read_text(encoding="utf-8")
     deadline_script = (
         ROOT / "static" / "app" / "problem-deadline-warning.js"
     ).read_text(encoding="utf-8")
 
-    assert 'class="problem-homework-statuses"' in detail
+    assert 'class="problem-homework-statuses"' not in detail
+    assert "本次提交不计入作业成绩" not in detail
     assert 'id="homeworkDeadlineWarningModal"' in detail
     assert "我明白了" in detail
     assert "problem-deadline-warning.js" in detail

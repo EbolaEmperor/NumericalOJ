@@ -68,25 +68,6 @@
               <span class="problem-title-text">{{ problem.title }}</span>
             </h2>
           </div>
-          {% if homework_assignments %}
-          <div class="problem-homework-statuses" aria-label="班级作业截止状态">
-            {% for assignment in homework_assignments %}
-            <div class="problem-homework-status{% if assignment.is_expired %} is-expired{% else %} is-active{% endif %}">
-              <span class="problem-homework-status-dot" aria-hidden="true"></span>
-              <strong>{{ assignment.class_cn }}</strong>
-              {% if assignment.ddl %}
-                {% if assignment.is_expired %}
-                <span>已于 {{ assignment.ddl.strftime('%m-%d %H:%M') }} 截止，本次提交不计入作业成绩</span>
-                {% else %}
-                <span>{{ assignment.ddl.strftime('%m-%d %H:%M') }} 截止，本次提交仍计入作业成绩</span>
-                {% endif %}
-              {% else %}
-              <span>无截止时间，本次提交计入作业成绩</span>
-              {% endif %}
-            </div>
-            {% endfor %}
-          </div>
-          {% endif %}
           {% if user and user.is_admin == 1 %}
           <div class="problem-admin-actions mt-2">
             {% if problem.type == 1 %}
