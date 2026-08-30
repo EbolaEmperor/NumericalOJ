@@ -13,6 +13,7 @@ BACKUP_DIR="$STATE_DIR/backups"
 ARC_DATA_ROOT="$STATE_DIR/arc-agi-3"
 ARC_CURRENT_SET="$ARC_DATA_ROOT/current"
 STATIC_PRECOMPRESSION_STATE_DIR="$STATE_DIR/static-precompression"
+FRONTEND_NODE_MODULES_DIR="$STATE_DIR/frontend-node-modules"
 VIBEHUB_BASE_OCI_LAYOUT_ROOT="$STATE_DIR/vibehub-base-oci"
 LOCK_FILE='/tmp/noj_deploy.lock'
 WEB_CONFIG="$ROOT_DIR/deploy/supervisor/web.conf"
@@ -203,7 +204,9 @@ trap 'exit 130' HUP INT TERM
 
 cd "$ROOT_DIR"
 install -d -m 0700 "$STATE_DIR" "$VENV_ROOT" "$EDITOR_TOOLCHAIN_ROOT"
-install -d -m 0700 "$STATIC_PRECOMPRESSION_STATE_DIR"
+install -d -m 0700 \
+  "$STATIC_PRECOMPRESSION_STATE_DIR" \
+  "$FRONTEND_NODE_MODULES_DIR"
 
 for command_name in docker flock pgrep; do
   command -v "$command_name" >/dev/null || {
@@ -613,7 +616,7 @@ docker run --rm \
   --env npm_config_cache=/tmp/numoj-npm-cache \
   --env npm_config_registry=https://registry.npmmirror.com \
   --mount "type=bind,src=$ROOT_DIR/frontend,dst=/workspace" \
-  --mount "type=volume,dst=/workspace/node_modules" \
+  --mount "type=bind,src=$FRONTEND_NODE_MODULES_DIR,dst=/workspace/node_modules" \
   --entrypoint /bin/sh \
   "$AGENT_JUDGE_CANDIDATE" \
   -c 'npm ci --no-audit --no-fund && npm run build'

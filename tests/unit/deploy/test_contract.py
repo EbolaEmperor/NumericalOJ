@@ -439,6 +439,13 @@ def test_deploy_fails_closed_without_private_production_config():
     assert "--network none" in script[precompress:service_stop]
     assert "--read-only" in script[precompress:service_stop]
     assert '"$AGENT_JUDGE_CANDIDATE"' in script[precompress:service_stop]
+    assert 'FRONTEND_NODE_MODULES_DIR="$STATE_DIR/frontend-node-modules"' in script
+    assert '"$FRONTEND_NODE_MODULES_DIR"' in script
+    assert (
+        '--mount "type=bind,src=$FRONTEND_NODE_MODULES_DIR,'
+        'dst=/workspace/node_modules"' in script
+    )
+    assert 'type=volume,dst=/workspace/node_modules' not in script
     assert 'getattr(config, "ENV_FILE_LOADED", False)' in preflight
     assert 'getattr(config, "ENV_FILE_KEYS", ())' in preflight
     assert "metadata.st_uid != os.geteuid()" in preflight
