@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "templates" / "ranking"
 STATIC = ROOT / "static" / "app" / "ranking"
+SORA_STATIC = ROOT / "static" / "vendor" / "sora"
 ROUTES = ROOT / "oj_modules" / "routes"
 
 
@@ -82,6 +83,22 @@ def test_ranking_detail_uses_v2_shell_and_real_navigation_state():
     assert "setRailBackgroundInert" in script
     assert "cache.delete('batch_eval')" in script
     assert "当前页面有尚未保存的修改，确认离开吗？" in script
+
+
+def test_ranking_detail_self_hosts_sora_font():
+    template = _read(TEMPLATES / "detail.html")
+    sora_stylesheet = _read(SORA_STATIC / "sora.css")
+
+    assert "vendor/sora/sora.css" in template
+    assert "fonts.googleapis.com" not in template
+    assert "fonts.gstatic.com" not in template
+    assert 'font-family: "Sora"' in sora_stylesheet
+    assert "font-weight: 400 700" in sora_stylesheet
+    assert 'url("./sora-latin.woff2")' in sora_stylesheet
+    assert 'url("./sora-latin-ext.woff2")' in sora_stylesheet
+    assert (SORA_STATIC / "sora-latin.woff2").read_bytes()[:4] == b"wOF2"
+    assert (SORA_STATIC / "sora-latin-ext.woff2").read_bytes()[:4] == b"wOF2"
+    assert "SIL OPEN FONT LICENSE" in _read(SORA_STATIC / "OFL.txt")
 
 
 def test_ranking_content_scroll_does_not_trap_panel_modals_under_backdrop():
