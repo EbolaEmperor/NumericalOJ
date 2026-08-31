@@ -6,7 +6,6 @@
   const loaderScript = document.currentScript;
   const assetUrls = {
     highlighter: loaderScript?.dataset.highlighterSrc || "",
-    mathjax: loaderScript?.dataset.mathjaxSrc || "",
     mermaid: loaderScript?.dataset.mermaidSrc || "",
     semanticTokens: loaderScript?.dataset.semanticTokensSrc || "",
   };
@@ -121,8 +120,16 @@
     return needsMermaid(root) ? loadAsset("mermaid") : Promise.resolve(false);
   }
 
-  function ensureMathJax(root) {
-    return needsMath(root) ? loadAsset("mathjax") : Promise.resolve(false);
+  async function ensureMathJax(root) {
+    if (!needsMath(root)) return false;
+    const mathJax = global.MathJax;
+    if (!mathJax) return false;
+    try {
+      if (mathJax.startup?.promise) await mathJax.startup.promise;
+    } catch (_error) {
+      return false;
+    }
+    return assetReady("mathjax");
   }
 
   global.NumOJRichContentAssets = Object.freeze({

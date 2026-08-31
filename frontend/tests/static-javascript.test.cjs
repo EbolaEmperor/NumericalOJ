@@ -67,7 +67,21 @@ for (const relativePath of javascriptAssets) {
   })
 }
 
-test('富内容资源跳过纯文本并在加载失败时安全降级', () => {
+test('SPA 在 React 启动前加载 MathJax 必需运行时', () => {
+  const source = read('frontend/index.html')
+  const mathJax = source.indexOf('<script src="/static/vendor/mathjax/tex-mml-chtml.js"></script>')
+  const richContent = source.indexOf('src="/static/app/rich-content-assets.js"')
+  const markdown = source.indexOf('<script src="/static/app/markdown-rendering.js"></script>')
+  const react = source.indexOf('<script type="module" src="/src/main.tsx"></script>')
+
+  assert.ok(mathJax > 0)
+  assert.ok(mathJax < richContent)
+  assert.ok(richContent < markdown)
+  assert.ok(markdown < react)
+  assert.equal(source.includes('data-mathjax-src='), false)
+})
+
+test('富内容资源等待已加载的 MathJax 启动完成', () => {
   const source = JSON.stringify(asset('app/rich-content-assets.js'))
   runIsolated(`
 const assert = require("node:assert/strict");
@@ -86,7 +100,6 @@ function scriptElement() {
 global.document = {
   currentScript: {dataset: {
     highlighterSrc: "/highlighter.js",
-    mathjaxSrc: "/mathjax.js",
     mermaidSrc: "/mermaid.js",
     semanticTokensSrc: "/semantic-tokens.js"
   }},
@@ -135,11 +148,31 @@ require(${source});
   appended[2].fire("error");
   assert.equal(await structured, false);
 
-  const math = NumOJRichContentAssets.ensureMathJax(root("公式 $x + 1$", ""));
-  assert.equal(appended.length, 4);
-  assert.equal(appended[3].dataset.numojRichAsset, "mathjax");
-  appended[3].fire("error");
-  assert.equal(await math, false);
+  assert.equal(
+    await NumOJRichContentAssets.ensureMathJax(root("公式 $x + 1$", "")),
+    false
+  );
+  assert.equal(appended.length, 3);
+
+  let releaseStartup = null;
+  global.MathJax = {
+    startup: {promise: new Promise((resolve) => { releaseStartup = resolve; })},
+    typesetPromise() {}
+  };
+  const math = NumOJRichContentAssets.ensureMathJax(root("另一条公式 $y = 2$", ""));
+  assert.equal(appended.length, 3);
+  let mathReady = false;
+  math.then(() => { mathReady = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(mathReady, false);
+  releaseStartup();
+  assert.equal(await math, true);
+
+  assert.equal(
+    await NumOJRichContentAssets.ensureMathJax(root("第三条公式 $z = 3$", "")),
+    true
+  );
+  assert.equal(appended.length, 3);
 })().catch((error) => { console.error(error); process.exit(1); });
 `)
 })
