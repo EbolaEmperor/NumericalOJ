@@ -5,6 +5,7 @@ import {useParams} from 'react-router-dom'
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
+import {MarkdownContent} from '../components/MarkdownContent'
 import {ModelLogo} from '../components/ModelLogo'
 import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
@@ -43,7 +44,7 @@ function WorkspaceNode({node}: {node: JsonRecord}) {
 }
 
 function RichHtml({html}: {html: unknown}) {
-  return <div className="numoj-markdown" dangerouslySetInnerHTML={{__html: String(html || '')}} />
+  return <MarkdownContent className="numoj-markdown" html={String(html || '')} />
 }
 
 export default function AgentSessionPage() {

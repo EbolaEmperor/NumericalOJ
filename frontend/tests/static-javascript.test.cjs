@@ -16,9 +16,7 @@ const javascriptAssets = [
   'frontend/public/static/app/code-editor-runtime.js',
   'frontend/public/static/app/editor-semantic-tokens.js',
   'frontend/public/static/app/lean-workbench.js',
-  'frontend/public/static/app/markdown-rendering.js',
   'frontend/public/static/app/model-family.js',
-  'frontend/public/static/app/rich-content-assets.js',
   'frontend/public/static/app/ranking/topology.js',
 ]
 
@@ -67,179 +65,52 @@ for (const relativePath of javascriptAssets) {
   })
 }
 
-test('SPA 在 React 启动前加载 MathJax 必需运行时', () => {
+test('SPA 只在 React 启动前加载 MathJax 底层运行时', () => {
   const source = read('frontend/index.html')
   const mathJax = source.indexOf('<script src="/static/vendor/mathjax/tex-mml-chtml.js"></script>')
-  const richContent = source.indexOf('src="/static/app/rich-content-assets.js"')
-  const markdown = source.indexOf('<script src="/static/app/markdown-rendering.js"></script>')
   const react = source.indexOf('<script type="module" src="/src/main.tsx"></script>')
 
   assert.ok(mathJax > 0)
-  assert.ok(mathJax < richContent)
-  assert.ok(richContent < markdown)
-  assert.ok(markdown < react)
+  assert.ok(mathJax < react)
+  assert.equal(source.includes('src="/static/app/rich-content-assets.js"'), false)
+  assert.equal(source.includes('src="/static/app/markdown-rendering.js"'), false)
   assert.equal(source.includes('data-mathjax-src='), false)
   assert.ok(source.includes('window.NumOJMathJaxReady = new Promise'))
   assert.ok(source.includes('window.MathJax.startup.defaultReady()'))
   assert.ok(source.includes('window.MathJax.startup.promise.then('))
 })
 
-test('富内容资源等待已加载的 MathJax 启动完成', () => {
-  const source = JSON.stringify(asset('app/rich-content-assets.js'))
-  runIsolated(`
-const assert = require("node:assert/strict");
-global.window = global;
-global.Node = {TEXT_NODE: 3};
-global.NodeFilter = {SHOW_TEXT: 4};
-const appended = [];
-function scriptElement() {
-  const listeners = Object.create(null);
-  return {
-    dataset: {},
-    addEventListener(name, callback) { listeners[name] = callback; },
-    fire(name) { listeners[name](); }
-  };
-}
-global.document = {
-  currentScript: {dataset: {
-    highlighterSrc: "/highlighter.js",
-    mermaidSrc: "/mermaid.js",
-    semanticTokensSrc: "/semantic-tokens.js"
-  }},
-  createTreeWalker(root) {
-    let index = 0;
-    return {nextNode() { return (root._nodes || [])[index++] || null; }};
-  },
-  createElement() { return scriptElement(); },
-  head: {appendChild(script) { appended.push(script); }}
-};
-function textNode(value) {
-  return {data: value, parentElement: {closest() { return null; }}};
-}
-function root(value, selectorNeedle) {
-  return {
-    nodeType: 1,
-    _nodes: value ? [textNode(value)] : [],
-    matches() { return false; },
-    querySelector(selector) {
-      return selectorNeedle && selector.includes(selectorNeedle) ? {} : null;
-    }
-  };
-}
-require(${source});
-(async function() {
-  const plain = root("题目正文没有公式和结构化代码", "");
-  const skipped = await Promise.all([
-    NumOJRichContentAssets.ensureMathJax(plain),
-    NumOJRichContentAssets.ensureMermaid(plain),
-    NumOJRichContentAssets.ensureCodeAssets(plain)
-  ]);
-  assert.deepEqual(skipped, [false, false, false]);
-  assert.equal(appended.length, 0);
+test('React Hook 独立调度公式、代码和 Mermaid 增强', () => {
+  const source = read('frontend/src/components/useMarkdownEnhancements.ts')
+  const mathHook = source.indexOf('function useMathJax(')
+  const codeEffect = source.indexOf('void highlightCode(')
+  const mermaidEffect = source.indexOf('void renderMermaid(')
 
-  const mermaid = NumOJRichContentAssets.ensureMermaid(root("graph TD", "language-mermaid"));
-  assert.equal(appended.length, 1);
-  assert.equal(appended[0].dataset.numojRichAsset, "mermaid");
-  appended[0].fire("error");
-  assert.equal(await mermaid, false);
-
-  const structured = NumOJRichContentAssets.ensureCodeAssets(root("int main() {}", "language-cpp"));
-  assert.equal(appended.length, 3);
-  assert.equal(appended[1].dataset.numojRichAsset, "highlighter");
-  assert.equal(appended[2].dataset.numojRichAsset, "semanticTokens");
-  appended[1].fire("error");
-  appended[2].fire("error");
-  assert.equal(await structured, false);
-
-  assert.equal(
-    await NumOJRichContentAssets.ensureMathJax(root("公式 $x + 1$", "")),
-    false
-  );
-  assert.equal(appended.length, 3);
-
-  let releaseStartup = null;
-  global.NumOJMathJaxReady = new Promise((resolve) => { releaseStartup = resolve; });
-  global.MathJax = {
-    typesetPromise() {}
-  };
-  const math = NumOJRichContentAssets.ensureMathJax(root("另一条公式 $y = 2$", ""));
-  assert.equal(appended.length, 3);
-  let mathReady = false;
-  math.then(() => { mathReady = true; });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(mathReady, false);
-  releaseStartup(true);
-  assert.equal(await math, true);
-
-  assert.equal(
-    await NumOJRichContentAssets.ensureMathJax(root("第三条公式 $z = 3$", "")),
-    true
-  );
-  assert.equal(appended.length, 3);
-})().catch((error) => { console.error(error); process.exit(1); });
-`)
+  assert.ok(mathHook > 0)
+  assert.ok(codeEffect > mathHook)
+  assert.ok(mermaidEffect > codeEffect)
+  assert.ok(source.includes('useLayoutEffect(() => {'))
+  assert.ok(source.includes('.then(() => enhanceSemanticCode('))
+  assert.equal(source.includes('NumericalOJMarkdownRenderer'), false)
 })
 
-test('词法、语义、公式和 Mermaid 增强互不阻塞', () => {
-  const source = read('frontend/public/static/app/markdown-rendering.js')
-  const mathStart = source.indexOf('const mathTypesetting = typesetMath(')
-  const semanticStart = source.indexOf('Promise.all([structuredHighlighting, semanticTokensReady])')
-  const finalWait = source.indexOf('await Promise.all([', semanticStart)
+test('React MathJax Hook 等待启动并校验当前挂载实例', () => {
+  const source = read('frontend/src/components/useMarkdownEnhancements.ts')
 
-  assert.ok(mathStart > 0)
-  assert.ok(semanticStart > mathStart)
-  assert.ok(finalWait > semanticStart)
-  assert.equal(source.includes('await structuredHighlighting;'), false)
-  assert.ok(source.includes('codeHighlighterReady'))
-  assert.ok(source.includes('semanticTokensReady'))
+  assert.ok(source.includes('await window.NumOJMathJaxReady.catch(() => false)'))
+  assert.ok(source.includes('!active || !ready || !root.isConnected'))
+  assert.ok(source.includes('mathJax.typesetClear?.([root])'))
+  assert.ok(source.includes('await mathJax.typesetPromise([root])'))
+  assert.ok(source.includes("root.dataset.numojMathState = 'rendered'"))
 })
 
-test('MathJax 等待 startup 完成后再排版', () => {
-  const source = JSON.stringify(asset('app/markdown-rendering.js'))
-  runIsolated(`
-global.window = global;
-global.document = {readyState: "loading", addEventListener() {}};
-let releaseStartup = null;
-let typesetCalls = 0;
-let typesetTarget = null;
-global.MathJax = {
-  startup: {promise: new Promise((resolve) => { releaseStartup = resolve; })},
-  async typesetPromise(targets) { typesetCalls += 1; typesetTarget = targets[0]; }
-};
-global.NumOJRichContentAssets = {
-  ensureCodeAssets() { return Promise.resolve(false); },
-  ensureMathJax() { return Promise.resolve(true); },
-  ensureMermaid() { return Promise.resolve(false); }
-};
-const root = {
-  isConnected: true,
-  contains() { return true; },
-  matches() { return false; },
-  querySelectorAll() { return []; }
-};
-require(${source});
-(async function() {
-  const enhancement = NumericalOJMarkdownRenderer.enhance(root);
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(typesetCalls, 0);
-  releaseStartup();
-  await enhancement;
-  assert.equal(typesetCalls, 1);
-  assert.equal(typesetTarget, root);
-})().catch((error) => { console.error(error); process.exit(1); });
-`)
-})
+test('React 富内容增强失败时保留当前正文与代码配色', () => {
+  const source = read('frontend/src/components/useMarkdownEnhancements.ts')
 
-test('富内容资源失败时保留渲染回退逻辑', () => {
-  const source = read('frontend/public/static/app/markdown-rendering.js')
-
-  assert.ok(source.includes('const mermaidRendering = mermaidAssetReady.then('))
-  assert.ok(source.includes('() => renderMermaidDiagrams(root),'))
-  assert.ok(source.includes('block.dataset.numojBashState = "fallback";'))
-  assert.ok(source.includes('block.dataset.numojStructuredTextmateState = "fallback";'))
-  assert.ok(source.includes('diagram.remove();'))
-  assert.ok(source.includes('sourceDetails.open = true;'))
-  assert.ok(source.includes('container.dataset.numojMermaidState = "error";'))
+  assert.ok(source.includes('已保留当前配色'))
+  assert.ok(source.includes('已保留词法配色'))
+  assert.ok(source.includes("root.dataset.numojMathState = 'error'"))
+  assert.ok(source.includes("block.classList.add('is-error')"))
 })
 
 test('Markdown 高亮产物为常用语言使用 GitHub Light 配色', () => {

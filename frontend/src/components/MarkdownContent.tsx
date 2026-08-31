@@ -1,25 +1,12 @@
-import {useEffect, useRef} from 'react'
+import {useRef} from 'react'
 
-type MarkdownRenderer = {
-  clear?: (root: Element) => void
-  enhance: (root: Element) => Promise<void>
-}
+import {useMarkdownEnhancements} from './useMarkdownEnhancements'
 
-declare global {
-  interface Window {
-    NumericalOJMarkdownRenderer?: MarkdownRenderer
-  }
-}
+export function MarkdownContent({html, className, as = 'div'}: {html: string; className: string; as?: 'div' | 'span'}) {
+  const ref = useRef<HTMLElement>(null)
+  useMarkdownEnhancements(ref, html)
 
-export function MarkdownContent({html, className}: {html: string; className: string}) {
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const root = ref.current
-    if (!root) return
-    void window.NumericalOJMarkdownRenderer?.enhance(root)
-    return () => window.NumericalOJMarkdownRenderer?.clear?.(root)
-  }, [html])
-
-  return <div ref={ref} className={className} data-numoj-markdown dangerouslySetInnerHTML={{__html: html}} />
+  return as === 'span'
+    ? <span ref={ref} className={className} data-numoj-markdown dangerouslySetInnerHTML={{__html: html}} />
+    : <div ref={ref as React.Ref<HTMLDivElement>} className={className} data-numoj-markdown dangerouslySetInnerHTML={{__html: html}} />
 }
