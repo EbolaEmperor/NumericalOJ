@@ -1,5 +1,5 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useEffect, useMemo, useRef, useState, type FormEvent} from 'react'
+import {useMemo, useState, type FormEvent} from 'react'
 import {useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
@@ -8,6 +8,7 @@ import {Identicon} from '../components/Identicon'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {useNativeDialog} from '../components/useNativeDialog'
 import {useNavigate} from '../components/PageNavigation'
 import {useSession} from '../session'
 
@@ -68,18 +69,8 @@ export default function ForumPage() {
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [replyContent, setReplyContent] = useState('')
-  const composerRef = useRef<HTMLDialogElement>(null)
-  const identityDialogRef = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
-    const element = composerRef.current
-    if (composerOpen && element && !element.open) element.showModal()
-    return () => {if (element?.open) element.close()}
-  }, [composerOpen])
-  useEffect(() => {
-    const element = identityDialogRef.current
-    if (identityDialogOpen && element && !element.open) element.showModal()
-    return () => {if (element?.open) element.close()}
-  }, [identityDialogOpen])
+  const composerRef = useNativeDialog(composerOpen)
+  const identityDialogRef = useNativeDialog(identityDialogOpen)
   const list = useQuery({queryKey: ['forum', scope], queryFn: () => apiFetch<ListResponse>(`/api/forum?scope=${scope}`)})
   const identity = useQuery({queryKey: ['forum', 'identity'], queryFn: () => apiFetch<IdentityResponse>('/api/forum/identity')})
   const rows = list.data?.threads || list.data?.items || []

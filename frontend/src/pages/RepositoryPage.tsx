@@ -6,6 +6,7 @@ import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {MonacoEditor, type MonacoEditorInstance} from '../components/MonacoEditor'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {LoadingState} from '../components/PageState'
+import {useNativeDialog} from '../components/useNativeDialog'
 
 interface TreeResponse extends ApiEnvelope {
   entries?: JsonRecord[]
@@ -100,8 +101,7 @@ function languageLabelForFilename(filename: string) {
 }
 
 function Dialog({title, kicker, onClose, children, footer, className = '', closeLabel = '关闭', footerClassName = ''}: {title: string; kicker: string; onClose: () => void; children: React.ReactNode; footer: React.ReactNode; className?: string; closeLabel?: string; footerClassName?: string}) {
-  const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => {const element = ref.current; if (element && !element.open) element.showModal(); return () => {if (element?.open) element.close()}}, [])
+  const ref = useNativeDialog(true)
   return <dialog ref={ref} className={`repository-dialog${className ? ` ${className}` : ''}`} onCancel={(event) => {event.preventDefault(); onClose()}}>
     <header><div><p>{kicker}</p><h2>{title}</h2></div><button className="repository-icon-button" type="button" onClick={onClose} aria-label={closeLabel}><Icon name="close" /></button></header>
     <div className="repository-dialog-body">{children}</div>

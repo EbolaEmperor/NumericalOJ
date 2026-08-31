@@ -7,21 +7,12 @@ import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {useNativeDialog} from '../components/useNativeDialog'
 import {useSession} from '../session'
 
 interface Response extends ApiEnvelope {projects: JsonRecord[]; count: number}
 interface ProjectResponse extends ApiEnvelope {project: JsonRecord}
 type EditorMode = 'create' | 'edit'
-
-function openNativeDialog(dialog: HTMLDialogElement | null) {
-  if (!dialog || dialog.open) return
-  dialog.showModal()
-  window.requestAnimationFrame(() => dialog.classList.add('is-open'))
-}
-
-function closeNativeDialog(dialog: HTMLDialogElement | null) {
-  if (dialog?.open) dialog.close()
-}
 
 export default function VibeHubPage() {
   const {session} = useSession()
@@ -47,44 +38,25 @@ export default function VibeHubPage() {
   const [approveStatus, setApproveStatus] = useState('')
   const [featuredProject, setFeaturedProject] = useState<JsonRecord | null>(null)
   const [featuredStatus, setFeaturedStatus] = useState('')
-  const editorDialogRef = useRef<HTMLDialogElement>(null)
-  const deleteDialogRef = useRef<HTMLDialogElement>(null)
-  const approveDialogRef = useRef<HTMLDialogElement>(null)
-  const featuredDialogRef = useRef<HTMLDialogElement>(null)
   const titleRef = useRef<HTMLInputElement>(null)
+  const editorCloseRef = useRef<HTMLButtonElement>(null)
+  const approveConfirmRef = useRef<HTMLButtonElement>(null)
+  const featuredConfirmRef = useRef<HTMLButtonElement>(null)
+  const editorRequestRef = useRef<AbortController | null>(null)
+  const editorDialogRef = useNativeDialog(editorOpen, () => {
+    if (editorMode === 'create') titleRef.current?.focus()
+    else editorCloseRef.current?.focus()
+  })
+  const deleteDialogRef = useNativeDialog(deleteOpen)
+  const approveDialogRef = useNativeDialog(Boolean(approveProject), () => approveConfirmRef.current?.focus())
+  const featuredDialogRef = useNativeDialog(Boolean(featuredProject), () => featuredConfirmRef.current?.focus())
 
   const anyModalOpen = editorOpen || deleteOpen || Boolean(approveProject) || Boolean(featuredProject)
   useEffect(() => {
     document.body.classList.toggle('vibe-modal-open', anyModalOpen)
     return () => document.body.classList.remove('vibe-modal-open')
   }, [anyModalOpen])
-  useEffect(() => {
-    if (editorOpen) {
-      openNativeDialog(editorDialogRef.current)
-      window.requestAnimationFrame(() => {
-        if (editorMode === 'create') titleRef.current?.focus()
-        else editorDialogRef.current?.querySelector<HTMLButtonElement>('.vibe-modal-close')?.focus()
-      })
-    } else closeNativeDialog(editorDialogRef.current)
-  }, [editorMode, editorOpen])
-  useEffect(() => {
-    if (deleteOpen) openNativeDialog(deleteDialogRef.current)
-    else closeNativeDialog(deleteDialogRef.current)
-  }, [deleteOpen])
-  useEffect(() => {
-    if (approveProject) {
-      openNativeDialog(approveDialogRef.current)
-      window.requestAnimationFrame(() => approveDialogRef.current?.querySelector<HTMLButtonElement>('.vibe-modal-primary')?.focus())
-    }
-    else closeNativeDialog(approveDialogRef.current)
-  }, [approveProject])
-  useEffect(() => {
-    if (featuredProject) {
-      openNativeDialog(featuredDialogRef.current)
-      window.requestAnimationFrame(() => featuredDialogRef.current?.querySelector<HTMLButtonElement>('.vibe-modal-primary')?.focus())
-    }
-    else closeNativeDialog(featuredDialogRef.current)
-  }, [featuredProject])
+  useEffect(() => () => editorRequestRef.current?.abort(), [])
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.key !== '/' || anyModalOpen || /^(INPUT|TEXTAREA|SELECT)$/.test((event.target as HTMLElement | null)?.tagName || '')) return
@@ -129,19 +101,30 @@ export default function VibeHubPage() {
   })
 
   const openCreate = () => {
+    editorRequestRef.current?.abort(); editorRequestRef.current = null
     setEditorMode('create'); setEditorSlug(''); setTitle(''); setOriginalTitle(''); setPackageFile(null); setEditorStatus(''); setEditorError(false); setEditorLoading(false); setEditorOpen(true)
   }
   const openEdit = async (project: JsonRecord) => {
     const slug = String(project.slug || '')
+    editorRequestRef.current?.abort()
+    const request = new AbortController()
+    editorRequestRef.current = request
     setEditorMode('edit'); setEditorSlug(slug); setTitle(''); setOriginalTitle(''); setPackageFile(null); setEditorStatus('正在读取作品信息…'); setEditorError(false); setEditorLoading(true); setEditorOpen(true)
     try {
-      const response = await apiFetch<ProjectResponse>(`/api/vibehub/projects/${encodeURIComponent(slug)}?view=latest`)
+      const response = await apiFetch<ProjectResponse>(`/api/vibehub/projects/${encodeURIComponent(slug)}?view=latest`, {signal: request.signal})
+      if (request.signal.aborted || editorRequestRef.current !== request) return
       setTitle(String(response.project.title || ''))
       setOriginalTitle(String(response.project.title || ''))
       setEditorStatus('')
     } catch (error) {
+      if (request.signal.aborted || editorRequestRef.current !== request) return
       setEditorError(true); setEditorStatus(errorMessage(error))
-    } finally {setEditorLoading(false)}
+    } finally {
+      if (editorRequestRef.current === request) {
+        editorRequestRef.current = null
+        setEditorLoading(false)
+      }
+    }
   }
   useEffect(() => {
     const slug = initialParams.get('edit')
@@ -178,9 +161,9 @@ export default function VibeHubPage() {
       {!projects.length ? <div className="vibe-empty-state"><i className="fas fa-shapes" /><h2>{result.data?.projects?.length ? '没有找到相符的作品' : '还没有作品'}</h2><p>{result.data?.projects?.length ? '换个关键词或筛选条件再试试。' : '审核通过的作品会出现在这里。'}</p></div> : null}
     </section>
 
-    <dialog ref={editorDialogRef} className="vibe-modal" aria-labelledby="vibeProjectModalTitle" onCancel={(event) => {event.preventDefault(); setEditorOpen(false)}} onClose={() => {editorDialogRef.current?.classList.remove('is-open'); setEditorOpen(false)}}><section className="vibe-modal-panel"><header><div><h2 id="vibeProjectModalTitle">{editorMode === 'edit' ? '编辑作品' : '创建作品'}</h2><p>{editorMode === 'edit' ? '保存修改时构建镜像并自动送审；可选上传新程序包。' : '保存时构建镜像并自动送审。'}</p></div><button className="vibe-modal-close" type="button" onClick={() => setEditorOpen(false)} aria-label="关闭"><i className="fas fa-xmark" /></button></header><form encType="multipart/form-data" onSubmit={(event: FormEvent) => {event.preventDefault(); saveProject.mutate()}}><label className="vibe-form-field"><span>游戏名称</span><input ref={titleRef} name="title" required maxLength={120} autoComplete="off" placeholder="给作品起个名字" value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="vibe-package-field"><input type="file" name="package" required={editorMode === 'create'} accept=".zip,application/zip" onChange={(event) => setPackageFile(event.target.files?.[0] || null)} /><i className="fas fa-file-zipper" /><span><strong>{packageFile?.name || (editorMode === 'edit' ? '保留现有程序包' : '选择 ZIP 程序包')}</strong><small>必须包含 Dockerfile 与 vibehub.json</small></span><b>选择文件</b></label><p className={`vibe-form-status${editorError ? ' is-error' : ''}`} aria-live="polite">{editorStatus}</p><footer>{editorMode === 'edit' ? <button className="vibe-modal-danger" type="button" disabled={editorLoading || !originalTitle} onClick={() => {setEditorOpen(false); setDeleteText(''); setDeleteStatus(''); setDeleteOpen(true)}}>删除作品</button> : <span />}<button className="vibe-modal-primary" type="submit" disabled={saveProject.isPending}>{saveProject.isPending ? '构建并送审中…' : editorMode === 'edit' ? '保存更新并自动送审' : '创建并自动送审'}</button></footer></form></section></dialog>
-    <dialog ref={deleteDialogRef} className="vibe-modal" aria-labelledby="vibeDeleteConfirmTitle" aria-describedby="vibeDeleteConfirmDescription vibeDeleteConfirmPhrase" onCancel={(event) => {event.preventDefault(); setDeleteOpen(false); setEditorOpen(true)}} onClose={() => deleteDialogRef.current?.classList.remove('is-open')}><section className="vibe-modal-panel vibe-modal-panel--confirm"><h2 id="vibeDeleteConfirmTitle">确认删除作品</h2><p id="vibeDeleteConfirmDescription">此操作不可恢复。请输入以下文字后才能删除：</p><p className="vibe-delete-confirm-phrase" id="vibeDeleteConfirmPhrase">{deletePhrase}</p><form onSubmit={(event) => {event.preventDefault(); if (deleteText === deletePhrase) deleteProject.mutate()}}><label className="vibe-form-field vibe-delete-confirm-field"><span>确认文字</span><input type="text" autoComplete="off" required value={deleteText} onChange={(event) => setDeleteText(event.target.value)} /></label><p className={`vibe-form-status${deleteProject.isError ? ' is-error' : ''}`} aria-live="polite">{deleteStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => {setDeleteOpen(false); setEditorOpen(true)}}>返回编辑</button><button className="vibe-modal-danger vibe-modal-danger--confirm" type="submit" disabled={deleteText !== deletePhrase || deleteProject.isPending}>{deleteProject.isPending ? '删除中…' : '删除作品'}</button></footer></form></section></dialog>
-    <dialog ref={approveDialogRef} className="vibe-modal" aria-labelledby="vibeApproveTitle" aria-describedby="vibeApproveDescription" onCancel={(event) => {event.preventDefault(); setApproveProject(null)}} onClose={() => approveDialogRef.current?.classList.remove('is-open')}><section className="vibe-modal-panel vibe-modal-panel--confirm"><span className="vibe-confirm-icon"><i className="fas fa-check" /></span><h2 id="vibeApproveTitle">审核通过这个作品？</h2><p id="vibeApproveDescription">通过后直接公开当前已构建版本，不会重新构建。</p><p className={`vibe-form-status${approve.isError ? ' is-error' : ''}`} aria-live="polite">{approveStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => setApproveProject(null)}>取消</button><button className="vibe-modal-primary" type="button" disabled={approve.isPending} onClick={() => approve.mutate()}>{approve.isPending ? '通过中…' : '确认通过'}</button></footer></section></dialog>
-    <dialog ref={featuredDialogRef} className="vibe-modal" aria-labelledby="vibeFeaturedTitle" aria-describedby="vibeFeaturedDescription" onCancel={(event) => {event.preventDefault(); setFeaturedProject(null)}} onClose={() => featuredDialogRef.current?.classList.remove('is-open')}><section className="vibe-modal-panel vibe-modal-panel--confirm"><span className="vibe-confirm-icon vibe-confirm-icon--featured"><i className="fas fa-gem" /></span><h2 id="vibeFeaturedTitle">{featuredProject?.is_featured ? '取消精品？' : '设为精品？'}</h2><p id="vibeFeaturedDescription">{featuredProject?.is_featured ? `确认取消“${String(featuredProject?.title || featuredProject?.slug || '')}”的精品资格，并恢复普通作品资源规格。` : `确认将“${String(featuredProject?.title || featuredProject?.slug || '')}”设为精品，并启用精品标记与资源规格。`}</p><p className={`vibe-form-status${toggleFeatured.isError ? ' is-error' : ''}`} aria-live="polite">{featuredStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => setFeaturedProject(null)}>取消</button><button className="vibe-modal-primary" type="button" disabled={toggleFeatured.isPending} onClick={() => toggleFeatured.mutate()}>{toggleFeatured.isPending ? featuredProject?.is_featured ? '取消中…' : '设置中…' : featuredProject?.is_featured ? '确认取消精品' : '确认设为精品'}</button></footer></section></dialog>
+    <dialog ref={editorDialogRef} className="vibe-modal" aria-labelledby="vibeProjectModalTitle" onCancel={(event) => {event.preventDefault(); editorRequestRef.current?.abort(); setEditorOpen(false)}} onClose={() => setEditorOpen(false)}><section className="vibe-modal-panel"><header><div><h2 id="vibeProjectModalTitle">{editorMode === 'edit' ? '编辑作品' : '创建作品'}</h2><p>{editorMode === 'edit' ? '保存修改时构建镜像并自动送审；可选上传新程序包。' : '保存时构建镜像并自动送审。'}</p></div><button ref={editorCloseRef} className="vibe-modal-close" type="button" onClick={() => {editorRequestRef.current?.abort(); setEditorOpen(false)}} aria-label="关闭"><i className="fas fa-xmark" /></button></header><form encType="multipart/form-data" onSubmit={(event: FormEvent) => {event.preventDefault(); saveProject.mutate()}}><label className="vibe-form-field"><span>游戏名称</span><input ref={titleRef} name="title" required maxLength={120} autoComplete="off" placeholder="给作品起个名字" value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="vibe-package-field"><input type="file" name="package" required={editorMode === 'create'} accept=".zip,application/zip" onChange={(event) => setPackageFile(event.target.files?.[0] || null)} /><i className="fas fa-file-zipper" /><span><strong>{packageFile?.name || (editorMode === 'edit' ? '保留现有程序包' : '选择 ZIP 程序包')}</strong><small>必须包含 Dockerfile 与 vibehub.json</small></span><b>选择文件</b></label><p className={`vibe-form-status${editorError ? ' is-error' : ''}`} aria-live="polite">{editorStatus}</p><footer>{editorMode === 'edit' ? <button className="vibe-modal-danger" type="button" disabled={editorLoading || !originalTitle} onClick={() => {editorRequestRef.current?.abort(); setEditorOpen(false); setDeleteText(''); setDeleteStatus(''); setDeleteOpen(true)}}>删除作品</button> : <span />}<button className="vibe-modal-primary" type="submit" disabled={saveProject.isPending}>{saveProject.isPending ? '构建并送审中…' : editorMode === 'edit' ? '保存更新并自动送审' : '创建并自动送审'}</button></footer></form></section></dialog>
+    <dialog ref={deleteDialogRef} className="vibe-modal" aria-labelledby="vibeDeleteConfirmTitle" aria-describedby="vibeDeleteConfirmDescription vibeDeleteConfirmPhrase" onCancel={(event) => {event.preventDefault(); setDeleteOpen(false); setEditorOpen(true)}} onClose={() => setDeleteOpen(false)}><section className="vibe-modal-panel vibe-modal-panel--confirm"><h2 id="vibeDeleteConfirmTitle">确认删除作品</h2><p id="vibeDeleteConfirmDescription">此操作不可恢复。请输入以下文字后才能删除：</p><p className="vibe-delete-confirm-phrase" id="vibeDeleteConfirmPhrase">{deletePhrase}</p><form onSubmit={(event) => {event.preventDefault(); if (deleteText === deletePhrase) deleteProject.mutate()}}><label className="vibe-form-field vibe-delete-confirm-field"><span>确认文字</span><input type="text" autoComplete="off" required value={deleteText} onChange={(event) => setDeleteText(event.target.value)} /></label><p className={`vibe-form-status${deleteProject.isError ? ' is-error' : ''}`} aria-live="polite">{deleteStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => {setDeleteOpen(false); setEditorOpen(true)}}>返回编辑</button><button className="vibe-modal-danger vibe-modal-danger--confirm" type="submit" disabled={deleteText !== deletePhrase || deleteProject.isPending}>{deleteProject.isPending ? '删除中…' : '删除作品'}</button></footer></form></section></dialog>
+    <dialog ref={approveDialogRef} className="vibe-modal" aria-labelledby="vibeApproveTitle" aria-describedby="vibeApproveDescription" onCancel={(event) => {event.preventDefault(); setApproveProject(null)}} onClose={() => setApproveProject(null)}><section className="vibe-modal-panel vibe-modal-panel--confirm"><span className="vibe-confirm-icon"><i className="fas fa-check" /></span><h2 id="vibeApproveTitle">审核通过这个作品？</h2><p id="vibeApproveDescription">通过后直接公开当前已构建版本，不会重新构建。</p><p className={`vibe-form-status${approve.isError ? ' is-error' : ''}`} aria-live="polite">{approveStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => setApproveProject(null)}>取消</button><button ref={approveConfirmRef} className="vibe-modal-primary" type="button" disabled={approve.isPending} onClick={() => approve.mutate()}>{approve.isPending ? '通过中…' : '确认通过'}</button></footer></section></dialog>
+    <dialog ref={featuredDialogRef} className="vibe-modal" aria-labelledby="vibeFeaturedTitle" aria-describedby="vibeFeaturedDescription" onCancel={(event) => {event.preventDefault(); setFeaturedProject(null)}} onClose={() => setFeaturedProject(null)}><section className="vibe-modal-panel vibe-modal-panel--confirm"><span className="vibe-confirm-icon vibe-confirm-icon--featured"><i className="fas fa-gem" /></span><h2 id="vibeFeaturedTitle">{featuredProject?.is_featured ? '取消精品？' : '设为精品？'}</h2><p id="vibeFeaturedDescription">{featuredProject?.is_featured ? `确认取消“${String(featuredProject?.title || featuredProject?.slug || '')}”的精品资格，并恢复普通作品资源规格。` : `确认将“${String(featuredProject?.title || featuredProject?.slug || '')}”设为精品，并启用精品标记与资源规格。`}</p><p className={`vibe-form-status${toggleFeatured.isError ? ' is-error' : ''}`} aria-live="polite">{featuredStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => setFeaturedProject(null)}>取消</button><button ref={featuredConfirmRef} className="vibe-modal-primary" type="button" disabled={toggleFeatured.isPending} onClick={() => toggleFeatured.mutate()}>{toggleFeatured.isPending ? featuredProject?.is_featured ? '取消中…' : '设置中…' : featuredProject?.is_featured ? '确认取消精品' : '确认设为精品'}</button></footer></section></dialog>
   </div>
 }
