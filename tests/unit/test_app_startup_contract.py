@@ -292,7 +292,7 @@ def _static_cache_app():
     def download():
         return send_from_directory(
             ROOT / 'frontend' / 'public' / 'static' / 'app',
-            'layout.js',
+            'model-family.js',
             conditional=True,
         )
 
@@ -338,7 +338,7 @@ def test_real_unfingerprinted_static_responses_revalidate_on_get_head_and_304():
     client = _static_cache_app().test_client()
 
     initial = client.get(
-        '/static/app/layout.js',
+        '/static/app/model-family.js',
         headers={'Accept-Encoding': 'identity'},
     )
     head = client.head(
@@ -346,7 +346,7 @@ def test_real_unfingerprinted_static_responses_revalidate_on_get_head_and_304():
         headers={'Accept-Encoding': 'identity'},
     )
     not_modified = client.get(
-        '/static/app/layout.js',
+        '/static/app/model-family.js',
         headers={
             'Accept-Encoding': 'identity',
             'If-None-Match': initial.headers['ETag'],
@@ -419,18 +419,6 @@ def test_mysql_pool_tracking_wraps_auth_and_backpressure_precedes_headers():
         functions['_enforce_mysql_pool_exhaustion_backpressure'].lineno
         > functions['_set_security_headers'].lineno
     )
-
-
-def test_template_globals_never_wait_behind_an_inflight_config_read():
-    processor = next(
-        node
-        for node in _tree().body
-        if isinstance(node, ast.FunctionDef) and node.name == 'inject_globals'
-    )
-    source = ast.unparse(processor)
-
-    assert 'is_class_adjust_enabled(wait_timeout_seconds=0.0)' in source
-    assert 'get_mail_settings(wait_timeout_seconds=0.0)' in source
 
 
 def _mysql_pool_exhaustion_handler():

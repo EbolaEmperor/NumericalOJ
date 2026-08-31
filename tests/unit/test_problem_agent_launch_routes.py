@@ -441,26 +441,17 @@ def test_agent_task_list_redirects_existing_task_to_session_detail(monkeypatch):
             else "/unexpected"
         ),
     )
-    rendered = []
-    monkeypatch.setattr(
-        routes,
-        "render_template",
-        lambda template, **context: rendered.append((template, context)) or "ok",
-    )
-
     app = _app()
     with app.test_request_context("/admin/agent_tasks?task_id=task-1"):
         response = routes.admin_agent_tasks()
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/agent/tasks/session-1")
-    assert rendered == []
 
-    with app.test_request_context("/admin/agent_tasks?task_id=missing"):
-        assert routes.admin_agent_tasks() == "ok"
-    assert rendered[-1][0] == "admin/agent_tasks.html"
-    assert rendered[-1][1]["agent_sessions"] == []
-    assert rendered[-1][1]["current_page"] == 1
-    assert rendered[-1][1]["total_pages"] == 1
+    with app.test_request_context("/api/agent/sessions?task_id=missing"):
+        payload = routes.admin_agent_tasks().get_json()
+    assert payload["agent_sessions"] == []
+    assert payload["current_page"] == 1
+    assert payload["total_pages"] == 1
 
 
 def test_legacy_agent_run_page_route_is_removed():

@@ -60,8 +60,7 @@
   max-width: 100%;
 }
 
-/* 这些规则原先只存在于 Jinja 题目页内联样式中。React 路由不再加载旧模板，
- * 因此在 SPA 内按原值、按题目页作用域补齐。 */
+/* 题目详情页的局部布局规则。 */
 .problem-detail-page .problem-header,
 .problem-detail-page .problem-title-row,
 .problem-detail-page .problem-title-singleline {
@@ -179,28 +178,68 @@
   min-height: 1px;
 }
 
-/* 路由统一使用浏览器的 root 快照，让侧栏、顶栏与正文作为一张完整页面
- * 同时交叉淡化；不再单独移动或渐显正文容器。 */
-::view-transition-group(root) {
-  animation-duration: 320ms;
-  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+/* BrowserRouter 只为正文可见区域保留旧内容快照；桌面侧栏与移动端顶栏不参与
+ * 动画。路由和数据加载立即开始，旧正文先退场；过半后新正文才开始上浮。 */
+.numoj-page-transition-snapshot {
+  position: fixed;
+  z-index: 1020;
+  overflow: hidden;
+  pointer-events: none;
+  animation:
+    numoj-content-sink 260ms cubic-bezier(.45, 0, .55, 1) both,
+    numoj-content-dissolve 260ms linear both;
+  contain: paint;
+  will-change: opacity;
 }
 
-::view-transition-image-pair(root) {
-  isolation: isolate;
+.numoj-page-transition-clone {
+  position: absolute;
+  max-width: none !important;
+  margin: 0 !important;
+  pointer-events: none;
 }
 
-::view-transition-old(root),
-::view-transition-new(root) {
-  mix-blend-mode: normal;
+/* 快照保留旧页面的最终画面，只允许外层执行退场；不能继承真实新页面的
+ * 延迟入场动画，否则旧正文会在切换瞬间被置为透明。 */
+.numoj-page-transition-clone > .numoj-spa-route,
+.numoj-page-transition-clone.numoj-auth-page {
+  opacity: 1 !important;
+  transform: none !important;
+  animation: none !important;
 }
 
-::view-transition-old(root) {
-  animation: numoj-page-fade-out 320ms cubic-bezier(.4, 0, 1, 1) both;
+html.numoj-page-transition-entering #root .numoj-content > .numoj-spa-route,
+html.numoj-page-transition-entering #root .numoj-auth-page {
+  animation:
+    numoj-content-rise 260ms 130ms cubic-bezier(.45, 0, .55, 1) both,
+    numoj-content-appear 260ms 130ms linear both;
+  will-change: opacity, transform;
 }
 
-::view-transition-new(root) {
-  animation: numoj-page-fade-in 320ms cubic-bezier(0, 0, .2, 1) both;
+/* Agent 与 VibeHub 的首屏容器恰好等于 100dvh/100vh。上浮动画的视觉
+ * 位移不应被计入页面滚动范围，否则右侧会短暂多出滚动条。 */
+html.numoj-page-transition-entering #root .numoj-content {
+  overflow-y: clip;
+}
+
+@keyframes numoj-content-sink {
+  from { transform: translateY(0); }
+  to { transform: translateY(6px); }
+}
+
+@keyframes numoj-content-dissolve {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes numoj-content-rise {
+  from { transform: translateY(6px); }
+  to { transform: translateY(0); }
+}
+
+@keyframes numoj-content-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* 旧版题目工作台依赖内容容器的确定高度；SPA 过渡层必须把这条尺寸链继续向下传递。 */
@@ -259,8 +298,7 @@
   min-height: 0;
 }
 
-/* 旧版打榜赛设置页把这些规则写在 Jinja 模板内；SPA 需要原样携带，
-   否则次数输入框、刷新按钮和上线开关会退回 Bootstrap 的默认排布。 */
+/* 打榜赛设置区保持次数输入框、刷新按钮和上线开关的紧凑排布。 */
 .rank-limit-refresh-btn {
   min-width: 44px;
   height: 36px;
@@ -370,21 +408,6 @@
   .detection-action-bar .btn { align-self: flex-end; }
 }
 
-@keyframes numoj-page-fade-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-
-@keyframes numoj-page-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  ::view-transition-group(root),
-  ::view-transition-old(root),
-  ::view-transition-new(root) { animation: none; }
-}
 .appeal-review-page .ap-grid {display:flex;gap:1rem;align-items:flex-start;--gold:#f5c518;--gold-d:#b8910f;--ink:#1f2329;--muted:#70757c;--line:#e6e6e9;--ok:#1f7a4d;--info:#2563cb;--err:#b03a2e;--mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace}
 .appeal-review-page .ap-left {flex:1 1 auto;min-width:0;padding-right:.25rem}
 .appeal-review-page .ap-right {flex:0 0 360px;position:sticky;top:1rem;max-height:calc(100vh - 150px);overflow-y:auto}

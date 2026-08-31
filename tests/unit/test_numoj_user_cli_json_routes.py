@@ -467,7 +467,7 @@ def test_problem_download_refuses_overwrite_without_force(monkeypatch, tmp_path)
     assert (workspace / "solution.cpp").is_file()
 
 
-def test_lean_workspace_submit_uses_generic_snapshot_and_form_redirect_contract(
+def test_lean_workspace_submit_uses_generic_snapshot_and_json_api_contract(
     monkeypatch, capsys, tmp_path
 ):
     cli = _load_numoj_user_cli_module()
@@ -495,13 +495,9 @@ def test_lean_workspace_submit_uses_generic_snapshot_and_form_redirect_contract(
         encoding="utf-8",
     )
 
-    class _RedirectResponse(_FakeResponse):
-        status_code = 302
-        headers = {"Location": "/submission_detail/321"}
-
     client = _SequenceClient([
         _PayloadResponse({"submit": {"input_kind": "lean_workspace"}}),
-        _RedirectResponse(),
+        _StatusPayloadResponse(201, {"success": True, "submission_id": 321}),
     ])
     monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
 
@@ -520,7 +516,7 @@ def test_lean_workspace_submit_uses_generic_snapshot_and_form_redirect_contract(
         "submission_id": 321,
     }
     method, path, kwargs = client.requests[1]
-    assert (method, path) == ("POST", "/submit/42")
+    assert (method, path) == ("POST", "/api/problems/42/submissions")
     assert "json" not in kwargs
     assert kwargs["headers"] == {"Accept": "application/json"}
     assert cli.json.loads(kwargs["data"]["lean_workspace"]) == {
@@ -579,7 +575,7 @@ def test_problem_submit_preserves_server_deadline_warning_after_success(
     assert len(client.requests) == 2
     assert client.requests[1] == (
         "POST",
-        "/submit/42",
+        "/api/problems/42/submissions",
         {
             "data": {"code": "print('hello')"},
             "headers": {"Accept": "application/json"},
@@ -603,13 +599,9 @@ def test_lean_workspace_submit_accepts_legacy_manifest_fallback(
     )
     (workspace / "Submission.lean").write_text("example : True := by trivial\n")
 
-    class _RedirectResponse(_FakeResponse):
-        status_code = 302
-        headers = {"Location": "/submission_detail/322"}
-
     client = _SequenceClient([
         _PayloadResponse({"submit": {"input_kind": "lean_workspace"}}),
-        _RedirectResponse(),
+        _StatusPayloadResponse(201, {"success": True, "submission_id": 322}),
     ])
     monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: client)
 
@@ -1071,7 +1063,7 @@ def test_user_ranking_submit_allows_missing_base_model_and_omits_it_from_request
             if path.endswith("/my-submissions"):
                 rows = [{"id": 41}] if self.submitted else []
                 return _PayloadResponse({"submissions": rows})
-            if path.endswith("/submit"):
+            if path == "/api/ranking/competitions/9/submissions":
                 self.submitted = True
                 return _PayloadResponse({"success": True})
             raise AssertionError(path)
@@ -1087,7 +1079,11 @@ def test_user_ranking_submit_allows_missing_base_model_and_omits_it_from_request
     ))
 
     assert cli.json.loads(capsys.readouterr().out) == {"success": True, "submission_id": 41}
-    submit_request = next(request for request in fake_client.requests if request[1].endswith("/submit"))
+    submit_request = next(
+        request
+        for request in fake_client.requests
+        if request[:2] == ("POST", "/api/ranking/competitions/9/submissions")
+    )
     assert submit_request[2]["data"] == {"agent_endpoint_id": "7"}
 
 
@@ -1106,7 +1102,7 @@ def test_user_ranking_submit_confirms_creation_after_a_proxy_5xx(monkeypatch, ca
             if path.endswith("/my-submissions"):
                 rows = [{"id": 42}] if self.submitted else []
                 return _PayloadResponse({"submissions": rows})
-            if path.endswith("/submit"):
+            if path == "/api/ranking/competitions/9/submissions":
                 self.submitted = True
                 return _StatusPayloadResponse(502, {"message": "upstream redirect failed"})
             raise AssertionError(path)
@@ -1251,8 +1247,8 @@ def test_user_ranking_download_submission_routes_and_saves_all_supported_artifac
 
     cases = [
         ("ai-answer", "/tmp/ai-answer.zip", "/api/ranking/submissions/9/reverse-agent-answer"),
-        ("answer", None, "/ranking/submission/9/answer"),
-        ("code", "/tmp/code.zip", "/ranking/submission/9/code"),
+        ("answer", None, "/api/ranking/submissions/9/answer"),
+        ("code", "/tmp/code.zip", "/api/ranking/submissions/9/code"),
     ]
     for kind, output, expected_path in cases:
         cli.ranking_download_submission(Namespace(submission_id=9, kind=kind, output=output))

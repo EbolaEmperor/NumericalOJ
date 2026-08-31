@@ -19,7 +19,7 @@ from datetime import datetime
 
 from flask import (
     Blueprint, Response, abort, current_app, flash, jsonify, redirect,
-    render_template, request, send_file, stream_with_context, url_for,
+    request, send_file, stream_with_context, url_for,
 )
 from werkzeug.utils import secure_filename
 
@@ -801,16 +801,7 @@ def _create_uploaded_ranking_submission(
 
 @ranking_bp.route('/', methods=['GET'])
 def ranking_list():
-    user, resp = _require_user()
-    if resp is not None:
-        return resp
-    is_admin = user.get('is_admin') == 1
-    competitions = list_competitions(include_inactive=is_admin)
-    return render_template(
-        'ranking/list.html',
-        user=user,
-        competitions=competitions,
-    )
+    return redirect('/rankings')
 
 
 @ranking_bp.route('/create', methods=['POST'])
@@ -1143,67 +1134,12 @@ def _ranking_navigation_payload(state, is_admin):
 
 @ranking_bp.route('/<int:competition_id>/', methods=['GET'])
 def ranking_detail(competition_id):
-    user, resp = _require_user()
-    if resp is not None:
-        return resp
-    fragment_requested = str(request.args.get('fragment') or '').strip() == '1'
-    # revision 快照必须早于 competition 与 tab 内容读取：并发写入时允许
-    # “新内容 + 旧 revision”（下轮仍会检测），禁止“旧内容 + 新 revision”。
-    global_state = _get_ranking_navigation_state_cached(competition_id)
-    if not global_state:
-        if fragment_requested:
-            return jsonify(success=False, message='比赛不存在或已被删除'), 404
-        flash('比赛不存在或已被删除', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-    comp = get_competition(competition_id)
-    if not comp:
-        if fragment_requested:
-            return jsonify(success=False, message='比赛不存在或已被删除'), 404
-        flash('比赛不存在或已被删除', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-    is_admin = user.get('is_admin') == 1
-    if not is_admin and comp.get('is_active') != 1:
-        if fragment_requested:
-            return jsonify(success=False, message='该比赛未开放'), 403
-        flash('该比赛未开放', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-
-    state = _get_ranking_navigation_state_for_request(
-        comp,
-        user,
-        is_admin,
-        state=global_state,
-    )
-    if not state:
-        if fragment_requested:
-            return jsonify(success=False, message='比赛不存在或已被删除'), 404
-        flash('比赛不存在或已被删除', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-    if not is_admin and state.get('is_active') != 1:
-        if fragment_requested:
-            return jsonify(success=False, message='该比赛未开放'), 403
-        flash('该比赛未开放', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-
-    # 先固定响应携带的 revision，再读取 tab 内容。这样并发写入最多得到
-    # “较新 HTML + 较旧 revision”，下一轮轮询仍会再次检测；不能反过来把
-    # 较旧 HTML 标成最新 revision 而永久漏掉刷新。
-    context = _build_ranking_detail_context(
-        competition_id, user, comp, request.args,
-    )
-    navigation = _ranking_navigation_payload(state, is_admin)
-    context['navigation'] = navigation
-    context['revision'] = state['revision']
-
-    if fragment_requested:
+    if str(request.args.get('fragment') or '').strip() == '1':
         return jsonify(
-            success=True,
-            tab=context['tab'],
-            html=render_template('ranking/components/detail_panel.html', **context),
-            revision=state['revision'],
-            navigation=navigation,
-        )
-    return render_template('ranking/detail.html', **context)
+            success=False,
+            message='旧版 HTML 分片接口已移除，请使用 /api/ranking/competitions',
+        ), 410
+    return redirect(f'/rankings/{competition_id}')
 
 
 @ranking_bp.route('/<int:competition_id>/navigation-state', methods=['GET'])
@@ -1425,59 +1361,11 @@ def ranking_elo_trajectory(competition_id):
 
 @ranking_bp.route('/<int:competition_id>/submissions_json', methods=['GET'])
 def ranking_submissions_json(competition_id):
-    """供「所有提交」标签页的分页与按用户名搜索使用的 AJAX 端点。
-
-    返回 ``rows_html`` / ``pagination_html`` 两段已渲染好的 HTML，由前端直接替换 DOM 内容；
-    服务端是 row 模板的唯一真理源，避免前后端再写一遍。
-    """
-    user = _current_user()
-    if not user:
-        return jsonify({'error': 'unauthorized'}), 401
-    if user.get('is_admin') != 1:
-        return jsonify({'error': 'forbidden'}), 403
-    comp = get_competition(competition_id)
-    if not comp:
-        return jsonify({'error': 'not_found'}), 404
-
-    q = (request.args.get('q') or '').strip()[:50]
-    requested_page = max(1, request.args.get('page', 1, type=int))
-    per_page = SUBMISSIONS_PER_PAGE
-    rows, page, total = list_all_submissions(
-        competition_id,
-        page=requested_page,
-        per_page=per_page,
-        username_q=q or None,
-    )
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page_numbers = _page_window(page, total_pages)
-
-    is_elo = (str(comp.get('scoring_mode') or 'absolute').lower() == 'elo')
-    max_score = comp.get('max_score') or 100
-
-    is_agent_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'agent_judge')
-    is_reverse_judge = (str(comp.get('scoring_mode') or 'absolute').lower() == 'reverse_judge')
-    rows_html = render_template(
-        'ranking/components/submission_rows.html',
-        all_submissions=rows,
-        competition=comp,
-        is_elo=is_elo,
-        max_score=max_score,
-        is_agent_judge=is_agent_judge,
-        is_reverse_judge=is_reverse_judge,
-    )
-    pagination_html = render_template(
-        'ranking/components/pagination.html',
-        competition=comp,
-        current_page=page,
-        total_pages=total_pages,
-        page_numbers=page_numbers,
-        submission_search_q=q,
-    )
-    return jsonify({
-        'rows_html': rows_html,
-        'pagination_html': pagination_html,
-        'page': page,
-    })
+    """旧版 HTML 分片端点已退役。"""
+    return jsonify(
+        success=False,
+        message='旧版 HTML 分片接口已移除，请使用 /api/ranking/competitions',
+    ), 410
 
 
 @ranking_bp.route('/<int:competition_id>/bulk_rejudge/filter', methods=['POST'])
@@ -1625,47 +1513,11 @@ def ranking_bulk_rejudge_status(competition_id, job_id):
 
 @ranking_bp.route('/<int:competition_id>/matches_json', methods=['GET'])
 def ranking_matches_json(competition_id):
-    """对战数据标签页的 AJAX 端点：返回某一页对战列表 + 分页的已渲染 HTML 片段。
-    管理员删除某场对战后，前端据此就地刷新「当前页」，不跳回第 1 页。"""
-    user = _current_user()
-    if not user:
-        return jsonify({'error': 'unauthorized'}), 401
-    comp = get_competition(competition_id)
-    if not comp:
-        return jsonify({'error': 'not_found'}), 404
-    is_admin = user.get('is_admin') == 1
-    if not is_admin and comp.get('is_active') != 1:
-        return jsonify({'error': 'forbidden'}), 403
-
-    requested_page = max(1, request.args.get('page', 1, type=int))
-    matches_mine = str(request.args.get('mine') or '').strip() in ('1', 'true', 'on', 'yes')
-    username_filter = user.get('username') if matches_mine else None
-    matches, current_page, matches_total = list_competition_matches(
-        competition_id,
-        page=requested_page,
-        per_page=MATCHES_PER_PAGE,
-        username=username_filter,
-    )
-    total_pages = max(1, (matches_total + MATCHES_PER_PAGE - 1) // MATCHES_PER_PAGE)
-    page_numbers = _page_window(current_page, total_pages)
-
-    html = render_template(
-        'ranking/components/matches.html',
-        matches=matches,
-        competition=comp,
-        user=user,
-        is_admin=is_admin,
-        matches_mine=matches_mine,
-        current_page=current_page,
-        total_pages=total_pages,
-        page_numbers=page_numbers,
-    )
-    return jsonify({
-        'html': html,
-        'total': matches_total,
-        'page': current_page,
-        'total_pages': total_pages,
-    })
+    """旧版 HTML 分片端点已退役。"""
+    return jsonify(
+        success=False,
+        message='旧版 HTML 分片接口已移除，请使用 /api/ranking/competitions',
+    ), 410
 
 
 # ---------- 用户提交作品 ----------
@@ -3030,62 +2882,17 @@ def ranking_appeal_status(competition_id, submission_id):
 
 @ranking_bp.route('/<int:competition_id>/appeals_json', methods=['GET'])
 def ranking_appeals_json(competition_id):
-    """「申诉处理」标签页的分页/筛选 AJAX（返回已渲染的 rows/pagination HTML）。"""
-    user = _current_user()
-    if not user:
-        return jsonify({'error': 'unauthorized'}), 401
-    if user.get('is_admin') != 1:
-        return jsonify({'error': 'forbidden'}), 403
-    comp = get_competition(competition_id)
-    if not comp:
-        return jsonify({'error': 'not_found'}), 404
-    q = (request.args.get('q') or '').strip()[:50]
-    status_q = (request.args.get('status') or '').strip().lower() or None
-    requested_page = max(1, request.args.get('page', 1, type=int))
-    rows, page, total = list_appeals(
-        competition_id, page=requested_page, per_page=SUBMISSIONS_PER_PAGE,
-        status_q=status_q, username_q=q or None,
-    )
-    total_pages = max(1, (total + SUBMISSIONS_PER_PAGE - 1) // SUBMISSIONS_PER_PAGE)
-    page_numbers = _page_window(page, total_pages)
-    rows_html = render_template(
-        'ranking/components/appeal_rows.html',
-        all_appeals=rows,
-        competition=comp,
-    )
-    pagination_html = render_template(
-        'ranking/components/pagination.html',
-        competition=comp, current_page=page, total_pages=total_pages,
-        page_numbers=page_numbers, submission_search_q=q, tab='appeals',
-    )
-    return jsonify({'rows_html': rows_html, 'pagination_html': pagination_html, 'page': page})
+    """旧版 HTML 分片端点已退役。"""
+    return jsonify(
+        success=False,
+        message='旧版 HTML 分片接口已移除，请使用 /api/ranking/competitions',
+    ), 410
 
 
 @ranking_bp.route('/<int:competition_id>/appeal/<int:appeal_id>/review', methods=['GET'])
 def ranking_appeal_review(competition_id, appeal_id):
-    """管理员申诉审阅页：左=可编辑评分详情，右=申诉意见+回复+驳回/处理+重测。"""
-    user, resp = _require_admin()
-    if resp is not None:
-        return resp
-    comp = get_competition(competition_id)
-    if not comp:
-        if _wants_json_response():
-            return jsonify(success=False, message='比赛不存在'), 404
-        flash('比赛不存在', 'warning')
-        return redirect(url_for('ranking.ranking_list'))
-    appeal = get_appeal(appeal_id)
-    if not appeal or int(appeal.get('competition_id')) != competition_id:
-        flash('申诉记录不存在', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='appeals'))
-    submission = get_ranking_submission(appeal.get('submission_id'))
-    snapshot = build_judge_snapshot(appeal.get('submission_id')) or {}
-    if snapshot:
-        snapshot = _render_snapshot_html(snapshot)
-    return render_template(
-        'ranking/appeal_review.html',
-        user=user, is_admin=True, competition=comp,
-        appeal=appeal, submission=submission, snapshot=snapshot,
-    )
+    """把旧审阅地址导向 React 页面。"""
+    return redirect(f'/rankings/{competition_id}/appeals/{appeal_id}')
 
 
 @ranking_bp.route('/<int:competition_id>/appeal/<int:appeal_id>/handle', methods=['POST'])

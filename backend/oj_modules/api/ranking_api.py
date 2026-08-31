@@ -66,6 +66,41 @@ from backend.oj_modules.ranking.readiness import (
 
 ranking_api_bp = Blueprint("ranking_api", __name__, url_prefix="/api/ranking")
 
+_DIRECT_RANKING_HANDLER_NAMES = frozenset({
+    "ranking_submit",
+    "ranking_check_repo",
+    "ranking_git_submit",
+    "ranking_download_attachment",
+    "download_submission_answer",
+    "download_submission_code",
+})
+_ranking_api_handlers = {}
+
+
+def init_ranking_api_handlers(provider):
+    """由应用组合根注入旧 HTTP 适配器中尚未下沉的业务处理函数。"""
+
+    handler_names = _DIRECT_RANKING_HANDLER_NAMES | {
+        handler_name for _endpoint, _rule, _methods, handler_name
+        in _RANKING_COMMAND_ROUTES
+    }
+    handlers = {
+        name: getattr(provider, name, None)
+        for name in handler_names
+    }
+    missing = sorted(name for name, handler in handlers.items() if not callable(handler))
+    if missing:
+        raise RuntimeError(f"Ranking API handlers are missing: {', '.join(missing)}")
+    _ranking_api_handlers.clear()
+    _ranking_api_handlers.update(handlers)
+
+
+def _call_ranking_api_handler(handler_name, **values):
+    handler = _ranking_api_handlers.get(handler_name)
+    if handler is None:
+        raise RuntimeError("Ranking API handlers have not been initialized")
+    return handler(**values)
+
 
 def _require_user():
     user = current_user()
@@ -431,23 +466,26 @@ def competition_detail(competition_id):
 @ranking_api_bp.route("/competitions/<int:competition_id>/submissions", methods=["POST"])
 def create_competition_submission(competition_id):
     """SPA 专用提交入口；内部复用同一业务处理，不暴露旧页面 URL。"""
-    from backend.oj_modules.routes.ranking_routes import ranking_submit
-
-    return ranking_submit(competition_id)
+    return _call_ranking_api_handler(
+        "ranking_submit",
+        competition_id=competition_id,
+    )
 
 
 @ranking_api_bp.route("/competitions/<int:competition_id>/repository/check", methods=["POST"])
 def check_competition_repository(competition_id):
-    from backend.oj_modules.routes.ranking_routes import ranking_check_repo
-
-    return ranking_check_repo(competition_id)
+    return _call_ranking_api_handler(
+        "ranking_check_repo",
+        competition_id=competition_id,
+    )
 
 
 @ranking_api_bp.route("/competitions/<int:competition_id>/repository/submissions", methods=["POST"])
 def create_repository_submission(competition_id):
-    from backend.oj_modules.routes.ranking_routes import ranking_git_submit
-
-    return ranking_git_submit(competition_id)
+    return _call_ranking_api_handler(
+        "ranking_git_submit",
+        competition_id=competition_id,
+    )
 
 
 @ranking_api_bp.route(
@@ -455,23 +493,27 @@ def create_repository_submission(competition_id):
     methods=["GET"],
 )
 def download_competition_attachment(competition_id, file_id):
-    from backend.oj_modules.routes.ranking_routes import ranking_download_attachment
-
-    return ranking_download_attachment(competition_id, file_id)
+    return _call_ranking_api_handler(
+        "ranking_download_attachment",
+        competition_id=competition_id,
+        file_id=file_id,
+    )
 
 
 @ranking_api_bp.route("/submissions/<int:submission_id>/answer", methods=["GET"])
 def download_submission_answer_file(submission_id):
-    from backend.oj_modules.routes.ranking_routes import download_submission_answer
-
-    return download_submission_answer(submission_id)
+    return _call_ranking_api_handler(
+        "download_submission_answer",
+        submission_id=submission_id,
+    )
 
 
 @ranking_api_bp.route("/submissions/<int:submission_id>/code", methods=["GET"])
 def download_submission_code_file(submission_id):
-    from backend.oj_modules.routes.ranking_routes import download_submission_code
-
-    return download_submission_code(submission_id)
+    return _call_ranking_api_handler(
+        "download_submission_code",
+        submission_id=submission_id,
+    )
 
 
 @ranking_api_bp.route("/competitions/<int:competition_id>/my-submissions", methods=["GET"])
@@ -655,9 +697,7 @@ def _ranking_command_proxy(handler_name):
     """为 SPA/CLI 暴露稳定 API，复用已有领域处理与权限检查。"""
 
     def proxy(**values):
-        from backend.oj_modules.routes import ranking_routes
-
-        result = getattr(ranking_routes, handler_name)(**values)
+        result = _call_ranking_api_handler(handler_name, **values)
         response = make_response(result)
         payload = response.get_json(silent=True)
         if isinstance(payload, dict) and "success" not in payload and "ok" in payload:

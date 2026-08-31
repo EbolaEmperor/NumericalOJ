@@ -6,11 +6,11 @@ from urllib.parse import unquote, urlsplit
 
 from flask import jsonify, redirect, request, url_for
 
-from backend.oj_modules.spa_routes import is_spa_document_path
+from backend.oj_modules.routes.spa_routes import is_spa_document_path
 
 
 _PUBLIC_AUTH_ENDPOINTS = frozenset(
-    {"auth.login", "auth.register", "auth.send_verification", "auth.forgot_password"}
+    {"auth.login", "auth.send_verification"}
 )
 _PUBLIC_CAPABILITY_ENDPOINTS = frozenset({"vibehub.runtime_proxy"})
 _PUBLIC_EXACT_PATHS = frozenset({
@@ -80,7 +80,7 @@ def _is_public_request():
         return True
     if request.path in _PUBLIC_EXACT_PATHS:
         return True
-    if request.path in {"/old/login", "/old/register", "/old/forgot_password"}:
+    if request.path == "/forgot_password" and request.method in {"GET", "HEAD"}:
         return True
     # 已退役的 /app 前缀必须直接落到 Flask 404；不能先被登录守卫改写成
     # 登录跳转，更不能成为无前缀 React 路由的兼容入口。

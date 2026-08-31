@@ -540,29 +540,6 @@ def test_validate_email_accepts_deliverable_addresses_and_rejects_unsafe_values(
         assert message
 
 
-def test_admin_score_template_does_not_innerhtml_user_fields():
-    root = Path(__file__).resolve().parents[2]
-    text = (root / 'backend' / 'templates' / 'problems' / 'detail.html').read_text(encoding='utf-8')
-    assert '${score.username}' not in text
-    assert '${score.classes_display}' not in text
-    assert 'appendScoreCell(row, score.username' in text
-    assert 'appendScoreCell(row, score.classes_display' in text
-
-
-def test_admin_user_template_avoids_inline_user_data_handlers():
-    root = Path(__file__).resolve().parents[2]
-    text = (root / 'backend' / 'templates' / 'admin' / 'users.html').read_text(encoding='utf-8')
-    script = (root / 'frontend' / 'public' / 'static' / 'app' / 'admin-users.js').read_text(encoding='utf-8')
-    assert 'onclick=' not in text
-    assert 'data-username="{{ u.username }}"' in text
-    assert 'data-classes="{{ u.classes|tojson|forceescape }}"' in text
-    assert 'textContent = membership.class_cn' in script
-    assert 'innerHTML' not in script
-    assert 'alert(' not in script
-    assert 'confirm(' not in script
-    assert 'prompt(' not in script
-
-
 def test_class_membership_routes_never_change_admin_privileges():
     root = Path(__file__).resolve().parents[2]
     text = (root / 'backend' / 'oj_modules' / 'routes' / 'class_management_routes.py').read_text(encoding='utf-8')

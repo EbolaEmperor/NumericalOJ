@@ -1,4 +1,4 @@
-/* 从原 ranking/list.html 原样抽出的列表视觉合同，供 Jinja 与 React 共用。 */
+/* 打榜赛列表的 React 视觉合同。 */
 .ranking-list-heading{min-width:0;margin:0 0 23px;padding:12px 16px 12px 20px;border-bottom:1px solid var(--numoj-line,#e4e4e7);background:rgba(255,255,255,.97)}
 .ranking-list-heading>p{margin:0 0 3px;color:var(--numoj-ink-4,#a1a1aa);font:700 9.5px/1.2 var(--numoj-mono,"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace);letter-spacing:.15em}
 .ranking-list-heading>div{display:flex;min-width:0;align-items:baseline;gap:10px}

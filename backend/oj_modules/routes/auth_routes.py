@@ -7,7 +7,7 @@ import smtplib
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, jsonify, redirect, request, session, url_for
 
 from backend.oj_modules.classroom.logos import attach_class_logos
 from backend.oj_modules.site_config.services import get_mail_settings
@@ -54,9 +54,7 @@ def _wants_json_response():
 
 
 def _json_or_error(message, status=400):
-    if _wants_json_response():
-        return jsonify(success=False, message=message), status
-    return render_template('shared/error.html', message=message), status
+    return jsonify(success=False, message=message), status
 
 
 # ---- 限流参数 ----
@@ -198,31 +196,17 @@ def login():
             _audit_auth(
                 'login', 'failure', reason='invalid_username', username=username,
             )
-            if _wants_json_response():
-                return jsonify(success=False, message=username_msg), 400
-            return render_template(
-                'auth/login.html',
-                error_message=username_msg,
-                success_message=None,
-                next_url=next_url,
-            )
+            return jsonify(success=False, message=username_msg), 400
 
         # 登录尝试限流（按用户名），减缓离线/在线暴力破解。
         if not rate_limit_hit(_rds, f'login:{username}', _LOGIN_MAX_ATTEMPTS, _LOGIN_WINDOW)[0]:
             _audit_auth(
                 'login', 'denied', reason='rate_limited', username=username,
             )
-            if _wants_json_response():
-                return jsonify(
-                    success=False,
-                    message="尝试过于频繁，请稍后再试",
-                ), 429
-            return render_template(
-                'auth/login.html',
-                error_message="尝试过于频繁，请稍后再试",
-                success_message=None,
-                next_url=next_url,
-            )
+            return jsonify(
+                success=False,
+                message="尝试过于频繁，请稍后再试",
+            ), 429
 
         user_record = get_user_by_username(username)
         if user_record:
@@ -251,22 +235,9 @@ def login():
         _audit_auth(
             'login', 'failure', reason='invalid_credentials', username=username,
         )
-        if _wants_json_response():
-            return jsonify(success=False, message="用户名或密码错误"), 401
-        return render_template(
-            'auth/login.html',
-            error_message="用户名或密码错误",
-            success_message=None,
-            next_url=next_url,
-        )
+        return jsonify(success=False, message="用户名或密码错误"), 401
 
-    success_message = request.args.get('success')
-    return render_template(
-        'auth/login.html',
-        error_message=None,
-        success_message=success_message,
-        next_url=next_url,
-    )
+    return jsonify(success=False, message="请通过 React 前端登录"), 405
 
 
 @auth_bp.post('/api/auth/registration/code')
@@ -410,157 +381,6 @@ def password_reset_api():
         conn.close()
     _audit_auth('password.reset', 'success', user=user)
     return jsonify(success=True, message='密码重置成功，请重新登录', next='/login')
-
-
-@auth_bp.route('/register', methods=['GET', 'POST'])
-def register():
-    public_classes = attach_class_logos(get_all_classes())
-    mail_configured = bool(get_mail_settings())
-    if request.method == 'POST':
-        if not mail_configured:
-            return render_template(
-                'auth/register.html',
-                error_message=_MAIL_UNAVAILABLE_MESSAGE,
-                classes=public_classes,
-                mail_configured=False,
-            ), 503
-        username = (request.form.get('username') or '').strip()
-        password = (request.form.get('password') or '').strip()
-        email = (request.form.get('email') or '').strip()
-        code = (request.form.get('verification_code') or '').strip()
-        user_class = get_class_by_en(request.form.get('class'))
-
-        if not all([username, password, email, code, user_class]):
-            return render_template('auth/register.html', error_message="所有字段不能为空", classes=public_classes, mail_configured=mail_configured)
-
-        username_ok, username, username_msg = validate_username(username)
-        if not username_ok:
-            return render_template('auth/register.html', error_message=username_msg, classes=public_classes, mail_configured=mail_configured)
-
-        if not _verify_attempt_allowed(email):
-            return render_template('auth/register.html', error_message="验证次数过多，请稍后再试", classes=public_classes, mail_configured=mail_configured)
-
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                sql = "SELECT * FROM verification_codes WHERE email = %s"
-                cursor.execute(sql, (email,))
-                record = cursor.fetchone()
-        finally:
-            conn.close()
-
-        if not record or record['code'] != code or datetime.now() > record['expires_at']:
-            return render_template('auth/register.html', error_message="验证码错误或已过期", classes=public_classes, mail_configured=mail_configured)
-
-        if get_user_by_username(username) or get_user_by_email(email):
-            return render_template('auth/register.html', error_message="用户名或邮箱已被注册", classes=public_classes, mail_configured=mail_configured)
-
-        try:
-            user_id = create_user(
-                username,
-                hash_password(password),
-                email,
-                user_class,
-            )
-        except ValueError as exc:
-            # 真实用户名与讨论区所有历史匿名名共用命名空间。预检查用于快速反馈，
-            # create_user 内的事务级检查才是并发下的最终边界。
-            return render_template(
-                'auth/register.html',
-                error_message=str(exc),
-                classes=public_classes,
-                mail_configured=mail_configured,
-            )
-        _audit_auth(
-            'register',
-            'success',
-            user={'id': user_id, 'username': username, 'is_admin': False},
-            account={'class': user_class.get('class_en')},
-        )
-        return redirect(url_for('auth.login', success="注册成功，请登录"))
-
-    return render_template('auth/register.html', classes=public_classes, mail_configured=mail_configured)
-
-
-@auth_bp.route('/forgot_password', methods=['GET', 'POST'])
-def forgot_password():
-    step = request.args.get('step', 'email')
-    # 已经取得验证码的用户即使管理员随后清除了 SMTP，也仍可完成验证步骤。
-    mail_configured = True if step == 'verify' else bool(get_mail_settings())
-
-    if request.method == 'POST':
-        if step == 'email':
-            if not mail_configured:
-                flash(_MAIL_UNAVAILABLE_MESSAGE, 'danger')
-                return redirect(url_for('auth.forgot_password'))
-            email = request.form.get('email').strip()
-
-            if not email:
-                flash('邮箱不能为空', 'danger')
-                return redirect(url_for('auth.forgot_password'))
-
-            user = get_user_by_email(email)
-            # 不区分「邮箱未注册」与「已发送」，避免账号枚举；仅对已注册邮箱真正发码。
-            if user:
-                allowed, reason = _check_send_code_allowed(email)
-                if not allowed:
-                    flash(reason, 'danger')
-                    return redirect(url_for('auth.forgot_password'))
-                send_verification_code(email, '重置密码验证码')
-
-            flash('如果该邮箱已注册，验证码已发送，请检查邮箱', 'success')
-            return redirect(url_for('auth.forgot_password', step='verify', email=email))
-
-        if step == 'verify':
-            email = request.args.get('email', '').strip()
-
-            code = request.form.get('code').strip()
-            new_password = request.form.get('new_password').strip()
-            confirm_password = request.form.get('confirm_password').strip()
-
-            if new_password != confirm_password:
-                flash('两次输入的密码不一致', 'danger')
-                return redirect(url_for('auth.forgot_password', step='verify', email=email))
-
-            if not _verify_attempt_allowed(email):
-                flash('验证次数过多，请稍后再试', 'danger')
-                return redirect(url_for('auth.forgot_password', step='verify', email=email))
-
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cursor:
-                    sql = "SELECT * FROM verification_codes WHERE email=%s"
-                    cursor.execute(sql, (email,))
-                    record = cursor.fetchone()
-            finally:
-                conn.close()
-
-            if not record or record['code'] != code or datetime.now() > record['expires_at']:
-                flash('验证码错误或已过期', 'danger')
-                return redirect(url_for('auth.forgot_password', step='verify', email=email))
-
-            user = get_user_by_email(email)
-            _update_password_hash(email=email, new_hash=hash_password(new_password))
-
-            conn = get_db_connection()
-            try:
-                with conn.cursor() as cursor:
-                    sql = 'DELETE FROM verification_codes WHERE email = %s'
-                    cursor.execute(sql, (email,))
-                conn.commit()
-            finally:
-                conn.close()
-
-            flash('密码重置成功，请重新登录', 'success')
-            _audit_auth('password.reset', 'success', user=user)
-            return redirect(url_for('auth.login'))
-
-    return render_template(
-        'auth/forgot_password.html',
-        step=step,
-        email=request.args.get('email'),
-        mail_configured=mail_configured,
-    )
 
 
 @auth_bp.post('/api/account/password/code')

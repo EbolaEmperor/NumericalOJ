@@ -1412,44 +1412,35 @@ def test_detail_get_defers_workspace_tree_until_after_first_render(monkeypatch):
         "list_pending_agent_quota_requests",
         lambda _user_id: quota_popup_calls.append("pending") or [],
     )
-    rendered = []
-    monkeypatch.setattr(
-        routes,
-        "render_template",
-        lambda template, **context: rendered.append((template, context)) or "detail",
-    )
-
     app = _app()
-    with app.test_request_context("/admin/agent_tasks/session-1"):
+    with app.test_request_context("/api/agent/sessions/session-1"):
         response = routes.admin_agent_task_detail("session-1")
 
-    assert response.get_data(as_text=True) == "detail"
     assert response.headers["Cache-Control"] == "private, no-store"
-    assert rendered[0][0] == "admin/agent_task_detail.html"
-    assert rendered[0][1]["agent_session"] == agent_session
-    assert rendered[0][1]["agent_message_urls"] == {
-        "state": "/agent/tasks/session-1/state",
-        "stream": "/agent/tasks/session-1/stream",
+    payload = response.get_json()
+    assert payload["agent_session"] == agent_session
+    assert payload["agent_message_urls"] == {
+        "state": "/api/agent/sessions/session-1/state",
+        "stream": "/api/agent/sessions/session-1/stream",
         "update": (
-            "/agent/tasks/session-1/messages/__MESSAGE_ID__/update"
+            "/api/agent/sessions/session-1/messages/__MESSAGE_ID__/update"
         ),
         "delete": (
-            "/agent/tasks/session-1/messages/__MESSAGE_ID__/delete"
+            "/api/agent/sessions/session-1/messages/__MESSAGE_ID__/delete"
         ),
-            "send_now": (
-                "/agent/tasks/session-1/messages/__MESSAGE_ID__/send-now"
-            ),
-            "resume": "/agent/tasks/session-1/queue/resume",
-            "rename": "/agent/tasks/session-1/title",
-        }
-    assert rendered[0][1]["can_resume"] is True
-    assert rendered[0][1]["can_retry"] is True
-    assert rendered[0][1]["can_retry_now"] is True
-    assert rendered[0][1]["workspace_tree"] == []
+        "send_now": (
+            "/api/agent/sessions/session-1/messages/__MESSAGE_ID__/send-now"
+        ),
+        "resume": "/api/agent/sessions/session-1/queue/resume",
+        "rename": "/api/agent/sessions/session-1/title",
+    }
+    assert payload["can_resume"] is True
+    assert payload["can_retry"] is True
+    assert payload["can_retry_now"] is True
     assert quota_popup_calls == []
-    assert "agent_personal_endpoints" not in rendered[0][1]
-    assert "agent_quota_pending_count" not in rendered[0][1]
-    assert "agent_quota_pending_requests" not in rendered[0][1]
+    assert "agent_personal_endpoints" not in payload
+    assert "agent_quota_pending_count" not in payload
+    assert "agent_quota_pending_requests" not in payload
     assert len(decorate_calls) == 1
     assert state_calls == [(
         "turn-1",
@@ -1492,20 +1483,13 @@ def test_detail_get_allows_retrying_specialized_generic_followup(monkeypatch):
         },
     )
     monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
-    rendered = []
-    monkeypatch.setattr(
-        routes,
-        "render_template",
-        lambda template, **context: rendered.append((template, context)) or "detail",
-    )
-
     app = _app()
-    with app.test_request_context("/admin/agent_tasks/session-1"):
+    with app.test_request_context("/api/agent/sessions/session-1"):
         response = routes.admin_agent_task_detail("session-1")
 
-    assert response.get_data(as_text=True) == "detail"
-    assert rendered[0][1]["can_retry"] is True
-    assert rendered[0][1]["can_retry_now"] is True
+    payload = response.get_json()
+    assert payload["can_retry"] is True
+    assert payload["can_retry_now"] is True
 
 
 def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_count(
@@ -1563,18 +1547,11 @@ def test_detail_get_exposes_cumulative_session_usage_without_pi_resume_double_co
         lambda _sid, _tid: [("turn-1", turns[0]["execution_trace"]["token_usage"])],
     )
     monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
-    rendered = []
-    monkeypatch.setattr(
-        routes,
-        "render_template",
-        lambda template, **context: rendered.append((template, context)) or "detail",
-    )
-
     app = _app()
-    with app.test_request_context("/admin/agent_tasks/session-1"):
-        routes.admin_agent_task_detail("session-1")
+    with app.test_request_context("/api/agent/sessions/session-1"):
+        response = routes.admin_agent_task_detail("session-1")
 
-    usage = rendered[0][1]["current_state"]["session_token_usage"]
+    usage = response.get_json()["current_state"]["session_token_usage"]
     assert usage["request_count"] == 2
     assert usage["input_total_tokens"] == 235
     assert usage["input_cached_tokens"] == 50
@@ -1835,19 +1812,11 @@ def test_detail_get_marks_another_admin_session_read_only(monkeypatch):
         },
     )
     monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
-    rendered = []
-    monkeypatch.setattr(
-        routes,
-        "render_template",
-        lambda template, **context: rendered.append((template, context)) or "detail",
-    )
-
     app = _app()
-    with app.test_request_context("/admin/agent_tasks/session-1"):
+    with app.test_request_context("/api/agent/sessions/session-1"):
         response = routes.admin_agent_task_detail("session-1")
 
-    assert response.get_data(as_text=True) == "detail"
-    assert rendered[0][1]["can_resume"] is False
+    assert response.get_json()["can_resume"] is False
 
 
 def test_detail_refresh_keeps_cleanup_failed_session_blocked_over_sticky_cancel(
@@ -1874,19 +1843,11 @@ def test_detail_refresh_keeps_cleanup_failed_session_blocked_over_sticky_cancel(
         },
     )
     monkeypatch.setattr(routes, "build_agent_workspace_tree", lambda _sid: [])
-    rendered = []
-    monkeypatch.setattr(
-        routes,
-        "render_template",
-        lambda template, **context: rendered.append((template, context)) or "detail",
-    )
-
     app = _app()
-    with app.test_request_context("/admin/agent_tasks/session-1"):
+    with app.test_request_context("/api/agent/sessions/session-1"):
         response = routes.admin_agent_task_detail("session-1")
 
-    assert response.get_data(as_text=True) == "detail"
-    current_state = rendered[0][1]["current_state"]
+    current_state = response.get_json()["current_state"]
     assert current_state["status"] == "CleanupFailed"
     assert current_state["message"] == "容器清理状态未知"
     assert current_state["harness_status"] == "cleanup_failed"

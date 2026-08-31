@@ -4,7 +4,7 @@
 import re
 import secrets
 
-from flask import Blueprint, current_app, flash, jsonify, render_template, request, session
+from flask import Blueprint, current_app, flash, jsonify, redirect, request, session
 
 from backend.oj_modules.classroom.logos import generate_class_logo_seed
 from backend.oj_modules.db_services import (
@@ -208,10 +208,7 @@ def user_management():
     )
     if request.path.startswith('/api/'):
         return jsonify(success=True, total=total, page=page, **page_payload)
-    return render_template(
-        'admin/users.html',
-        **page_payload,
-    )
+    return redirect('/admin')
 
 
 @admin_user_bp.post('/api/admin/users/admin-role')

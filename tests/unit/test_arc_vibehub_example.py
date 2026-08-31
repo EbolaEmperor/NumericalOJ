@@ -189,7 +189,7 @@ def test_templates_match_the_normalized_pre_vibehub_dom():
         assert hashlib.sha256(normalized.encode()).hexdigest() == digest
 
 
-def test_rendered_catalog_pages_match_the_historical_jinja_dom():
+def test_rendered_catalog_pages_match_the_historical_dom():
     games = tuple(_game_spec(f"g{index:03d}") for index in range(25))
 
     assert _canonical_dom_hash(arc_app._catalog_pages(games)) == (

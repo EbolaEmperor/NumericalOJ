@@ -3,7 +3,7 @@
 
 import hashlib
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, request
 
 from backend.oj_modules.repository.index import (
     fail_repository_index_job_dispatch,
@@ -55,10 +55,7 @@ from backend.oj_modules.security.auth import current_user
 
 @repository_bp.route('/code_repository')
 def code_repository():
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-    return render_template('repository/index.html', user=user)
+    return redirect('/repository')
 
 
 @repository_bp.route('/api/repository/files', methods=['GET'])

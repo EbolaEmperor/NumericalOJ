@@ -1,11 +1,11 @@
-"""VibeHub 服务端页面适配层。"""
+"""VibeHub 兼容路由与运行时能力端点。"""
 
 from __future__ import annotations
 
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
-from flask import Blueprint, Response, current_app, jsonify, make_response, redirect
-from flask import render_template, request, url_for
+from flask import Blueprint, Response, current_app, jsonify, redirect
+from flask import request, url_for
 
 from backend.oj_modules.security.auth import (
     current_user,
@@ -13,7 +13,6 @@ from backend.oj_modules.security.auth import (
 )
 from backend.oj_modules.security.origin_guard import is_same_origin
 from backend.oj_modules.vibehub import services
-from backend.oj_modules.vibehub.guide import render_developer_guide
 from backend.oj_modules.vibehub.runtime import (
     VibeHubCapacityError,
     VibeHubLeaseError,
@@ -28,10 +27,6 @@ from backend.oj_modules.vibehub.runtime import (
 vibehub_bp = Blueprint("vibehub", __name__, url_prefix="/vibehub")
 
 
-# 只限制播放页被站外嵌入，不限制作品访问网络。
-_PLAYER_CONTENT_SECURITY_POLICY = "frame-ancestors 'self'"
-
-
 def _log_page_failure(operation):
     current_app.logger.exception(
         "VibeHub 页面数据加载失败",
@@ -42,45 +37,20 @@ def _log_page_failure(operation):
 @vibehub_bp.get("")
 @vibehub_bp.get("/")
 def index():
-    user = current_user()
-    allowed_filters = {"all", "featured"}
-    if user:
-        allowed_filters.add("mine")
-    if user and int(user.get("is_admin") or 0) == 1:
-        allowed_filters.add("pending")
-    requested_filter = str(request.args.get("view") or "").strip()
-    initial_filter = requested_filter if requested_filter in allowed_filters else "all"
-    load_error = None
-    try:
-        projects = services.list_gallery_projects(user)
-    except Exception:
-        _log_page_failure("personalized_gallery")
-        projects = []
-        load_error = "社区作品暂时没有载入。"
-    response = make_response(
-        render_template(
-            "vibehub/index.html", user=user, projects=projects, load_error=load_error,
-            initial_filter=initial_filter,
-            edit_slug=(request.args.get("edit") or "").strip(),
-        )
-    )
-    if user:
-        response.headers["Cache-Control"] = "private, no-store"
-    return response
+    return jsonify(
+        success=False,
+        message="该页面由 React 前端提供",
+        path="/vibehub",
+    ), 406
 
 
 @vibehub_bp.get("/guide")
 def guide():
-    guide_html, guide_toc_html = render_developer_guide()
-    response = make_response(
-        render_template(
-            "vibehub/guide.html", user=current_user(),
-            guide_html=guide_html, guide_toc_html=guide_toc_html,
-        )
-    )
-    # 手册和目录都从 tracked Markdown 即时生成，刷新时必须重新验证内容。
-    response.headers["Cache-Control"] = "no-cache"
-    return response
+    return jsonify(
+        success=False,
+        message="该页面由 React 前端提供",
+        path="/vibehub/guide",
+    ), 406
 
 
 @vibehub_bp.get("/workspace")
@@ -103,18 +73,14 @@ def detail(slug):
         else:
             project = services.get_project(slug, actor=user)
     except services.VibeHubError as exc:
-        return render_template(
-            "vibehub/not_found.html",
-            user=user,
-            message=str(exc),
-        ), exc.status_code
+        return Response(str(exc), status=exc.status_code, mimetype='text/plain')
     except Exception:
         _log_page_failure("project_redirect")
-        return render_template(
-            "vibehub/not_found.html",
-            user=user,
-            message="作品暂时无法打开，请稍后再试。",
-        ), 503
+        return Response(
+            "作品暂时无法打开，请稍后再试。",
+            status=503,
+            mimetype='text/plain',
+        )
 
     response = redirect(project.get("play_url") or url_for("vibehub.index"))
     # 跳转目标会因作者、管理员和普通用户的可见版本不同而变化。
@@ -125,45 +91,11 @@ def detail(slug):
 @vibehub_bp.get("/<slug>/play")
 @login_required
 def play(slug):
-    user = current_user()
-    channel = str(request.args.get("channel") or "public").strip().lower()
-    if channel not in {"public", "latest", "review"}:
-        channel = "public"
-    try:
-        project = services.get_project(slug, actor=user, audience=channel)
-    except services.VibeHubError as exc:
-        return render_template(
-            "vibehub/not_found.html",
-            user=user,
-            message=str(exc),
-        ), exc.status_code
-    except Exception:
-        _log_page_failure("project_player")
-        return render_template(
-            "vibehub/not_found.html",
-            user=user,
-            message="作品运行信息暂时无法读取，请稍后再试。",
-        ), 503
-
-    mine = channel == "latest"
-    return_url = url_for("vibehub.index", **({"view": "mine"} if mine else {}))
-    return_label = "我的作品" if mine else "作品列表"
-
-    response = render_template(
-        "vibehub/player.html",
-        user=user,
-        project=project,
-        embedded_url=None,
-        acquire_url=f"/vibehub/{project['slug']}/runtime/acquire?{urlencode({'channel': channel})}",
-        heartbeat_url_template="/vibehub/runtime/__TOKEN__/heartbeat",
-        release_url_template="/vibehub/runtime/__TOKEN__/release",
-        return_url=return_url,
-        return_label=return_label,
-    )
-    return response, 200, {
-        "Cache-Control": "no-store",
-        "Content-Security-Policy": _PLAYER_CONTENT_SECURITY_POLICY,
-    }
+    return jsonify(
+        success=False,
+        message="该页面由 React 前端提供",
+        path=f"/vibehub/{slug}/play",
+    ), 406
 
 
 def _runtime_error_response(exc, *, status=503):

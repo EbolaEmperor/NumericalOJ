@@ -6,7 +6,7 @@ Admin routes for AI code detection dashboard.
 
 from decimal import Decimal
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, request, url_for
 
 from backend.oj_modules.ai_detection.task_tracker import (
     get_recent_tasks,
@@ -130,15 +130,7 @@ def dashboard():
             ],
             'endpoints': endpoints,
         })
-    return render_template(
-        'admin/ai_detection.html',
-        user=user,
-        summary=summary,
-        classes=classes,
-        problems=problems,
-        ai_detection_endpoints=endpoints,
-        strip_tags=_strip_problem_title_tags,
-    )
+    return redirect('/admin/ai-detection')
 
 
 @ai_detection_bp.post('/api/admin/ai-detection/preview')
@@ -236,16 +228,7 @@ def problem_detail(problem_id):
             'risk_filter': risk_filter,
             'endpoints': endpoints,
         }))
-    return render_template(
-        'admin/ai_detection.html',
-        user=user,
-        view='problem',
-        problem=problem,
-        results=results,
-        risk_filter=risk_filter,
-        ai_detection_endpoints=endpoints,
-        strip_tags=_strip_problem_title_tags,
-    )
+    return redirect(f'/admin/ai-detection/problems/{problem_id}')
 
 
 @ai_detection_bp.get('/api/admin/ai-detection/students/<username>')
@@ -267,15 +250,7 @@ def student_detail(username):
             'results': results,
             'endpoints': endpoints,
         }))
-    return render_template(
-        'admin/ai_detection.html',
-        user=user,
-        view='student',
-        target_username=username,
-        ai_detection_endpoints=endpoints,
-        results=results,
-        strip_tags=_strip_problem_title_tags,
-    )
+    return redirect(f'/admin/ai-detection/students/{username}')
 
 
 @ai_detection_bp.post('/api/admin/ai-detection/problems/<int:problem_id>/runs')

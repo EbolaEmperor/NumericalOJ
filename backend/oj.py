@@ -8,10 +8,8 @@ from flask import (
     Response,
     jsonify,
     redirect,
-    render_template,
     request,
     send_from_directory,
-    url_for,
 )
 from flask.globals import request_ctx as _flask_request_ctx
 from werkzeug.exceptions import HTTPException
@@ -41,7 +39,6 @@ register_storage_gc_config(_cfg)
 from backend.oj_modules.db_services import (
     get_db_connection,
     init_submission_snapshot_cache,
-    is_class_adjust_enabled,
 )
 from backend.oj_modules.security.auth import current_user
 from backend.oj_modules.routes.submission_routes import submission_bp
@@ -72,6 +69,7 @@ from backend.oj_modules.classroom.dashboard import init_class_activity_cache
 from backend.oj_modules.routes.ai_detection_routes import ai_detection_bp, init_ai_detection_module
 from backend.oj_modules.routes.game_routes import game_bp
 from backend.oj_modules.routes.vibehub_routes import vibehub_bp
+from backend.oj_modules.routes import ranking_routes as _ranking_routes
 from backend.oj_modules.routes.ranking_routes import ranking_bp, init_ranking_module
 from backend.oj_modules.routes.health_routes import create_health_blueprint
 from backend.oj_modules.routes.admin_dynamic_config_routes import admin_dynamic_config_bp
@@ -84,7 +82,6 @@ from backend.oj_modules.security.login_guard import (
     is_api_request,
 )
 from backend.oj_modules.security.origin_guard import install_same_origin_protection
-from backend.oj_modules.site_config.services import get_mail_settings
 from backend.oj_modules.infrastructure.redis import (
     create_binary_redis_client,
     create_blocking_redis_client,
@@ -101,15 +98,15 @@ from backend.oj_modules.shared.static_delivery import (
     send_precompressed_directory,
 )
 from backend.oj_modules.project_paths import (
-    BACKEND_ROOT,
     FRONTEND_DIST_ROOT,
     FRONTEND_PUBLIC_ROOT,
     PROJECT_ROOT,
 )
-from backend.oj_modules.spa_routes import (
+from backend.oj_modules.routes.spa_routes import (
     is_spa_document_path,
     migrated_legacy_page_target,
 )
+from backend.oj_modules.api.ranking_api import init_ranking_api_handlers
 from backend.oj_modules.api.registry import API_BLUEPRINTS
 from backend.oj_modules.tasks.registry import (
     apply_agent_concurrency_limit,
@@ -164,6 +161,8 @@ from backend.oj_modules.runtime.pending_recovery import (
     seed_pending_requeue_watchdog,
 )
 
+init_ranking_api_handlers(_ranking_routes)
+
 # Redis 连接
 rds = create_text_redis_client()
 # 用于存储二进制数据（如 ZIP 文件）的 Redis 连接
@@ -203,14 +202,12 @@ app = PrecompressedStaticFlask(
     static_folder=str(FRONTEND_PUBLIC_ROOT / 'static'),
     legacy_static_folder=str(PROJECT_ROOT / 'static'),
     static_url_path='/static',
-    template_folder=str(BACKEND_ROOT / 'templates'),
+    template_folder=None,
 )
 app.secret_key = _load_secret_key()
 # DEBUG 默认关闭：生产环境绝不能开 Werkzeug 交互式调试器（源码/变量泄露 + RCE 控制台）。
 # 本地开发可在 .env 设 FLASK_DEBUG=true。
 app.config['DEBUG'] = bool(getattr(_cfg, 'FLASK_DEBUG', False))
-# 即便 DEBUG 关闭也保留模板热重载，保证「scp 模板即生效」的前端快速路径不受影响。
-app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
 # 会话 Cookie 加固：HttpOnly 防 JS 窃取；SameSite=Lax 阻断跨站 POST CSRF；
 # Secure 仅在 HTTPS 下回传（默认关闭以兼容内网 HTTP，部署 HTTPS 后可在 .env 置 true）。
@@ -288,27 +285,6 @@ app.register_blueprint(create_health_blueprint(rds, get_db_connection))
 for _api_bp in API_BLUEPRINTS:
     app.register_blueprint(_api_bp)
 
-###############################################################################
-#  站点设置（全局开关）
-###############################################################################
-@app.context_processor
-def inject_globals():
-    try:
-        class_adjust_enabled = is_class_adjust_enabled(wait_timeout_seconds=0.0)
-    except Exception:
-        class_adjust_enabled = True
-    try:
-        mail_service_configured = bool(
-            get_mail_settings(wait_timeout_seconds=0.0)
-        )
-    except Exception:
-        mail_service_configured = False
-    return {
-        'class_adjust_enabled': class_adjust_enabled,
-        'mail_service_configured': mail_service_configured,
-    }
-
-
 # 默认 CSP：考虑到现有页面大量内联脚本/样式与本地打包资源，采用「不破坏现网」的宽松策略，
 # 但仍通过 object-src/frame-ancestors/base-uri 缓解点击劫持与 base 标签劫持。可在 .env
 # 用 CONTENT_SECURITY_POLICY 覆盖以逐步收紧。
@@ -356,10 +332,7 @@ def _handle_unexpected_error(e):
         or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
     if wants_json:
         return jsonify(success=False, message='服务器内部错误，请稍后再试'), 500
-    try:
-        return render_template('shared/error.html', message='服务器内部错误，请稍后再试'), 500
-    except Exception:
-        return '服务器内部错误，请稍后再试', 500
+    return '服务器内部错误，请稍后再试', 500
 
 
 @app.after_request
@@ -467,23 +440,6 @@ def _serve_react_document_or_redirect_migrated_page():
         return _spa_index_response()
     return None
 
-
-@app.get('/old', defaults={'_legacy_path': ''})
-@app.get('/old/<path:_legacy_path>')
-def legacy_ui(_legacy_path):
-    """仅供迁移期人工视觉对照的只读旧版入口。"""
-
-    legacy_target = f'/{_legacy_path}' if _legacy_path else '/problems'
-    if legacy_target.startswith(('/api/', '/assets/', '/static/', '/old/')):
-        return Response('旧版对照路由不可用', status=404, mimetype='text/plain')
-    adapter = app.url_map.bind_to_environ(request.environ)
-    try:
-        endpoint, values = adapter.match(legacy_target, method='GET')
-    except HTTPException as error:
-        return error
-    if endpoint in {'index', 'legacy_ui', 'retired_spa_prefix'} or endpoint.startswith('spa_api.'):
-        return Response('旧版对照路由不可用', status=404, mimetype='text/plain')
-    return app.view_functions[endpoint](**values)
 
 ###############################################################################
 #  Celery 任务定义

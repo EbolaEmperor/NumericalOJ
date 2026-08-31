@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import pymysql
-from flask import Blueprint, flash, jsonify, make_response, redirect, render_template, request, url_for
+from flask import Blueprint, flash, jsonify, make_response, redirect, request, url_for
 
 from backend.oj_modules.db_services import (
     CLASS_ADJUST_FLAG_KEY,
@@ -226,10 +226,7 @@ def admin_homework():
     )
     if _wants_json_response():
         return jsonify(success=True, **page_payload)
-    return render_template(
-        'admin/homework.html',
-        **page_payload,
-    )
+    return redirect('/admin/homework')
 
 
 @homework_bp.post('/api/admin/settings/class-adjust')

@@ -45,10 +45,10 @@ def test_session_bootstrap_exposes_spa_paths_and_admin_capability(monkeypatch):
 
     assert payload["user"] == user
     paths = {item["id"]: item["path"] for item in payload["navigation"]["items"]}
-    assert paths["library"] == "/app/problems?view=library"
-    assert paths["problems"] == "/app/problems"
-    assert paths["repository"] == "/app/repository"
-    assert paths["admin"] == "/app/admin"
+    assert paths["library"] == "/problems?view=library"
+    assert paths["problems"] == "/problems"
+    assert paths["repository"] == "/repository"
+    assert paths["admin"] == "/admin"
     assert payload["navigation"]["agent_active"] is True
     assert payload["capabilities"]["spa"] is True
     assert payload["capabilities"]["class_adjust_enabled"] is True

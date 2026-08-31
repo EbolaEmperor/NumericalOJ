@@ -46,7 +46,6 @@ NumericalOJ 采用前后端分离的代码结构，同时由 Flask 在生产环�
 backend/
 ├── oj.py                 # Flask / Celery 组合根
 ├── oj_modules/           # API、路由、任务与领域逻辑
-├── templates/            # 兼容页面与复杂服务端流程
 ├── database/             # 初始化 schema
 └── requirements/         # Python 精确依赖
 frontend/

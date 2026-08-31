@@ -56,8 +56,8 @@ def session_bootstrap():
         try:
             class_adjust_enabled = is_class_adjust_enabled(wait_timeout_seconds=0.0)
         except Exception:
-            # 与 Jinja 全局上下文保持相同的可用性降级，避免读取站点设置失败时
-            # 把原本可见的班级管理入口从 SPA 中静默移除。
+            # 读取站点设置失败时沿用可用性降级，避免把原本可见的班级管理入口
+            # 从 SPA 中静默移除。
             class_adjust_enabled = True
         try:
             mail_service_configured = bool(get_mail_settings(wait_timeout_seconds=0.0))

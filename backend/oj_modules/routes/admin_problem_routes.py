@@ -7,7 +7,7 @@ import os
 import pymysql
 import tempfile
 import zipfile
-from flask import Blueprint, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, flash, jsonify, redirect, request, send_file, session, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 from backend.oj_modules.db_services import (
     create_problem,
@@ -18,12 +18,8 @@ from backend.oj_modules.db_services import (
     safe_table_name,
     update_problem,
 )
-from backend.oj_modules.problems.grading import (
-    DEFAULT_WRITTEN_GRADING_PROMPT as _DEFAULT_WRITTEN_GRADING_PROMPT,
-)
 from backend.oj_modules.problems.llm_bindings import (
     ProblemLlmBindingsError,
-    get_problem_llm_endpoint_candidates as _problem_llm_endpoint_candidates,
     problem_llm_bindings_from_form,
 )
 from backend.oj_modules.problems.testdata import TestdataValidationError, import_testdata_zip
@@ -37,13 +33,6 @@ from backend.oj_modules.problems.lean_workspace import (
 
 admin_problem_bp = Blueprint('admin_problem', __name__)
 ALLOWED_EXTENSIONS = {'zip'}
-
-
-def _problem_llm_form_context(bindings=None):
-    return {
-        "llm_endpoint_bindings": dict(bindings or {}),
-        "llm_endpoint_candidates": _problem_llm_endpoint_candidates(),
-    }
 
 
 def _wants_json_response():
@@ -121,23 +110,9 @@ def parse_output_image_filename_from_form(form, default="output.png"):
     return normalize_output_image_filename(raw, default=default)
 
 
-def _output_image_filename_error_response(error, *, template_name, user, problem=None):
+def _output_image_filename_error_response(error):
     """返回输出图片文件名的统一校验错误，避免无效配置入库。"""
-
-    if _wants_json_response():
-        return jsonify(success=False, message=str(error)), 400
-    context = {
-        'user': user,
-        'error_message': str(error),
-        **_problem_llm_form_context(
-            (problem or {}).get('llm_endpoint_bindings') if problem else None
-        ),
-    }
-    if template_name == 'problems/create.html':
-        context['default_written_grading_prompt'] = _DEFAULT_WRITTEN_GRADING_PROMPT
-    else:
-        context['problem'] = problem
-    return render_template(template_name, **context), 400
+    return jsonify(success=False, message=str(error)), 400
 
 
 def _form_has_promptly_review_fields(form):
@@ -210,9 +185,7 @@ def parse_programming_grading_prompt_from_form(form):
 def add_problem():
     user = current_user()
     if not is_admin(user):
-        if _wants_json_response():
-            return jsonify(success=False, message="无权限"), 403
-        return "<h3>无权限</h3>"
+        return jsonify(success=False, message="无权限"), 403
 
     if request.method == 'POST':
         title = request.form.get('title').strip()
@@ -230,8 +203,6 @@ def add_problem():
         except ValueError as exc:
             return _output_image_filename_error_response(
                 exc,
-                template_name='problems/create.html',
-                user=user,
             )
         programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         written_grading_mode = parse_written_grading_mode_from_form(request.form, default=1)
@@ -250,26 +221,10 @@ def add_problem():
                 programming_grading_mode=programming_grading_mode,
             )
         except ProblemLlmBindingsError as exc:
-            if _wants_json_response():
-                return jsonify(success=False, message=str(exc)), 400
-            return render_template(
-                'problems/create.html',
-                user=user,
-                error_message=str(exc),
-                default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
-                **_problem_llm_form_context(),
-            ), 400
+            return jsonify(success=False, message=str(exc)), 400
 
         if not title or not content:
-            if _wants_json_response():
-                return jsonify(success=False, message="标题和内容不能为空"), 400
-            return render_template(
-                'problems/create.html',
-                user=user,
-                error_message="标题和内容不能为空",
-                default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
-                **_problem_llm_form_context(llm_endpoint_bindings),
-            )
+            return jsonify(success=False, message="标题和内容不能为空"), 400
 
         problem_id = create_problem(
             title,
@@ -292,13 +247,7 @@ def add_problem():
             return jsonify(success=True, problem_id=problem_id, message="题目创建成功")
         return redirect(url_for('problem_core.problem_list'))
 
-    return render_template(
-        'problems/create.html',
-        user=user,
-        error_message=None,
-        default_written_grading_prompt=_DEFAULT_WRITTEN_GRADING_PROMPT,
-        **_problem_llm_form_context(),
-    )
+    return redirect('/admin/problems/new')
 
 
 @admin_problem_bp.post('/api/admin/problems/<int:problem_id>')
@@ -306,15 +255,11 @@ def add_problem():
 def edit_problem(problem_id):
     user = current_user()
     if not is_admin(user):
-        if _wants_json_response():
-            return jsonify(success=False, message="无权限"), 403
-        return "<h3>无权限</h3>"
+        return jsonify(success=False, message="无权限"), 403
 
     problem = get_problem(problem_id)
     if not problem:
-        if _wants_json_response():
-            return jsonify(success=False, message="题目不存在"), 404
-        return "<h3>题目不存在</h3>"
+        return jsonify(success=False, message="题目不存在"), 404
 
     if request.method == 'POST':
         new_title = request.form.get('title').strip()
@@ -340,9 +285,6 @@ def edit_problem(problem_id):
         except ValueError as exc:
             return _output_image_filename_error_response(
                 exc,
-                template_name='problems/edit.html',
-                user=user,
-                problem=problem,
             )
         new_programming_grading_prompt = parse_programming_grading_prompt_from_form(request.form)
         default_mode = problem.get('written_grading_mode', 1)
@@ -358,24 +300,10 @@ def edit_problem(problem_id):
                 existing=problem.get('llm_endpoint_bindings'),
             )
         except ProblemLlmBindingsError as exc:
-            if _wants_json_response():
-                return jsonify(success=False, message=str(exc)), 400
-            return render_template(
-                'problems/edit.html',
-                problem=problem,
-                user=user,
-                error_message=str(exc),
-                **_problem_llm_form_context(problem.get('llm_endpoint_bindings')),
-            ), 400
+            return jsonify(success=False, message=str(exc)), 400
 
         if not new_title or not new_content:
-            return render_template(
-                'problems/edit.html',
-                problem=problem,
-                user=user,
-                error_message="标题和内容不能为空",
-                **_problem_llm_form_context(new_llm_endpoint_bindings),
-            )
+            return jsonify(success=False, message="标题和内容不能为空"), 400
 
         update_problem(
             problem_id,
@@ -403,13 +331,7 @@ def edit_problem(problem_id):
             )
         return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
-    return render_template(
-        'problems/edit.html',
-        problem=problem,
-        user=user,
-        error_message=None,
-        **_problem_llm_form_context(problem.get('llm_endpoint_bindings')),
-    )
+    return redirect(f'/admin/problems/{problem_id}/edit')
 
 
 @admin_problem_bp.app_errorhandler(RequestEntityTooLarge)

@@ -25,17 +25,17 @@ def _app():
     return app
 
 
-def test_agent_routes_use_public_canonical_urls():
+def test_agent_routes_expose_api_canonical_urls():
     app = _app()
     app.register_blueprint(routes.problem_core_bp)
     rules = {rule.endpoint: rule.rule for rule in app.url_map.iter_rules()}
 
-    assert rules["problem_core.agent_tasks"] == "/agent/tasks"
-    assert rules["problem_core.agent_task_detail"] == "/agent/tasks/<session_id>"
+    assert rules["problem_core.agent_tasks"] == "/api/agent/sessions"
+    assert rules["problem_core.agent_task_detail"] == "/api/agent/sessions/<session_id>"
     assert rules["problem_core.agent_launch_options"] == "/agent/launch-options"
-    assert rules["problem_core.agent_run_status"] == "/agent/runs/<task_id>/state"
+    assert rules["problem_core.agent_run_status"] == "/api/agent/runs/<task_id>"
     assert rules["problem_core.agent_run_cancel"] == "/agent/runs/<task_id>/cancel"
-    assert rules["problem_core.agent_run_stream"] == "/agent/runs/<task_id>/stream"
+    assert rules["problem_core.agent_run_stream"] == "/api/agent/runs/<task_id>/events"
 
 
 def test_ordinary_user_list_is_always_scoped_to_self(monkeypatch):
@@ -47,11 +47,10 @@ def test_ordinary_user_list_is_always_scoped_to_self(monkeypatch):
         lambda **kwargs: calls.append(kwargs) or ([], 1, 1),
     )
     monkeypatch.setattr(routes, "_agent_launch_page_options", lambda _uid: {})
-    monkeypatch.setattr(routes, "render_template", lambda *_args, **_kwargs: "ok")
 
     app = _app()
-    with app.test_request_context("/agent/tasks?scope=all"):
-        assert routes.agent_tasks() == "ok"
+    with app.test_request_context("/api/agent/sessions?scope=all"):
+        assert routes.agent_tasks().get_json()["success"] is True
 
     assert calls == [{"page": 1, "per_page": 20, "requested_by": "student"}]
 
@@ -65,13 +64,12 @@ def test_admin_list_defaults_to_all_and_can_select_mine(monkeypatch):
         lambda **kwargs: calls.append(kwargs) or ([], 1, 1),
     )
     monkeypatch.setattr(routes, "_agent_launch_page_options", lambda _uid: {})
-    monkeypatch.setattr(routes, "render_template", lambda *_args, **_kwargs: "ok")
 
     app = _app()
-    with app.test_request_context("/agent/tasks"):
-        assert routes.agent_tasks() == "ok"
-    with app.test_request_context("/agent/tasks?scope=mine"):
-        assert routes.agent_tasks() == "ok"
+    with app.test_request_context("/api/agent/sessions"):
+        assert routes.agent_tasks().get_json()["success"] is True
+    with app.test_request_context("/api/agent/sessions?scope=mine"):
+        assert routes.agent_tasks().get_json()["success"] is True
 
     assert calls == [
         {"page": 1, "per_page": 20, "requested_by": None},

@@ -5,7 +5,6 @@ from __future__ import annotations
 import ipaddress
 import json
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,8 +12,6 @@ from flask import Flask, g
 
 from backend.oj_modules.routes import auth_routes
 
-
-ROOT = Path(__file__).resolve().parents[3]
 
 CLIENT_IP = "198.51.100.77"
 PEER_IP = "127.0.0.2"
@@ -29,7 +26,7 @@ COOKIE_SECRET = "audit-cookie-secret"
 
 @pytest.fixture
 def app():
-    application = Flask(__name__, template_folder=str(ROOT / "backend" / "templates"))
+    application = Flask(__name__)
     application.config.update(SECRET_KEY="test-secret", TESTING=True)
     application.extensions["numericaloj_observability"] = {
         "trusted_proxy_networks": (ipaddress.ip_network("127.0.0.0/8"),),
@@ -185,7 +182,6 @@ def test_login_invalid_username_emits_failure_audit(app, audit_headers):
     password = "InvalidUsernamePassword!1"
     with (
         patch.object(auth_routes, "validate_username", return_value=(False, "bad name", "invalid")),
-        patch.object(auth_routes, "render_template", return_value="invalid username"),
         patch.object(auth_routes, "emit_audit") as emit,
     ):
         response = app.test_client().post(
@@ -195,7 +191,8 @@ def test_login_invalid_username_emits_failure_audit(app, audit_headers):
             environ_base={"REMOTE_ADDR": PEER_IP},
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.get_json() == {"success": False, "message": "invalid"}
     _audit_payload(
         emit,
         action="login",
@@ -212,7 +209,6 @@ def test_login_rate_limited_emits_denied_audit(app, audit_headers):
     with (
         patch.object(auth_routes, "validate_username", return_value=(True, "alice", "")),
         patch.object(auth_routes, "rate_limit_hit", return_value=(False, 30)),
-        patch.object(auth_routes, "render_template", return_value="rate limited"),
         patch.object(auth_routes, "emit_audit") as emit,
     ):
         response = app.test_client().post(
@@ -222,7 +218,11 @@ def test_login_rate_limited_emits_denied_audit(app, audit_headers):
             environ_base={"REMOTE_ADDR": PEER_IP},
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 429
+    assert response.get_json() == {
+        "success": False,
+        "message": "尝试过于频繁，请稍后再试",
+    }
     _audit_payload(
         emit,
         action="login",
@@ -250,7 +250,6 @@ def test_login_invalid_credentials_emits_failure_without_user_record(app, audit_
         patch.object(auth_routes, "rate_limit_hit", return_value=(True, 0)),
         patch.object(auth_routes, "get_user_by_username", return_value=user_record),
         patch.object(auth_routes, "verify_password", return_value=(False, False)),
-        patch.object(auth_routes, "render_template", return_value="invalid credentials"),
         patch.object(auth_routes, "emit_audit") as emit,
     ):
         response = app.test_client().post(
@@ -260,7 +259,11 @@ def test_login_invalid_credentials_emits_failure_without_user_record(app, audit_
             environ_base={"REMOTE_ADDR": PEER_IP},
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 401
+    assert response.get_json() == {
+        "success": False,
+        "message": "用户名或密码错误",
+    }
     _audit_payload(
         emit,
         action="login",
@@ -302,7 +305,7 @@ def test_login_success_upgrades_legacy_hash_and_audits_safe_metadata(app, audit_
         )
 
     assert response.status_code == 302
-    assert response.headers["Location"].endswith("/app")
+    assert response.headers["Location"].endswith("/problems")
     update_hash.assert_called_once_with(user_id=37, new_hash=new_hash)
     with client.session_transaction() as persisted_session:
         assert persisted_session["username"] == "legacy-user"
@@ -339,7 +342,7 @@ def test_register_success_audits_identity_without_credentials_or_email(app, audi
         patch.object(auth_routes, "emit_audit") as emit,
     ):
         response = app.test_client().post(
-            "/register",
+            "/api/users",
             data={
                 "username": "new-user",
                 "password": password,
@@ -351,14 +354,14 @@ def test_register_success_audits_identity_without_credentials_or_email(app, audi
             environ_base={"REMOTE_ADDR": PEER_IP},
         )
 
-    assert response.status_code == 302
+    assert response.status_code == 201
     create_user.assert_called_once_with("new-user", password_hash, email, user_class)
     payload = _audit_payload(
         emit,
         action="register",
         outcome="success",
         reason=None,
-        route="/register",
+        route="/api/users",
         user={"id": 43, "name": "new-user", "is_admin": False},
         secrets=(password, code, email, password_hash),
     )
@@ -393,8 +396,9 @@ def test_forgot_password_success_reloads_user_and_audits_without_secrets(app, au
         patch.object(auth_routes, "emit_audit") as emit,
     ):
         response = app.test_client().post(
-            f"/forgot_password?step=verify&email={email}",
+            "/api/auth/password-reset",
             data={
+                "email": email,
                 "code": code,
                 "new_password": password,
                 "confirm_password": password,
@@ -403,7 +407,7 @@ def test_forgot_password_success_reloads_user_and_audits_without_secrets(app, au
             environ_base={"REMOTE_ADDR": PEER_IP},
         )
 
-    assert response.status_code == 302
+    assert response.status_code == 200
     get_user.assert_called_once_with(email)
     update_hash.assert_called_once_with(email=email, new_hash=password_hash)
     delete_cursor.execute.assert_called_once_with(
@@ -416,7 +420,7 @@ def test_forgot_password_success_reloads_user_and_audits_without_secrets(app, au
         action="password.reset",
         outcome="success",
         reason=None,
-        route="/forgot_password",
+        route="/api/auth/password-reset",
         user={"id": 47, "name": "reset-user", "is_admin": False},
         secrets=(password, code, email, password_hash, user["password_hash"]),
     )
@@ -566,15 +570,16 @@ def test_unconfigured_mail_blocks_code_operations_with_explicit_message(app):
     assert response.get_json() == {"success": False, "message": message}
 
 
-def test_unconfigured_mail_keeps_registration_page_but_disables_actions(app):
+def test_unconfigured_mail_is_exposed_by_registration_api(app):
     with (
         patch.object(auth_routes, "get_mail_settings", return_value=None),
         patch.object(auth_routes, "get_all_classes", return_value=[]),
     ):
-        response = app.test_client().get("/register")
+        response = app.test_client().get("/api/auth/registration")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "站点尚未配置邮件服务，请联系管理员" in html
-    assert 'data-auth-send-code' in html
-    assert 'disabled aria-disabled="true"' in html
+    assert response.get_json() == {
+        "success": True,
+        "classes": [],
+        "mail_configured": False,
+    }

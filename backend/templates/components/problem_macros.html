@@ -1,4 +1,0 @@
-{% macro language_label(language) -%}
-  {% set value = (language or '')|lower %}
-  {{- 'C++' if value == 'cpp' else 'Python' if value in ('py', 'python') else 'MATLAB' if value in ('matlab', 'octave') else 'Lean 4' if value == 'lean4' else value|upper -}}
-{%- endmacro %}

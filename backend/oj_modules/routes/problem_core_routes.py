@@ -11,7 +11,7 @@ from io import BytesIO
 from uuid import uuid4
 from urllib.parse import quote
 
-from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, stream_with_context, url_for
+from flask import Blueprint, Response, current_app, flash, jsonify, redirect, request, send_file, stream_with_context, url_for
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
@@ -23,12 +23,9 @@ from backend.oj_modules.db_services import (
     create_submission,
     get_agent_run_by_task_id,
     get_db_connection,
-    get_filtered_submissions_paginated,
     get_latest_written_submission,
     get_problem,
-    get_submission_problem_options,
     mark_submission_archive_failed,
-    normalize_submission_list_status_filter,
     overwrite_written_submission,
     upsert_agent_run_snapshot,
 )
@@ -133,14 +130,11 @@ from backend.oj_modules.problems.catalog import get_user_classes_cached
 from backend.oj_modules.problems.context import (
     build_homework_deadline_warning,
     build_problem_detail_context,
-    build_problem_library_context,
-    build_problem_list_context,
     get_problem_homework_assignments,
 )
 from backend.oj_modules.problems.presentation import (
     strip_problem_title_tags as _strip_problem_title_tags,
 )
-from backend.oj_modules.submissions.presentation import build_submission_panel_payload
 from backend.oj_modules.submissions.written_artifacts import (
     WrittenSubmissionArtifactError,
     publish_manual_written_submission,
@@ -1311,7 +1305,11 @@ def _submission_limit_redirect(problem_id, submission_limit):
 
 
 def _request_wants_json():
-    return request.is_json or 'application/json' in request.headers.get('Accept', '')
+    return (
+        request.path.startswith('/api/')
+        or request.is_json
+        or 'application/json' in request.headers.get('Accept', '')
+    )
 
 
 def _submission_success_response(submission_id, deadline_warning=None):
@@ -1351,46 +1349,13 @@ def _load_expected_written_submission(username, problem_id, expected_id):
     return None
 
 
-_PROBLEM_LIST_CLASS_COOKIE = 'numoj_problem_list_class'
-
-
 @problem_core_bp.route('/problems', methods=['GET'])
 def problem_list():
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-
-    requested_class_en = str(request.args.get('class_en') or '').strip()
-    remembered_class_en = str(
-        request.cookies.get(_PROBLEM_LIST_CLASS_COOKIE) or ''
-    ).strip()
-    context = build_problem_list_context(
-        user,
-        admin_class_view=(int(user.get('is_admin') or 0) == 1),
-        selected_class_en=requested_class_en or remembered_class_en or None,
-        include_dashboard=True,
-        include_class_activity=False,
-    )
-    rendered = render_template('problems/list.html', **context)
-    selected_class_en = str(context.get('selected_class_en') or '').strip()
-    if not selected_class_en:
-        if not remembered_class_en:
-            return rendered
-        response = current_app.make_response(rendered)
-        response.delete_cookie(_PROBLEM_LIST_CLASS_COOKIE, path='/problems')
-        return response
-
-    response = current_app.make_response(rendered)
-    response.set_cookie(
-        _PROBLEM_LIST_CLASS_COOKIE,
-        selected_class_en,
-        max_age=60 * 60 * 24 * 365,
-        httponly=True,
-        secure=request.is_secure,
-        samesite='Lax',
+    return jsonify(
+        success=False,
+        message='该页面由 React 前端提供',
         path='/problems',
-    )
-    return response
+    ), 406
 
 
 @problem_core_bp.route('/api/class-activity', methods=['GET'])
@@ -1464,13 +1429,7 @@ def layout_navigation_data():
 
 @problem_core_bp.route('/problems/all', methods=['GET'])
 def problem_library():
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-    return render_template(
-        'problems/list.html',
-        **build_problem_library_context(user),
-    )
+    return redirect('/problems?view=library')
 
 
 @problem_core_bp.get('/api/downloads/numoj-cli.zip')
@@ -1505,22 +1464,7 @@ def download_numoj_cli_skill():
 
 @problem_core_bp.route('/problem/<int:problem_id>', methods=['GET'])
 def problem_detail(problem_id):
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-
-    context, error_code = build_problem_detail_context(
-        user,
-        problem_id,
-        selected_class_en=request.args.get('class_en'),
-    )
-    if error_code == "not_found":
-        return "<h3>题目不存在</h3>"
-    if error_code == "forbidden":
-        flash('无权限访问该题目', 'danger')
-        return redirect(url_for('problem_core.problem_list'))
-
-    return render_template('problems/detail.html', **context)
+    return redirect(f'/problems/{problem_id}')
 
 
 @problem_core_bp.get('/agent/launch-options')
@@ -2592,13 +2536,7 @@ def submit_solution(problem_id):
                 submission_id, deadline_warning,
             )
 
-    context, error_code = build_problem_detail_context(user, problem_id)
-    if error_code == "not_found":
-        return "<h3>题目不存在</h3>"
-    if error_code == "forbidden":
-        flash('无权限访问该题目', 'danger')
-        return redirect(url_for('problem_core.problem_list'))
-    return render_template('problems/detail.html', **context)
+    return redirect(f'/problems/{problem_id}')
 
 
 @problem_core_bp.route('/api/agent/sessions', methods=['GET', 'POST'])
@@ -2869,10 +2807,7 @@ def agent_tasks():
     }
     if _request_wants_json():
         return jsonify(success=True, **page_payload)
-    return render_template(
-        'admin/agent_tasks.html',
-        **page_payload,
-    )
+    return redirect('/agents')
 
 
 @problem_core_bp.get('/admin/agent_tasks')
@@ -3487,7 +3422,6 @@ def agent_task_detail(session_id):
     agent_message_state['quota_summary'] = agent_quota_summary
     # Workspace 目录可能在 Agent 运行中持续变化；首屏不同步
     # 遍历它，由前端在页面框架返回后通过 workspace 路由异步加载。
-    workspace_tree = []
     owns_session = (
         str(agent_session.get('requested_by') or '')
         == str(user.get('username') or '')
@@ -3556,26 +3490,7 @@ def agent_task_detail(session_id):
         response.headers['Cache-Control'] = 'private, no-store'
         return response
 
-    response = current_app.make_response(render_template(
-        'admin/agent_task_detail.html',
-        user=user,
-        agent_session=agent_session,
-        turns=turns,
-        current_state=page_current_state,
-        agent_message_state=agent_message_state,
-        agent_message_urls=agent_message_urls,
-        workspace_tree=workspace_tree,
-        can_resume=owns_session,
-        can_retry=can_retry,
-        can_retry_now=can_retry_now,
-        agent_quota_summary=agent_quota_summary,
-        agent_context_window_tokens=int(
-            (current_state.get('context_usage') or {}).get('window_tokens')
-            or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
-        ),
-    ))
-    response.headers['Cache-Control'] = 'private, no-store'
-    return response
+    return redirect(f'/agents/{session_id}')
 
 
 @problem_core_bp.patch('/api/agent/sessions/<session_id>/title')
@@ -4181,110 +4096,4 @@ admin_agent_workspace_file = agent_workspace_file
 
 @problem_core_bp.route('/my_submissions')
 def all_submissions():
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-
-    page = max(1, request.args.get('page', 1, type=int))
-    per_page = 30
-    query = str(request.args.get('q') or '').strip()[:120]
-    status_filter = normalize_submission_list_status_filter(
-        request.args.get('status')
-    )
-    problem_id = request.args.get('problem_id', type=int)
-    if not problem_id or problem_id < 1:
-        problem_id = None
-
-    scope_username = None if user['is_admin'] else user['username']
-    submissions, page, total_pages = get_filtered_submissions_paginated(
-        username=scope_username,
-        page=page,
-        per_page=per_page,
-        query=query,
-        status_filter=status_filter,
-        problem_id=problem_id,
-        include_test_points=True,
-    )
-    for sub in submissions:
-        sub['display_problem_title'] = _strip_problem_title_tags(sub.get('problem_title'))
-        sub['is_ac'] = (sub.get('status') == 'Accepted')
-        sub['display_language'] = str(sub.get('lang') or '—').upper()
-        max_score = sub.get('max_score')
-        try:
-            max_score = int(max_score) if max_score is not None else None
-        except (TypeError, ValueError):
-            max_score = None
-        sub['display_max_score'] = (
-            max_score
-            if max_score is not None and max_score > 0
-            else (sub.get('test_points_count') or None)
-        )
-
-    initial_submission_panel = None
-    if submissions:
-        first_submission = submissions[0]
-        submission_id = int(first_submission['id'])
-        panel_submission = dict(first_submission)
-        panel_submission['problem_title'] = first_submission.get(
-            'display_problem_title'
-        )
-        initial_submission_panel = build_submission_panel_payload(
-            panel_submission,
-            {
-                'id': first_submission.get('problem_id'),
-                'title': _strip_problem_title_tags(
-                    first_submission.get('current_problem_title')
-                ),
-                'lang': first_submission.get('lang'),
-                'max_score': first_submission.get('max_score'),
-            },
-            detail_url=url_for(
-                'submission.submission_detail', submission_id=submission_id,
-            ),
-            status_stream_url=url_for(
-                'submission.submission_status_stream',
-                submission_id=submission_id,
-                view='panel',
-            ),
-            rejudge_url=(
-                url_for(
-                    'rejudge.rejudge_submission', submission_id=submission_id,
-                )
-                if user['is_admin']
-                else None
-            ),
-        )
-
-    problem_options = get_submission_problem_options(username=scope_username)
-    current_problem_label = ''
-    for option in problem_options:
-        option['display_problem_title'] = _strip_problem_title_tags(
-            option.get('problem_title')
-        )
-        option['filter_label'] = (
-            f"P{int(option['problem_id']):04d} · "
-            f"{option['display_problem_title']}"
-        )
-        if int(option['problem_id']) == int(problem_id or 0):
-            current_problem_label = option['filter_label']
-
-    page_start = max(1, page - 3)
-    page_end = min(total_pages, page + 3)
-    page_numbers = list(range(page_start, page_end + 1))
-
-    return render_template(
-        'submissions/all.html',
-        submissions=submissions,
-        user=user,
-        current_page=page,
-        total_pages=total_pages,
-        page_numbers=page_numbers,
-        problem_options=problem_options,
-        initial_submission_panel=initial_submission_panel,
-        current_problem_label=current_problem_label,
-        filters={
-            'q': query,
-            'status': status_filter,
-            'problem_id': problem_id,
-        },
-    )
+    return redirect('/submissions')

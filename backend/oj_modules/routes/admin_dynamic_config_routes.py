@@ -11,7 +11,6 @@ from flask import (
     current_app,
     jsonify,
     redirect,
-    render_template,
     request,
     url_for,
 )
@@ -82,12 +81,7 @@ def create_admin_dynamic_config_blueprint(
     @blueprint.get("/admin/site-config")
     @admin_required
     def site_config():
-        user = current_user()
-        return render_template(
-            "admin/site_config.html",
-            user=user,
-            current_user=user,
-        )
+        return redirect("/admin/site-config")
 
     @blueprint.get("/admin/site-config#<tab>")
     @admin_required

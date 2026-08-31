@@ -272,7 +272,7 @@ def test_numoj_user_wait_promptly_review_result_returns_reply():
 
         def request(self, method, path):
             assert method == "GET"
-            assert path == "/submission_status/99"
+            assert path == "/api/submissions/99/status"
             return FakeResponse(self.payloads.pop(0))
 
     result = cli.wait_promptly_review_result(
@@ -307,7 +307,7 @@ def test_numoj_user_wait_promptly_review_result_treats_judge_failure_as_review_s
     class FakeClient:
         def request(self, method, path):
             assert method == "GET"
-            assert path == "/submission_status/101"
+            assert path == "/api/submissions/101/status"
             return FakeResponse()
 
     result = cli.wait_promptly_review_result(
@@ -347,7 +347,7 @@ def test_numoj_admin_wait_promptly_review_result_returns_reply():
 
         def request(self, method, path):
             assert method == "GET"
-            assert path == "/submission_status/100"
+            assert path == "/api/submissions/100/status"
             return FakeResponse(self.payloads.pop(0))
 
     result = cli.wait_promptly_review_result(
@@ -382,7 +382,7 @@ def test_numoj_admin_wait_promptly_review_result_treats_judge_failure_as_review_
     class FakeClient:
         def request(self, method, path):
             assert method == "GET"
-            assert path == "/submission_status/102"
+            assert path == "/api/submissions/102/status"
             return FakeResponse()
 
     result = cli.wait_promptly_review_result(

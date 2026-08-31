@@ -106,15 +106,15 @@ def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch)
         (cli.problem_submit_page, Namespace(problem_id=42), "/api/problems/42/submit-context"),
         (cli.problem_create_form, Namespace(), "/api/admin/problems/create-form"),
         (cli.problem_edit_form, Namespace(problem_id=42), "/api/admin/problems/42/edit-form"),
-        (cli.problem_agent_run, Namespace(task_id="task-1"), "/agent/runs/task-1/state"),
+        (cli.problem_agent_run, Namespace(task_id="task-1"), "/api/agent/runs/task-1"),
         (cli.problem_agent_tasks, Namespace(), "/api/admin/agent-tasks"),
         (cli.forum_list, Namespace(), "/api/forum"),
         (cli.forum_thread, Namespace(thread_id=7), "/api/forum/threads/7"),
         (cli.forum_new_page, Namespace(), "/api/forum/new-context"),
         (cli.repository_page, Namespace(), "/api/repository/context"),
         (cli.ai_detection_page, Namespace(), "/api/admin/ai-detection/dashboard"),
-        (cli.ai_detection_problem_page, Namespace(problem_id=42), "/api/admin/ai-detection/problem/42"),
-        (cli.ai_detection_student_page, Namespace(username="alice"), "/api/admin/ai-detection/student/alice"),
+        (cli.ai_detection_problem_page, Namespace(problem_id=42), "/api/admin/ai-detection/problems/42"),
+        (cli.ai_detection_student_page, Namespace(username="alice"), "/api/admin/ai-detection/students/alice"),
         (cli.ranking_list, Namespace(limit=3), "/api/ranking/competitions"),
         (cli.ranking_detail, Namespace(competition_id=9, tab="leaderboard"), "/api/ranking/competitions/9"),
         (cli.ranking_appeal_review, Namespace(competition_id=9, appeal_id=11), "/api/ranking/competitions/9/appeals/11/review"),
@@ -255,7 +255,7 @@ def test_problem_agent_solve_sends_explicit_harness_and_endpoint_as_json(
     ))
 
     method, path, kwargs = fake_client.requests[-1]
-    assert (method, path) == ("POST", "/agent/problems/9/solve")
+    assert (method, path) == ("POST", "/api/problems/9/agent/solve")
     assert kwargs == {
         "json": {
             "harness": "claude_code",
@@ -288,7 +288,7 @@ def test_problem_agent_generate_data_uploads_standard_solution_as_multipart(
     method, path, kwargs = fake_client.requests[-1]
     assert (method, path) == (
         "POST",
-        "/agent/problems/9/generate-testdata",
+        "/api/problems/9/agent/generate-testdata",
     )
     assert kwargs["data"] == {
         "harness": "codex",
@@ -595,22 +595,22 @@ def test_ai_detection_cli_posts_endpoint_id_for_every_run_command(monkeypatch, c
     cases = (
         (
             ["ai-detection", "run-filtered", "--submission-id", "9", "--endpoint-id", "101"],
-            "/admin/ai_detection/run_filtered",
+            "/api/admin/ai-detection/runs",
             {"submission_id": 9, "endpoint_id": 101},
         ),
         (
             ["ai-detection", "run-problem", "3", "--endpoint-id", "102"],
-            "/admin/ai_detection/run/3",
+            "/api/admin/ai-detection/problems/3/runs",
             {"endpoint_id": 102},
         ),
         (
             ["ai-detection", "run-single", "9", "--endpoint-id", "103"],
-            "/admin/ai_detection/run_single/9",
+            "/api/admin/ai-detection/submissions/9/runs",
             {"endpoint_id": 103},
         ),
         (
             ["ai-detection", "run-user", "alice", "--endpoint-id", "104"],
-            "/admin/ai_detection/run_user/alice",
+            "/api/admin/ai-detection/users/alice/runs",
             {"endpoint_id": 104},
         ),
     )
@@ -631,7 +631,7 @@ def test_ai_detection_cli_posts_endpoint_id_for_every_run_command(monkeypatch, c
     preview.func(preview)
     assert fake_client.requests[-1] == (
         "POST",
-        "/admin/ai_detection/preview",
+        "/api/admin/ai-detection/preview",
         {"json": {"submission_id": 9}},
     )
     capsys.readouterr()
@@ -1120,9 +1120,9 @@ def test_admin_quality_gate_commands_reuse_file_and_env_secret_inputs(monkeypatc
     capsys.readouterr()
 
     assert [request[1] for request in fake_client.requests] == [
-        "/ranking/3/reverse_judge/quality_gate",
-        "/ranking/3/reverse_judge/quality_gate",
-        "/ranking/3/reverse_judge/quality_gate",
+        "/api/ranking/competitions/3/reverse-judge/quality-gate",
+        "/api/ranking/competitions/3/reverse-judge/quality-gate",
+        "/api/ranking/competitions/3/reverse-judge/quality-gate",
     ]
     assert fake_client.requests[0][2]["json"] == {
         "enabled": False,
@@ -1313,8 +1313,8 @@ def test_admin_ranking_download_submission_routes_each_artifact_without_redirect
 
     cases = [
         ("ai-answer", "/tmp/ai-answer.zip", "/api/ranking/submissions/9/reverse-agent-answer"),
-        ("answer", None, "/ranking/submission/9/answer"),
-        ("code", "/tmp/code.zip", "/ranking/submission/9/code"),
+        ("answer", None, "/api/ranking/submissions/9/answer"),
+        ("code", "/tmp/code.zip", "/api/ranking/submissions/9/code"),
     ]
     for kind, output, expected_path in cases:
         cli.ranking_download_submission(Namespace(submission_id=9, kind=kind, output=output))
@@ -1637,15 +1637,15 @@ class _HygieneClient:
             return _StreamResponse()
         if path == "/" or path.endswith("/logout"):
             return _RedirectResponse("/problem_list")
-        if path.startswith("/download") or path.startswith("/export") or path.startswith("/ranking/submission/"):
+        if path.startswith("/download") or path.startswith("/export"):
+            return self._file_response()
+        if path.startswith("/api/ranking/submissions/"):
             return self._file_response()
         if "download" in path and method.upper() == "GET":
             return self._file_response()
-        if path.endswith("/submit") and "/ranking/" in path:
+        if path == "/api/ranking/competitions/1/submissions" and method.upper() == "POST":
             self.ranking_submitted = True
-            return self._generic_payload_response()
-        if path == "/submit/1":
-            return _RedirectResponse("/submission_detail/99")
+            return _PayloadResponse({"success": True, "submission_id": 2})
         if path == "/api/problems/1/submit-context":
             return _PayloadResponse(self._problem_detail_payload(input_kind="code"))
         if path == "/api/problems/1":
@@ -1662,13 +1662,15 @@ class _HygieneClient:
             return _PayloadResponse(self._problem_list_payload())
         if path == "/api/submissions":
             return _PayloadResponse(self._submission_list_payload())
+        if path == "/api/problems/1/submissions" and method.upper() == "POST":
+            return _PayloadResponse({"success": True, "submission_id": 99})
         if path == "/api/problems/1/submissions":
             return _PayloadResponse(self._submission_problem_payload())
-        if path == "/submission_status/1":
+        if path == "/api/submissions/1/status":
             return _PayloadResponse(self._submission_status_payload())
         if path == "/api/submissions/1":
             return _PayloadResponse(self._submission_detail_payload())
-        if path == "/api/get_last_submission_code/1":
+        if path == "/api/problems/1/last-submission-code":
             return _PayloadResponse({**self._noise(), "success": True, "code": "disp(1)"})
         if path == "/api/admin/homework":
             return _PayloadResponse(self._homework_list_payload())
@@ -1680,9 +1682,9 @@ class _HygieneClient:
             })
         if path == "/api/admin/users":
             return _PayloadResponse(self._user_list_payload())
-        if path == "/me/classes":
+        if path == "/api/account/classes":
             return _PayloadResponse({**self._noise(), "classes": [{"class_en": "C1", "class_cn": "一班"}]})
-        if path == "/admin/get_user_grades":
+        if path == "/api/admin/user-grades":
             return _PayloadResponse({**self._noise(), "grades": [{"problem_id": 1, "score": 95}]})
         if path == "/api/forum":
             return _PayloadResponse({
@@ -1731,9 +1733,9 @@ class _HygieneClient:
             })
         if path == "/api/admin/ai-detection/dashboard":
             return _PayloadResponse({**self._noise(), "success": True, "summary": {}, "classes": [], "problems": []})
-        if path == "/api/admin/ai-detection/problem/1":
+        if path == "/api/admin/ai-detection/problems/1":
             return _PayloadResponse({**self._noise(), "success": True, "problem": {"id": 1}, "results": []})
-        if path == "/api/admin/ai-detection/student/alice":
+        if path == "/api/admin/ai-detection/students/alice":
             return _PayloadResponse({**self._noise(), "success": True, "student": {"username": "alice"}, "results": []})
         if path == "/api/admin/dynamic-config/meta":
             return _PayloadResponse({**self._noise(), "success": True, "protocols": ["openai"], "features": []})
@@ -1791,7 +1793,7 @@ class _HygieneClient:
                 "page": 1,
                 "total_pages": 1,
             })
-        if path == "/ranking/1/match/1/details.json":
+        if path == "/api/ranking/competitions/1/matches/1":
             return _PayloadResponse({"id": 1, "details": {}, **self._noise()})
         if path == "/api/ranking/competitions/1/appeals":
             return _PayloadResponse({**self._noise(), "competition_id": 1, "appeals": [{"id": 1}], "total": 1})

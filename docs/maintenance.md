@@ -21,7 +21,6 @@ NumericalOJ 保持模块化单体，不因文件较大就拆微服务。只有�
 | 跨域公共层 | `security/`、`shared/` | 安全策略和经确认的通用 helper | 某一个业务域的专有规则 |
 | 运行期编排 | `runtime/` | 显式恢复、watchdog 和进程运行期协调 | import-time 写入、领域业务算法 |
 | SPA 展示层 | `frontend/src/`、`frontend/public/static/` | React 页面、客户端路由、查询缓存、原视觉资产 | SQL、任务注册、服务端业务规则 |
-| 兼容展示层 | `backend/templates/` | 复杂服务端流程与兼容页面 | 新的 SPA 主导航页面、业务规则 |
 
 期望依赖方向：
 
@@ -333,7 +332,7 @@ sudo /usr/bin/systemctl start mysql
 
 ## 7. 前端结构与视觉合同
 
-SPA 和兼容页面按以下结构组织：
+前端只保留 React SPA，按以下结构组织：
 
 ```text
 frontend/
@@ -342,29 +341,22 @@ frontend/
 │   ├── components/          # SPA 外壳、状态与跨页面组件
 │   └── api/                 # JSON 客户端与类型合同
 └── public/static/           # 原页面 CSS、图标、字体和兼容运行时
-backend/templates/
-├── layouts/                 # 兼容页面骨架
-├── components/              # 服务端复用组件与全局弹窗
-├── auth|admin|problems|…/   # 仍由 Jinja 承载的流程
-└── ranking/                 # 打榜赛兼容 partial 与 modal
 ```
 
 维护规则：
 
 - 主工作区的新导航页面进入 React SPA；不得另起视觉系统。迁移页面要复用原 DOM class、静态 CSS、
   用户可见文案和响应式断点，并以浏览器截图和关键交互核对迁移前后的视觉合同。
-- React Router 只接管声明为 SPA 的入口；尚未迁移的复杂管理流程保留普通 `<a>` 回退到 Flask 路由，
-  不能用不存在的客户端路由占位。读请求可以预取和缓存，写请求必须显式触发并在成功后失效相关查询。
+- React Router 接管所有页面入口；Flask 只提供 JSON、下载、SSE 和作品运行时代理。读请求可以预取和
+  缓存，写请求必须显式触发并在成功后失效相关查询。
 - Vite 内容指纹资产长期 immutable 缓存，SPA `index.html` 必须 `no-cache` 重新验证；不得给会话化 JSON、
   权限结果或写响应配置公共共享缓存。闲时预热必须尊重 `Save-Data` 和慢速网络信号。
-- 路由始终用完整域路径调用 `render_template()`；常规业务页面从 `layouts/site.html` 或 `layouts/embedded.html` 继承，不依赖根目录兼容别名。partial 不继承布局，独立完整错误页等明确例外保持自包含。
-- 跨页面且不包含业务分支的 UI 才进入 `components/`；只被一个页面使用的片段留在该业务域，避免制造全局碎片。
-- AJAX 返回的 HTML 与首屏必须复用同一 component，不能复制第二套行/卡片实现。
-- Modal 是页面级单例，由页面骨架包含一次；tab 只触发它，不各自携带一份同名 DOM 和脚本。
-- 业务脚本使用唯一 `window` namespace 或模块入口，并保证重复 include 不会重复注册全局监听器。AJAX 请求应在业务域入口集中处理鉴权、错误与 JSON 解析；同一处理逻辑跨页面重复时再建立共享请求封装，不在模板中继续复制。
-- 重型展示依赖默认不进入基础布局；MathJax 等资源由确实需要它的页面显式覆盖 block。共享算法只保留一个参数化实现，页面不得复制后再改常量。
+- 跨页面且不包含业务分支的 UI 才进入 `components/`；只被一个页面使用的组件留在该业务域，避免制造全局碎片。
+- 服务端只返回结构化数据，行、卡片与弹层由 React 组件唯一渲染，不再提供 HTML 分片接口。
+- 业务脚本使用模块入口；API 请求在业务域入口集中处理鉴权、错误与 JSON 解析，同一逻辑跨页面重复时再建立共享请求封装。
+- 重型展示依赖默认不进入基础入口；MathJax 等资源由确实需要它的页面显式加载。共享算法只保留一个参数化实现，页面不得复制后再改常量。
 - 大页面先沿用户可独立理解和测试的功能面拆分；不要按任意行数切成缺少语义的碎片。
-- 模板移动、include 契约、单例 DOM 与 MathJax 边界由前端契约测试保护；列入前端资产清单的关键静态 JavaScript 必须通过语法检查。交互变化仍需补对应路由测试和浏览器关键流程验证。
+- React 组件、路由与 MathJax 边界由前端测试保护；列入前端资产清单的关键静态 JavaScript 必须通过语法检查。交互变化仍需补对应路由测试和浏览器关键流程验证。
 
 ## 8. 周期性维护指标
 

@@ -17,32 +17,13 @@ JAVASCRIPT_ASSETS = (
     "frontend/lean4-grammar.js",
     "frontend/lean4-theme.js",
     "frontend/lean4-unicode-input.js",
-    "static/app/auth.js",
-    "static/app/class-select.js",
-    "static/app/class-picker.js",
-    "static/app/choice-picker.js",
     "static/app/code-editor-runtime.js",
     "static/app/editor-semantic-tokens.js",
     "static/app/lean-workbench.js",
     "static/app/markdown-rendering.js",
     "static/app/model-family.js",
-    "static/app/problem-dashboard.js",
-    "static/app/problem-detail-layout.js",
-    "static/app/problem-editor.js",
-    "static/app/problem-form-editors.js",
     "static/app/rich-content-assets.js",
-    "static/app/repository/workbench.js",
-    "static/app/sidebar-state.js",
-    "static/app/forum.js",
-    "static/app/layout.js",
-    "static/app/vibehub.js",
-    "static/app/vibehub-player.js",
-    "static/app/ranking/detail-v2.js",
-    "static/app/ranking/endpoints.js",
-    "static/app/ranking/rules-editor.js",
     "static/app/ranking/topology.js",
-    "static/app/site-config.js",
-    "static/app/submissions/detail.js",
 )
 
 
@@ -517,18 +498,11 @@ def test_oj_monaco_bundle_keeps_only_supported_languages_and_a_size_budget():
     runtime = (ROOT / "frontend" / "monaco" / "runtime.js").read_text()
     build_script = (ROOT / "frontend" / "scripts" / "build_monaco.mjs").read_text()
     component = (
-        ROOT / "backend" / "templates" / "components" / "editor" / "monaco.html"
-    ).read_text()
-    problem_detail = (
-        ROOT / "backend" / "templates" / "problems" / "detail.html"
-    ).read_text()
-    submission_detail = (
-        ROOT / "backend" / "templates" / "submissions" / "detail.html"
+        ROOT / "frontend" / "src" / "components" / "MonacoEditor.tsx"
     ).read_text()
 
-    assert "monaco_bundle|default('minimal')" in component
-    assert "components/editor/monaco.html" in problem_detail
-    assert "components/editor/monaco.html" in submission_detail
+    assert "/static/vendor/monaco/editor-minimal.css" in component
+    assert "/static/vendor/monaco/editor-minimal.js" in component
 
     for language in ("c", "cpp", "python", "matlab"):
         assert f'from "@shikijs/langs/{language}"' in minimal_entry

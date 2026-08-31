@@ -37,14 +37,13 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和
 - `classroom/`、`forum/`、`homework/`、`problems/`、`ranking/`、`submissions/`：领域逻辑和事务；
 - `ai/`、`integrations/`：模型协议与外部服务，统一 LLM 协议在 `ai/endpoints.py`；
 - `infrastructure/`：MySQL、Redis 等连接原语；`security/`、`shared/`：跨域安全与通用能力；
-- `backend/templates/`：保留的服务端页面与复杂兼容流程；
-- `frontend/src/`：React SPA 页面、路由和数据状态；`frontend/public/static/`：沿用的受 Git 管理视觉资产与兼容运行时。
+- `frontend/src/`：唯一的 React 页面层、路由和数据状态；`frontend/public/static/`：受 Git 管理的视觉资产与浏览器运行时。
   生产根目录 `static/` 仅作为未跟踪历史附件的只读 URL 回退，不得迁入、覆盖或清理。
 
 新增后台任务沿用 `register -> init` 模式，由 `tasks/registry.py` 聚合，路由不得导入任务私有实现。
 新增能力前先复用规范入口：认证用 `security/auth.py`，Markdown 清洗用 `shared/markdown.py`，
 压缩包处理用 `shared/archive.py`，Redis/MySQL 连接用 `infrastructure/`，动态站点配置用
-`site_config/services.py`。所有配合 Jinja `| safe` 的 HTML 必须先清洗。
+`site_config/services.py`。所有返回给 React 的富文本 HTML 必须先清洗。
 
 健康检查为 `GET /health/live`（进程存活）和 `GET /health/ready`（MySQL、Redis 就绪）。
 
@@ -103,10 +102,9 @@ bash deploy.sh
 用户主工作区由 `frontend/src/` 下的 React SPA 提供，直接使用无统一前缀的业务路径；`/app` 与
 `/app/*` 必须保持 404，不得重定向到无前缀路径。视觉必须继续复用
 `frontend/public/static/` 中的既有 DOM/CSS 契约，不得因技术栈迁移重新设计页面。React 查询缓存、
-路由预取和闲时预热不得绕过权限或把写请求缓存为读响应。复杂兼容流程仍可从
-`backend/templates/layouts/base.html` 的 site/embedded 布局派生；MathJax 必须按页面显式 opt-in，
-复用现有 Markdown、编辑器、选择器和提交组件，不复制私有版本。React 或静态资源改动必须重新构建，
-只有纯 Jinja 模板改动可以依靠 `TEMPLATES_AUTO_RELOAD=True` 走原前端快速路径。
+路由预取和闲时预热不得绕过权限或把写请求缓存为读响应。服务端不再维护 Jinja 页面；MathJax 必须
+由 React 页面显式 opt-in，复用现有 Markdown、编辑器、选择器和提交组件，不复制私有版本。所有
+前端改动都必须重新构建。
 
 ## 领域不变量
 

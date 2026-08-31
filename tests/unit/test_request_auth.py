@@ -3,16 +3,12 @@
 
 """全站登录边界与安全登录返回路径的回归测试。"""
 
-from pathlib import Path
 
 import pytest
 from flask import Flask, session
 
 from backend.oj_modules.security.login_guard import install_global_login_guard, safe_local_next
 from backend.oj_modules.routes import auth_routes
-
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def _guarded_app():
@@ -107,7 +103,6 @@ def test_api_routes_and_unknown_api_paths_always_return_json_401():
         ('get', '/register', 200),
         ('post', '/send_code', 204),
         ('get', '/forgot_password', 200),
-        ('post', '/forgot_password?step=verify', 200),
         ('get', '/health/live', 200),
         ('get', '/health/ready', 200),
         ('get', '/favicon.ico', 404),
@@ -199,7 +194,7 @@ def test_safe_local_next_accepts_path_and_query_only():
 
 
 def _login_app():
-    app = Flask(__name__, template_folder=str(ROOT / 'backend' / 'templates'))
+    app = Flask(__name__)
     app.config.update(SECRET_KEY='test-secret', TESTING=True)
     app.add_url_rule(
         '/problems',
@@ -261,9 +256,4 @@ def test_login_success_ignores_malicious_next(monkeypatch, target):
     )
 
     assert response.status_code == 302
-    assert response.headers['Location'].endswith('/app')
-
-
-def test_login_form_carries_the_validated_next_target():
-    template = (ROOT / 'backend' / 'templates' / 'auth' / 'login.html').read_text(encoding='utf-8')
-    assert 'name="next" value="{{ next_url }}"' in template
+    assert response.headers['Location'].endswith('/problems')

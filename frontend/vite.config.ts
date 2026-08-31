@@ -26,7 +26,7 @@ export default defineConfig({
     proxy: {
       '/api': backendProxy(),
       // 这两类是下载/作品容器代理，不是页面路由。其余页面必须由 Vite
-      // 自己回退到 React 入口，避免开发环境悄悄加载 Jinja 旧前端。
+      // 自己回退到 React 入口。
       '/vibehub/runtime': backendProxy(),
     },
   },

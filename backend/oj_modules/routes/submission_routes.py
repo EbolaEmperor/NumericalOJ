@@ -5,12 +5,11 @@ import os
 import json
 import time
 
-from flask import Blueprint, Response, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
+from flask import Blueprint, Response, jsonify, redirect, request, send_file, session, stream_with_context, url_for
 
 from backend.oj_modules.judging import core as judger_core
 
 from backend.oj_modules.db_services import (
-    get_cached_ai_code_marks_for_submission,
     get_latest_submission_code_by_user_and_problem,
     get_problem,
     get_submission_by_id,
@@ -23,7 +22,6 @@ from backend.oj_modules.problems.presentation import (
 )
 from backend.oj_modules.problems.lean_workspace import (
     get_latest_submission_lean_workspace,
-    get_submission_lean_workspace,
 )
 from backend.oj_modules.submissions.presentation import (
     load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
@@ -57,59 +55,7 @@ def _get_authorized_submission_snapshot(submission_id, user):
 
 @submission_bp.route('/submission_detail/<int:submission_id>')
 def submission_detail(submission_id):
-    user = current_user()
-    if not user:
-        return redirect(url_for('auth.login'))
-
-    embed_raw = str(request.args.get('embed') or request.args.get('embedded') or '').strip().lower()
-    embedded = embed_raw in ('1', 'true', 'yes', 'on')
-
-    submission = get_submission_by_id(submission_id)
-    if not submission:
-        return "<h3>提交记录不存在</h3>"
-
-    if submission['username'] != user['username'] and not is_admin(user):
-        return "<h3>无权查看他人提交</h3>"
-
-    problem = get_problem(submission['problem_id'])
-    plang = (problem.get('lang') or 'matlab').lower()
-    cached_ai_code_marks = None
-    if submission.get('problem_type') == 1:
-        cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
-    submission_latex_text = ""
-    submission_latex_error = ""
-    submission_latex_html = ""
-    written_grading_mode = 1
-    lean_workspace = None
-    if plang in {'lean', 'lean4'}:
-        lean_workspace = get_submission_lean_workspace(submission_id)
-    if problem and problem['type'] == 2:
-        try:
-            written_grading_mode = int(problem.get('written_grading_mode') or 1)
-        except Exception:
-            written_grading_mode = 1
-        file_path = f"uploads/{submission['username']}_{submission['problem_id']}_*"
-        submission['file_url'] = file_path
-        if written_grading_mode == 1:
-            submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
-            submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
-
-    return render_template(
-        'submissions/detail.html',
-        submission=submission,
-        test_points=submission['test_points'],
-        user=user,
-        embedded=embedded,
-        layout_template='layouts/embedded.html' if embedded else 'layouts/site.html',
-        plang=plang,
-        problem=problem,
-        cached_ai_code_marks=cached_ai_code_marks,
-        submission_latex_text=submission_latex_text,
-        submission_latex_error=submission_latex_error,
-        submission_latex_html=submission_latex_html,
-        written_grading_mode=written_grading_mode,
-        lean_workspace=lean_workspace,
-    )
+    return redirect(f'/submissions/{submission_id}')
 
 
 @submission_bp.get('/api/submissions/<int:submission_id>/status')

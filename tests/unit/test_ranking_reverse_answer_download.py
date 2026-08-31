@@ -768,29 +768,6 @@ def test_download_reverse_agent_answer_is_hidden_until_submission_finishes(
             routes.download_reverse_agent_answer(3, 9)
 
 
-def test_reverse_detail_template_shows_download_only_after_archive_is_available():
-    root = Path(__file__).resolve().parents[2]
-    modal = (
-        root / "backend" / "templates" / "ranking" / "modals" / "reverse_judge_detail.html"
-    ).read_text(
-        encoding="utf-8",
-    )
-    card = (
-        root / "backend" / "templates" / "ranking" / "components" / "submission_card.html"
-    ).read_text(
-        encoding="utf-8",
-    )
-
-    assert "下载 AI 解答" in modal
-    assert 'id="rjAnswerDownload"' in modal
-    assert 'href="#" download hidden' in modal
-    assert "answerStep.answer_available" in modal
-    assert "data-answer-download-url" in card
-    assert "ranking.download_reverse_agent_answer" in card
-    assert "download_submission_answer', submission_id=s.id) }}\" download" in card
-    assert "download_submission_code', submission_id=s.id) }}\" download" in card
-
-
 @pytest.mark.parametrize("status", ["Accepted", "Error"])
 def test_available_reverse_agent_answer_archive_path_accepts_terminal_regular_file(
         monkeypatch, tmp_path, status):
@@ -1121,8 +1098,8 @@ def test_submission_download_urls_exposes_available_reverse_answer(monkeypatch):
     }, include_reverse_answer=True)
 
     assert calls == [(9, "attempt-2", "Accepted")]
-    assert result["answer_download_url"] == "/ranking/submission/9/answer"
-    assert result["code_download_url"] == "/ranking/submission/9/code"
+    assert result["answer_download_url"] == "/api/ranking/submissions/9/answer"
+    assert result["code_download_url"] == "/api/ranking/submissions/9/code"
     assert result["ai_answer_available"] is True
     assert result["ai_answer_download_url"] == (
         "/api/ranking/submissions/9/reverse-agent-answer"

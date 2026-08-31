@@ -1,9 +1,0 @@
-{% macro class_logo(cls, class_name='numoj-class-logo') -%}
-<span class="{{ class_name }}" aria-hidden="true">
-  <svg viewBox="0 0 7 7" focusable="false" shape-rendering="crispEdges">
-    {% for column, row in cls.logo.cells %}
-    <rect x="{{ column + 1 }}" y="{{ row + 1 }}" width="1" height="1"></rect>
-    {% endfor %}
-  </svg>
-</span>
-{%- endmacro %}

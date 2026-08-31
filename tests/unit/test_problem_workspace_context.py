@@ -503,78 +503,6 @@ def test_deadline_warning_api_uses_lightweight_context(monkeypatch):
     )
 
 
-def test_problem_routes_forward_class_query_and_open_total_library(monkeypatch):
-    app = Flask(__name__)
-    app.secret_key = "test"
-    render = MagicMock(return_value="rendered")
-    monkeypatch.setattr(problem_core_routes, "render_template", render)
-    monkeypatch.setattr(problem_core_routes, "current_user", lambda: {"id": 1, "is_admin": 1})
-    build_list = MagicMock(return_value={"marker": "list"})
-    monkeypatch.setattr(problem_core_routes, "build_problem_list_context", build_list)
-
-    with app.test_request_context("/problems?class_en=C2"):
-        assert problem_core_routes.problem_list() == "rendered"
-    build_list.assert_called_once_with(
-        {"id": 1, "is_admin": 1},
-        admin_class_view=True,
-        selected_class_en="C2",
-        include_dashboard=True,
-        include_class_activity=False,
-    )
-
-    monkeypatch.setattr(problem_core_routes, "current_user", lambda: {"id": 8, "is_admin": 0})
-    build_library = MagicMock(return_value={"marker": "library"})
-    monkeypatch.setattr(
-        problem_core_routes, "build_problem_library_context", build_library,
-    )
-    with app.test_request_context("/problems/all"):
-        response = problem_core_routes.problem_library()
-    assert response == "rendered"
-    build_library.assert_called_once_with({"id": 8, "is_admin": 0})
-
-
-def test_problem_list_remembers_selected_class_in_cookie(monkeypatch):
-    app = Flask(__name__)
-    app.secret_key = "test"
-    user = {"id": 1, "is_admin": 0}
-    monkeypatch.setattr(problem_core_routes, "current_user", lambda: user)
-    monkeypatch.setattr(
-        problem_core_routes,
-        "render_template",
-        lambda _template, **_context: "rendered",
-    )
-    build_list = MagicMock(
-        side_effect=lambda _user, **kwargs: {
-            "selected_class_en": kwargs["selected_class_en"] or "C1",
-        },
-    )
-    monkeypatch.setattr(
-        problem_core_routes, "build_problem_list_context", build_list,
-    )
-
-    cookie_name = problem_core_routes._PROBLEM_LIST_CLASS_COOKIE
-    with app.test_request_context(
-        "/problems?class_en=C2",
-        headers={"Cookie": f"{cookie_name}=C1"},
-    ):
-        response = problem_core_routes.problem_list()
-
-    assert response.get_data(as_text=True) == "rendered"
-    assert f"{cookie_name}=C2" in response.headers["Set-Cookie"]
-    assert "HttpOnly" in response.headers["Set-Cookie"]
-    assert "SameSite=Lax" in response.headers["Set-Cookie"]
-    assert "Path=/problems" in response.headers["Set-Cookie"]
-    assert build_list.call_args.kwargs["selected_class_en"] == "C2"
-
-    build_list.reset_mock()
-    with app.test_request_context(
-        "/problems",
-        headers={"Cookie": f"{cookie_name}=C2"},
-    ):
-        problem_core_routes.problem_list()
-    assert build_list.call_args.kwargs["selected_class_en"] == "C2"
-
-
 def test_class_activity_endpoint_returns_authorized_class_data(monkeypatch):
     app = Flask(__name__)
     user = {"id": 8, "username": "student", "is_admin": 0}
@@ -666,26 +594,3 @@ def test_layout_navigation_endpoint_returns_fail_open_counts(monkeypatch):
         "agent_active": True,
     }
     navigation.assert_called_once_with(user, selected_class_en="C2")
-
-
-def test_problem_detail_route_forwards_class_query(monkeypatch):
-    app = Flask(__name__)
-    monkeypatch.setattr(
-        problem_core_routes,
-        "current_user",
-        lambda: {"id": 1, "username": "admin", "is_admin": 1},
-    )
-    build_detail = MagicMock(return_value=({"marker": "detail"}, None))
-    monkeypatch.setattr(problem_core_routes, "build_problem_detail_context", build_detail)
-    render = MagicMock(return_value="rendered")
-    monkeypatch.setattr(problem_core_routes, "render_template", render)
-
-    with app.test_request_context("/problem/7?class_en=C2"):
-        assert problem_core_routes.problem_detail(7) == "rendered"
-
-    build_detail.assert_called_once_with(
-        {"id": 1, "username": "admin", "is_admin": 1},
-        7,
-        selected_class_en="C2",
-    )
-    render.assert_called_once_with("problems/detail.html", marker="detail")

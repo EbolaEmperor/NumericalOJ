@@ -1,4 +1,4 @@
-"""React 前端的正式页面路由与临时旧版对照路由。"""
+"""React 前端的正式页面路由与旧书签重定向。"""
 
 from __future__ import annotations
 
