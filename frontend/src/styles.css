@@ -173,7 +173,7 @@
 
 .numoj-spa-route {
   min-height: 1px;
-  animation: numoj-spa-enter 160ms cubic-bezier(.22, 1, .36, 1) both;
+  animation: numoj-spa-enter 200ms cubic-bezier(.4, 0, .2, 1) both;
 }
 
 /* 原生 View Transition 只截取主内容区，侧栏保持稳定。路由切换发生在动画
@@ -183,16 +183,24 @@
 }
 
 ::view-transition-group(numoj-page-content) {
-  animation-duration: 180ms;
-  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(.4, 0, .2, 1);
 }
 
 ::view-transition-old(numoj-page-content) {
-  animation: numoj-page-out 110ms cubic-bezier(.4, 0, 1, 1) both;
+  animation: numoj-page-out 220ms cubic-bezier(.4, 0, .2, 1) both;
+  mix-blend-mode: plus-lighter;
 }
 
 ::view-transition-new(numoj-page-content) {
-  animation: numoj-page-in 180ms cubic-bezier(.22, 1, .36, 1) both;
+  animation: numoj-page-in 220ms cubic-bezier(.4, 0, .2, 1) both;
+  mix-blend-mode: plus-lighter;
+}
+
+/* 原生 View Transition 已经负责交叉淡化时，关闭 keyed 路由容器的回退动画，
+ * 避免两层透明度与位移动画叠加后出现短促闪烁。 */
+html:active-view-transition .numoj-spa-route {
+  animation: none;
 }
 
 /* 旧版题目工作台依赖内容容器的确定高度；SPA 过渡层必须把这条尺寸链继续向下传递。 */
@@ -363,17 +371,17 @@
 }
 
 @keyframes numoj-spa-enter {
-  from { opacity: .72; transform: translateY(4px); }
+  from { opacity: .96; transform: translateY(1px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes numoj-page-out {
   from { opacity: 1; transform: translateY(0); }
-  to { opacity: .52; transform: translateY(-2px); }
+  to { opacity: 0; transform: translateY(0); }
 }
 
 @keyframes numoj-page-in {
-  from { opacity: 0; transform: translateY(5px); }
+  from { opacity: 0; transform: translateY(0); }
   to { opacity: 1; transform: translateY(0); }
 }
 
