@@ -75,9 +75,7 @@
   justify-content: space-between;
   padding: 22px 24px 18px;
   border-bottom: 1px solid var(--agent-access-line);
-  background:
-    linear-gradient(90deg, rgb(255 247 237 / 88%), transparent 48%),
-    var(--agent-access-paper);
+  background: var(--agent-access-paper);
 }
 
 .agent-access-modal-header span,
@@ -465,6 +463,8 @@
 .agent-class-grant-options { max-height: 270px; overflow: auto; padding: 0 5px 5px; }
 .agent-class-option { position: relative; display: grid; min-height: 46px; grid-template-columns: 30px minmax(0, 1fr) 22px; align-items: center; gap: 8px; margin: 0; padding: 5px 7px; border-radius: 5px; cursor: pointer; }
 .agent-class-option:hover { background: #f3f0ea; }
+.agent-class-option.is-selected { background: #f3f0ea; color: var(--agent-access-ink); }
+.agent-class-option.is-selected:hover { background: #ebe7df; }
 .agent-class-option:focus-within {
   background: #f3f0ea;
   box-shadow: 0 0 0 2px #c2410c;
