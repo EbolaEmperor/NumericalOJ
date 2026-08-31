@@ -6,6 +6,7 @@ import {apiFetch, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {Link} from '../components/PageNavigation'
+import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {frontierProjects, problemInsights} from '../content/problemDashboard'
 import {useSession} from '../session'
 
@@ -55,6 +56,7 @@ export default function ProblemsPage() {
   const library = params.get('view') === 'library'
   const classEn = params.get('class_en') || ''
   const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerRef = useDismissibleDropdown<HTMLDivElement>(pickerOpen, () => setPickerOpen(false))
   const [insightIndex, setInsightIndex] = useState(0)
   const [projectOffset, setProjectOffset] = useState(0)
   const prefetchClass = (classEn: string) => {
@@ -98,7 +100,7 @@ export default function ProblemsPage() {
         <section className="numoj-panel numoj-assignment-panel" aria-label={library ? '全部题目' : '班级作业列表'}>
           {!library && selectedClass ? <div className="numoj-class-switcher" aria-label="选择班级">
             <span className="numoj-class-switcher-label">CLASS</span>
-            <div className={`numoj-class-picker${pickerOpen ? ' is-open' : ''}`} data-numoj-class-picker>
+            <div ref={pickerRef} className={`numoj-class-picker${pickerOpen ? ' is-open' : ''}`} data-numoj-class-picker>
               <button type="button" className="numoj-class-picker-trigger" aria-haspopup="listbox" aria-expanded={pickerOpen} onClick={() => setPickerOpen((value) => !value)} title={String(selectedClass.class_cn || '')}><ClassLogo item={selectedClass} /><span className="numoj-class-picker-current">{String(selectedClass.class_cn || '')}</span><i className="fas fa-chevron-down numoj-class-picker-chevron" aria-hidden="true" /></button>
               <div className="numoj-class-picker-menu" role="listbox" aria-label="可选择的班级" hidden={!pickerOpen}>{(result.data?.classes || []).map((item) => {const itemClassEn = String(item.class_en); return <Link className={`numoj-class-picker-option${itemClassEn === result.data?.selected_class_en ? ' active' : ''}`} to={`/problems${queryString({class_en: itemClassEn})}`} role="option" aria-selected={itemClassEn === result.data?.selected_class_en} key={itemClassEn} viewTransition onPointerEnter={() => prefetchClass(itemClassEn)} onFocus={() => prefetchClass(itemClassEn)} onClick={() => setPickerOpen(false)}><ClassLogo item={item} /><span className="numoj-class-picker-option-name">{String(item.class_cn)}</span>{itemClassEn === result.data?.selected_class_en ? <i className="fas fa-check numoj-class-picker-check" aria-hidden="true" /> : null}</Link>})}</div>
             </div>

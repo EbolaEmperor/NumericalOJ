@@ -5,6 +5,7 @@ import {apiFetch, errorMessage, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {useSession} from '../session'
 
 interface UsersResponse extends ApiEnvelope {users: JsonRecord[]; total: number; classes: JsonRecord[]; page?: number; total_pages?: number; mail_service_configured?: boolean}
@@ -13,9 +14,10 @@ function formData(values: Record<string, string>) {const body = new FormData(); 
 
 function ClassFilter({value, classes, onChange, placeholder = '全部班级', icon = 'fa-layer-group', ariaLabel = '筛选班级'}: {value: string; classes: JsonRecord[]; onChange: (value: string) => void; placeholder?: string; icon?: string; ariaLabel?: string}) {
   const [open, setOpen] = useState(false)
+  const rootRef = useDismissibleDropdown<HTMLDivElement>(open, () => setOpen(false))
   const selected = classes.find((item) => String(item.class_en) === value)
   const options = [{class_en: '', class_cn: placeholder}, ...classes]
-  return <div className={`rk-choice${open ? ' open' : ''}`}><input className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main"><i className={`fas ${icon}`} /><span>{String(selected?.class_cn || placeholder)}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{options.map((item) => {const optionValue = String(item.class_en || ''); return <button type="button" className={`rk-choice-option${optionValue === value ? ' active' : ''}`} role="option" aria-selected={optionValue === value} onClick={() => {onChange(optionValue); setOpen(false)}} key={optionValue || 'all'}><span className="rk-choice-option-main"><i className={`fas ${icon}`} /><span><span className="rk-choice-option-name">{String(item.class_cn || placeholder)}</span></span></span><i className="fas fa-check rk-choice-option-check" /></button>})}</div></div>
+  return <div ref={rootRef} className={`rk-choice${open ? ' open' : ''}`}><input className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main"><i className={`fas ${icon}`} /><span>{String(selected?.class_cn || placeholder)}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{options.map((item) => {const optionValue = String(item.class_en || ''); return <button type="button" className={`rk-choice-option${optionValue === value ? ' active' : ''}`} role="option" aria-selected={optionValue === value} onClick={() => {onChange(optionValue); setOpen(false)}} key={optionValue || 'all'}><span className="rk-choice-option-main"><i className={`fas ${icon}`} /><span><span className="rk-choice-option-name">{String(item.class_cn || placeholder)}</span></span></span><i className="fas fa-check rk-choice-option-check" /></button>})}</div></div>
 }
 
 function UserManager({user, classes, mailReady, close, refresh}: {user: JsonRecord; classes: JsonRecord[]; mailReady: boolean; close: () => void; refresh: () => Promise<unknown>}) {

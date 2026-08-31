@@ -5,6 +5,7 @@ import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {ModelLogo} from '../components/ModelLogo'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {useSession} from '../session'
 
 interface ItemsResponse extends ApiEnvelope {endpoints?: JsonRecord[]; bindings?: JsonRecord[]; settings?: JsonRecord}
@@ -35,9 +36,10 @@ function moneyText(raw: unknown) {
 
 function ConfigChoice({value: selectedValue, label, options, onChange, variant = 'endpoint', disabled = false}: {value: string; label: string; options: {value: string; label: string; icon: string}[]; onChange: (next: string) => void; variant?: 'endpoint' | 'feature'; disabled?: boolean}) {
   const [open, setOpen] = useState(false)
+  const rootRef = useDismissibleDropdown<HTMLDivElement>(open, () => setOpen(false))
   const selected = options.find((item) => item.value === selectedValue) || options[0]
   const choiceIcon = (item: {label: string; icon: string}) => item.icon === 'fa-microchip' ? <ModelLogo model={item.label} /> : <i className={`fas ${item.icon}`} />
-  return <div className={`rk-choice ${variant === 'feature' ? 'site-config-choice' : 'numoj-endpoint-editor__choice'}${open ? ' open' : ''}${disabled ? ' is-disabled' : ''}`}><button className="rk-choice-trigger" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={label} disabled={disabled} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main">{choiceIcon(selected)}<span>{selected.label}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox" hidden={!open}>{options.map((item) => <button type="button" className={`rk-choice-option${item.value === selectedValue ? ' active' : ''}`} role="option" aria-selected={item.value === selectedValue} key={item.value} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main">{choiceIcon(item)}<span><span className="rk-choice-option-name">{item.label}</span></span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
+  return <div ref={rootRef} className={`rk-choice ${variant === 'feature' ? 'site-config-choice' : 'numoj-endpoint-editor__choice'}${open ? ' open' : ''}${disabled ? ' is-disabled' : ''}`}><button className="rk-choice-trigger" type="button" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={label} disabled={disabled} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main">{choiceIcon(selected)}<span>{selected.label}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox" hidden={!open}>{options.map((item) => <button type="button" className={`rk-choice-option${item.value === selectedValue ? ' active' : ''}`} role="option" aria-selected={item.value === selectedValue} key={item.value} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main">{choiceIcon(item)}<span><span className="rk-choice-option-name">{item.label}</span></span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
 }
 
 function ServiceForm({kind, settings, refresh}: {kind: 'mail' | 'web-search'; settings?: JsonRecord; refresh: () => Promise<unknown>}) {

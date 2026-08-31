@@ -7,6 +7,7 @@ import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {ModelLogo} from '../components/ModelLogo'
 import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {useSession} from '../session'
 
 interface DashboardResponse extends ApiEnvelope {summary: JsonRecord; classes: JsonRecord[]; problems: JsonRecord[]; endpoints: JsonRecord[]}
@@ -36,10 +37,11 @@ function displayServerDateTime(value: unknown) {
 
 function ChoiceSelect({value, options, placeholder, icon, ariaLabel, onChange}: {value: string; options: Array<{value: string; label: string}>; placeholder: string; icon: string; ariaLabel: string; onChange: (value: string) => void}) {
   const [open, setOpen] = useState(false)
+  const rootRef = useDismissibleDropdown<HTMLDivElement>(open, () => setOpen(false))
   const selected = options.find((item) => item.value === value)
   const choices = [{value: '', label: placeholder}, ...options]
   const choiceIcon = (item?: {value: string; label: string}) => ariaLabel.includes('端点') && item?.value ? <ModelLogo model={item.label} /> : <i className={`fas ${icon}`} />
-  return <div className={`rk-choice${open ? ' open' : ''}`}><input className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main">{choiceIcon(selected)}<span>{selected?.label || placeholder}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{choices.map((item) => <button type="button" className={`rk-choice-option${item.value === value ? ' active' : ''}`} role="option" aria-selected={item.value === value} key={item.value || 'none'} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main">{choiceIcon(item)}<span className="rk-choice-option-name">{item.label}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
+  return <div ref={rootRef} className={`rk-choice${open ? ' open' : ''}`}><input className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main">{choiceIcon(selected)}<span>{selected?.label || placeholder}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{choices.map((item) => <button type="button" className={`rk-choice-option${item.value === value ? ' active' : ''}`} role="option" aria-selected={item.value === value} key={item.value || 'none'} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main">{choiceIcon(item)}<span className="rk-choice-option-name">{item.label}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
 }
 
 function EndpointSelect({value, endpoints, onChange}: {value: string; endpoints: JsonRecord[]; onChange: (value: string) => void}) {

@@ -5,6 +5,7 @@ import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {AuthFrame, PasswordToggle} from '../components/AuthFrame'
 import {Link, useNavigate} from '../components/PageNavigation'
+import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 
 interface ClassItem extends JsonRecord {
   class_en: string
@@ -32,6 +33,7 @@ export default function RegisterPage() {
   const [selectedClass, setSelectedClass] = useState('')
   const [passwordVisible, setPasswordVisible] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerRef = useDismissibleDropdown<HTMLDivElement>(pickerOpen, () => setPickerOpen(false))
   const [classError, setClassError] = useState(false)
   const [countdown, setCountdown] = useState(0)
   const selected = context.data?.classes.find((item) => item.class_en === selectedClass)
@@ -81,7 +83,7 @@ export default function RegisterPage() {
       <div className="numoj-auth-field"><label htmlFor="password">密码</label><span className="numoj-auth-control"><input id="password" name="password" type={passwordVisible ? 'text' : 'password'} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" required /><PasswordToggle visible={passwordVisible} onToggle={() => setPasswordVisible((value) => !value)} /></span></div>
       <div className="numoj-auth-field">
         <label htmlFor="registerClassSelectTrigger">班级</label>
-        <div className={`numoj-class-select numoj-register-class-select${pickerOpen ? ' open' : ''}${classError ? ' is-invalid' : ''}`}>
+        <div ref={pickerRef} className={`numoj-class-select numoj-register-class-select${pickerOpen ? ' open' : ''}${classError ? ' is-invalid' : ''}`}>
           <input type="hidden" id="registerClassSelect" name="class" value={selectedClass} readOnly />
           <button className="numoj-class-select-trigger" id="registerClassSelectTrigger" type="button" aria-haspopup="listbox" aria-expanded={pickerOpen} aria-controls="registerClassOptions" aria-describedby="registerClassError" aria-invalid={classError} onClick={() => setPickerOpen((value) => !value)}><ClassLogo item={selected} placeholder={!selected} /><span className="numoj-class-select-current"><strong>{selected?.class_cn || '请选择班级'}</strong><small>{selected?.class_en || 'REQUIRED'}</small></span><svg className="numoj-class-select-chevron" width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m1 1 4 4 4-4" /></svg></button>
           <div className="numoj-class-select-menu" id="registerClassOptions" role="listbox" aria-label="可注册的班级" hidden={!pickerOpen}>{(context.data?.classes || []).map((item) => <button className={`numoj-class-select-option${selectedClass === item.class_en ? ' is-selected' : ''}`} type="button" role="option" aria-selected={selectedClass === item.class_en} onClick={() => {setSelectedClass(item.class_en); setClassError(false); setPickerOpen(false)}} key={item.class_en}><ClassLogo item={item} /><span className="numoj-class-select-option-copy"><strong>{item.class_cn || item.class_en}</strong><small>{item.class_en}</small></span><span className="numoj-class-select-option-state" aria-hidden="true">✓</span></button>)}</div>
