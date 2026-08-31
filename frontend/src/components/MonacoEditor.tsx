@@ -62,6 +62,8 @@ export function MonacoEditor({
     let readyCleanup: (() => void) | null = null
 
     const initialize = async () => {
+      setFallback(false)
+      setReady(false)
       try {
         const monaco = await loadMonaco()
         const host = hostRef.current
@@ -101,18 +103,23 @@ export function MonacoEditor({
         })
         resizeObserver = new ResizeObserver(() => editor.layout())
         resizeObserver.observe(host)
-        const cleanup = await onReadyRef.current?.({monaco, editor, textarea: textareaRef.current})
-        if (typeof cleanup === 'function') {
-          if (disposed) cleanup()
-          else readyCleanup = cleanup
-        }
-        if (disposed) return
+        // Monaco 的首屏不应等待调用方的附加能力（Lean 模型、快捷键等）。
+        // 先同步完成一次布局并交还 React，确保 Safari 即使暂停/节流 rAF，
+        // 也不会让已可用的编辑器长期被“正在加载”遮罩覆盖。
+        editor.layout()
+        setReady(true)
         requestAnimationFrame(() => {
-          editor.layout()
-          requestAnimationFrame(() => {
-            if (!disposed) setReady(true)
-          })
+          if (!disposed) editor.layout()
         })
+        try {
+          const cleanup = await onReadyRef.current?.({monaco, editor, textarea: textareaRef.current})
+          if (typeof cleanup === 'function') {
+            if (disposed) cleanup()
+            else readyCleanup = cleanup
+          }
+        } catch (error) {
+          console.warn('代码编辑器附加能力初始化失败，已保留基础编辑器。', error)
+        }
       } catch (error) {
         console.error('代码编辑器初始化失败，已降级到文本框。', error)
         if (!disposed) {
