@@ -1,6 +1,7 @@
 from flask import Flask
 
 from backend.oj_modules.api import spa_api
+from backend.oj_modules.api.helpers import public_problem
 
 
 def _app():
@@ -8,6 +9,22 @@ def _app():
     app.config.update(TESTING=True)
     app.register_blueprint(spa_api.spa_api_bp)
     return app
+
+
+def test_public_problem_excludes_private_grading_configuration():
+    problem = public_problem({
+        "id": 7,
+        "title": "公开题目",
+        "programming_grading_mode": 2,
+        "written_grading_mode": 4,
+        "output_image_filename": "secret-output.png",
+    })
+
+    assert problem == {
+        "id": 7,
+        "title": "公开题目",
+        "programming_grading_mode": 2,
+    }
 
 
 def test_session_bootstrap_is_public_and_minimal_when_logged_out(monkeypatch):

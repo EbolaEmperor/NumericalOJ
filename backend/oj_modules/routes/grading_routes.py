@@ -90,7 +90,7 @@ def download_submission_file(submission_id):
         return "文件不存在", 404
 
     return send_file(
-        file_path,
+        os.path.abspath(file_path),
         mimetype='application/pdf',
         as_attachment=False,
         download_name=f'submission_{submission_id}.pdf',

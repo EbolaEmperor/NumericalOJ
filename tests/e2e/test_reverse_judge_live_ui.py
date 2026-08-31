@@ -235,7 +235,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
         text=True,
     )
     try:
-        _wait_for_http(web_proc, f"{BASE_URL}/login", web_log_path)
+        _wait_for_http(web_proc, f"{BASE_URL}/health/ready", web_log_path)
         if celery_proc.poll() is not None:
             _fail(
                 "本地 Celery worker 启动失败：\n"

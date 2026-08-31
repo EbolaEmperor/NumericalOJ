@@ -24,8 +24,6 @@ _PROBLEM_PUBLIC_FIELDS = (
     "time_limit_ms",
     "submission_limit",
     "programming_grading_mode",
-    "written_grading_mode",
-    "output_image_filename",
 )
 
 

@@ -126,6 +126,20 @@ def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch)
         assert fake_client.requests[-1][1] == expected_path
 
 
+def test_admin_problem_list_requests_problem_library(monkeypatch):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(cli.problem_list.__globals__, "client_from_args", lambda _args: fake_client)
+
+    cli.problem_list(Namespace(limit=5))
+
+    assert fake_client.requests[-1] == (
+        "GET",
+        "/api/problems",
+        {"params": {"view": "library", "limit": 5}},
+    )
+
+
 def test_forum_write_commands_use_json_api_and_uuid(monkeypatch, capsys):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()

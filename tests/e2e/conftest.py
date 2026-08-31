@@ -454,7 +454,10 @@ def _wait_for_http(
         except Exception as exc:  # noqa: BLE001
             last_error = exc
         time.sleep(0.5)
-    pytest.fail(f"Local Flask server did not become ready: {last_error}")
+    output = _read_process_log(log_path)
+    pytest.fail(
+        f"Local Flask server did not become ready: {last_error}\n{output}"
+    )
 
 
 def _terminate_process(proc: subprocess.Popen[str]) -> None:
@@ -544,7 +547,7 @@ def local_numoj_server(tmp_path: Path) -> str:
         text=True,
     )
     try:
-        _wait_for_http(web_proc, f"{BASE_URL}/login", web_log_path)
+        _wait_for_http(web_proc, f"{BASE_URL}/health/ready", web_log_path)
         if celery_proc.poll() is not None:
             output = _read_process_log(celery_log_path)
             pytest.fail(f"Local Celery worker exited early with {celery_proc.returncode}:\n{output}")
@@ -690,13 +693,6 @@ def seed_verification_code(email: str, code: str = "123456") -> str:
     return code
 
 
-def find_problem_id(problem_list_payload: dict[str, Any], title: str) -> int:
-    for row in problem_list_payload.get("problems") or []:
-        if title in str(row.get("title") or ""):
-            return int(row["id"])
-    pytest.fail(f"Created problem {title!r} was not visible through problem list: {problem_list_payload}")
-
-
 def find_repository_file_id(files_payload: dict[str, Any], filename: str) -> int:
     for row in files_payload.get("files") or []:
         if row.get("filename") == filename:
@@ -705,10 +701,14 @@ def find_repository_file_id(files_payload: dict[str, Any], filename: str) -> int
 
 
 def ranking_id_from_create(payload: dict[str, Any]) -> int:
-    match = re.search(r"/ranking/(\d+)/", str(payload.get("location") or ""))
-    if not match:
-        pytest.fail(f"Could not parse ranking id from create response: {payload}")
-    return int(match.group(1))
+    competition_id = payload.get("competition_id")
+    if competition_id is not None:
+        return int(competition_id)
+    for key in ("path", "redirect_url", "location"):
+        match = re.search(r"/rankings?/(\d+)(?:/|[?#]|$)", str(payload.get(key) or ""))
+        if match:
+            return int(match.group(1))
+    pytest.fail(f"Could not parse ranking id from create response: {payload}")
 
 
 def get_ranking_appeal_id(submission_id: int) -> int:
@@ -771,9 +771,12 @@ def find_forum_thread_id(cli: CliRunner, title: str, *, admin: bool = False) -> 
 
 def find_homework_id(homework_payload: dict[str, Any], title: str) -> str:
     for row in homework_payload.get("homeworks") or []:
-        if title in str(row.get("title") or ""):
+        row_title = row.get("title") or row.get("problem_title")
+        if title in str(row_title or ""):
             homework_id = row.get("homework_id")
-            if homework_id:
+            if homework_id is None:
+                homework_id = row.get("id")
+            if homework_id is not None:
                 return str(homework_id)
     pytest.fail(f"Homework {title!r} was not visible through homework list: {homework_payload}")
 
@@ -807,8 +810,12 @@ def create_problem(
     ]
     if extra:
         args.extend(extra)
-    assert cli.admin_json(*args)["success"] is True
-    return find_problem_id(cli.admin_json("problem", "list", "--limit", "100"), title)
+    payload = cli.admin_json(*args)
+    assert payload["success"] is True
+    problem_id = payload.get("problem_id")
+    if problem_id is None:
+        pytest.fail(f"Could not parse problem id from create response: {payload}")
+    return int(problem_id)
 
 
 def add_problem_homework(cli: CliRunner, problem_id: int, title: str, class_en: str = "Cclass1") -> str:

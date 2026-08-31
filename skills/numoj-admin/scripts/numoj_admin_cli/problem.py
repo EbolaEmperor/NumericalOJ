@@ -559,7 +559,7 @@ def necessary_problem_form_payload(payload: Any) -> Any:
 
 def problem_list(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    params: Dict[str, Any] = {}
+    params: Dict[str, Any] = {"view": "library"}
     if args.limit is not None:
         params["limit"] = args.limit
     resp = client.request("GET", "/api/problems", params=params)
