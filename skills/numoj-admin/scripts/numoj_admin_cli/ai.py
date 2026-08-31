@@ -21,7 +21,7 @@ def ai_code_marks(args: argparse.Namespace) -> None:
         "submission_id": args.submission_id,
         "force_refresh": bool(args.force_refresh),
     }
-    resp = client.request("POST", "/ask_ai_code_marks", json=payload)
+    resp = client.request("POST", "/api/ai/code-marks", json=payload)
     print_or_save_response(resp)
 
 
@@ -35,4 +35,3 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--submission-id", type=int, required=True, help="Submission ID whose AI marks should be fetched.")
     pa.add_argument("--force-refresh", action="store_true", help="Force the server to refresh cached AI marks.")
     pa.set_defaults(func=ai_code_marks)
-

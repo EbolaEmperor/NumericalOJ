@@ -87,6 +87,7 @@ from backend.oj_modules.security.auth import (
 )
 
 
+@admin_user_bp.get('/api/admin/users')
 @admin_user_bp.route('/admin/users')
 def user_management():
     user = current_user()
@@ -194,8 +195,7 @@ def user_management():
     except Exception:
         current_app.logger.exception('读取邮件服务状态失败')
         mail_service_configured = False
-    return render_template(
-        'admin/users.html',
+    page_payload = dict(
         users=users,
         classes=classes,
         user=user,
@@ -206,8 +206,15 @@ def user_management():
         search_class=search_class,
         mail_service_configured=mail_service_configured,
     )
+    if request.path.startswith('/api/'):
+        return jsonify(success=True, total=total, page=page, **page_payload)
+    return render_template(
+        'admin/users.html',
+        **page_payload,
+    )
 
 
+@admin_user_bp.post('/api/admin/users/admin-role')
 @admin_user_bp.route('/admin/grant_user_admin_ajax', methods=['POST'])
 def grant_user_admin_ajax():
     admin = current_user()
@@ -266,6 +273,7 @@ def grant_user_admin_ajax():
     })
 
 
+@admin_user_bp.post('/api/admin/users/username')
 @admin_user_bp.route('/admin/edit_username_ajax', methods=['POST'])
 def edit_username_ajax():
     admin = current_user()
@@ -303,6 +311,7 @@ def edit_username_ajax():
     return jsonify({'success': True, 'message': '更新成功', 'user_id': user_id, 'new_username': new_username})
 
 
+@admin_user_bp.post('/api/admin/users/email')
 @admin_user_bp.route('/admin/set_user_email_ajax', methods=['POST'])
 def set_user_email_ajax():
     admin = current_user()
@@ -370,6 +379,7 @@ def set_user_email_ajax():
     })
 
 
+@admin_user_bp.post('/api/admin/users/password-reset')
 @admin_user_bp.route('/admin/send_password_reset_email_ajax', methods=['POST'])
 def send_password_reset_email_ajax():
     admin = current_user()
@@ -460,6 +470,7 @@ def send_password_reset_email_ajax():
     })
 
 
+@admin_user_bp.get('/api/admin/user-grades')
 @admin_user_bp.route('/admin/get_user_grades', methods=['GET'])
 def get_user_grades():
     admin = current_user()
@@ -507,6 +518,7 @@ def get_user_grades():
         conn.close()
 
 
+@admin_user_bp.post('/api/admin/user-grades')
 @admin_user_bp.route('/admin/update_user_grade', methods=['POST'])
 def update_user_grade():
     admin = current_user()
@@ -550,6 +562,7 @@ def update_user_grade():
         return jsonify({'success': False, 'message': f'数据库操作失败，请稍后再试'}), 500
 
 
+@admin_user_bp.route('/api/admin/problems/<int:problem_id>/scores')
 @admin_user_bp.route('/admin/problem_scores/<int:problem_id>')
 def get_problem_scores(problem_id):
     admin = current_user()
@@ -629,6 +642,7 @@ def get_problem_scores(problem_id):
         conn.close()
 
 
+@admin_user_bp.post('/api/admin/classes')
 @admin_user_bp.route('/admin/add_class_ajax', methods=['POST'])
 def add_class_ajax():
     admin = current_user()

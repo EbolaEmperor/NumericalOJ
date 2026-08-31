@@ -87,13 +87,13 @@ def submission_problem_list(args: argparse.Namespace) -> None:
 
 def submission_status_cmd(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/submission_status/{args.submission_id}")
+    resp = client.request("GET", f"/api/submissions/{args.submission_id}/status")
     print_or_save_response(resp, project_json=False)
 
 
 def submission_stream(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/submission_status_stream/{args.submission_id}", stream=True)
+    resp = client.request("GET", f"/api/submissions/{args.submission_id}/events", stream=True)
     print_stream_lines(resp, max_lines=args.max_lines)
 
 
@@ -105,7 +105,7 @@ def submission_detail_cmd(args: argparse.Namespace) -> None:
 
 def submission_last_code(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/api/get_last_submission_code/{args.problem_id}")
+    resp = client.request("GET", f"/api/problems/{args.problem_id}/last-submission-code")
     ensure_ok(resp, allow_redirect=False)
     if args.output:
         if not response_is_json(resp):
@@ -126,13 +126,13 @@ def submission_last_code(args: argparse.Namespace) -> None:
 
 def submission_output_image(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/submission_output_image/{args.submission_id}/{args.test_index}")
+    resp = client.request("GET", f"/api/submissions/{args.submission_id}/outputs/{args.test_index}/image")
     print_or_save_response(resp, output=args.output or ".")
 
 
 def submission_download_file(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/download_submission_file/{args.submission_id}")
+    resp = client.request("GET", f"/api/submissions/{args.submission_id}/file")
     print_or_save_response(resp, output=args.output or ".")
 
 

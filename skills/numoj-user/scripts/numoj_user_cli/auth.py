@@ -18,12 +18,13 @@ def login(args: argparse.Namespace) -> None:
     sess = common.requests.Session()
     sess.trust_env = False
     resp = sess.post(
-        urljoin(base_url + "/", "/login"),
-        data={"username": username, "password": password},
+        urljoin(base_url + "/", "/api/session"),
+        json={"username": username, "password": password, "next": "/problems"},
+        headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"},
         allow_redirects=False,
         timeout=args.timeout,
     )
-    if resp.status_code not in (301, 302, 303, 307, 308) or "session" not in sess.cookies.get_dict():
+    if resp.status_code >= 400 or "session" not in sess.cookies.get_dict():
         raise common.CliError(f"Login failed. HTTP {resp.status_code}: {resp.text[:500].strip()}")
     cfg["base_url"] = base_url
     cfg["username"] = username
@@ -36,7 +37,7 @@ def logout(args: argparse.Namespace) -> None:
     cfg = common.load_config(args.config)
     if cfg.get("cookies"):
         try:
-            common.client_from_args(args, require_auth=False).request("POST", "/logout")
+            common.client_from_args(args, require_auth=False).request("DELETE", "/api/session")
         except Exception:
             pass
     cfg.pop("cookies", None)
@@ -56,7 +57,7 @@ def status(args: argparse.Namespace) -> None:
         )
         return
     client = common.client_from_args(args, require_auth=False)
-    resp = client.request("GET", "/me/classes")
+    resp = client.request("GET", "/api/v1/session")
     common.output_json(
         {
             "authenticated": resp.status_code < 400,
@@ -67,7 +68,7 @@ def status(args: argparse.Namespace) -> None:
 
 
 def auth_send_password_code(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", "/send_password_code")
+    resp = common.client_from_args(args).request("POST", "/api/account/password/code")
     common.print_or_save_response(resp)
 
 
@@ -75,7 +76,7 @@ def auth_change_password(args: argparse.Namespace) -> None:
     confirm = args.confirm_password or args.new_password
     resp = common.client_from_args(args).request(
         "POST",
-        "/change_password",
+        "/api/account/password",
         data={"code": args.code, "new_password": args.new_password, "confirm_password": confirm},
     )
     common.print_redirect_response(resp)

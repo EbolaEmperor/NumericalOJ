@@ -133,6 +133,7 @@ def init_homework_module(
     )
 
 
+@homework_bp.get('/api/admin/homework')
 @homework_bp.route('/admin/homework')
 def admin_homework():
     user = current_user()
@@ -214,8 +215,7 @@ def admin_homework():
     except Exception:
         all_competitions = []
 
-    return render_template(
-        'admin/homework.html',
+    page_payload = dict(
         classes=classes,
         selected_class=selected_class,
         homework_list=homework_list,
@@ -224,8 +224,15 @@ def admin_homework():
         plagiarism_problem_options=plagiarism_problem_options,
         user=user,
     )
+    if _wants_json_response():
+        return jsonify(success=True, **page_payload)
+    return render_template(
+        'admin/homework.html',
+        **page_payload,
+    )
 
 
+@homework_bp.post('/api/admin/settings/class-adjust')
 @homework_bp.route('/admin/class_adjust', methods=['POST'])
 def admin_class_adjust():
     user = current_user()
@@ -237,6 +244,7 @@ def admin_class_adjust():
     return jsonify(success=True, enabled=(enabled == '1'))
 
 
+@homework_bp.post('/api/admin/homework/deadline')
 @homework_bp.route('/admin/update_ddl', methods=['POST'])
 def admin_update_ddl():
     user = current_user()
@@ -268,6 +276,7 @@ def admin_update_ddl():
         conn.close()
 
 
+@homework_bp.post('/api/admin/homework')
 @homework_bp.route('/admin/add_homework', methods=['POST'])
 def admin_add_homework():
     user = current_user()
@@ -328,6 +337,7 @@ def admin_add_homework():
     return redirect(url_for('homework.admin_homework', sclass=class_en))
 
 
+@homework_bp.delete('/api/admin/homework')
 @homework_bp.route('/admin/delete_homework', methods=['POST'])
 def admin_delete_homework():
     user = current_user()
@@ -359,6 +369,7 @@ def admin_delete_homework():
         conn.close()
 
 
+@homework_bp.get('/api/admin/homework/exports/scores')
 @homework_bp.route('/export_scores')
 def export_scores():
     user = current_user()
@@ -680,6 +691,7 @@ def admin_delete_plagiarism_records():
     return jsonify(success=True, message=f'已删除 {deleted} 条记录', deleted=deleted)
 
 
+@homework_bp.post('/api/admin/homework/exports/code')
 @homework_bp.post('/export_student_codes')
 def export_student_codes():
     user = current_user()
@@ -698,6 +710,7 @@ def export_student_codes():
     return jsonify({'success': True, 'task_id': task_id, 'message': '导出任务已启动'})
 
 
+@homework_bp.get('/api/admin/homework/exports/<task_id>')
 @homework_bp.route('/export_progress/<task_id>')
 def export_progress(task_id):
     user = current_user()
@@ -710,6 +723,7 @@ def export_progress(task_id):
     return jsonify({'success': True, 'progress': progress})
 
 
+@homework_bp.get('/api/admin/homework/exports/<task_id>/download')
 @homework_bp.route('/download_export/<task_id>')
 def download_export(task_id):
     user = current_user()

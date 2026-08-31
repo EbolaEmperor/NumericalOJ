@@ -214,7 +214,7 @@ def wait_promptly_review_result(
     last_status: Dict[str, Any] = {}
 
     while True:
-        resp = client.request("GET", f"/submission_status/{submission_id}")
+        resp = client.request("GET", f"/api/submissions/{submission_id}/status")
         common.ensure_ok(resp, allow_redirect=False)
         payload = resp.json() if common.response_is_json(resp) else {}
         last_status = payload if isinstance(payload, dict) else {}
@@ -371,7 +371,7 @@ def problem_submit(args: argparse.Namespace) -> None:
         )
         resp = client.request(
             "POST",
-            f"/submit/{args.problem_id}",
+            f"/api/problems/{args.problem_id}/submissions",
             data={
                 "lean_workspace": json.dumps(
                     submission,
@@ -390,7 +390,7 @@ def problem_submit(args: argparse.Namespace) -> None:
         try:
             resp = client.request(
                 "POST",
-                f"/submit/{args.problem_id}",
+                f"/api/problems/{args.problem_id}/submissions",
                 files=files,
                 headers={"Accept": "application/json"},
             )
@@ -404,7 +404,7 @@ def problem_submit(args: argparse.Namespace) -> None:
         prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8") if args.prompt_file else common.read_text_value(args.prompt)
         resp = client.request(
             "POST",
-            f"/submit/{args.problem_id}",
+            f"/api/problems/{args.problem_id}/submissions",
             data={"prompt": prompt},
             headers={"Accept": "application/json"},
         )
@@ -416,11 +416,11 @@ def problem_submit(args: argparse.Namespace) -> None:
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else common.read_text_value(args.code)
         resp = client.request(
             "POST",
-            f"/submit/{args.problem_id}",
+            f"/api/problems/{args.problem_id}/submissions",
             data={"code": code},
             headers={"Accept": "application/json"},
         )
-    payload = common.redirect_response_payload(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
+    payload = common.redirect_response_payload(resp)
     if input_kind == "prompt" and payload.get("success") and payload.get("submission_id") and getattr(args, "wait_promptly", True):
         promptly_review = wait_promptly_review_result(
             client,

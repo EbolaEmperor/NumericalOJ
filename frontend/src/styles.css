@@ -7,6 +7,164 @@
   min-height: 100vh;
 }
 
+.problem-detail-page .numoj-code-textarea-fallback {
+  display: block;
+  width: 100%;
+  min-height: 500px;
+  height: 100%;
+  padding: 1rem;
+  border: 0;
+  resize: vertical;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font: 12.5px/20px "SFMono-Regular", Consolas, monospace;
+}
+
+/* 旧版题目模板尾部的题面规则需要随 React 页面一同加载；这些值保持原样，
+ * 否则 Markdown 表格会退回浏览器默认样式。 */
+.problem-detail-page .problem-content table {
+  max-width: 100%;
+  margin: 1rem auto;
+  border: 1px solid #dee2e6;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.problem-detail-page .problem-content table th,
+.problem-detail-page .problem-content table td {
+  padding: 0.5rem 0.85rem;
+  border: 1px solid #dee2e6;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.problem-detail-page .problem-content table thead th {
+  background: #f5f6f8;
+  color: #1f2328;
+  font-weight: 600;
+}
+
+.problem-detail-page .problem-content table tbody tr:nth-child(odd) {
+  background: #fafbfc;
+}
+
+.problem-detail-page .problem-content blockquote {
+  margin: 0.75rem 0;
+  padding: 0.25rem 0.9rem;
+  border-left: 3px solid #d0d7de;
+  background: #f9fafb;
+  color: #57606a;
+}
+
+.problem-detail-page .problem-content img {
+  max-width: 100%;
+}
+
+/* 这些规则原先只存在于 Jinja 题目页内联样式中。React 路由不再加载旧模板，
+ * 因此在 SPA 内按原值、按题目页作用域补齐。 */
+.problem-detail-page .problem-header,
+.problem-detail-page .problem-title-row,
+.problem-detail-page .problem-title-singleline {
+  width: 100%;
+}
+
+.problem-detail-page .problem-title-row {
+  overflow: hidden;
+}
+
+.problem-detail-page .problem-title-singleline {
+  white-space: nowrap;
+  line-height: 1.15;
+  font-size: 2rem;
+}
+
+.problem-detail-page .problem-admin-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.problem-detail-page .code-label-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.problem-detail-page .code-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.problem-detail-page .code-title-line {
+  line-height: 1.1;
+}
+
+@media (min-width: 769px) {
+  .problem-detail-page .code-label-wrap {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .problem-detail-page .problem-title-singleline {
+    font-size: 1.45rem;
+  }
+
+  .problem-detail-page .problem-admin-actions {
+    gap: 8px;
+  }
+}
+
+.submission-code-surface .submission-editor-shell {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 560px;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.submission-code-surface .submission-editor-shell > .submission-monaco-container {
+  width: 100%;
+  height: 100%;
+}
+
+.submission-code-surface .problem-editor-loading-state {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #1e1e1e;
+  color: #d4d4d4;
+}
+
+.submission-code-surface .problem-editor-loading-indicator {
+  --math-curve-color-a: #ffffff;
+  --math-curve-color-b: #ffffff;
+}
+
+.submission-code-surface .submission-code-fallback {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 560px;
+  padding: 18px;
+  border: 0;
+  resize: none;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font: 14px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
 .numoj-spa-state {
   display: grid;
   min-height: 240px;
@@ -15,14 +173,314 @@
 
 .numoj-spa-route {
   min-height: 1px;
-  animation: numoj-spa-enter 100ms ease-out both;
+  animation: numoj-spa-enter 160ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 原生 View Transition 只截取主内容区，侧栏保持稳定。路由切换发生在动画
+ * 中间，因此数据请求与过渡并行；最终静止画面仍完全沿用旧版样式。 */
+.numoj-content {
+  view-transition-name: numoj-page-content;
+}
+
+::view-transition-group(numoj-page-content) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+}
+
+::view-transition-old(numoj-page-content) {
+  animation: numoj-page-out 110ms cubic-bezier(.4, 0, 1, 1) both;
+}
+
+::view-transition-new(numoj-page-content) {
+  animation: numoj-page-in 180ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* 旧版题目工作台依赖内容容器的确定高度；SPA 过渡层必须把这条尺寸链继续向下传递。 */
+.problem-detail-content-shell > .numoj-spa-route {
+  height: 100%;
+  min-height: 0;
+}
+
+/* 打榜赛详情与题目工作台一样使用内部滚动区；路由过渡层必须继续传递
+   100% 高度，否则长设置页会把外层撑开，右侧导航固定而正文无法滚动。 */
+.ranking-detail-shell > .numoj-spa-route {
+  height: 100%;
+  min-height: 0;
+}
+
+/* React 组件会为同页多个编辑器生成独立 ID；尺寸不能再依赖旧模板的
+ * #monacoEditorContainer 固定名称，否则 Monaco 只会按单行宿主初始化。 */
+.problem-detail-page .problem-editor-shell > [data-language] {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.numoj-problem-editor-page .problem-editor-shell {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 320px;
+  min-height: 240px;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.numoj-problem-editor-page .problem-editor-shell > [data-language] {
+  width: 100%;
+  height: 100%;
+}
+
+.numoj-problem-editor-page .numoj-code-textarea-fallback {
+  display: block;
+  width: 100%;
+  height: 320px;
+  padding: 14px 18px;
+  border: 0;
+  resize: vertical;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font: 14px/22px "SFMono-Regular", Consolas, monospace;
+}
+
+.agent-session-shell > .numoj-spa-route,
+.vibehub-player-page > .numoj-spa-route,
+.forum-content-container > .numoj-spa-route,
+.repository-page-shell > .numoj-spa-route {
+  height: 100%;
+  min-height: 0;
+}
+
+/* 旧版打榜赛设置页把这些规则写在 Jinja 模板内；SPA 需要原样携带，
+   否则次数输入框、刷新按钮和上线开关会退回 Bootstrap 的默认排布。 */
+.rank-limit-refresh-btn {
+  min-width: 44px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  padding: 0 .82rem;
+  flex: 0 0 auto;
+}
+
+.rank-limit-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .65rem;
+}
+
+.rank-limit-control .form-control {
+  min-width: 0;
+}
+
+.rank-limit-time {
+  color: #6c757d;
+  font-size: .8125rem;
+  line-height: 1.35;
+  margin-top: .4rem;
+}
+
+.rank-online-row {
+  display: inline-flex;
+  align-items: center;
+  gap: .65rem;
+  padding-left: 0;
+}
+
+.rank-online-row .form-check-label {
+  cursor: pointer;
+  order: 1;
+}
+
+.rank-online-row .form-check-input {
+  cursor: pointer;
+  float: none;
+  margin-left: 0;
+  margin-top: 0;
+  order: 2;
+}
+
+/* 打榜赛旧模板内联的文件投放细节。V2 样式会覆盖主色和边框，但这些未被
+   覆盖的尺寸、CTA 对齐与文件名布局仍是旧版视觉契约的一部分。 */
+.ranking-v2-detail .file-drop-inner {
+  min-height: 120px;
+}
+
+.ranking-v2-detail .file-drop-icon {
+  margin-bottom: .5rem;
+}
+
+.ranking-v2-detail .file-drop-ext {
+  display: inline-block;
+  margin-top: .25rem;
+  padding: .1rem .55rem;
+  border: 1px solid #dee2e6;
+  border-radius: 999px;
+  background: #fff;
+  color: #6c757d;
+  font: .72rem "Menlo", "SF Mono", ui-monospace, monospace;
+}
+
+.ranking-v2-detail .file-drop-selected {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.ranking-v2-detail .submit-actions {
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.ranking-v2-detail .submit-cta {
+  padding: .6rem 2.25rem;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(13, 110, 253, .22);
+}
+
+.risk-high { color: #dc3545; font-weight: 600; }
+.risk-medium { color: #fd7e14; font-weight: 600; }
+.risk-low { color: #198754; }
+.badge-high { background-color: #dc3545 !important; }
+.badge-medium { background-color: #fd7e14 !important; }
+.badge-low { background-color: #198754 !important; }
+.score-bar { height: 8px; min-width: 60px; overflow: hidden; border-radius: 4px; background: #e9ecef; }
+.score-bar-fill { height: 100%; border-radius: 4px; }
+.evidence-list { margin: 0; padding-left: 1.2em; color: #555; font-size: .83em; }
+.detection-card { margin-bottom: 12px; padding-left: 12px; border-left: 4px solid #dee2e6; }
+.detection-card.risk-border-high { border-left-color: #dc3545; }
+.detection-card.risk-border-medium { border-left-color: #fd7e14; }
+.detection-card.risk-border-low { border-left-color: #198754; }
+.filter-card { padding: 1.25rem 1.5rem; border: 1px solid #dee2e6; border-radius: 8px; background: #f8f9fa; }
+.stat-card { border-radius: 8px; }
+.detection-action-bar { display: flex; align-items: end; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; border: 1px solid #dee2e6; border-radius: 8px; background: #f8f9fa; }
+.detection-endpoint-field { width: min(100%, 420px); }
+
+@media (max-width: 575.98px) {
+  .detection-action-bar { align-items: stretch; flex-direction: column; }
+  .detection-action-bar .btn { align-self: flex-end; }
 }
 
 @keyframes numoj-spa-enter {
-  from { opacity: 0.82; }
-  to { opacity: 1; }
+  from { opacity: .72; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes numoj-page-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: .52; transform: translateY(-2px); }
+}
+
+@keyframes numoj-page-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .numoj-spa-route { animation: none; }
+  ::view-transition-group(numoj-page-content),
+  ::view-transition-old(numoj-page-content),
+  ::view-transition-new(numoj-page-content) { animation: none; }
 }
+.appeal-review-page .ap-grid {display:flex;gap:1rem;align-items:flex-start;--gold:#f5c518;--gold-d:#b8910f;--ink:#1f2329;--muted:#70757c;--line:#e6e6e9;--ok:#1f7a4d;--info:#2563cb;--err:#b03a2e;--mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace}
+.appeal-review-page .ap-left {flex:1 1 auto;min-width:0;padding-right:.25rem}
+.appeal-review-page .ap-right {flex:0 0 360px;position:sticky;top:1rem;max-height:calc(100vh - 150px);overflow-y:auto}
+.appeal-review-page .ap-right-inner {background:#fff;border:1px solid #e9ecef;border-radius:.75rem;padding:1rem}
+.appeal-review-page .ap-reason {white-space:pre-wrap;word-break:break-word;background:#f8f9fa;border:1px solid #eef0f2;border-radius:.5rem;padding:.6rem .75rem;font-size:.9rem;line-height:1.6;max-height:30vh;overflow-y:auto}
+.appeal-review-page .ap-view-head {display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
+.appeal-review-page .ap-view-tabs {display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}
+.appeal-review-page .ap-view-tab {border:0;background:#fff;color:var(--muted);padding:.28rem .72rem;font-size:.78rem;line-height:1.2;cursor:pointer;transition:.12s}
+.appeal-review-page .ap-view-tab + .ap-view-tab {border-left:1px solid var(--line)}
+.appeal-review-page .ap-view-tab:hover {color:var(--gold-d);background:#fffaf0}
+.appeal-review-page .ap-view-tab.active {color:#5b4708;background:var(--gold);font-weight:600}
+.appeal-review-page .ap-view[hidden] {display:none!important}
+.appeal-review-page .ap-topo-canvas {min-height:360px;border:1px solid var(--line);border-radius:6px;background:#fff;overflow-x:auto;overflow-y:hidden;padding:.35rem}
+.appeal-review-page .ap-topo-stage {position:relative;min-width:100%}
+.appeal-review-page .ap-topo-surface {position:absolute;left:0;top:0;min-width:100%;transform-origin:top left}
+.appeal-review-page .ap-topo-svg {position:absolute;inset:0;overflow:visible;pointer-events:none}
+.appeal-review-page .ap-topo-edge {fill:none;stroke:#b9aa7b;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;opacity:.76;pointer-events:none;transition:opacity .12s,stroke .12s,stroke-width .12s}
+.appeal-review-page .ap-topo-arrow {fill:#b9aa7b;opacity:.76;pointer-events:none;transition:opacity .12s,fill .12s}
+.appeal-review-page .ap-topo-edge-hit {fill:none;stroke:transparent;stroke-width:16;cursor:pointer;pointer-events:stroke}
+.appeal-review-page .ap-topo-surface.has-focus .ap-topo-edge {opacity:.16}
+.appeal-review-page .ap-topo-surface.has-focus .ap-topo-arrow {opacity:.16}
+.appeal-review-page .ap-topo-surface.has-focus .ap-topo-node {opacity:.34}
+.appeal-review-page .ap-topo-surface.has-focus .ap-topo-edge.edge-active {opacity:1;stroke:#806713;stroke-width:2.6}
+.appeal-review-page .ap-topo-surface.has-focus .ap-topo-arrow.edge-active {opacity:1;fill:#806713}
+.appeal-review-page .ap-topo-surface.has-focus .ap-topo-node.node-active {opacity:1;border-color:var(--gold-d);background:#fff8dd}
+.appeal-review-page .ap-topo-node {position:absolute;width:176px;height:96px;display:flex;flex-direction:column;gap:.22rem;text-align:left;border:1px solid #dfd6b6;border-left:3px solid var(--gold);background:#fffdf8;border-radius:6px;padding:.56rem .65rem;color:var(--ink);cursor:pointer;transition:border-color .12s,background .12s,transform .12s,opacity .12s;overflow:hidden}
+.appeal-review-page .ap-topo-node:hover {border-color:var(--gold-d);background:#fff8dd;transform:translateY(-1px)}
+.appeal-review-page .ap-topo-node.s-pass {border-left-color:var(--ok);background:#fbfffc}
+.appeal-review-page .ap-topo-node.s-failed {border-left-color:var(--err);background:#fffafa}
+.appeal-review-page .ap-topo-node.s-skipped {border-left-color:#8f969e;background:#fcfcfd}
+.appeal-review-page .ap-topo-node.s-error {border-left-color:#b07340;background:#fffaf5}
+.appeal-review-page .ap-topo-node.s-pending {border-left-color:var(--info);background:#fbfdff}
+.appeal-review-page .ap-topo-node-id {font-family:ui-monospace,monospace;font-size:.72rem;color:#806713;font-weight:700;line-height:1}
+.appeal-review-page .ap-topo-node-title {display:block;min-height:1.35em;font-size:.88rem;line-height:1.35;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.appeal-review-page .ap-topo-node-text {font-size:.72rem;line-height:1.25;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.appeal-review-page .ap-topo-node-foot {margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:.4rem;font-size:.7rem}
+.appeal-review-page .ap-topo-status {border-radius:999px;padding:.08rem .42rem;white-space:nowrap}
+.appeal-review-page .ap-topo-score {font-family:ui-monospace,monospace;color:var(--ink);white-space:nowrap}
+.appeal-review-page .ap-topo-empty {min-height:300px;display:grid;place-items:center;color:#b7ad95;font-size:.9rem;text-align:center}
+.appeal-review-page .ap-rule-pop {--gold:#f5c518;--gold-d:#b8910f;--ink:#1f2329;--muted:#70757c;--line:#e6e6e9;position:fixed;inset:0;z-index:1065;display:grid;place-items:center;background:rgba(31,35,41,.28);padding:1rem}
+.appeal-review-page .ap-rule-pop-box {width:min(780px,100%);max-height:min(82vh,720px);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:8px}
+.appeal-review-page .ap-rule-pop-head {display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;padding:1rem 1.1rem;border-bottom:1px solid var(--line)}
+.appeal-review-page .ap-rule-pop-title {font-weight:700;color:var(--ink)}
+.appeal-review-page .ap-rule-pop-meta {font-size:.78rem;color:var(--muted);margin-top:.18rem}
+.appeal-review-page .ap-rule-pop-close {border:0;background:transparent;width:30px;height:30px;border-radius:5px;color:var(--muted)}
+.appeal-review-page .ap-rule-pop-close:hover {background:#f1f1f3;color:var(--ink)}
+.appeal-review-page .ap-rule-pop-body {padding:1rem 1.1rem 1.1rem}
+.appeal-review-page .ap-rule-pop-section + .ap-rule-pop-section {margin-top:1rem}
+.appeal-review-page .ap-rule-pop-label {font-size:.76rem;color:var(--muted);margin-bottom:.35rem}
+.appeal-review-page .ap-rule-status:hover {filter:brightness(.96)}
+.appeal-review-page .ap-rule-score {white-space:nowrap}
+.appeal-review-page .ap-rule.dirty {border-color:#f0c36d!important;box-shadow:0 0 0 2px rgba(234,179,8,.15)}
+.bm-class-react-list {width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.45rem}
+.match-detail-html-frame {border:0;border-radius:.5rem;background:#fff}
+.homework-admin-actions {display:flex;flex-wrap:wrap;gap:.5rem}
+.homework-admin-actions .btn {margin-left:0!important}
+
+/* 作业管理的抄袭记录窗口原先由模板内样式定义；SPA 独立携带同一组规则。 */
+.plagiarism-records-modal {
+  --pr-text:#1f2933;--pr-muted:#6b7280;--pr-line:#e5e7eb;
+  --pr-soft:#f7f8fa;--pr-soft-strong:#eef0f3;
+}
+.plagiarism-records-dialog {max-width:min(1120px,calc(100vw - 32px))}
+.plagiarism-records-content {border:1px solid var(--pr-line);border-radius:8px;box-shadow:0 18px 46px rgba(15,23,42,.14);color:var(--pr-text);overflow:hidden}
+.plagiarism-records-header {border-bottom:1px solid var(--pr-line);background:#fff;padding:18px 20px}
+.plagiarism-records-title {align-items:center;display:flex;font-size:1.05rem;font-weight:700;gap:10px;margin:0}
+.plagiarism-records-title-icon {align-items:center;background:var(--pr-soft-strong);border-radius:8px;color:#374151;display:inline-flex;height:34px;justify-content:center;width:34px}
+.plagiarism-records-body {background:#fff;padding:0}
+.plagiarism-records-toolbar {align-items:center;background:var(--pr-soft);border-bottom:1px solid var(--pr-line);display:flex;justify-content:space-between;gap:12px;padding:12px 16px}
+.plagiarism-records-count {align-items:center;color:var(--pr-muted);display:inline-flex;font-size:.92rem;gap:8px;min-height:32px}
+.plagiarism-records-actions {display:flex;gap:8px}
+.plagiarism-records-action {align-items:center;border-color:var(--pr-line);border-radius:6px;color:#374151;display:inline-flex;gap:6px;line-height:1;min-height:32px}
+.plagiarism-records-action:hover {background:#fff;border-color:#cfd4dc;color:#111827}
+.plagiarism-records-action-danger {color:#7f1d1d}
+.plagiarism-records-table-wrap {max-height:560px;overflow:auto}
+.plagiarism-records-table {margin:0}
+.plagiarism-records-table thead th {background:#fff;border-bottom:1px solid var(--pr-line);color:var(--pr-muted);font-size:.76rem;font-weight:700;letter-spacing:0;padding:11px 12px;position:sticky;text-transform:none;top:0;z-index:1}
+.plagiarism-records-table tbody td {border-color:#edf0f2;padding:12px;vertical-align:middle}
+.plagiarism-records-table tbody tr:hover {background:#fafafa}
+.plagiarism-select-col {text-align:center;width:42px}
+.plagiarism-record-id {color:var(--pr-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.plagiarism-user-main,.plagiarism-problem-main {color:var(--pr-text);font-weight:600}
+.plagiarism-time {color:var(--pr-muted);font-size:.82rem}
+.plagiarism-submission-link {color:#374151;font-weight:600;text-decoration:none;white-space:nowrap}
+.plagiarism-submission-link:hover {color:#111827;text-decoration:underline}
+.plagiarism-rule-badge {align-items:center;border:1px solid var(--pr-line);border-radius:999px;display:inline-flex;font-size:.84rem;font-weight:650;gap:6px;padding:5px 10px;white-space:nowrap}
+.plagiarism-rule-byte {background:var(--pr-soft-strong);color:#111827}
+.plagiarism-rule-threshold {background:#fff;color:#374151}
+.plagiarism-match-list {display:flex;flex-wrap:wrap;gap:6px;max-width:300px}
+.plagiarism-match-chip {background:var(--pr-soft);border:1px solid var(--pr-line);border-radius:999px;color:#374151;font-size:.82rem;line-height:1.1;padding:5px 9px}
+.plagiarism-records-state {align-items:center;color:var(--pr-muted);display:flex;gap:8px;justify-content:center;min-height:120px}
+.plagiarism-records-footer {border-top:1px solid var(--pr-line);padding:12px 16px}
+@media (max-width:768px) {
+  .plagiarism-records-dialog {max-width:calc(100vw - 16px)}
+  .plagiarism-records-toolbar {align-items:stretch;flex-direction:column}
+  .plagiarism-records-actions {justify-content:flex-end}
+  .plagiarism-match-list {max-width:220px}
+}
+.repository-toast.is-visible {pointer-events:auto}
+.repository-toast-close {position:absolute;top:5px;right:7px;width:24px;height:24px;padding:0;border:0;background:transparent;color:#8b8b8b;font-size:17px;line-height:24px}
+@media (max-width:860px) {.appeal-review-page .ap-grid{flex-direction:column}.appeal-review-page .ap-right{flex-basis:auto;width:100%;position:static;max-height:none}.appeal-review-page .ap-left{width:100%}}

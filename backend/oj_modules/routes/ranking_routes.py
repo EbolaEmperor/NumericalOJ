@@ -286,6 +286,16 @@ def _submit_error_response(competition_id, message, category='warning', status=4
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
 
+def _submit_success_response(competition_id, submission_id):
+    if _wants_json_response():
+        return jsonify(
+            success=True,
+            message='提交成功',
+            submission_id=int(submission_id),
+        ), 201
+    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+
+
 def _submit_commit_unknown_response(competition_id, exc):
     """把 commit 结果未知呈现为可恢复的待确认状态，避免用户立即重复提交。"""
     submission_id = int(exc.submission_id)
@@ -813,6 +823,8 @@ def ranking_create():
     description = request.form.get('description') or ''
     max_score = request.form.get('max_score') or '100'
     if not title:
+        if _wants_json_response():
+            return jsonify(success=False, message='比赛标题不能为空'), 400
         flash('比赛标题不能为空', 'danger')
         return redirect(url_for('ranking.ranking_list'))
     try:
@@ -820,6 +832,8 @@ def ranking_create():
         if max_score_int <= 0:
             raise ValueError
     except ValueError:
+        if _wants_json_response():
+            return jsonify(success=False, message='满分必须是正整数'), 400
         flash('满分必须是正整数', 'danger')
         return redirect(url_for('ranking.ranking_list'))
     new_id = create_competition(
@@ -829,6 +843,13 @@ def ranking_create():
         max_score=max_score_int,
         created_by=user.get('username'),
     )
+    if _wants_json_response():
+        return jsonify(
+            success=True,
+            message='打榜赛已创建',
+            competition_id=int(new_id),
+            path=f'/rankings/{int(new_id)}?tab=edit',
+        ), 201
     return redirect(url_for('ranking.ranking_detail', competition_id=new_id, tab='edit'))
 
 
@@ -840,13 +861,23 @@ def ranking_copy(competition_id):
         return resp
     comp = get_competition(competition_id)
     if not comp:
+        if _wants_json_response():
+            return jsonify(success=False, message='比赛不存在'), 404
         flash('比赛不存在', 'danger')
         return redirect(url_for('ranking.ranking_list'))
     try:
-        copy_competition(competition_id, created_by=user.get('username'))
+        new_id = copy_competition(competition_id, created_by=user.get('username'))
     except Exception as e:
+        if _wants_json_response():
+            return jsonify(success=False, message=f'复制失败：{e}'), 400
         flash(f'复制失败：{e}', 'danger')
         return redirect(url_for('ranking.ranking_list'))
+    if _wants_json_response():
+        return jsonify(
+            success=True,
+            message='已复制为非公开副本',
+            competition_id=int(new_id),
+        ), 201
     return redirect(url_for('ranking.ranking_list'))
 
 
@@ -1715,7 +1746,7 @@ def ranking_submit(competition_id):
                 set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但反向评测任务入队失败：{e}', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_success_response(competition_id, submission_id)
 
     base_model_raw = (request.form.get('base_model') or '').strip()
     if not base_model_raw:
@@ -1767,7 +1798,7 @@ def ranking_submit(competition_id):
                 set_agent_judge_task_id(submission_id, attempt_id, async_result.id)
             except Exception as e:
                 flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_success_response(competition_id, submission_id)
 
     # ELO 只接收一个 ZIP 作品包，沿用 code_file/code_path 存储；
     # 不读取 answer_file，也不依赖比赛的 answer_format 字段。
@@ -1812,7 +1843,7 @@ def ranking_submit(competition_id):
                 )
             except Exception as e:
                 flash(f'已加入 ELO 池，但即时补战入队失败：{e}', 'warning')
-        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+        return _submit_success_response(competition_id, submission_id)
 
     answer_format = _competition_answer_format(comp)
     answer_ext = '.' + answer_format
@@ -1876,7 +1907,7 @@ def ranking_submit(competition_id):
             except Exception:
                 pass
             flash(f'已接收提交，但评测任务入队失败：{e}', 'warning')
-    return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
+    return _submit_success_response(competition_id, submission_id)
 
 
 # ---------- git 提交方式：学生检查自己的仓库 / 确认提交 ----------

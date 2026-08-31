@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Blueprint, request
+from flask import Blueprint, jsonify, make_response, request
 
 from backend.oj_modules.api.helpers import apply_limit, clamp_limit, clamp_page, json_error, json_success, public_user
 from backend.oj_modules.security.auth import current_user
+from backend.oj_modules.db_services import get_all_classes
 from backend.oj_modules.ranking.agent_judge.rules import (
     normalize_orchestration_mode as _normalize_aj_orchestration,
     render_snapshot_html as _render_snapshot_html,
 )
 from backend.oj_modules.ranking.agent_judge.db import (
     build_judge_snapshot,
+    global_agent_endpoint_candidates,
     list_agent_judge_endpoints,
     list_competition_rules,
     list_quality_gate_endpoints,
@@ -24,6 +26,7 @@ from backend.oj_modules.ranking.db import (
     get_competition,
     get_leaderboard,
     get_ranking_submission,
+    get_ranking_navigation_state,
     get_submission_quota,
     get_submission_stats,
     list_all_submissions,
@@ -158,7 +161,10 @@ def _files_with_media(files):
     for item in files or []:
         row = dict(item)
         row["media_kind"] = _attachment_media_kind(row.get("filename"))
-        row["download_url"] = f"/ranking/{row.get('competition_id')}/attachment/{row.get('id')}/download"
+        row["download_url"] = (
+            f"/api/ranking/competitions/{row.get('competition_id')}"
+            f"/attachments/{row.get('id')}/download"
+        )
         out.append(row)
     return out
 
@@ -168,8 +174,8 @@ def _submission_download_urls(row, *, include_reverse_answer=False):
     attempt_id = out.pop("judge_attempt_id", None)
     sid = out.get("id")
     if sid:
-        out["answer_download_url"] = f"/ranking/submission/{sid}/answer"
-        out["code_download_url"] = f"/ranking/submission/{sid}/code"
+        out["answer_download_url"] = f"/api/ranking/submissions/{sid}/answer"
+        out["code_download_url"] = f"/api/ranking/submissions/{sid}/code"
     archive_path = None
     if sid and include_reverse_answer:
         archive_path = available_reverse_agent_answer_archive_path(
@@ -224,7 +230,7 @@ def competitions():
     rows = [_safe_competition(row, include_admin=is_admin) for row in rows]
     visible = apply_limit(rows, limit)
     for row in visible:
-        row["url"] = f"/ranking/{row.get('id')}/"
+        row["url"] = f"/rankings/{row.get('id')}"
     return json_success(
         user=public_user(user),
         competitions=visible,
@@ -262,6 +268,7 @@ def competition_detail(competition_id):
     aj_endpoints = []
     answer_endpoints = []
     quality_gate_endpoints = []
+    agent_global_endpoint_candidates = {}
     quality_gate_ready = _reverse_quality_gate_ready(competition_id, comp) if is_reverse_judge else True
     agent_judge_ready = False
     if is_ai_judge:
@@ -289,6 +296,10 @@ def competition_detail(competition_id):
                     )
                 except Exception:
                     quality_gate_endpoints = []
+            try:
+                agent_global_endpoint_candidates = global_agent_endpoint_candidates()
+            except Exception:
+                agent_global_endpoint_candidates = {}
         else:
             if is_agent_judge:
                 agent_judge_ready = (
@@ -304,6 +315,10 @@ def competition_detail(competition_id):
         "tab": tab,
         "rendered_description": _render_description(comp.get("description") or "") if tab == "description" else "",
         "submission_method": (comp.get("submission_method") or "zip").strip().lower(),
+        "navigation": get_ranking_navigation_state(
+            competition_id,
+            None if is_admin else user.get("username"),
+        ),
     }
     if is_reverse_judge:
         payload["answer_endpoints"] = answer_endpoints
@@ -312,10 +327,13 @@ def competition_detail(competition_id):
             "agent_judge_ready": agent_judge_ready,
             "quality_gate_ready": quality_gate_ready,
             "quality_gate_endpoints": quality_gate_endpoints,
+            "agent_global_endpoint_candidates": agent_global_endpoint_candidates,
             "judge_rules": judge_rules,
             "aj_endpoints": aj_endpoints,
             "batch_default_template": BATCH_DEFAULT_TEMPLATE,
         })
+        if tab == "batch_eval":
+            payload["batch_classes"] = get_all_classes()
     else:
         payload["judge_ready"] = agent_judge_ready
 
@@ -408,6 +426,52 @@ def competition_detail(competition_id):
         })
 
     return json_success(**payload)
+
+
+@ranking_api_bp.route("/competitions/<int:competition_id>/submissions", methods=["POST"])
+def create_competition_submission(competition_id):
+    """SPA 专用提交入口；内部复用同一业务处理，不暴露旧页面 URL。"""
+    from backend.oj_modules.routes.ranking_routes import ranking_submit
+
+    return ranking_submit(competition_id)
+
+
+@ranking_api_bp.route("/competitions/<int:competition_id>/repository/check", methods=["POST"])
+def check_competition_repository(competition_id):
+    from backend.oj_modules.routes.ranking_routes import ranking_check_repo
+
+    return ranking_check_repo(competition_id)
+
+
+@ranking_api_bp.route("/competitions/<int:competition_id>/repository/submissions", methods=["POST"])
+def create_repository_submission(competition_id):
+    from backend.oj_modules.routes.ranking_routes import ranking_git_submit
+
+    return ranking_git_submit(competition_id)
+
+
+@ranking_api_bp.route(
+    "/competitions/<int:competition_id>/attachments/<int:file_id>/download",
+    methods=["GET"],
+)
+def download_competition_attachment(competition_id, file_id):
+    from backend.oj_modules.routes.ranking_routes import ranking_download_attachment
+
+    return ranking_download_attachment(competition_id, file_id)
+
+
+@ranking_api_bp.route("/submissions/<int:submission_id>/answer", methods=["GET"])
+def download_submission_answer_file(submission_id):
+    from backend.oj_modules.routes.ranking_routes import download_submission_answer
+
+    return download_submission_answer(submission_id)
+
+
+@ranking_api_bp.route("/submissions/<int:submission_id>/code", methods=["GET"])
+def download_submission_code_file(submission_id):
+    from backend.oj_modules.routes.ranking_routes import download_submission_code
+
+    return download_submission_code(submission_id)
 
 
 @ranking_api_bp.route("/competitions/<int:competition_id>/my-submissions", methods=["GET"])
@@ -584,4 +648,78 @@ def appeal_review(competition_id, appeal_id):
         submission=_submission_download_urls(submission),
         snapshot=snapshot,
         rendered_snapshot=rendered_snapshot,
+    )
+
+
+def _ranking_command_proxy(handler_name):
+    """为 SPA/CLI 暴露稳定 API，复用已有领域处理与权限检查。"""
+
+    def proxy(**values):
+        from backend.oj_modules.routes import ranking_routes
+
+        result = getattr(ranking_routes, handler_name)(**values)
+        response = make_response(result)
+        payload = response.get_json(silent=True)
+        if isinstance(payload, dict) and "success" not in payload and "ok" in payload:
+            payload["success"] = bool(payload.get("ok"))
+            redirect_target = payload.get("redirect")
+            if isinstance(redirect_target, str) and redirect_target.startswith("/ranking/"):
+                payload["redirect"] = "/rankings/" + redirect_target.removeprefix("/ranking/")
+            return jsonify(payload), response.status_code
+        if 300 <= response.status_code < 400:
+            location = response.headers.get("Location") or ""
+            if location.startswith("/ranking/"):
+                location = "/rankings/" + location.removeprefix("/ranking/")
+            elif location == "/ranking":
+                location = "/rankings"
+            return json_success(redirect_url=location or None)
+        return response
+
+    proxy.__name__ = f"api_{handler_name}"
+    return proxy
+
+
+_RANKING_COMMAND_ROUTES = (
+    ("create_competition", "/competitions", ("POST",), "ranking_create"),
+    ("copy_competition", "/competitions/<int:competition_id>/copy", ("POST",), "ranking_copy"),
+    ("edit_competition", "/competitions/<int:competition_id>", ("POST",), "ranking_edit"),
+    ("delete_competition", "/competitions/<int:competition_id>", ("DELETE",), "ranking_delete"),
+    ("match_detail", "/competitions/<int:competition_id>/matches/<int:match_id>", ("GET",), "ranking_match_details"),
+    ("delete_match", "/competitions/<int:competition_id>/matches/<int:match_id>", ("DELETE",), "ranking_delete_match"),
+    ("upload_attachment", "/competitions/<int:competition_id>/attachments", ("POST",), "ranking_upload_attachment"),
+    ("delete_attachment", "/competitions/<int:competition_id>/attachments/<int:file_id>", ("DELETE",), "ranking_delete_attachment"),
+    ("upload_reference", "/competitions/<int:competition_id>/reference", ("POST",), "ranking_upload_reference"),
+    ("upload_scoring_script", "/competitions/<int:competition_id>/scoring-script", ("POST",), "ranking_upload_scoring_script"),
+    ("clear_scoring_script", "/competitions/<int:competition_id>/scoring-script", ("DELETE",), "ranking_clear_scoring_script"),
+    ("reset_submit_limit", "/competitions/<int:competition_id>/submission-limit/reset", ("POST",), "ranking_reset_submit_limit"),
+    ("save_agent_judge_rules", "/competitions/<int:competition_id>/agent-judge/rules", ("POST",), "ranking_save_judge_rules"),
+    ("save_agent_judge_endpoints", "/competitions/<int:competition_id>/agent-judge/endpoints", ("POST",), "ranking_save_agent_endpoints"),
+    ("save_reverse_quality_gate", "/competitions/<int:competition_id>/reverse-judge/quality-gate", ("POST",), "ranking_save_reverse_quality_gate"),
+    ("batch_probe", "/competitions/<int:competition_id>/batch/probes", ("POST",), "ranking_batch_probe_start"),
+    ("batch_probe_status", "/competitions/<int:competition_id>/batch/probes/status", ("GET",), "ranking_batch_probe_status"),
+    ("batch_create", "/competitions/<int:competition_id>/batch/submissions", ("POST",), "ranking_batch_create"),
+    ("bulk_filter", "/competitions/<int:competition_id>/rejudge/filter", ("POST",), "ranking_bulk_rejudge_filter"),
+    ("bulk_start", "/competitions/<int:competition_id>/rejudge/jobs", ("POST",), "ranking_bulk_rejudge_start"),
+    ("bulk_status", "/competitions/<int:competition_id>/rejudge/jobs/<job_id>", ("GET",), "ranking_bulk_rejudge_status"),
+    ("judge_stream", "/competitions/<int:competition_id>/submissions/<int:submission_id>/judge-events", ("GET",), "ranking_judge_stream"),
+    ("reverse_judge_stream", "/competitions/<int:competition_id>/submissions/<int:submission_id>/reverse-judge-events", ("GET",), "ranking_reverse_judge_stream"),
+    ("rejudge_agent", "/competitions/<int:competition_id>/submissions/<int:submission_id>/rejudge", ("POST",), "ranking_rejudge_agent"),
+    ("submit_appeal", "/competitions/<int:competition_id>/submissions/<int:submission_id>/appeal", ("POST",), "ranking_submit_appeal"),
+    ("appeal_status", "/competitions/<int:competition_id>/submissions/<int:submission_id>/appeal", ("GET",), "ranking_appeal_status"),
+    ("handle_appeal", "/competitions/<int:competition_id>/appeals/<int:appeal_id>", ("POST",), "ranking_appeal_handle"),
+    ("elo_start", "/competitions/<int:competition_id>/elo/start", ("POST",), "ranking_elo_start"),
+    ("elo_stop", "/competitions/<int:competition_id>/elo/stop", ("POST",), "ranking_elo_stop"),
+    ("elo_reset", "/competitions/<int:competition_id>/elo/reset", ("POST",), "ranking_elo_reset"),
+    ("elo_rebuild", "/competitions/<int:competition_id>/elo/rebuild", ("POST",), "ranking_elo_rebuild_history"),
+    ("elo_trajectory_submissions", "/competitions/<int:competition_id>/elo/trajectory/submissions", ("GET",), "ranking_elo_trajectory_submissions"),
+    ("elo_trajectory", "/competitions/<int:competition_id>/elo/trajectory", ("POST",), "ranking_elo_trajectory"),
+    ("delete_submission", "/competitions/<int:competition_id>/submissions/<int:submission_id>", ("DELETE",), "ranking_delete_submission"),
+)
+
+for _endpoint, _rule, _methods, _handler in _RANKING_COMMAND_ROUTES:
+    ranking_api_bp.add_url_rule(
+        _rule,
+        endpoint=_endpoint,
+        view_func=_ranking_command_proxy(_handler),
+        methods=list(_methods),
     )

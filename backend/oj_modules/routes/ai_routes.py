@@ -307,6 +307,7 @@ def _json_error_from_ai_request_error(error):
     return jsonify(success=False, message=error.message), error.status_code
 
 
+@ai_bp.post('/api/ai/code-marks')
 @ai_bp.route('/ask_ai_code_marks', methods=['POST'])
 def ask_ai_code_marks():
     try:

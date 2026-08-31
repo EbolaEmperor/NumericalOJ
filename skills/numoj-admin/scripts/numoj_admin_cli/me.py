@@ -19,19 +19,19 @@ from .submission import submission_list
 
 def me_classes(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/me/classes")
+    resp = client.request("GET", "/api/account/classes")
     print_or_save_response(resp)
 
 
 def me_join_class(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", "/me/join_class", data={"class_en": args.class_en})
+    resp = client.request("POST", "/api/account/classes", data={"class_en": args.class_en})
     print_or_save_response(resp)
 
 
 def me_leave_class(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", "/me/leave_class", data={"class_en": args.class_en})
+    resp = client.request("DELETE", f"/api/account/classes/{args.class_en}")
     print_or_save_response(resp)
 
 
@@ -40,7 +40,7 @@ def me_grades(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
     username = args.username or cfg.get("username")
     if args.user_id is not None:
-        resp = client.request("GET", "/admin/get_user_grades", params={"user_id": args.user_id})
+        resp = client.request("GET", "/api/admin/user-grades", params={"user_id": args.user_id})
         print_or_save_response(resp)
         return
     if not username:
@@ -51,7 +51,7 @@ def me_grades(args: argparse.Namespace) -> None:
     matches = [u for u in (payload.get("users") or []) if u.get("username") == username]
     if not matches:
         raise CliError("Cannot find current user id from /api/admin/users. Pass --user-id explicitly.")
-    resp = client.request("GET", "/admin/get_user_grades", params={"user_id": matches[0]["id"]})
+    resp = client.request("GET", "/api/admin/user-grades", params={"user_id": matches[0]["id"]})
     print_or_save_response(resp)
 
 

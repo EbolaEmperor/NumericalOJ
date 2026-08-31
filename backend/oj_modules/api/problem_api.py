@@ -26,6 +26,7 @@ problem_api_bp = Blueprint("problem_api", __name__, url_prefix="/api")
 def _homework_problem_item(hw, class_en=None, class_cn=None):
     common = {
         **to_jsonable(dict(hw)),
+        "homework_id": hw.get("id"),
         "class_en": class_en,
         "class_cn": class_cn,
         "title": hw.get("problem_title"),
@@ -40,7 +41,7 @@ def _homework_problem_item(hw, class_en=None, class_cn=None):
             "complete_count": hw.get("complete_cnt"),
             "is_completed": hw.get("is_completed"),
             "max_score": hw.get("max_score"),
-            "url": f"/ranking/{hw.get('competition_id')}/",
+            "url": f"/rankings/{hw.get('competition_id')}",
         }
     return {
         **common,
@@ -52,7 +53,7 @@ def _homework_problem_item(hw, class_en=None, class_cn=None):
         "is_completed": hw.get("is_completed"),
         "max_score": hw.get("max_score"),
         "total_score": hw.get("total_score"),
-        "url": f"/problem/{hw.get('problem_id')}",
+        "url": f"/problems/{hw.get('problem_id')}",
     }
 
 
@@ -71,7 +72,7 @@ def _visible_items_from_context(context):
                 "submission_count": p.get("cnt"),
                 "time_limit_ms": p.get("time_limit_ms"),
                 "submission_metrics": to_jsonable(p.get("submission_metrics")),
-                "url": f"/problem/{p.get('id')}",
+                "url": f"/problems/{p.get('id')}",
             }
             for p in context.get("problems") or []
         ]
@@ -124,6 +125,7 @@ def problems():
         total_grade=context.get("total_grade"),
         last_10_days=context.get("last_10_days"),
         daily_counts=context.get("daily_counts"),
+        numoj_cli_resource=context.get("numoj_cli_resource"),
         classes=context.get("classes"),
         selected_class_en=context.get("selected_class_en"),
         selected_class_cn=context.get("selected_class_cn"),
@@ -181,7 +183,7 @@ def problem_detail(problem_id):
         submit_warning=context.get("submit_warning"),
         homework_assignments=context.get("homework_assignments") or [],
         submit={
-            "action": f"/submit/{problem_id}",
+            "action": f"/api/problems/{problem_id}/submissions",
             "method": "POST",
             "problem_type": problem_type,
             "programming_grading_mode": programming_mode if problem_type == 1 else None,
@@ -241,7 +243,7 @@ def _problem_form_options():
         "languages": ["matlab", "c", "cpp", "python", "lean4"],
         "problem_types": [
             {"value": "1", "label": "编程题"},
-            {"value": "2", "label": "书面题"},
+            {"value": "2", "label": "书面作业"},
         ],
         "programming_grading_modes": [
             {"value": 1, "label": "传统交互"},
@@ -270,7 +272,7 @@ def problem_create_form():
         return json_error("无权限", 403)
     return json_success(
         user=public_user(user),
-        action="/admin/add_problem",
+        action="/api/admin/problems",
         method="POST",
         defaults={
             "title": "",
@@ -280,7 +282,9 @@ def problem_create_form():
             "forbidden_func": "",
             "type": "1",
             "lang": "matlab",
-            "time_limit": 2000,
+            # 旧版表单在页面初始化时会把新建编程题的 2000ms
+            # 转为 10000ms；SPA 的表单 API 直接返回用户最终看到的值。
+            "time_limit": 10000,
             "submission_limit": 10,
             "programming_grading_mode": 1,
             "output_image_filename": "output.png",
@@ -334,7 +338,7 @@ def problem_edit_form(problem_id):
         problem=to_jsonable(api_problem),
         form=form,
         lean_workspace=context.get("lean_workspace"),
-        action=f"/admin/edit_problem/{problem_id}",
+        action=f"/api/admin/problems/{problem_id}",
         method="POST",
         options=_problem_form_options(),
     )

@@ -31,7 +31,7 @@ The command prompts for:
 - username
 - password
 
-It logs in through NumOJ's existing `/login` route and writes a local JSON config to `~/.numoj-user/config.json` by default. Treat that JSON as a secret because it contains the Flask session cookie. Use `--config <path>` or `NUMOJ_USER_CONFIG=<path>` only when the user wants a different config file.
+It logs in through NumOJ's JSON session API (`POST /api/session`) and writes a local JSON config to `~/.numoj-user/config.json` by default. The CLI does not depend on the legacy server-rendered frontend. Treat that JSON as a secret because it contains the Flask session cookie. Use `--config <path>` or `NUMOJ_USER_CONFIG=<path>` only when the user wants a different config file.
 
 Verify access:
 

@@ -20,6 +20,7 @@ from backend.oj_modules.db_services import (
     get_problem,
     get_submission_by_id,
     get_submission_panel_by_id,
+    get_submission_problem_options,
     get_submission_summaries_by_user_and_problem_paginated,
     normalize_submission_list_status_filter,
 )
@@ -51,7 +52,7 @@ def _decorate_submission_summary(row):
         if max_score is not None and max_score > 0
         else (out.get("test_points_count") or None)
     )
-    out["detail_url"] = f"/submission_detail/{out.get('id')}"
+    out["detail_url"] = f"/submissions/{out.get('id')}"
     return out
 
 
@@ -88,14 +89,9 @@ def _submission_panel_payload(submission, raw_problem, user):
     return _build_submission_panel_payload(
         panel_submission,
         panel_problem,
-        detail_url=url_for(
-            "submission.submission_detail",
-            submission_id=submission_id,
-        ),
-        status_stream_url=url_for(
-            "submission.submission_status_stream",
-            submission_id=submission_id,
-            view="panel",
+        detail_url=f"/submissions/{submission_id}",
+        status_stream_url=(
+            f"/api/submissions/{submission_id}/events?view=panel"
         ),
         rejudge_url=(
             url_for(
@@ -144,6 +140,18 @@ def submissions():
 
     decorated = [_decorate_submission_summary(row) for row in rows]
     visible = apply_limit(decorated, limit)
+    problem_options = get_submission_problem_options(username=scope_username)
+    current_problem_label = ""
+    for option in problem_options:
+        option["display_problem_title"] = _strip_problem_title_tags(
+            option.get("problem_title")
+        )
+        option["filter_label"] = (
+            f"P{int(option['problem_id']):04d} · "
+            f"{option['display_problem_title']}"
+        )
+        if int(option["problem_id"]) == int(problem_id or 0):
+            current_problem_label = option["filter_label"]
     return json_success(
         user=public_user(user),
         scope=scope,
@@ -153,6 +161,8 @@ def submissions():
         page_numbers=page_numbers(page, total_pages, radius=10),
         submission_ids=[row["id"] for row in visible],
         submissions=visible,
+        problem_options=problem_options,
+        current_problem_label=current_problem_label,
         count=len(visible),
         filters={
             "q": query,

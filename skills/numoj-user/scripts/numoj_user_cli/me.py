@@ -18,7 +18,7 @@ def necessary_classes_payload(payload: Any) -> Any:
 
 
 def me_classes(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("GET", "/me/classes")
+    resp = common.client_from_args(args).request("GET", "/api/account/classes")
     common.ensure_ok(resp, allow_redirect=False)
     if common.response_is_json(resp):
         common.output_json(necessary_classes_payload(resp.json()))
@@ -27,12 +27,12 @@ def me_classes(args: argparse.Namespace) -> None:
 
 
 def me_join_class(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", "/me/join_class", data={"class_en": args.class_en})
+    resp = common.client_from_args(args).request("POST", "/api/account/classes", data={"class_en": args.class_en})
     common.print_or_save_response(resp)
 
 
 def me_leave_class(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("POST", "/me/leave_class", data={"class_en": args.class_en})
+    resp = common.client_from_args(args).request("DELETE", f"/api/account/classes/{args.class_en}")
     common.print_or_save_response(resp)
 
 

@@ -24,7 +24,7 @@ def ai_code_marks(args: argparse.Namespace) -> None:
         "submission_id": args.submission_id,
         "force_refresh": bool(args.force_refresh),
     }
-    resp = common.client_from_args(args).request("POST", "/ask_ai_code_marks", json=payload)
+    resp = common.client_from_args(args).request("POST", "/api/ai/code-marks", json=payload)
     common.ensure_ok(resp, allow_redirect=False)
     if common.response_is_json(resp):
         common.output_json(necessary_ai_code_marks_payload(resp.json()))

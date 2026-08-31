@@ -338,7 +338,7 @@ SPA 和兼容页面按以下结构组织：
 ```text
 frontend/
 ├── src/
-│   ├── pages/               # `/app/*` 路由页面
+│   ├── pages/               # 无统一前缀的 React 业务路由页面
 │   ├── components/          # SPA 外壳、状态与跨页面组件
 │   └── api/                 # JSON 客户端与类型合同
 └── public/static/           # 原页面 CSS、图标、字体和兼容运行时

@@ -205,6 +205,7 @@ def parse_programming_grading_prompt_from_form(form):
     return text
 
 
+@admin_problem_bp.post('/api/admin/problems')
 @admin_problem_bp.route('/admin/add_problem', methods=['GET', 'POST'])
 def add_problem():
     user = current_user()
@@ -300,6 +301,7 @@ def add_problem():
     )
 
 
+@admin_problem_bp.post('/api/admin/problems/<int:problem_id>')
 @admin_problem_bp.route('/admin/edit_problem/<int:problem_id>', methods=['GET', 'POST'])
 def edit_problem(problem_id):
     user = current_user()
@@ -392,6 +394,13 @@ def edit_problem(problem_id):
             new_written_grading_prompt=new_written_grading_prompt,
             new_llm_endpoint_bindings=new_llm_endpoint_bindings,
         )
+        if _wants_json_response():
+            return jsonify(
+                success=True,
+                problem_id=problem_id,
+                message="题目修改成功",
+                next=f"/problems/{problem_id}",
+            )
         return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
     return render_template(
@@ -409,6 +418,7 @@ def handle_file_too_large(error):
     return redirect(request.url)
 
 
+@admin_problem_bp.route('/api/admin/problems/<int:problem_id>/testdata', methods=['POST'])
 @admin_problem_bp.route('/admin/upload_testdata/<int:problem_id>', methods=['POST'])
 def upload_testdata(problem_id):
     user = current_user()
@@ -460,6 +470,7 @@ def upload_testdata(problem_id):
     return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
 
 
+@admin_problem_bp.post('/api/admin/problems/<int:problem_id>/lean-workspace')
 @admin_problem_bp.route('/admin/upload_lean_workspace/<int:problem_id>', methods=['POST'])
 def upload_lean_workspace(problem_id):
     """上传 Lean 4 多文件题目包，并发布为新的不可变版本。"""
@@ -531,6 +542,7 @@ def admin_lean_workspace(problem_id):
     return jsonify(success=True, problem_id=problem_id, lean_workspace=workspace)
 
 
+@admin_problem_bp.get('/api/admin/problems/<int:problem_id>/lean-workspace/download')
 @admin_problem_bp.get('/admin/download_lean_workspace/<int:problem_id>')
 def download_lean_workspace(problem_id):
     user = current_user()
@@ -570,6 +582,7 @@ def download_lean_workspace(problem_id):
     )
 
 
+@admin_problem_bp.delete('/api/admin/problems/<int:problem_id>')
 @admin_problem_bp.route('/admin/delete_problem/<int:problem_id>', methods=['DELETE'])
 def delete_problem(problem_id):
     user = current_user()

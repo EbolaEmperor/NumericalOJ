@@ -27,7 +27,7 @@ The command prompts for:
 - administrator username
 - administrator password
 
-It logs in through NumOJ's existing `/login` route and writes a local JSON config to `~/.numoj-cli/config.json` by default. Treat that JSON as a secret because it contains the Flask session cookie. Use `--config <path>` or `NUMOJ_CLI_CONFIG=<path>` only when the administrator wants a different config file.
+It logs in through NumOJ's JSON session API (`POST /api/session`) and writes a local JSON config to `~/.numoj-cli/config.json` by default. The CLI does not depend on the legacy server-rendered frontend. Treat that JSON as a secret because it contains the Flask session cookie. Use `--config <path>` or `NUMOJ_CLI_CONFIG=<path>` only when the administrator wants a different config file.
 
 Verify access:
 
@@ -55,7 +55,7 @@ Do not use commands that launch external model/API work, large judging workloads
 ## Command Areas
 
 - `auth`: login status, local token cleanup, registration/password-reset pages, verification-code requests, registration, and password change.
-- `site`: inspect public site routes and login/problem-list redirects.
+- `site`: inspect the public SPA session bootstrap API.
 - `site-config`: inspect and manage global LLM endpoints, feature bindings,
   SMTP settings, and WebSearch MCP settings. LLM create/update commands always
   run the server's real connection test and consume its one-time test token

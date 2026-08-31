@@ -62,8 +62,9 @@ def login(args: argparse.Namespace) -> None:
     sess = requests.Session()
     sess.trust_env = False
     resp = sess.post(
-        urljoin(base_url + "/", "/login"),
-        data={"username": username, "password": password},
+        urljoin(base_url + "/", "/api/session"),
+        json={"username": username, "password": password, "next": "/problems"},
+        headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"},
         allow_redirects=False,
         timeout=args.timeout,
     )
@@ -113,7 +114,7 @@ def logout(args: argparse.Namespace) -> None:
     if cfg.get("cookies"):
         try:
             client = NumOJClient(cfg, timeout=args.timeout)
-            client.request("POST", "/logout")
+            client.request("DELETE", "/api/session")
         except Exception:
             pass
     cfg.pop("cookies", None)
@@ -180,7 +181,7 @@ def status(args: argparse.Namespace) -> None:
     )
 
 def auth_send_password_code(args: argparse.Namespace) -> None:
-    resp = client_from_args(args).request("POST", "/send_password_code")
+    resp = client_from_args(args).request("POST", "/api/account/password/code")
     print_or_save_response(resp)
 
 
@@ -188,7 +189,7 @@ def auth_change_password(args: argparse.Namespace) -> None:
     confirm = args.confirm_password or args.new_password
     resp = client_from_args(args).request(
         "POST",
-        "/change_password",
+        "/api/account/password",
         data={"code": args.code, "new_password": args.new_password, "confirm_password": confirm},
     )
     print_redirect_response(resp)

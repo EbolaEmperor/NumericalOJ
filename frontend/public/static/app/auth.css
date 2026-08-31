@@ -359,6 +359,19 @@
   color: var(--auth-orange-dark);
 }
 
+.numoj-auth-link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--auth-ink-2);
+  font-size: inherit;
+  font-weight: 650;
+}
+
+.numoj-auth-link-button:hover {
+  color: var(--auth-orange-dark);
+}
+
 .numoj-auth-notice {
   margin: 0 0 15px;
   padding: 9px 10px;

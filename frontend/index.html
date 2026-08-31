@@ -6,11 +6,11 @@
     <meta name="theme-color" content="#f7f7f5" />
     <meta name="color-scheme" content="light" />
     <title>Numerical OJ</title>
-    <script src="/static/app/sidebar-state.js"></script>
     <link rel="stylesheet" href="/static/bootstrap/bootstrap.min.css" />
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css" />
     <link rel="stylesheet" href="/static/math-curve-loaders/loader.css" />
     <link rel="stylesheet" href="/static/app/model-family-logos.css" />
+    <link rel="stylesheet" href="/static/vendor/sora/sora.css" />
     <link rel="stylesheet" href="/static/app/layout.css" />
     <link rel="stylesheet" href="/static/app/choice-picker.css" />
     <link rel="stylesheet" href="/static/app/auth.css" />
@@ -25,14 +25,17 @@
     <link rel="stylesheet" href="/static/app/vibehub.css" />
     <link rel="stylesheet" href="/static/app/ranking/harness-logos.css" />
     <link rel="stylesheet" href="/static/app/ranking/list.css" />
+    <link rel="stylesheet" href="/static/app/ranking/settings.css" />
     <link rel="stylesheet" href="/static/app/ranking/detail-v2.css" />
     <link rel="stylesheet" href="/static/app/ranking/content-v2.css" />
     <link rel="stylesheet" href="/static/app/ranking/elo-trajectories.css" />
     <link rel="stylesheet" href="/static/styles/repository/workbench.css" />
     <link rel="stylesheet" href="/static/app/agents/task-list.css" />
+    <link rel="stylesheet" href="/static/app/agents/conversation.css" />
     <link rel="stylesheet" href="/static/app/endpoint-editor.css" />
     <link rel="stylesheet" href="/static/app/agents/access-control.css" />
     <link rel="stylesheet" href="/static/app/admin-users.css" />
+    <link rel="stylesheet" href="/static/app/site-config.css" />
   </head>
   <body>
     <div id="root"></div>
@@ -40,6 +43,26 @@
     <script src="/static/math-curve-loaders/loader.js"></script>
     <script src="/static/app/model-family.js"></script>
     <script src="/static/app/identicon.js"></script>
+    <script src="/static/app/ranking/topology.js"></script>
+    <script>
+      window.MathJax = {
+        startup: {typeset: false},
+        loader: {load: []},
+        tex: {
+          inlineMath: [['$', '$'], ['\\(', '\\)']],
+          displayMath: [['$$', '$$'], ['\\[', '\\]']],
+          packages: ['base', 'ams', 'newcommand', 'noundefined']
+        },
+        options: {enableMenu: false}
+      };
+    </script>
+    <script
+      src="/static/app/rich-content-assets.js"
+      data-mathjax-src="/static/vendor/mathjax/tex-mml-chtml.js"
+      data-mermaid-src="/static/vendor/mermaid/mermaid.min.js"
+      data-highlighter-src="/static/vendor/shiki-markdown/highlighter.js"
+      data-semantic-tokens-src="/static/app/editor-semantic-tokens.js"></script>
+    <script src="/static/app/markdown-rendering.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

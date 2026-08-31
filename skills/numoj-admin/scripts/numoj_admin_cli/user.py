@@ -29,7 +29,7 @@ def user_add_class_type(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        "/admin/add_class_ajax",
+        "/api/admin/classes",
         data={"class_en": args.class_en, "class_cn": args.class_cn},
     )
     print_or_save_response(resp)
@@ -49,7 +49,7 @@ def user_list(args: argparse.Namespace) -> None:
 def user_grant_admin(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
-        "POST", "/admin/grant_user_admin_ajax", data={"user_id": args.user_id},
+        "POST", "/api/admin/users/admin-role", data={"user_id": args.user_id},
     )
     print_or_save_response(resp)
 
@@ -58,7 +58,7 @@ def user_rename(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        "/admin/edit_username_ajax",
+        "/api/admin/users/username",
         data={"user_id": args.user_id, "new_username": args.username},
     )
     print_or_save_response(resp)
@@ -68,7 +68,7 @@ def user_add_to_class(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        "/admin/add_user_to_class",
+        "/api/admin/class-memberships",
         data={"user_id": args.user_id, "class_en": args.class_en},
     )
     print_or_save_response(resp)
@@ -77,8 +77,8 @@ def user_add_to_class(args: argparse.Namespace) -> None:
 def user_remove_from_class(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
-        "POST",
-        "/admin/remove_user_from_class",
+        "DELETE",
+        "/api/admin/class-memberships",
         data={"user_id": args.user_id, "class_en": args.class_en},
     )
     print_or_save_response(resp)
@@ -86,7 +86,7 @@ def user_remove_from_class(args: argparse.Namespace) -> None:
 
 def user_grades(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/admin/get_user_grades", params={"user_id": args.user_id})
+    resp = client.request("GET", "/api/admin/user-grades", params={"user_id": args.user_id})
     print_or_save_response(resp)
 
 
@@ -95,7 +95,7 @@ def user_update_grade(args: argparse.Namespace) -> None:
     score = "" if args.clear else str(args.score)
     resp = client.request(
         "POST",
-        "/admin/update_user_grade",
+        "/api/admin/user-grades",
         data={"user_id": args.user_id, "problem_id": args.problem_id, "score": score},
     )
     print_or_save_response(resp)

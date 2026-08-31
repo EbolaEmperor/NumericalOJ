@@ -268,6 +268,7 @@
 }
 .user-admin-pagination > div { gap: 4px; }
 .user-admin-pagination a,
+.user-admin-pagination button,
 .user-admin-pagination > div > span {
   display: grid;
   width: 30px;
@@ -279,8 +280,11 @@
   font: 650 9px/1 var(--ua-mono);
   text-decoration: none;
 }
-.user-admin-pagination a:hover { border-color: var(--ua-line); background: var(--ua-line-soft); color: var(--ua-ink); }
-.user-admin-pagination a.is-current { border-color: var(--ua-ink); background: var(--ua-ink); color: #fff; }
+.user-admin-pagination button { padding: 0; background: transparent; }
+.user-admin-pagination a:hover,
+.user-admin-pagination button:hover { border-color: var(--ua-line); background: var(--ua-line-soft); color: var(--ua-ink); }
+.user-admin-pagination a.is-current,
+.user-admin-pagination button.is-current { border-color: var(--ua-ink); background: var(--ua-ink); color: #fff; }
 
 .user-admin-toast {
   position: fixed;

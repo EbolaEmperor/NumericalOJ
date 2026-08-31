@@ -280,7 +280,7 @@ def wait_promptly_review_result(
     last_status: Dict[str, Any] = {}
 
     while True:
-        resp = client.request("GET", f"/submission_status/{submission_id}")
+        resp = client.request("GET", f"/api/submissions/{submission_id}/status")
         ensure_ok(resp, allow_redirect=False)
         payload = resp.json() if response_is_json(resp) else {}
         last_status = payload if isinstance(payload, dict) else {}
@@ -606,7 +606,7 @@ def problem_submit(args: argparse.Namespace) -> None:
         )
         resp = client.request(
             "POST",
-            f"/submit/{args.problem_id}",
+            f"/api/problems/{args.problem_id}/submissions",
             data={
                 "lean_workspace": json.dumps(
                     submission,
@@ -622,7 +622,7 @@ def problem_submit(args: argparse.Namespace) -> None:
             raise CliError("This problem accepts a file submission, not code or prompt.")
         files = {"file": require_file(args.file)}
         try:
-            resp = client.request("POST", f"/submit/{args.problem_id}", files=files)
+            resp = client.request("POST", f"/api/problems/{args.problem_id}/submissions", files=files)
         finally:
             close_files(files)
     elif input_kind == "prompt":
@@ -631,15 +631,15 @@ def problem_submit(args: argparse.Namespace) -> None:
         if workspace_directory or args.file or args.code or args.code_file:
             raise CliError("This Promptly problem accepts prompt text, not code or file.")
         prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8") if args.prompt_file else read_text_value(args.prompt)
-        resp = client.request("POST", f"/submit/{args.problem_id}", data={"prompt": prompt})
+        resp = client.request("POST", f"/api/problems/{args.problem_id}/submissions", data={"prompt": prompt})
     else:
         if not (args.code or args.code_file):
             raise CliError("This programming problem requires --code or --code-file.")
         if workspace_directory or args.file or args.prompt or args.prompt_file:
             raise CliError("This programming problem accepts code, not prompt or file.")
         code = Path(args.code_file).expanduser().read_text(encoding="utf-8") if args.code_file else read_text_value(args.code)
-        resp = client.request("POST", f"/submit/{args.problem_id}", data={"code": code})
-    payload = redirect_response_payload(resp, id_pattern=r"/submission_detail/(\d+)", id_name="submission_id")
+        resp = client.request("POST", f"/api/problems/{args.problem_id}/submissions", data={"code": code})
+    payload = redirect_response_payload(resp)
     if input_kind == "prompt" and payload.get("success") and payload.get("submission_id") and getattr(args, "wait_promptly", True):
         promptly_review = wait_promptly_review_result(
             client,
@@ -692,7 +692,7 @@ def problem_create(args: argparse.Namespace) -> None:
             ("llm_endpoint_bindings", llm_endpoint_bindings),
         ]
     )
-    resp = client.request("POST", "/admin/add_problem", data=data, headers={"Accept": "application/json"})
+    resp = client.request("POST", "/api/admin/problems", data=data, headers={"Accept": "application/json"})
     if not lean_package:
         print_or_save_response(resp)
         return
@@ -707,7 +707,7 @@ def problem_create(args: argparse.Namespace) -> None:
     try:
         upload_resp = client.request(
             "POST",
-            f"/admin/upload_lean_workspace/{problem_id}",
+            f"/api/admin/problems/{problem_id}/lean-workspace",
             files=files,
             headers={"Accept": "application/json"},
         )
@@ -769,13 +769,13 @@ def problem_edit(args: argparse.Namespace) -> None:
             ("llm_endpoint_bindings", llm_endpoint_bindings),
         ]
     )
-    resp = client.request("POST", f"/admin/edit_problem/{args.problem_id}", data=data)
+    resp = client.request("POST", f"/api/admin/problems/{args.problem_id}", data=data)
     print_or_save_response(resp)
 
 
 def problem_delete(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("DELETE", f"/admin/delete_problem/{args.problem_id}")
+    resp = client.request("DELETE", f"/api/admin/problems/{args.problem_id}")
     print_or_save_response(resp)
 
 
@@ -783,7 +783,7 @@ def problem_upload_testdata(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     files = {"testdata_zip": require_file(args.zip)}
     try:
-        resp = client.request("POST", f"/admin/upload_testdata/{args.problem_id}", files=files)
+        resp = client.request("POST", f"/api/admin/problems/{args.problem_id}/testdata", files=files)
     finally:
         close_files(files)
     print_or_save_response(resp)
@@ -832,7 +832,7 @@ def problem_lean_upload(args: argparse.Namespace) -> None:
     try:
         resp = client.request(
             "POST",
-            f"/admin/upload_lean_workspace/{args.problem_id}",
+            f"/api/admin/problems/{args.problem_id}/lean-workspace",
             files=files,
             headers={"Accept": "application/json"},
         )
@@ -853,7 +853,7 @@ def problem_lean_download(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "GET",
-        f"/admin/download_lean_workspace/{args.problem_id}",
+        f"/api/admin/problems/{args.problem_id}/lean-workspace/download",
     )
     output = args.output or f"lean-problem-{args.problem_id}.zip"
     print_or_save_response(resp, output=output, allow_redirect=False)
@@ -861,13 +861,13 @@ def problem_lean_download(args: argparse.Namespace) -> None:
 
 def problem_rejudge(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/admin/rejudge_problem/{args.problem_id}")
+    resp = client.request("POST", f"/api/admin/problems/{args.problem_id}/rejudge")
     print_or_save_response(resp)
 
 
 def problem_rejudge_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/admin/rejudge_status/{args.problem_id}")
+    resp = client.request("GET", f"/api/admin/problems/{args.problem_id}/rejudge-status")
     print_or_save_response(resp, fail_on_business_error=False)
 
 
@@ -876,25 +876,25 @@ def problem_rejudge_time_range(args: argparse.Namespace) -> None:
     payload: Dict[str, Any] = {"start": args.start, "end": args.end}
     if args.confirm_total is not None:
         payload["confirm_total"] = args.confirm_total
-    resp = client.request("POST", "/admin/rejudge_time_range", json=payload)
+    resp = client.request("POST", "/api/admin/rejudge-ranges", json=payload)
     print_or_save_response(resp)
 
 
 def problem_rejudge_time_range_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/admin/rejudge_time_range_status")
+    resp = client.request("GET", "/api/admin/rejudge-ranges/status")
     print_or_save_response(resp, fail_on_business_error=False)
 
 
 def problem_agent_run_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/agent/runs/{args.task_id}/state")
+    resp = client.request("GET", f"/api/agent/runs/{args.task_id}")
     print_or_save_response(resp)
 
 
 def problem_agent_run(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/agent/runs/{args.task_id}/state")
+    resp = client.request("GET", f"/api/agent/runs/{args.task_id}")
     print_or_save_response(resp, allow_redirect=False)
 
 
@@ -951,7 +951,7 @@ def necessary_agent_stream_event_payload(event: Any) -> Any:
 
 def problem_agent_run_stream(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/agent/runs/{args.task_id}/stream", stream=True)
+    resp = client.request("GET", f"/api/agent/runs/{args.task_id}/events", stream=True)
     if getattr(args, "full", False):
         print_stream_lines(resp, max_lines=args.max_lines)
         return
@@ -979,7 +979,7 @@ def problem_agent_solve(args: argparse.Namespace) -> None:
         "harness": args.harness,
         "endpoint_id": args.endpoint_id,
     }
-    resp = client.request("POST", f"/agent/problems/{args.problem_id}/solve", json=payload)
+    resp = client.request("POST", f"/api/problems/{args.problem_id}/agent/solve", json=payload)
     print_or_save_response(resp)
 
 
@@ -995,7 +995,7 @@ def problem_agent_generate_data(args: argparse.Namespace) -> None:
     try:
         resp = client.request(
             "POST",
-            f"/agent/problems/{args.problem_id}/generate-testdata",
+            f"/api/problems/{args.problem_id}/agent/generate-testdata",
             data=data,
             files=files,
         )
@@ -1006,7 +1006,7 @@ def problem_agent_generate_data(args: argparse.Namespace) -> None:
 
 def problem_scores(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/admin/problem_scores/{args.problem_id}")
+    resp = client.request("GET", f"/api/admin/problems/{args.problem_id}/scores")
     print_or_save_response(resp)
 
 

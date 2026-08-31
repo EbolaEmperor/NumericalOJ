@@ -1473,6 +1473,7 @@ def problem_library():
     )
 
 
+@problem_core_bp.get('/api/downloads/numoj-cli.zip')
 @problem_core_bp.get('/downloads/numoj-cli.zip')
 def download_numoj_cli_skill():
     user = current_user()
@@ -1590,6 +1591,7 @@ def agent_launch_options():
     return response
 
 
+@problem_core_bp.post('/api/problems/<int:problem_id>/agent/solve')
 @problem_core_bp.post('/agent/problems/<int:problem_id>/solve')
 def agent_solve_problem(problem_id):
     user = current_user()
@@ -1696,6 +1698,7 @@ def agent_solve_problem(problem_id):
     )
 
 
+@problem_core_bp.post('/api/problems/<int:problem_id>/agent/generate-testdata')
 @problem_core_bp.post('/agent/problems/<int:problem_id>/generate-testdata')
 def agent_generate_testdata(problem_id):
     user = current_user()
@@ -1841,6 +1844,7 @@ def agent_generate_testdata(problem_id):
     )
 
 
+@problem_core_bp.get('/api/agent/runs/<task_id>')
 @problem_core_bp.get('/agent/runs/<task_id>/state')
 def agent_run_status(task_id):
     user = current_user()
@@ -1991,6 +1995,7 @@ def agent_run_cancel(task_id):
     )
 
 
+@problem_core_bp.get('/api/agent/runs/<task_id>/events')
 @problem_core_bp.get('/agent/runs/<task_id>/stream')
 def agent_run_stream(task_id):
     user = current_user()
@@ -2288,6 +2293,7 @@ def agent_run_stream(task_id):
     )
 
 
+@problem_core_bp.route('/api/problems/<int:problem_id>/submissions', methods=['POST'])
 @problem_core_bp.route('/submit/<int:problem_id>', methods=['GET', 'POST'])
 def submit_solution(problem_id):
     user = current_user()
@@ -2595,6 +2601,7 @@ def submit_solution(problem_id):
     return render_template('problems/detail.html', **context)
 
 
+@problem_core_bp.route('/api/agent/sessions', methods=['GET', 'POST'])
 @problem_core_bp.route('/agent/tasks', methods=['GET', 'POST'])
 def agent_tasks():
     user = current_user()
@@ -2877,10 +2884,8 @@ def legacy_agent_tasks():
     return redirect(f'{target}?{query}' if query else target, code=308)
 
 
-@problem_core_bp.route(
-    '/agent/tasks/<session_id>',
-    methods=['GET', 'POST'],
-)
+@problem_core_bp.route('/api/agent/sessions/<session_id>', methods=['GET', 'POST'])
+@problem_core_bp.route('/agent/tasks/<session_id>', methods=['GET', 'POST'])
 def agent_task_detail(session_id):
     user = current_user()
     if not user:
@@ -3521,6 +3526,36 @@ def agent_task_detail(session_id):
             'final_response',
         ):
             page_current_state.pop(key, None)
+    agent_message_urls = {
+        'state': f'/api/agent/sessions/{quote(session_id, safe="")}/state',
+        'stream': f'/api/agent/sessions/{quote(session_id, safe="")}/stream',
+        'update': f'/api/agent/sessions/{quote(session_id, safe="")}/messages/__MESSAGE_ID__/update',
+        'delete': f'/api/agent/sessions/{quote(session_id, safe="")}/messages/__MESSAGE_ID__/delete',
+        'send_now': f'/api/agent/sessions/{quote(session_id, safe="")}/messages/__MESSAGE_ID__/send-now',
+        'resume': f'/api/agent/sessions/{quote(session_id, safe="")}/queue/resume',
+        'rename': f'/api/agent/sessions/{quote(session_id, safe="")}/title',
+    }
+    if _request_wants_json():
+        response = jsonify(
+            success=True,
+            user=user,
+            agent_session=agent_session,
+            turns=turns,
+            current_state=page_current_state,
+            agent_message_state=agent_message_state,
+            agent_message_urls=agent_message_urls,
+            can_resume=owns_session,
+            can_retry=can_retry,
+            can_retry_now=can_retry_now,
+            agent_quota_summary=agent_quota_summary,
+            agent_context_window_tokens=int(
+                (current_state.get('context_usage') or {}).get('window_tokens')
+                or DEFAULT_LLM_CONTEXT_WINDOW_TOKENS
+            ),
+        )
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
+
     response = current_app.make_response(render_template(
         'admin/agent_task_detail.html',
         user=user,
@@ -3528,28 +3563,7 @@ def agent_task_detail(session_id):
         turns=turns,
         current_state=page_current_state,
         agent_message_state=agent_message_state,
-        agent_message_urls={
-            'state': f'/agent/tasks/{quote(session_id, safe="")}/state',
-            'stream': f'/agent/tasks/{quote(session_id, safe="")}/stream',
-            'update': (
-                f'/agent/tasks/{quote(session_id, safe="")}'
-                '/messages/__MESSAGE_ID__/update'
-            ),
-            'delete': (
-                f'/agent/tasks/{quote(session_id, safe="")}'
-                '/messages/__MESSAGE_ID__/delete'
-            ),
-            'send_now': (
-                f'/agent/tasks/{quote(session_id, safe="")}'
-                '/messages/__MESSAGE_ID__/send-now'
-            ),
-            'resume': (
-                f'/agent/tasks/{quote(session_id, safe="")}/queue/resume'
-            ),
-            'rename': (
-                f'/agent/tasks/{quote(session_id, safe="")}/title'
-            ),
-        },
+        agent_message_urls=agent_message_urls,
         workspace_tree=workspace_tree,
         can_resume=owns_session,
         can_retry=can_retry,
@@ -3564,6 +3578,7 @@ def agent_task_detail(session_id):
     return response
 
 
+@problem_core_bp.patch('/api/agent/sessions/<session_id>/title')
 @problem_core_bp.patch('/agent/tasks/<session_id>/title')
 def agent_task_rename(session_id):
     user = current_user()
@@ -3629,6 +3644,7 @@ def _agent_message_mutation_error(exc):
     raise exc
 
 
+@problem_core_bp.get('/api/agent/sessions/<session_id>/state')
 @problem_core_bp.get('/agent/tasks/<session_id>/state')
 def agent_task_message_state(session_id):
     user = current_user()
@@ -3674,6 +3690,7 @@ def agent_task_message_state(session_id):
     return response
 
 
+@problem_core_bp.get('/api/agent/sessions/<session_id>/stream')
 @problem_core_bp.get('/agent/tasks/<session_id>/stream')
 def agent_task_message_stream(session_id):
     user = current_user()
@@ -4050,6 +4067,7 @@ def agent_task_queue_resume(session_id):
     return jsonify(success=True, session_state=state)
 
 
+@problem_core_bp.get('/api/agent/sessions/<session_id>/workspace')
 @problem_core_bp.get('/agent/tasks/<session_id>/workspace')
 def agent_workspace_tree(session_id):
     user = current_user()
@@ -4079,6 +4097,7 @@ def agent_workspace_tree(session_id):
     return response
 
 
+@problem_core_bp.get('/api/agent/sessions/<session_id>/workspace/file')
 @problem_core_bp.get('/agent/tasks/<session_id>/workspace/file')
 def agent_workspace_file(session_id):
     user = current_user()

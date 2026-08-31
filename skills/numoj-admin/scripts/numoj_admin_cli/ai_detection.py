@@ -70,7 +70,7 @@ def ai_filter_payload(args: argparse.Namespace) -> Dict[str, Any]:
 
 def ai_preview(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", "/admin/ai_detection/preview", json=ai_filter_payload(args))
+    resp = client.request("POST", "/api/admin/ai-detection/preview", json=ai_filter_payload(args))
     print_or_save_response(resp)
 
 
@@ -82,7 +82,7 @@ def ai_run_filtered(args: argparse.Namespace) -> None:
     if not getattr(args, "all", False) and not has_filter:
         raise CliError("run-filtered requires at least one filter; pass --all to scan all submissions.")
     client = client_from_args(args)
-    resp = client.request("POST", "/admin/ai_detection/run_filtered", json=ai_filter_payload(args))
+    resp = client.request("POST", "/api/admin/ai-detection/runs", json=ai_filter_payload(args))
     print_or_save_response(resp)
 
 
@@ -90,7 +90,7 @@ def ai_run_problem(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        f"/admin/ai_detection/run/{args.problem_id}",
+        f"/api/admin/ai-detection/problems/{args.problem_id}/runs",
         json={"endpoint_id": args.endpoint_id},
     )
     print_or_save_response(resp)
@@ -100,7 +100,7 @@ def ai_run_single(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        f"/admin/ai_detection/run_single/{args.submission_id}",
+        f"/api/admin/ai-detection/submissions/{args.submission_id}/runs",
         json={"endpoint_id": args.endpoint_id},
     )
     print_or_save_response(resp)
@@ -110,7 +110,7 @@ def ai_run_user(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        f"/admin/ai_detection/run_user/{args.username}",
+        f"/api/admin/ai-detection/users/{args.username}/runs",
         json={"endpoint_id": args.endpoint_id},
     )
     print_or_save_response(resp)
@@ -130,20 +130,21 @@ def ai_detection_page(args: argparse.Namespace) -> None:
 
 def ai_detection_problem_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/api/admin/ai-detection/problem/{args.problem_id}")
+    resp = client.request("GET", f"/api/admin/ai-detection/problems/{args.problem_id}")
     common.output_projected_json_response(resp, necessary_ai_detection_problem_payload)
 
 
 def ai_detection_student_page(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/api/admin/ai-detection/student/{args.username}")
+    resp = client.request("GET", f"/api/admin/ai-detection/students/{args.username}")
     common.output_projected_json_response(resp, necessary_ai_detection_student_payload)
 
 
 def ai_task_post(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    action = "delete_task" if args.action == "delete" else "stop"
-    resp = client.request("POST", f"/admin/ai_detection/api/{action}/{args.task_id}")
+    method = "DELETE" if args.action == "delete" else "POST"
+    suffix = "" if args.action == "delete" else "/stop"
+    resp = client.request(method, f"/api/admin/ai-detection/tasks/{args.task_id}{suffix}")
     print_or_save_response(resp)
 
 
@@ -195,9 +196,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--endpoint-id", type=positive_endpoint_id, required=True, help="Global text or omni LLM endpoint ID to use for this detection run.")
     pa.set_defaults(func=ai_run_user)
     for name, path, description in (
-        ("summary", "/admin/ai_detection/api/summary", "Fetch AI-detection summary metrics."),
-        ("tasks", "/admin/ai_detection/api/tasks", "List recent AI-detection tasks."),
-        ("models", "/admin/ai_detection/api/available_models", "List AI-detection models available on the server."),
+        ("summary", "/api/admin/ai-detection/summary", "Fetch AI-detection summary metrics."),
+        ("tasks", "/api/admin/ai-detection/tasks", "List recent AI-detection tasks."),
+        ("models", "/api/admin/ai-detection/models", "List AI-detection models available on the server."),
     ):
         pa = add_cli_parser(ais, name, description)
         pa.set_defaults(func=ai_api_get, path=path)

@@ -1,22 +1,64 @@
 import {useQueryClient} from '@tanstack/react-query'
-import {useEffect, useMemo, useRef} from 'react'
+import {createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction} from 'react'
 import {Link, Outlet, useLocation, useNavigate} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
 import type {ApiEnvelope, NavigationItem} from '../api/types'
 import {preloadNavigationRoute} from '../routeLoaders'
 import {useSession} from '../session'
+import {AccountModals} from './AccountModals'
 
-const prefetchTargets: Record<string, {path: string; queryKey: readonly unknown[]}> = {
-  library: {path: '/api/problems?view=library', queryKey: ['problems', 'library', '']},
-  problems: {path: '/api/problems', queryKey: ['problems', 'homework', '']},
-  submissions: {path: '/api/submissions?page=1&per_page=20', queryKey: ['submissions', 1, '', '']},
-  rankings: {path: '/api/ranking/competitions', queryKey: ['rankings']},
-  agents: {path: '/agent/tasks', queryKey: ['agent-tasks']},
-  forum: {path: '/api/forum', queryKey: ['forum']},
-  repository: {path: '/api/repository/context', queryKey: ['repository', 'context']},
-  vibehub: {path: '/api/vibehub/projects', queryKey: ['vibehub']},
-  admin: {path: '/api/admin/users', queryKey: ['admin', 'users', '']},
+interface PrefetchTarget {
+  path: string
+  queryKey: readonly unknown[]
+}
+
+type PageDisplayMode = 'default' | 'vibehub-not-found'
+
+const PageDisplayContext = createContext<Dispatch<SetStateAction<PageDisplayMode>>>(() => undefined)
+
+export function usePageDisplayMode() {
+  return useContext(PageDisplayContext)
+}
+
+const prefetchTargets: Record<string, readonly PrefetchTarget[]> = {
+  library: [{path: '/api/problems?view=library', queryKey: ['problems', 'library', '']}],
+  problems: [{path: '/api/problems', queryKey: ['problems', 'homework', '']}],
+  submissions: [{path: '/api/submissions?page=1&per_page=30', queryKey: ['submissions', 1, '', '', '']}],
+  rankings: [{path: '/api/ranking/competitions', queryKey: ['rankings']}],
+  agents: [{path: '/api/agent/sessions?page=1', queryKey: ['agent-tasks', 1, '']}],
+  forum: [
+    {path: '/api/forum?scope=all', queryKey: ['forum', 'all']},
+    {path: '/api/forum/identity', queryKey: ['forum', 'identity']},
+  ],
+  repository: [
+    {path: '/api/repository/context', queryKey: ['repository', 'context']},
+    {path: '/api/repository/tree', queryKey: ['repository', 'tree']},
+  ],
+  vibehub: [{path: '/api/vibehub/projects', queryKey: ['vibehub']}],
+  admin: [{path: '/api/admin/users?page=1', queryKey: ['admin', 'users', '', '', 1]}],
+  admin_homework: [{path: '/api/admin/homework', queryKey: ['admin', 'homework', '']}],
+  ai_detection: [
+    {path: '/api/admin/ai-detection/dashboard', queryKey: ['admin', 'ai-detection', 'dashboard']},
+    {path: '/api/admin/ai-detection/tasks', queryKey: ['admin', 'ai-detection', 'tasks']},
+  ],
+  site_config: [
+    {path: '/api/admin/dynamic-config/llm-endpoints', queryKey: ['admin', 'dynamic-config', 'endpoints']},
+    {path: '/api/admin/dynamic-config/feature-bindings', queryKey: ['admin', 'dynamic-config', 'bindings']},
+    {path: '/api/admin/dynamic-config/mail', queryKey: ['admin', 'dynamic-config', 'mail']},
+    {path: '/api/admin/dynamic-config/web-search', queryKey: ['admin', 'dynamic-config', 'web-search']},
+  ],
+}
+
+function warmNavigationItem(id: string, queryClient: ReturnType<typeof useQueryClient>, staleTime: number) {
+  preloadNavigationRoute(id === 'library' ? 'problems' : id)
+  for (const target of prefetchTargets[id] || []) {
+    void queryClient.prefetchQuery({
+      queryKey: target.queryKey,
+      queryFn: () => apiFetch<ApiEnvelope>(target.path),
+      staleTime,
+    })
+  }
 }
 
 const iconPaths: Record<string, string[]> = {
@@ -48,9 +90,9 @@ function BrandMark() {
 }
 
 function isItemActive(item: NavigationItem, pathname: string, search: string) {
-  if (item.id === 'library') return pathname === '/app/problems' && new URLSearchParams(search).get('view') === 'library'
-  if (item.id === 'problems') return pathname === '/app/problems' && new URLSearchParams(search).get('view') !== 'library'
-  if (item.id === 'admin') return pathname === '/app/admin'
+  if (item.id === 'library') return pathname === '/problems' && new URLSearchParams(search).get('view') === 'library'
+  if (item.id === 'problems') return pathname === '/problems' && new URLSearchParams(search).get('view') !== 'library'
+  if (item.id === 'admin') return pathname === '/admin'
   return pathname === item.path || pathname.startsWith(`${item.path}/`)
 }
 
@@ -59,18 +101,16 @@ function NavigationLink({item, mobile = false}: {item: NavigationItem; mobile?: 
   const queryClient = useQueryClient()
   const location = useLocation()
   const active = isItemActive(item, location.pathname, location.search)
-  const countKey = item.id === 'library' ? 'problems' : item.id === 'problems' ? 'homeworks' : item.id
+  const countKey = item.id === 'library' ? 'problems' : item.id === 'problems' ? 'homeworks' : item.id === 'admin' ? 'users' : item.id
   const count = session?.navigation.counts[countKey]
   const prefetch = () => {
     if (!item.spa) return
-    preloadNavigationRoute(item.id === 'library' ? 'problems' : item.id)
-    const target = prefetchTargets[item.id]
-    if (target) void queryClient.prefetchQuery({queryKey: target.queryKey, queryFn: () => apiFetch<ApiEnvelope>(target.path), staleTime: 20_000})
+    warmNavigationItem(item.id, queryClient, 30_000)
   }
   const contents = <><LayoutIcon name={item.icon} /><span className="numoj-nav-label" {...(mobile && item.id === 'problems' ? {'data-problem-list-label': 'mobile'} : {})}>{item.label}</span>{typeof count === 'number' ? <span className="numoj-nav-count">{count}</span> : null}{item.id === 'agents' && session?.navigation.agent_active ? <span className="numoj-nav-dot" aria-label="存在运行中的 Agent 任务" /> : null}</>
   const className = `numoj-nav-item${active ? ' active' : ''}`
   return item.spa
-    ? <Link className={className} to={item.path} title={item.label} onPointerEnter={prefetch} onFocus={prefetch}>{contents}</Link>
+    ? <Link className={className} to={item.path} title={item.label} viewTransition onPointerEnter={prefetch} onFocus={prefetch}>{contents}</Link>
     : <a className={className} href={item.path} title={item.label}>{contents}</a>
 }
 
@@ -93,7 +133,7 @@ function NavigationGroups({mobile = false, logout}: {mobile?: boolean; logout: (
   </nav>
 }
 
-function UserFooter({mobile = false}: {mobile?: boolean}) {
+function UserFooter({mobile = false, collapsed = false, toggleSidebar}: {mobile?: boolean; collapsed?: boolean; toggleSidebar?: () => void}) {
   const {session} = useSession()
   const avatarRef = useRef<HTMLSpanElement>(null)
   useEffect(() => {
@@ -105,154 +145,107 @@ function UserFooter({mobile = false}: {mobile?: boolean}) {
       <span ref={avatarRef} className="numoj-avatar" data-numoj-user-avatar data-avatar-seed={session?.user?.username} data-avatar-label={session?.user?.username} aria-hidden="true">{session?.user?.username.slice(0, 2).toUpperCase()}</span>
       <span className="numoj-user-copy"><strong>{session?.user?.username}</strong><small>{session?.user?.is_admin ? '教师' : '学生'}</small></span>
     </div>
-    {mobile ? <button className="numoj-sidebar-toggle numoj-mobile-sidebar-close" type="button" data-bs-dismiss="offcanvas" aria-label="关闭侧边栏" title="关闭侧边栏"><LayoutIcon name="collapse-left" /></button> : <button className="numoj-sidebar-toggle" type="button" data-numoj-sidebar-toggle aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏"><span className="numoj-collapse-expanded"><LayoutIcon name="collapse-left" /></span><span className="numoj-collapse-collapsed"><LayoutIcon name="collapse-right" /></span></button>}
+    {mobile ? <button className="numoj-sidebar-toggle numoj-mobile-sidebar-close" type="button" data-bs-dismiss="offcanvas" aria-label="关闭侧边栏" title="关闭侧边栏"><LayoutIcon name="collapse-left" /></button> : <button className="numoj-sidebar-toggle" type="button" onClick={toggleSidebar} aria-expanded={!collapsed} aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'} title={collapsed ? '展开侧边栏' : '收起侧边栏'}><span className="numoj-collapse-expanded"><LayoutIcon name="collapse-left" /></span><span className="numoj-collapse-collapsed"><LayoutIcon name="collapse-right" /></span></button>}
   </footer>
 }
 
-function AccountModals() {
-  const {session} = useSession()
-  if (!session?.user) return null
-  const mailConfigured = session.capabilities.mail_service_configured
-  const classAdjustEnabled = session.capabilities.class_adjust_enabled
-  const canManageClasses = Boolean(session.user.is_admin) || classAdjustEnabled
-  return (
-    <>
-      <div className="numoj-account-toast" id="accountModalToast" role="status" aria-live="polite" hidden />
-      <div className="modal fade numoj-account-modal numoj-password-modal" id="changePasswordModal" tabIndex={-1} aria-labelledby="changePasswordModalLabel" aria-hidden="true">
-        <div className="modal-dialog modal-dialog-centered modal-dialog-scrollable">
-          <div className="modal-content">
-            <span className="numoj-account-modal-accent" aria-hidden="true" />
-            <div className="modal-header">
-              <div className="numoj-account-modal-title"><span className="numoj-account-kicker">SECURITY · PASSWORD</span><h2 className="modal-title" id="changePasswordModalLabel">修改密码</h2></div>
-              <button type="button" className="numoj-account-close" data-bs-dismiss="modal" aria-label="关闭修改密码弹窗"><span aria-hidden="true">×</span></button>
-            </div>
-            <form id="passwordForm" method="POST" action="/change_password" noValidate data-password-code-url="/send_password_code" data-user-email={session.user.email || ''}>
-              <div className="modal-body numoj-account-modal-body">
-                <section className="numoj-account-section" aria-labelledby="passwordIdentityTitle">
-                  <div className="numoj-account-section-heading"><h3 id="passwordIdentityTitle">验证身份</h3><span>STEP 01 / 02</span></div>
-                  <div className="numoj-account-identity"><span className="numoj-account-identity-icon" aria-hidden="true">@</span><span className="numoj-account-identity-copy"><strong>{session.user.email || '尚未设置邮箱'}</strong><small>{mailConfigured ? '验证码仅发送至当前账户邮箱' : '站点尚未配置邮件服务，请联系管理员'}</small></span><span className="numoj-account-state">{mailConfigured ? '可用' : '不可用'}</span></div>
-                </section>
-                <div className="numoj-account-form-stack"><div className="numoj-account-field"><div className="numoj-account-input numoj-account-input-action"><input id="passwordCodeInput" name="code" type="text" inputMode="numeric" maxLength={6} autoComplete="one-time-code" placeholder="••••••" aria-label="验证码" aria-describedby="passwordCodeMessage" required /><button type="button" id="sendPasswordCodeBtn" disabled={!mailConfigured} aria-disabled={!mailConfigured} title={mailConfigured ? undefined : '站点尚未配置邮件服务，请联系管理员'}>发送验证码</button></div><p className="numoj-account-field-message" id="passwordCodeMessage" aria-live="polite">发送后 5 分钟内有效。</p></div></div>
-                <div className="numoj-account-form-stack">
-                  <div className="numoj-account-field"><div className="numoj-account-field-heading"><label htmlFor="newPasswordInput">新密码</label><span id="passwordStrengthLabel">尚未输入</span></div><div className="numoj-account-input"><input id="newPasswordInput" name="new_password" type="password" minLength={6} autoComplete="new-password" placeholder="至少输入 6 个字符" required /></div><div className="numoj-password-meter" id="passwordStrengthMeter" data-level="0" role="progressbar" aria-label="密码强度" aria-valuemin={0} aria-valuemax={3} aria-valuenow={0}><span /><span /><span /></div><div className="numoj-password-rules" id="passwordRules"><span id="passwordRuleLength">至少 6 个字符</span><span id="passwordRuleMix">建议同时包含字母与数字</span></div></div>
-                  <div className="numoj-account-field"><div className="numoj-account-field-heading"><label htmlFor="confirmPasswordInput">确认新密码</label><span>再次输入</span></div><div className="numoj-account-input"><input id="confirmPasswordInput" name="confirm_password" type="password" autoComplete="new-password" placeholder="重复新密码" aria-describedby="passwordMatchMessage" required /></div><p className="numoj-account-field-message" id="passwordMatchMessage" aria-live="polite" hidden /></div>
-                </div>
-                <p className="numoj-account-form-status" id="passwordFormStatus" role="status" aria-live="polite" hidden />
-              </div>
-              <div className="modal-footer"><span className="numoj-account-footer-note">FORM · VALIDATION INLINE</span><div className="numoj-account-footer-actions"><button type="button" className="numoj-account-button" data-bs-dismiss="modal">取消</button><button type="submit" className="numoj-account-button numoj-account-button-dark" id="passwordSubmitBtn" disabled>确认修改</button></div></div>
-            </form>
-          </div>
-        </div>
-      </div>
-      {canManageClasses ? (
-        <div className="modal fade numoj-account-modal numoj-class-modal" id="classManagerModal" tabIndex={-1} aria-labelledby="classManagerLabel" aria-hidden="true" data-is-admin={session.user.is_admin ? '1' : '0'} data-class-adjust-enabled={classAdjustEnabled ? '1' : '0'} data-classes-url="/me/classes" data-join-class-url="/me/join_class" data-leave-class-url="/me/leave_class" data-class-adjust-url="/admin/class_adjust">
-          <div className="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
-            <div className="modal-content">
-              <span className="numoj-account-modal-accent" aria-hidden="true" />
-              <div className="modal-header">
-                <div className="numoj-account-modal-title"><span className="numoj-account-kicker">MEMBERSHIP · CLASSES</span><h2 className="modal-title" id="classManagerLabel">调整班级</h2></div>
-                <div className="numoj-class-header-actions">
-                  {session.user.is_admin ? <label className="numoj-class-permission" htmlFor="classAdjustSwitch"><input type="checkbox" id="classAdjustSwitch" defaultChecked={classAdjustEnabled} /><span className="numoj-class-switch-track" aria-hidden="true"><span /></span><span id="classAdjustLabel">学生自助：{classAdjustEnabled ? '允许' : '禁止'}</span></label> : null}
-                  <button type="button" className="numoj-account-close" data-bs-dismiss="modal" aria-label="关闭调整班级弹窗"><span aria-hidden="true">×</span></button>
-                </div>
-              </div>
-              <div className="modal-body numoj-account-modal-body">
-                <section className="numoj-account-section" aria-labelledby="myClassesTitle"><div className="numoj-account-section-heading"><h3 id="myClassesTitle">我的班级</h3><span id="classMembershipCount">正在加载</span></div><div className="numoj-membership-list" id="myClassesBox" aria-live="polite"><div className="numoj-membership-state"><span className="math-curve-loader" data-math-curve-loader data-size="sm"><span className="math-curve-loader__label">正在加载班级…</span></span></div></div></section>
-                <section className="numoj-account-section" aria-labelledby="joinClassTitle"><div className="numoj-account-section-heading"><h3 id="joinClassTitle">加入新班级</h3><span>AVAILABLE</span></div><div className="numoj-class-join-row"><div className="numoj-class-select" id="joinClassPicker" data-numoj-class-select data-class-select-placeholder="请选择班级" data-class-select-placeholder-code="AVAILABLE"><input type="hidden" id="joinClassSelect" data-class-select-input value="" /><button className="numoj-class-select-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="joinClassOptions" data-class-select-trigger><span className="numoj-class-select-logo is-placeholder" data-class-select-current-logo aria-hidden="true" /><span className="numoj-class-select-current"><strong data-class-select-current-label>请选择班级</strong><small data-class-select-current-code>AVAILABLE</small></span><i className="fas fa-chevron-down numoj-class-select-chevron" aria-hidden="true" /></button><div className="numoj-class-select-menu" id="joinClassOptions" role="listbox" aria-label="可加入的班级" data-class-select-menu hidden /></div><button className="numoj-account-button numoj-account-button-brand" id="joinClassBtn" type="button" disabled>加入班级</button></div></section>
-              </div>
-              <div className="modal-footer"><span className="numoj-account-footer-note">CHANGES · SAVED IMMEDIATELY</span><div className="numoj-account-footer-actions"><button type="button" className="numoj-account-button numoj-account-button-dark" data-bs-dismiss="modal">完成</button></div></div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
-  )
-}
-
-function contentClass(pathname: string) {
-  if (/^\/app\/problems\/[^/]+/.test(pathname)) return 'container problem-detail-content-shell mt-4'
-  if (pathname === '/app/problems') return 'container mt-4 numoj-problems-content'
-  if (/^\/app\/submissions\/[^/]+/.test(pathname)) return 'container-fluid submission-detail-shell'
-  if (pathname === '/app/submissions') return 'container-fluid submission-page-shell'
-  if (/^\/app\/rankings\/[^/]+/.test(pathname)) return 'container-fluid p-0 ranking-detail-shell'
-  if (pathname.startsWith('/app/forum')) return 'forum-content-container'
-  if (pathname === '/app/repository') return 'container-fluid p-0 repository-page-shell'
-  if (pathname === '/app/vibehub') return 'container-fluid p-0 vibehub-page vibehub-page--gallery'
-  if (pathname === '/app/agents') return 'container-fluid agent-home-shell'
-  if (pathname === '/app/admin') return 'container-fluid p-0 user-admin-shell'
+function contentClass(pathname: string, pageDisplayMode: PageDisplayMode) {
+  if (pageDisplayMode === 'vibehub-not-found') return 'container-fluid p-0 vibehub-page'
+  if (/^\/problems\/[^/]+/.test(pathname)) return 'container problem-detail-content-shell mt-4'
+  if (pathname === '/problems') return 'container mt-4 numoj-problems-content'
+  if (/^\/submissions\/[^/]+/.test(pathname)) return 'container-fluid submission-detail-shell'
+  if (pathname === '/submissions') return 'container-fluid submission-page-shell'
+  if (/^\/rankings\/[^/]+/.test(pathname)) return 'container-fluid p-0 ranking-detail-shell'
+  if (pathname.startsWith('/forum')) return 'forum-content-container'
+  if (pathname === '/repository') return 'container-fluid p-0 repository-page-shell'
+  if (pathname === '/vibehub') return 'container-fluid p-0 vibehub-page vibehub-page--gallery'
+  if (pathname === '/vibehub/guide') return 'container-fluid p-0 vibehub-page vibehub-page--guide'
+  if (/^\/vibehub\/[^/]+(?:\/play)?$/.test(pathname)) return 'container-fluid p-0 vibehub-player-page'
+  if (pathname === '/agents') return 'container-fluid agent-home-shell'
+  if (/^\/agents\/[^/]+/.test(pathname)) return 'container-fluid agent-session-shell'
+  if (pathname === '/admin') return 'container-fluid p-0 user-admin-shell'
+  if (pathname === '/admin/site-config') return 'container-fluid p-0 site-config-shell'
   return 'container mt-4'
 }
 
 export function AppShell() {
-  const {refresh} = useSession()
+  const {refresh, session} = useSession()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
+  const [pageDisplayMode, setPageDisplayMode] = useState<PageDisplayMode>('default')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return window.localStorage.getItem('numoj.desktopSidebarCollapsed') === '1' } catch { return false }
+  })
   useEffect(() => {
-    let cancelled = false
-    const classSelect = document.createElement('script')
-    const layout = document.createElement('script')
-    classSelect.src = '/static/app/class-select.js'
-    classSelect.dataset.numojSpaRuntime = 'class-select'
-    layout.src = '/static/app/layout.js'
-    layout.dataset.numojSpaRuntime = 'layout'
-    classSelect.addEventListener('load', () => {
-      if (!cancelled) document.body.appendChild(layout)
-    }, {once: true})
-    document.body.appendChild(classSelect)
-    return () => {
-      cancelled = true
-      classSelect.remove()
-      layout.remove()
-    }
-  }, [])
+    document.documentElement.classList.toggle('numoj-sidebar-prefers-collapsed', sidebarCollapsed)
+    try { window.localStorage.setItem('numoj.desktopSidebarCollapsed', sidebarCollapsed ? '1' : '0') } catch { /* 当前页仍然可正常折叠 */ }
+  }, [sidebarCollapsed])
+
+  useEffect(() => {setPageDisplayMode('default')}, [location.pathname])
 
   useEffect(() => {
     const connection = (navigator as Navigator & {connection?: {saveData?: boolean; effectiveType?: string}}).connection
     if (connection?.saveData || connection?.effectiveType === '2g') return
-    const warm = () => {
-      for (const id of ['problems', 'submissions', 'rankings', 'forum']) {
-        preloadNavigationRoute(id)
-        const target = prefetchTargets[id]
-        void queryClient.prefetchQuery({queryKey: target.queryKey, queryFn: () => apiFetch<ApiEnvelope>(target.path), staleTime: 60_000})
-      }
-    }
+    const available = (session?.navigation.items || []).filter((item) => item.spa).map((item) => item.id)
+    if (!available.length) return
+    const priority = ['problems', 'submissions', 'rankings', 'forum'].filter((id) => available.includes(id))
+    const secondary = available.filter((id) => !priority.includes(id))
     const browser = window as Window & {requestIdleCallback?: (callback: () => void, options?: {timeout: number}) => number; cancelIdleCallback?: (handle: number) => void}
-    if (browser.requestIdleCallback) {
-      const handle = browser.requestIdleCallback(warm, {timeout: 2_500})
-      return () => browser.cancelIdleCallback?.(handle)
+    const idleHandles: number[] = []
+    const timeoutHandles: number[] = []
+    let cancelled = false
+    const schedule = (callback: () => void, timeout: number, fallbackDelay: number) => {
+      if (browser.requestIdleCallback) idleHandles.push(browser.requestIdleCallback(callback, {timeout}))
+      else timeoutHandles.push(window.setTimeout(callback, fallbackDelay))
     }
-    const handle = window.setTimeout(warm, 1_200)
-    return () => window.clearTimeout(handle)
-  }, [queryClient])
+    const warmSecondary = () => {
+      if (cancelled) return
+      for (const id of secondary) warmNavigationItem(id, queryClient, 60_000)
+    }
+    const warmPrimary = () => {
+      if (cancelled) return
+      // 先下载所有当前账号可见页面的代码块，再预取高频页面数据；低频数据放到下一次闲时。
+      for (const id of available) preloadNavigationRoute(id === 'library' ? 'problems' : id)
+      for (const id of priority) warmNavigationItem(id, queryClient, 60_000)
+      schedule(warmSecondary, 5_000, 2_000)
+    }
+    schedule(warmPrimary, 2_500, 1_200)
+    return () => {
+      cancelled = true
+      for (const handle of idleHandles) browser.cancelIdleCallback?.(handle)
+      for (const handle of timeoutHandles) window.clearTimeout(handle)
+    }
+  }, [queryClient, session?.navigation.items])
 
   const logout = useMemo(() => () => {
-    void apiFetch<ApiEnvelope>('/logout', {method: 'POST'}).then(refresh).then(() => navigate('/app/login', {replace: true}))
+    void apiFetch<ApiEnvelope>('/api/session', {method: 'DELETE'}).then(refresh).then(() => navigate('/login', {replace: true}))
   }, [navigate, refresh])
 
-  return <div className="numoj-site-shell numoj-site-shell-authenticated" data-numoj-shell>
+  const player = pageDisplayMode !== 'vibehub-not-found' && location.pathname !== '/vibehub/guide' && /^\/vibehub\/[^/]+(?:\/play)?$/.test(location.pathname)
+  return <div className={`numoj-site-shell numoj-site-shell-authenticated${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}${player ? ' vibehub-player-shell' : ''}`} data-numoj-shell>
     <aside className="numoj-sidebar d-none d-lg-flex" data-numoj-sidebar aria-label="桌面主导航">
-      <Link className="numoj-brand" to="/app/problems" aria-label="Numerical OJ 首页"><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
+      <Link className="numoj-brand" to="/problems" aria-label="Numerical OJ 首页"><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
       <NavigationGroups logout={logout} />
-      <UserFooter />
+      <UserFooter collapsed={sidebarCollapsed} toggleSidebar={() => setSidebarCollapsed((value) => !value)} />
     </aside>
 
     <header className="numoj-mobile-topbar d-lg-none" aria-label="移动顶栏">
-      <Link className="numoj-mobile-topbar-logo" to="/app/problems" aria-label="Numerical OJ 首页"><BrandMark /></Link>
+      <Link className="numoj-mobile-topbar-logo" to="/problems" aria-label="Numerical OJ 首页"><BrandMark /></Link>
       <strong className="numoj-mobile-topbar-title">NumOJ</strong>
       <button className="numoj-mobile-menu-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasNavbar" aria-controls="offcanvasNavbar" aria-label="打开主导航"><svg className="numoj-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
     </header>
     <aside className="offcanvas offcanvas-start d-lg-none layout-offcanvas-nav numoj-mobile-sidebar" tabIndex={-1} id="offcanvasNavbar" aria-labelledby="offcanvasNavbarLabel" data-numoj-mobile-sidebar>
       <h2 className="visually-hidden" id="offcanvasNavbarLabel">移动主导航</h2>
-      <Link className="numoj-brand numoj-mobile-sidebar-brand" to="/app/problems" aria-label="Numerical OJ 首页"><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
+      <Link className="numoj-brand numoj-mobile-sidebar-brand" to="/problems" aria-label="Numerical OJ 首页"><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
       <NavigationGroups mobile logout={logout} />
       <UserFooter mobile />
     </aside>
 
     <main className="numoj-site-main">
       <AccountModals />
-      <div className={`numoj-content ${contentClass(location.pathname)}`}>
-        <div className="numoj-spa-route" key={`${location.pathname}${location.search}`}><Outlet /></div>
+      <div className={`numoj-content ${contentClass(location.pathname, pageDisplayMode)}`}>
+        <PageDisplayContext.Provider value={setPageDisplayMode}><div className="numoj-spa-route" key={`${location.pathname}${location.search}`}><Outlet /></div></PageDisplayContext.Provider>
       </div>
     </main>
   </div>

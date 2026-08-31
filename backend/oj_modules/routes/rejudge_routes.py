@@ -73,6 +73,7 @@ def _enqueue_rejudge(submissions, progress_key, clear_running_lock=False):
         )
 
 
+@rejudge_bp.route('/api/admin/problems/<int:problem_id>/rejudge', methods=['POST'])
 @rejudge_bp.route('/admin/rejudge_problem/<int:problem_id>', methods=['POST'])
 def rejudge_problem(problem_id):
     user = current_user()
@@ -92,6 +93,10 @@ def rejudge_problem(problem_id):
 
 @rejudge_bp.route(
     '/admin/rejudge_submission/<int:submission_id>',
+    methods=['POST'],
+)
+@rejudge_bp.route(
+    '/api/submissions/<int:submission_id>/rejudge',
     methods=['POST'],
 )
 def rejudge_submission(submission_id):
@@ -118,6 +123,7 @@ def rejudge_submission(submission_id):
     )
 
 
+@rejudge_bp.route('/api/admin/problems/<int:problem_id>/rejudge-status', methods=['GET'])
 @rejudge_bp.route('/admin/rejudge_status/<int:problem_id>', methods=['GET'])
 def rejudge_status(problem_id):
     if _rds is None:
@@ -169,6 +175,7 @@ def _summarize_time_range_rows(rows):
     }
 
 
+@rejudge_bp.post('/api/admin/rejudge-ranges')
 @rejudge_bp.route('/admin/rejudge_time_range', methods=['POST'])
 def rejudge_time_range():
     user = current_user()
@@ -225,6 +232,7 @@ def rejudge_time_range():
     return jsonify(success=True, message="已开始重测", total=len(submissions))
 
 
+@rejudge_bp.get('/api/admin/rejudge-ranges/status')
 @rejudge_bp.route('/admin/rejudge_time_range_status', methods=['GET'])
 def rejudge_time_range_status():
     if _rds is None:

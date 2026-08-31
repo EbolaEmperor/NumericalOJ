@@ -20,21 +20,21 @@ spa_api_bp = Blueprint("spa_api", __name__, url_prefix="/api/v1")
 
 def _navigation_items(user):
     items = [
-        {"id": "library", "label": "总题库", "path": "/app/problems?view=library", "icon": "library", "group": "workspace", "spa": True},
-        {"id": "problems", "label": "班级作业" if int(user.get("is_admin") or 0) == 1 else "我的作业", "path": "/app/problems", "icon": "homework", "group": "workspace", "spa": True},
-        {"id": "submissions", "label": "提交记录", "path": "/app/submissions", "icon": "submissions", "group": "workspace", "spa": True},
-        {"id": "rankings", "label": "打榜赛", "path": "/app/rankings", "icon": "ranking", "group": "workspace", "spa": True},
-        {"id": "agents", "label": "Agent 任务", "path": "/app/agents", "icon": "agent", "group": "workspace", "spa": True},
-        {"id": "vibehub", "label": "VibeHub", "path": "/app/vibehub", "icon": "vibehub", "group": "workspace", "spa": True},
-        {"id": "forum", "label": "讨论区", "path": "/app/forum", "icon": "forum", "group": "workspace", "spa": True},
-        {"id": "repository", "label": "代码仓库", "path": "/app/repository", "icon": "repository", "group": "workspace", "spa": True},
+        {"id": "library", "label": "总题库", "path": "/problems?view=library", "icon": "library", "group": "workspace", "spa": True},
+        {"id": "problems", "label": "班级作业" if int(user.get("is_admin") or 0) == 1 else "我的作业", "path": "/problems", "icon": "homework", "group": "workspace", "spa": True},
+        {"id": "submissions", "label": "提交记录", "path": "/submissions", "icon": "submissions", "group": "workspace", "spa": True},
+        {"id": "rankings", "label": "打榜赛", "path": "/rankings", "icon": "ranking", "group": "workspace", "spa": True},
+        {"id": "agents", "label": "Agent 任务", "path": "/agents", "icon": "agent", "group": "workspace", "spa": True},
+        {"id": "vibehub", "label": "VibeHub", "path": "/vibehub", "icon": "vibehub", "group": "workspace", "spa": True},
+        {"id": "forum", "label": "讨论区", "path": "/forum", "icon": "forum", "group": "workspace", "spa": True},
+        {"id": "repository", "label": "代码仓库", "path": "/repository", "icon": "repository", "group": "workspace", "spa": True},
     ]
     if user and int(user.get("is_admin") or 0) == 1:
         items.extend([
-            {"id": "admin", "label": "用户管理", "path": "/app/admin", "icon": "users", "group": "admin", "spa": True},
-            {"id": "admin_homework", "label": "作业管理", "path": "/admin/homework", "icon": "admin-homework", "group": "admin", "spa": False},
-            {"id": "ai_detection", "label": "AI 检测", "path": "/admin/ai_detection", "icon": "ai", "group": "admin", "spa": False},
-            {"id": "site_config", "label": "全站配置", "path": "/admin/site-config", "icon": "site-config", "group": "admin", "spa": False},
+            {"id": "admin", "label": "用户管理", "path": "/admin", "icon": "users", "group": "admin", "spa": True},
+            {"id": "admin_homework", "label": "作业管理", "path": "/admin/homework", "icon": "admin-homework", "group": "admin", "spa": True},
+            {"id": "ai_detection", "label": "AI 检测", "path": "/admin/ai-detection", "icon": "ai", "group": "admin", "spa": True},
+            {"id": "site_config", "label": "全站配置", "path": "/admin/site-config", "icon": "site-config", "group": "admin", "spa": True},
         ])
     return items
 
@@ -73,7 +73,7 @@ def session_bootstrap():
         },
         capabilities={
             "spa": True,
-            "legacy_ui_available": True,
+            "legacy_ui_available": False,
             "streaming": True,
             "class_adjust_enabled": bool(class_adjust_enabled),
             "mail_service_configured": mail_service_configured,

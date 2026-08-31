@@ -106,6 +106,10 @@ from backend.oj_modules.project_paths import (
     FRONTEND_PUBLIC_ROOT,
     PROJECT_ROOT,
 )
+from backend.oj_modules.spa_routes import (
+    is_spa_document_path,
+    migrated_legacy_page_target,
+)
 from backend.oj_modules.api.registry import API_BLUEPRINTS
 from backend.oj_modules.tasks.registry import (
     apply_agent_concurrency_limit,
@@ -406,9 +410,9 @@ def _enforce_mysql_pool_exhaustion_backpressure(resp):
 ###############################################################################
 #  路由
 ###############################################################################
-@app.route('/')
+@app.get('/')
 def index():
-    return redirect('/app')
+    return redirect('/problems')
 
 
 @app.get('/assets/<path:filename>')
@@ -423,12 +427,8 @@ def spa_asset(filename):
     )
 
 
-@app.get('/app')
-@app.get('/app/')
-@app.get('/app/<path:_client_path>')
-def spa_index(_client_path=''):
-    """所有客户端路由返回同一份 React 应用入口。"""
-
+def _spa_index_response():
+    """返回 React 应用入口，且每次发布后必须重验证。"""
     index_path = FRONTEND_DIST_ROOT / 'index.html'
     if not index_path.is_file():
         return Response(
@@ -441,6 +441,49 @@ def spa_index(_client_path=''):
     response.cache_control.max_age = 0
     response.cache_control.must_revalidate = True
     return response
+
+
+def _html_document_request():
+    if request.method not in {'GET', 'HEAD'}:
+        return False
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return False
+    accept = (request.headers.get('Accept') or '').lower()
+    return not accept or 'text/html' in accept or '*/*' in accept
+
+
+@app.before_request
+def _serve_react_document_or_redirect_migrated_page():
+    """正式页面由 React 接管；旧书签仅在文档请求中重定向。"""
+
+    if not _html_document_request():
+        return None
+    target = migrated_legacy_page_target(request.path)
+    if target:
+        query = request.query_string.decode('latin-1')
+        separator = '&' if '?' in target else '?'
+        return redirect(f'{target}{separator}{query}' if query else target, code=308)
+    if is_spa_document_path(request.path):
+        return _spa_index_response()
+    return None
+
+
+@app.get('/old', defaults={'_legacy_path': ''})
+@app.get('/old/<path:_legacy_path>')
+def legacy_ui(_legacy_path):
+    """仅供迁移期人工视觉对照的只读旧版入口。"""
+
+    legacy_target = f'/{_legacy_path}' if _legacy_path else '/problems'
+    if legacy_target.startswith(('/api/', '/assets/', '/static/', '/old/')):
+        return Response('旧版对照路由不可用', status=404, mimetype='text/plain')
+    adapter = app.url_map.bind_to_environ(request.environ)
+    try:
+        endpoint, values = adapter.match(legacy_target, method='GET')
+    except HTTPException as error:
+        return error
+    if endpoint in {'index', 'legacy_ui', 'retired_spa_prefix'} or endpoint.startswith('spa_api.'):
+        return Response('旧版对照路由不可用', status=404, mimetype='text/plain')
+    return app.view_functions[endpoint](**values)
 
 ###############################################################################
 #  Celery 任务定义

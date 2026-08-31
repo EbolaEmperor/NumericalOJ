@@ -114,7 +114,7 @@ ranking_appeal_status = ranking.ranking_appeal_status
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="numoj-user",
-        description="NumericalOJ regular-user CLI over existing HTTP routes.",
+        description="NumericalOJ regular-user CLI over JSON APIs.",
         formatter_class=common.HELP_FORMATTER,
     )
     common.add_common_http_args(parser)

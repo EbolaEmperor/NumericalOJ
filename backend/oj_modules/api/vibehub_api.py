@@ -11,7 +11,12 @@ from PIL import Image, UnidentifiedImageError
 from backend.oj_modules.api.helpers import json_error, json_success, public_user
 from backend.oj_modules.security.auth import current_user
 from backend.oj_modules.vibehub import quotas, services, storage
-from backend.oj_modules.vibehub.guide import DEVELOPER_GUIDE_PATH
+from backend.oj_modules.vibehub.guide import DEVELOPER_GUIDE_PATH, render_developer_guide
+from backend.oj_modules.vibehub.runtime import (
+    VibeHubCapacityError,
+    VibeHubRuntimeError,
+    get_runtime_manager,
+)
 
 
 vibehub_api_bp = Blueprint("vibehub_api", __name__, url_prefix="/api/vibehub")
@@ -138,9 +143,24 @@ def developer_guide():
     return response
 
 
+@vibehub_api_bp.get("/developer-guide/rendered")
+def rendered_developer_guide():
+    guide_html, toc_html = render_developer_guide()
+    return json_success(html=guide_html, toc_html=toc_html)
+
+
 @vibehub_api_bp.route("/projects", methods=["GET"])
 def public_projects():
-    rows = services.list_public_projects(limit=request.args.get("limit"))
+    # 与旧版 gallery 保持同一投影：访客只看到公开作品；登录用户还会
+    # 看到自己的 latest，管理员另见待审核作品及对应操作能力。
+    # 这仍是纯读接口，不会把草稿暴露给无关用户。
+    rows = services.list_gallery_projects(current_user())
+    raw_limit = request.args.get("limit")
+    if raw_limit is not None:
+        try:
+            rows = rows[:max(0, min(int(raw_limit), 500))]
+        except (TypeError, ValueError):
+            pass
     return json_success(projects=rows, count=len(rows), total=len(rows))
 
 
@@ -156,6 +176,47 @@ def project_detail(slug):
     view = (request.args.get("view") or "").strip().lower() or None
     project = services.get_project(slug, actor=current_user(), audience=view)
     return json_success(project=project)
+
+
+@vibehub_api_bp.post("/projects/<slug>/runtime/leases")
+def acquire_runtime_lease(slug):
+    """为 React 播放页提供稳定 API；作品流量仍走隔离的 runtime proxy。"""
+    user = _require_user()
+    channel = str(request.args.get("channel") or "public").strip().lower()
+    if channel not in {"public", "latest", "review"}:
+        return json_error("未知的作品版本通道。", 400)
+    try:
+        package = services.resolve_project_package(
+            slug,
+            audience=channel,
+            actor=user,
+            upload_root=_upload_root(),
+        )
+        lease = get_runtime_manager().acquire(
+            package["slug"],
+            featured=bool(package.get("featured")),
+            channel=channel,
+            base_path="/vibehub/runtime",
+            package_digest=package["package_sha256"],
+            storage_key=f"project-{package['project_id']}-{channel}",
+        )
+    except VibeHubCapacityError:
+        response, status = json_error("运行资源繁忙，请稍后重试。", 429)
+        response.headers["Retry-After"] = "1"
+        return response, status
+    except VibeHubRuntimeError as exc:
+        current_app.logger.warning(
+            "VibeHub API 运行请求失败",
+            extra={"event_fields": {"error_type": type(exc).__name__}},
+        )
+        return json_error("作品运行服务暂时不可用，请稍后重试。", 503)
+    return json_success(
+        lease_token=lease.token,
+        proxy_url=lease.proxy_base_path,
+        heartbeat_url=f"/vibehub/runtime/{lease.token}/heartbeat",
+        release_url=f"/vibehub/runtime/{lease.token}/release",
+        expires_at=lease.expires_at,
+    )
 
 
 @vibehub_api_bp.route("/projects", methods=["POST"])

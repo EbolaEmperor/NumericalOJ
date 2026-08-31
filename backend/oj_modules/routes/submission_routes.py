@@ -112,6 +112,7 @@ def submission_detail(submission_id):
     )
 
 
+@submission_bp.get('/api/submissions/<int:submission_id>/status')
 @submission_bp.route('/submission_status/<int:submission_id>')
 def submission_status(submission_id):
     user = current_user()
@@ -146,6 +147,7 @@ def submission_status(submission_id):
     })
 
 
+@submission_bp.get('/api/submissions/<int:submission_id>/events')
 @submission_bp.route('/submission_status_stream/<int:submission_id>')
 def submission_status_stream(submission_id):
     user = current_user()
@@ -319,6 +321,7 @@ def submission_status_stream(submission_id):
     )
 
 
+@submission_bp.route('/api/problems/<int:problem_id>/last-submission-code')
 @submission_bp.route('/api/get_last_submission_code/<int:problem_id>')
 def get_last_submission_code(problem_id):
     user = current_user()
@@ -355,6 +358,7 @@ def get_last_submission_code(problem_id):
     return jsonify(payload)
 
 
+@submission_bp.get('/api/submissions/<int:submission_id>/outputs/<int:test_index>/image')
 @submission_bp.route('/submission_output_image/<int:submission_id>/<int:test_index>')
 def get_submission_output_image(submission_id, test_index):
     user = current_user()

@@ -66,6 +66,7 @@ def _find_written_submission_pdf(submission, problem):
     return None
 
 
+@grading_bp.get('/api/submissions/<int:submission_id>/file')
 @grading_bp.route('/download_submission_file/<int:submission_id>')
 def download_submission_file(submission_id):
     user = current_user()
@@ -96,6 +97,7 @@ def download_submission_file(submission_id):
     )
 
 
+@grading_bp.post('/api/admin/submissions/<int:submission_id>/grade')
 @grading_bp.route('/submit_grading/<int:submission_id>', methods=['POST'])
 def submit_grading(submission_id):
     user = current_user()
@@ -121,6 +123,7 @@ def submit_grading(submission_id):
     return jsonify(success=True, message="批改结果已提交")
 
 
+@grading_bp.get('/api/admin/submissions/<int:submission_id>/next-pending')
 @grading_bp.route('/get_next_pending_submission/<int:submission_id>', methods=['GET'])
 def get_next_pending_submission(submission_id):
     user = current_user()
@@ -180,6 +183,7 @@ def get_next_pending_submission(submission_id):
     return jsonify(success=False, message="无待批改的书面作业")
 
 
+@grading_bp.post('/api/admin/problems/<int:problem_id>/invalidate-submissions')
 @grading_bp.route('/invalidate_invalid_submissions/<int:problem_id>', methods=['POST'])
 def invalidate_invalid_submissions(problem_id):
     user = current_user()

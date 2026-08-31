@@ -103,6 +103,7 @@ def _get_endpoint_id_from_request():
     return endpoint_id
 
 
+@ai_detection_bp.get('/api/admin/ai-detection/dashboard')
 @ai_detection_bp.route('/admin/ai_detection')
 def dashboard():
     user, err = _require_admin()
@@ -117,17 +118,30 @@ def dashboard():
     ]
     problems.sort(key=lambda p: p['id'])
 
+    endpoints = get_available_endpoints()
+    if request.path.startswith('/api/'):
+        return jsonify({
+            'success': True,
+            'summary': _to_json_safe(summary),
+            'classes': classes,
+            'problems': [
+                {**p, 'title': _strip_problem_title_tags(p.get('title') or '')}
+                for p in problems
+            ],
+            'endpoints': endpoints,
+        })
     return render_template(
         'admin/ai_detection.html',
         user=user,
         summary=summary,
         classes=classes,
         problems=problems,
-        ai_detection_endpoints=get_available_endpoints(),
+        ai_detection_endpoints=endpoints,
         strip_tags=_strip_problem_title_tags,
     )
 
 
+@ai_detection_bp.post('/api/admin/ai-detection/preview')
 @ai_detection_bp.route('/admin/ai_detection/preview', methods=['POST'])
 def preview_filtered():
     user, err = _require_admin()
@@ -158,6 +172,7 @@ def preview_filtered():
     })
 
 
+@ai_detection_bp.post('/api/admin/ai-detection/runs')
 @ai_detection_bp.route('/admin/ai_detection/run_filtered', methods=['POST'])
 def run_filtered_detection():
     user, err = _require_admin()
@@ -192,6 +207,7 @@ def run_filtered_detection():
     })
 
 
+@ai_detection_bp.get('/api/admin/ai-detection/problems/<int:problem_id>')
 @ai_detection_bp.route('/admin/ai_detection/problem/<int:problem_id>')
 def problem_detail(problem_id):
     user, err = _require_admin()
@@ -208,6 +224,18 @@ def problem_detail(problem_id):
     for result in results:
         decode_detection_result_details(result)
 
+    endpoints = get_available_endpoints()
+    if request.path.startswith('/api/'):
+        return jsonify(_to_json_safe({
+            'success': True,
+            'problem': {
+                **problem,
+                'title': _strip_problem_title_tags(problem.get('title') or ''),
+            },
+            'results': results,
+            'risk_filter': risk_filter,
+            'endpoints': endpoints,
+        }))
     return render_template(
         'admin/ai_detection.html',
         user=user,
@@ -215,11 +243,12 @@ def problem_detail(problem_id):
         problem=problem,
         results=results,
         risk_filter=risk_filter,
-        ai_detection_endpoints=get_available_endpoints(),
+        ai_detection_endpoints=endpoints,
         strip_tags=_strip_problem_title_tags,
     )
 
 
+@ai_detection_bp.get('/api/admin/ai-detection/students/<username>')
 @ai_detection_bp.route('/admin/ai_detection/student/<username>')
 def student_detail(username):
     user, err = _require_admin()
@@ -230,17 +259,26 @@ def student_detail(username):
     for result in results:
         decode_detection_result_details(result)
 
+    endpoints = get_available_endpoints()
+    if request.path.startswith('/api/'):
+        return jsonify(_to_json_safe({
+            'success': True,
+            'username': username,
+            'results': results,
+            'endpoints': endpoints,
+        }))
     return render_template(
         'admin/ai_detection.html',
         user=user,
         view='student',
         target_username=username,
-        ai_detection_endpoints=get_available_endpoints(),
+        ai_detection_endpoints=endpoints,
         results=results,
         strip_tags=_strip_problem_title_tags,
     )
 
 
+@ai_detection_bp.post('/api/admin/ai-detection/problems/<int:problem_id>/runs')
 @ai_detection_bp.route('/admin/ai_detection/run/<int:problem_id>', methods=['POST'])
 def run_batch_detection(problem_id):
     user, err = _require_admin()
@@ -267,6 +305,7 @@ def run_batch_detection(problem_id):
     })
 
 
+@ai_detection_bp.post('/api/admin/ai-detection/submissions/<int:submission_id>/runs')
 @ai_detection_bp.route('/admin/ai_detection/run_single/<int:submission_id>', methods=['POST'])
 def run_single_detection(submission_id):
     user, err = _require_admin()
@@ -289,6 +328,7 @@ def run_single_detection(submission_id):
     })
 
 
+@ai_detection_bp.post('/api/admin/ai-detection/users/<username>/runs')
 @ai_detection_bp.route('/admin/ai_detection/run_user/<username>', methods=['POST'])
 def run_user_detection(username):
     user, err = _require_admin()
@@ -322,6 +362,7 @@ def _to_json_safe(obj):
     return obj
 
 
+@ai_detection_bp.get('/api/admin/ai-detection/models')
 @ai_detection_bp.route('/admin/ai_detection/api/available_models')
 def api_available_models():
     user, err = _require_admin()
@@ -331,6 +372,7 @@ def api_available_models():
     return jsonify({'success': True, 'endpoints': endpoints, 'models': endpoints})
 
 
+@ai_detection_bp.get('/api/admin/ai-detection/summary')
 @ai_detection_bp.route('/admin/ai_detection/api/summary')
 def api_summary():
     user, err = _require_admin()
@@ -348,6 +390,7 @@ def api_summary():
     return jsonify({'success': True, 'summary': _to_json_safe(payload)})
 
 
+@ai_detection_bp.get('/api/admin/ai-detection/tasks')
 @ai_detection_bp.route('/admin/ai_detection/api/tasks')
 def api_tasks():
     user, err = _require_admin()
@@ -359,6 +402,7 @@ def api_tasks():
     return jsonify({'success': True, 'tasks': tasks})
 
 
+@ai_detection_bp.delete('/api/admin/ai-detection/tasks/<task_id>')
 @ai_detection_bp.route('/admin/ai_detection/api/delete_task/<task_id>', methods=['POST'])
 def delete_task(task_id):
     """Delete a completed task and all AI detection records it produced."""
@@ -388,6 +432,7 @@ def delete_task(task_id):
     })
 
 
+@ai_detection_bp.post('/api/admin/ai-detection/tasks/<task_id>/stop')
 @ai_detection_bp.route('/admin/ai_detection/api/stop/<task_id>', methods=['POST'])
 def stop_task(task_id):
     user, err = _require_admin()

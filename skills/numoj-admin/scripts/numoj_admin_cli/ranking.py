@@ -388,13 +388,13 @@ def ranking_create(args: argparse.Namespace) -> None:
         "description": read_text_value(args.description),
         "max_score": args.max_score,
     }
-    resp = client.request("POST", "/ranking/create", data=data)
+    resp = client.request("POST", "/api/ranking/competitions", data=data)
     print_or_save_response(resp)
 
 
 def ranking_copy(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/copy")
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/copy")
     print_or_save_response(resp)
 
 
@@ -463,13 +463,13 @@ def ranking_edit(args: argparse.Namespace) -> None:
                 current, "reverse_judge_finalize_timeout_seconds", args.reverse_finalize_timeout)),
         ]
     )
-    resp = client.request("POST", f"/ranking/{args.competition_id}/edit", data=data)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}", data=data)
     print_or_save_response(resp)
 
 
 def ranking_delete(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/delete")
+    resp = client.request("DELETE", f"/api/ranking/competitions/{args.competition_id}")
     print_or_save_response(resp, allow_redirect=False)
 
 
@@ -477,7 +477,7 @@ def ranking_upload_attachment(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     files = {"attachment": require_file(args.file)}
     try:
-        resp = client.request("POST", f"/ranking/{args.competition_id}/upload_attachment", files=files)
+        resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/attachments", files=files)
     finally:
         close_files(files)
     print_or_save_response(resp)
@@ -485,14 +485,14 @@ def ranking_upload_attachment(args: argparse.Namespace) -> None:
 
 def ranking_delete_attachment(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/attachment/{args.file_id}/delete")
+    resp = client.request("DELETE", f"/api/ranking/competitions/{args.competition_id}/attachments/{args.file_id}")
     print_or_save_response(resp, allow_redirect=False)
 
 
 def ranking_download_attachment(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     params = {"inline": "1"} if args.inline else None
-    resp = client.request("GET", f"/ranking/{args.competition_id}/attachment/{args.file_id}/download", params=params)
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/attachments/{args.file_id}/download", params=params)
     print_or_save_response(resp, output=args.output or ".")
 
 
@@ -500,7 +500,7 @@ def ranking_upload_reference(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     files = {"reference": require_file(args.file)}
     try:
-        resp = client.request("POST", f"/ranking/{args.competition_id}/upload_reference", files=files)
+        resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/reference", files=files)
     finally:
         close_files(files)
     print_or_save_response(resp)
@@ -510,7 +510,7 @@ def ranking_upload_script(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     files = {"scoring_script": require_file(args.file)}
     try:
-        resp = client.request("POST", f"/ranking/{args.competition_id}/upload_scoring_script", files=files)
+        resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/scoring-script", files=files)
     finally:
         close_files(files)
     print_or_save_response(resp)
@@ -518,20 +518,20 @@ def ranking_upload_script(args: argparse.Namespace) -> None:
 
 def ranking_clear_script(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/clear_scoring_script")
+    resp = client.request("DELETE", f"/api/ranking/competitions/{args.competition_id}/scoring-script")
     print_or_save_response(resp)
 
 
 def ranking_reset_limit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/reset_submit_limit")
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/submission-limit/reset")
     print_or_save_response(resp)
 
 
 def ranking_rules(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     rules = parse_json_value(args.rules)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/rules", json={"rules": rules})
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/agent-judge/rules", json={"rules": rules})
     print_or_save_response(resp)
 
 
@@ -550,7 +550,7 @@ def ranking_endpoints(args: argparse.Namespace) -> None:
         payload["reverse_judge_finalize_timeout_seconds"] = args.reverse_finalize_timeout
     if args.orchestration_mode is not None:
         payload["orchestration_mode"] = args.orchestration_mode
-    resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/endpoints", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/agent-judge/endpoints", json=payload)
     print_or_save_response(resp)
 
 
@@ -646,7 +646,7 @@ def ranking_save_endpoint(args: argparse.Namespace) -> None:
         payload["reverse_judge_finalize_timeout_seconds"] = args.reverse_finalize_timeout
     if args.orchestration_mode is not None:
         payload["orchestration_mode"] = args.orchestration_mode
-    resp = client.request("POST", f"/ranking/{args.competition_id}/agent_judge/endpoints", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/agent-judge/endpoints", json=payload)
     print_or_save_response(resp)
 
 
@@ -660,7 +660,7 @@ def ranking_save_quality_gate(args: argparse.Namespace) -> None:
         raise CliError("Quality-gate configuration requires --enabled, --disabled, or --prompt.")
     resp = client_from_args(args).request(
         "POST",
-        f"/ranking/{args.competition_id}/reverse_judge/quality_gate",
+        f"/api/ranking/competitions/{args.competition_id}/reverse-judge/quality-gate",
         json=payload,
     )
     print_or_save_response(resp)
@@ -694,7 +694,7 @@ def ranking_save_quality_gate_endpoints(args: argparse.Namespace) -> None:
     endpoints = _require_quality_gate_endpoint_urls(endpoints)
     resp = client_from_args(args).request(
         "POST",
-        f"/ranking/{args.competition_id}/reverse_judge/quality_gate",
+        f"/api/ranking/competitions/{args.competition_id}/reverse-judge/quality-gate",
         json={"endpoints": endpoints},
     )
     print_or_save_response(resp)
@@ -733,7 +733,7 @@ def ranking_save_quality_gate_endpoint(args: argparse.Namespace) -> None:
     }])[0]
     resp = client_from_args(args).request(
         "POST",
-        f"/ranking/{args.competition_id}/reverse_judge/quality_gate",
+        f"/api/ranking/competitions/{args.competition_id}/reverse-judge/quality-gate",
         json={"endpoints": [endpoint]},
     )
     print_or_save_response(resp)
@@ -742,13 +742,13 @@ def ranking_save_quality_gate_endpoint(args: argparse.Namespace) -> None:
 def ranking_batch_probe(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     payload = {"classes": parse_csv(args.classes), "template": args.template}
-    resp = client.request("POST", f"/ranking/{args.competition_id}/batch_eval/probe", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/batch/probes", json=payload)
     print_or_save_response(resp)
 
 
 def ranking_batch_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/batch_eval/probe_status", params={"job": args.job_id})
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/batch/probes/status", params={"job": args.job_id})
     print_or_save_response(resp)
 
 
@@ -757,7 +757,7 @@ def ranking_batch_create(args: argparse.Namespace) -> None:
     payload = {"template": args.template, "usernames": parse_csv(args.usernames)}
     if getattr(args, "agent_endpoint_id", None) is not None:
         payload["agent_endpoint_id"] = args.agent_endpoint_id
-    resp = client.request("POST", f"/ranking/{args.competition_id}/batch_eval/create", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/batch/submissions", json=payload)
     print_or_save_response(resp)
 
 
@@ -769,20 +769,20 @@ def ranking_bulk_filter(args: argparse.Namespace) -> None:
         "username": args.username or "",
         "statuses": parse_csv(args.statuses),
     }
-    resp = client.request("POST", f"/ranking/{args.competition_id}/bulk_rejudge/filter", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/rejudge/filter", json=payload)
     print_or_save_response(resp)
 
 
 def ranking_bulk_start(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     payload = {"submission_ids": parse_int_csv(args.submission_ids)}
-    resp = client.request("POST", f"/ranking/{args.competition_id}/bulk_rejudge/start", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/rejudge/jobs", json=payload)
     print_or_save_response(resp)
 
 
 def ranking_bulk_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/bulk_rejudge/status/{args.job_id}")
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/rejudge/jobs/{args.job_id}")
     print_or_save_response(resp)
 
 
@@ -797,7 +797,7 @@ def ranking_matches(args: argparse.Namespace) -> None:
 
 def ranking_match_detail(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/match/{args.match_id}/details.json")
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/matches/{args.match_id}")
     common.output_projected_json_response(resp, necessary_ranking_match_detail_payload, allow_redirect=True)
 
 
@@ -805,7 +805,7 @@ def ranking_rejudge_agent(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        f"/ranking/{args.competition_id}/submission/{args.submission_id}/rejudge_agent",
+        f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/rejudge",
     )
     print_or_save_response(resp, allow_redirect=False)
 
@@ -814,7 +814,7 @@ def ranking_submit_appeal(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        f"/ranking/{args.competition_id}/submission/{args.submission_id}/appeal",
+        f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/appeal",
         data={"reason": read_text_value(args.reason)},
     )
     print_or_save_response(resp)
@@ -822,7 +822,7 @@ def ranking_submit_appeal(args: argparse.Namespace) -> None:
 
 def ranking_appeal_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/submission/{args.submission_id}/appeal_status")
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/appeal")
     print_or_save_response(resp)
 
 
@@ -849,31 +849,31 @@ def ranking_appeal_handle(args: argparse.Namespace) -> None:
         "admin_response": read_text_value(args.response),
         "overrides": parse_json_value(args.overrides) if args.overrides else {},
     }
-    resp = client.request("POST", f"/ranking/{args.competition_id}/appeal/{args.appeal_id}/handle", json=payload)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/appeals/{args.appeal_id}", json=payload)
     print_or_save_response(resp)
 
 
 def ranking_elo_action(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/elo/{args.action}")
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/elo/{args.action}")
     print_or_save_response(resp)
 
 
 def ranking_elo_delete_match(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/match/{args.match_id}/delete")
+    resp = client.request("DELETE", f"/api/ranking/competitions/{args.competition_id}/matches/{args.match_id}")
     print_or_save_response(resp)
 
 
 def ranking_elo_rebuild(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/elo/rebuild")
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/elo/rebuild")
     print_or_save_response(resp)
 
 
 def ranking_delete_submission(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/submission/{args.submission_id}/delete")
+    resp = client.request("DELETE", f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}")
     print_or_save_response(resp, allow_redirect=False)
 
 
@@ -882,7 +882,7 @@ def ranking_download_submission(args: argparse.Namespace) -> None:
     if args.kind == "ai-answer":
         path = f"/api/ranking/submissions/{args.submission_id}/reverse-agent-answer"
     else:
-        path = f"/ranking/submission/{args.submission_id}/{args.kind}"
+        path = f"/api/ranking/submissions/{args.submission_id}/{args.kind}"
     resp = client.request("GET", path)
     print_or_save_response(
         resp, output=args.output or ".", allow_redirect=False,
@@ -891,7 +891,7 @@ def ranking_download_submission(args: argparse.Namespace) -> None:
 
 def ranking_judge_stream(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/judge_stream/{args.submission_id}", stream=True)
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/judge-events", stream=True)
     if getattr(args, "full", False):
         print_stream_lines(resp, max_lines=args.max_lines)
         return
@@ -909,7 +909,7 @@ def ranking_judge_stream(args: argparse.Namespace) -> None:
 
 def ranking_reverse_judge_stream(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/ranking/{args.competition_id}/reverse_judge_stream/{args.submission_id}", stream=True)
+    resp = client.request("GET", f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/reverse-judge-events", stream=True)
     if getattr(args, "full", False):
         print_stream_lines(resp, max_lines=args.max_lines)
         return
@@ -982,7 +982,7 @@ def ranking_submit_zip(args: argparse.Namespace) -> None:
     try:
         resp = client.request(
             "POST",
-            f"/ranking/{args.competition_id}/submit",
+            f"/api/ranking/competitions/{args.competition_id}/submissions",
             data=data,
             files=files,
             headers={"Accept": "application/json"},
@@ -1004,11 +1004,11 @@ def ranking_submit_zip(args: argparse.Namespace) -> None:
 
 def ranking_git_submit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    path = "check_repo" if args.action == "check" else "git_submit"
+    path = "repository/check" if args.action == "check" else "repository/submissions"
     data: Dict[str, str] = {}
     if path == "git_submit" and getattr(args, "agent_endpoint_id", None) is not None:
         data["agent_endpoint_id"] = str(args.agent_endpoint_id)
-    resp = client.request("POST", f"/ranking/{args.competition_id}/{path}", data=data or None)
+    resp = client.request("POST", f"/api/ranking/competitions/{args.competition_id}/{path}", data=data or None)
     print_or_save_response(resp, allow_redirect=False)
 
 

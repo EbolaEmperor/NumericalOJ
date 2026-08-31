@@ -257,7 +257,7 @@ def ranking_matches(args: argparse.Namespace) -> None:
 
 
 def ranking_match_detail(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("GET", f"/ranking/{args.competition_id}/match/{args.match_id}/details.json")
+    resp = common.client_from_args(args).request("GET", f"/api/ranking/competitions/{args.competition_id}/matches/{args.match_id}")
     common.ensure_ok(resp, allow_redirect=False)
     if common.response_is_json(resp):
         common.output_json(necessary_ranking_match_detail_payload(resp.json()))
@@ -294,7 +294,7 @@ def ranking_submit(args: argparse.Namespace) -> None:
     try:
         resp = client.request(
             "POST",
-            f"/ranking/{args.competition_id}/submit",
+            f"/api/ranking/competitions/{args.competition_id}/submissions",
             data=data,
             files=files,
             headers={"Accept": "application/json"},
@@ -340,8 +340,8 @@ def ranking_submit(args: argparse.Namespace) -> None:
 
 
 def ranking_git(args: argparse.Namespace) -> None:
-    path = "check_repo" if args.action == "check" else "git_submit"
-    resp = common.client_from_args(args).request("POST", f"/ranking/{args.competition_id}/{path}")
+    path = "repository/check" if args.action == "check" else "repository/submissions"
+    resp = common.client_from_args(args).request("POST", f"/api/ranking/competitions/{args.competition_id}/{path}")
     if resp.status_code >= 400 and common.response_is_json(resp):
         payload = resp.json()
         if isinstance(payload, dict) and "success" not in payload:
@@ -381,7 +381,7 @@ def ranking_download_submission(args: argparse.Namespace) -> None:
     if args.kind == "ai-answer":
         path = f"/api/ranking/submissions/{args.submission_id}/reverse-agent-answer"
     else:
-        path = f"/ranking/submission/{args.submission_id}/{args.kind}"
+        path = f"/api/ranking/submissions/{args.submission_id}/{args.kind}"
     resp = common.client_from_args(args).request("GET", path)
     common.print_or_save_response(
         resp, output=args.output or ".", allow_redirect=False,
@@ -389,14 +389,14 @@ def ranking_download_submission(args: argparse.Namespace) -> None:
 
 
 def ranking_judge_stream(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("GET", f"/ranking/{args.competition_id}/judge_stream/{args.submission_id}", stream=True)
+    resp = common.client_from_args(args).request("GET", f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/judge-events", stream=True)
     common.print_stream_lines(resp, max_lines=args.max_lines)
 
 
 def ranking_reverse_judge_stream(args: argparse.Namespace) -> None:
     resp = common.client_from_args(args).request(
         "GET",
-        f"/ranking/{args.competition_id}/reverse_judge_stream/{args.submission_id}",
+        f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/reverse-judge-events",
         stream=True,
     )
     stream_payload = common.read_stream_events(resp, max_lines=args.max_lines)
@@ -413,14 +413,14 @@ def ranking_reverse_judge_stream(args: argparse.Namespace) -> None:
 def ranking_submit_appeal(args: argparse.Namespace) -> None:
     resp = common.client_from_args(args).request(
         "POST",
-        f"/ranking/{args.competition_id}/submission/{args.submission_id}/appeal",
+        f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/appeal",
         data={"reason": common.read_text_value(args.reason)},
     )
     common.print_or_save_response(resp)
 
 
 def ranking_appeal_status(args: argparse.Namespace) -> None:
-    resp = common.client_from_args(args).request("GET", f"/ranking/{args.competition_id}/submission/{args.submission_id}/appeal_status")
+    resp = common.client_from_args(args).request("GET", f"/api/ranking/competitions/{args.competition_id}/submissions/{args.submission_id}/appeal")
     common.print_or_save_response(resp)
 
 

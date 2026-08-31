@@ -19,7 +19,7 @@ def grading_submit(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     resp = client.request(
         "POST",
-        f"/submit_grading/{args.submission_id}",
+        f"/api/admin/submissions/{args.submission_id}/grade",
         data={"score": args.score, "comment": read_text_value(args.comment)},
     )
     print_or_save_response(resp)
@@ -27,13 +27,13 @@ def grading_submit(args: argparse.Namespace) -> None:
 
 def grading_next_pending(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/get_next_pending_submission/{args.submission_id}")
+    resp = client.request("GET", f"/api/admin/submissions/{args.submission_id}/next-pending")
     print_or_save_response(resp, fail_on_business_error=False)
 
 
 def grading_invalidate(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", f"/invalidate_invalid_submissions/{args.problem_id}")
+    resp = client.request("POST", f"/api/admin/problems/{args.problem_id}/invalidate-submissions")
     print_or_save_response(resp)
 
 

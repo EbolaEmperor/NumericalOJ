@@ -50,7 +50,7 @@ def homework_add(args: argparse.Namespace) -> None:
         data["problem_id"] = str(args.problem_id)
     if args.ranking_competition_id is not None:
         data["ranking_competition_id"] = str(args.ranking_competition_id)
-    resp = client.request("POST", "/admin/add_homework", data=data)
+    resp = client.request("POST", "/api/admin/homework", data=data)
     print_or_save_response(resp)
 
 
@@ -63,40 +63,40 @@ def homework_list(args: argparse.Namespace) -> None:
 def homework_update_ddl(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     payload = {"class_en": args.class_en, "homework_id": args.homework_id, "new_ddl": args.ddl}
-    resp = client.request("POST", "/admin/update_ddl", json=payload)
+    resp = client.request("POST", "/api/admin/homework/deadline", json=payload)
     print_or_save_response(resp)
 
 
 def homework_delete(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     payload = {"class_en": args.class_en, "homework_id": args.homework_id}
-    resp = client.request("POST", "/admin/delete_homework", json=payload)
+    resp = client.request("DELETE", "/api/admin/homework", json=payload)
     print_or_save_response(resp)
 
 
 def homework_export_scores(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     output = args.output or f"{args.class_en}_scores.csv"
-    resp = client.request("GET", "/export_scores", params={"sclass": args.class_en})
+    resp = client.request("GET", "/api/admin/homework/exports/scores", params={"sclass": args.class_en})
     print_or_save_response(resp, output=output)
 
 
 def homework_export_codes(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", "/export_student_codes", json={"sclass": args.class_en})
+    resp = client.request("POST", "/api/admin/homework/exports/code", json={"sclass": args.class_en})
     print_or_save_response(resp)
 
 
 def homework_export_progress(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", f"/export_progress/{args.task_id}")
+    resp = client.request("GET", f"/api/admin/homework/exports/{args.task_id}")
     print_or_save_response(resp)
 
 
 def homework_download_export(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     output = args.output or "student_codes.zip"
-    resp = client.request("GET", f"/download_export/{args.task_id}")
+    resp = client.request("GET", f"/api/admin/homework/exports/{args.task_id}/download")
     print_or_save_response(resp, output=output)
 
 
@@ -201,7 +201,7 @@ def homework_upload_exam(args: argparse.Namespace) -> None:
     try:
         resp = client.request(
             "POST",
-            "/admin/upload_exam_scores",
+            "/api/admin/exam-scores/import",
             data={"class_en": args.class_en},
             files=files,
         )
@@ -212,7 +212,7 @@ def homework_upload_exam(args: argparse.Namespace) -> None:
 
 def class_adjust(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("POST", "/admin/class_adjust", data={"enabled": "1" if args.enabled else "0"})
+    resp = client.request("POST", "/api/admin/settings/class-adjust", data={"enabled": "1" if args.enabled else "0"})
     print_or_save_response(resp)
 
 

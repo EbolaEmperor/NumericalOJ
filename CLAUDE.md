@@ -100,7 +100,8 @@ bash deploy.sh
 递归脱敏和 request/task 上下文，不自行创建共享文件 handler。默认不信任 `X-Forwarded-For`；可信
 代理只由 `LOG_TRUSTED_PROXY_CIDRS` 配置。
 
-用户主工作区由 `frontend/src/` 下的 React SPA 提供，路由统一位于 `/app/*`；视觉必须继续复用
+用户主工作区由 `frontend/src/` 下的 React SPA 提供，直接使用无统一前缀的业务路径；`/app` 与
+`/app/*` 必须保持 404，不得重定向到无前缀路径。视觉必须继续复用
 `frontend/public/static/` 中的既有 DOM/CSS 契约，不得因技术栈迁移重新设计页面。React 查询缓存、
 路由预取和闲时预热不得绕过权限或把写请求缓存为读响应。复杂兼容流程仍可从
 `backend/templates/layouts/base.html` 的 site/embedded 布局派生；MathJax 必须按页面显式 opt-in，

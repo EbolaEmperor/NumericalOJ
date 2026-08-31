@@ -47,6 +47,7 @@ def allowed_grade_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_GRADES_EXTENSIONS
 
 
+@class_management_bp.post('/api/admin/exam-scores/import')
 @class_management_bp.route('/admin/upload_exam_scores', methods=['POST'])
 def upload_exam_scores():
     user = current_user()
@@ -124,6 +125,7 @@ def upload_exam_scores():
     return jsonify(success=True, message="成绩上传成功")
 
 
+@class_management_bp.post('/api/admin/class-memberships')
 @class_management_bp.route('/admin/add_user_to_class', methods=['POST'])
 def add_user_to_class():
     admin = current_user()
@@ -165,6 +167,7 @@ def add_user_to_class():
     )
 
 
+@class_management_bp.delete('/api/admin/class-memberships')
 @class_management_bp.route('/admin/remove_user_from_class', methods=['POST'])
 def remove_user_from_class():
     admin = current_user()
@@ -205,6 +208,7 @@ def remove_user_from_class():
     )
 
 
+@class_management_bp.get('/api/account/classes')
 @class_management_bp.route('/me/classes', methods=['GET'])
 def get_my_classes():
     user = current_user()
@@ -221,6 +225,7 @@ def get_my_classes():
     )
 
 
+@class_management_bp.post('/api/account/classes')
 @class_management_bp.route('/me/join_class', methods=['POST'])
 def join_class():
     user = current_user()
@@ -256,15 +261,16 @@ def join_class():
     return jsonify(success=True, message="成功加入班级", class_en=class_en, class_cn=target_class['class_cn'])
 
 
+@class_management_bp.delete('/api/account/classes/<class_en>')
 @class_management_bp.route('/me/leave_class', methods=['POST'])
-def leave_class():
+def leave_class(class_en=None):
     user = current_user()
     if not user:
         return jsonify(success=False, message="请先登录"), 401
     if not is_admin(user) and not is_class_adjust_enabled():
         return jsonify(success=False, message="当前不允许调整班级，请联系老师"), 403
 
-    class_en = request.form.get('class_en', '').strip()
+    class_en = (class_en or request.form.get('class_en', '')).strip()
     if not class_en:
         return jsonify(success=False, message="缺少班级参数"), 400
 

@@ -168,6 +168,7 @@ def send_verification_code(email, code_type):
         return False
 
 
+@auth_bp.post('/api/session')
 @auth_bp.route('/login', methods=['GET', 'POST'])
 def login():
     json_payload = request.get_json(silent=True) if request.is_json else None
@@ -244,9 +245,9 @@ def login():
                     return jsonify(
                         success=True,
                         user=public_user(user_record),
-                        next=next_url or '/app',
+                        next=next_url or '/problems',
                     )
-                return redirect(next_url or '/app')
+                return redirect(next_url or '/problems')
         _audit_auth(
             'login', 'failure', reason='invalid_credentials', username=username,
         )
@@ -268,6 +269,7 @@ def login():
     )
 
 
+@auth_bp.post('/api/auth/registration/code')
 @auth_bp.route('/send_code', methods=['POST'])
 def send_verification():
     if not get_mail_settings():
@@ -287,6 +289,127 @@ def send_verification():
     if send_verification_code(email, "注册验证码"):
         return jsonify(success=True, message="验证码已发送")
     return jsonify(success=False, message="验证码发送失败")
+
+
+@auth_bp.get('/api/auth/registration')
+def registration_context():
+    return jsonify(
+        success=True,
+        classes=attach_class_logos(get_all_classes()),
+        mail_configured=bool(get_mail_settings()),
+    )
+
+
+@auth_bp.post('/api/users')
+def register_api():
+    if not get_mail_settings():
+        return jsonify(success=False, message=_MAIL_UNAVAILABLE_MESSAGE), 503
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    username = str(payload.get('username') or '').strip()
+    password = str(payload.get('password') or '').strip()
+    email = str(payload.get('email') or '').strip()
+    code = str(payload.get('verification_code') or '').strip()
+    user_class = get_class_by_en(payload.get('class'))
+    if not all([username, password, email, code, user_class]):
+        return jsonify(success=False, message='所有字段不能为空'), 400
+    username_ok, username, username_msg = validate_username(username)
+    if not username_ok:
+        return jsonify(success=False, message=username_msg), 400
+    if not _verify_attempt_allowed(email):
+        return jsonify(success=False, message='验证次数过多，请稍后再试'), 429
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'SELECT * FROM verification_codes WHERE email = %s',
+                (email,),
+            )
+            record = cursor.fetchone()
+    finally:
+        conn.close()
+    if not record or record['code'] != code or datetime.now() > record['expires_at']:
+        return jsonify(success=False, message='验证码错误或已过期'), 400
+    if get_user_by_username(username) or get_user_by_email(email):
+        return jsonify(success=False, message='用户名或邮箱已被注册'), 409
+    try:
+        user_id = create_user(username, hash_password(password), email, user_class)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    _audit_auth(
+        'register',
+        'success',
+        user={'id': user_id, 'username': username, 'is_admin': False},
+        account={'class': user_class.get('class_en')},
+    )
+    return jsonify(
+        success=True,
+        message='注册成功，请登录',
+        user_id=int(user_id),
+        next='/login',
+    ), 201
+
+
+@auth_bp.post('/api/auth/password-reset/code')
+def password_reset_code_api():
+    if not get_mail_settings():
+        return jsonify(success=False, message=_MAIL_UNAVAILABLE_MESSAGE), 503
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    email = str(payload.get('email') or '').strip()
+    if not email:
+        return jsonify(success=False, message='邮箱不能为空'), 400
+    user = get_user_by_email(email)
+    if user:
+        allowed, reason = _check_send_code_allowed(email)
+        if not allowed:
+            return jsonify(success=False, message=reason), 429
+        send_verification_code(email, '重置密码验证码')
+    return jsonify(
+        success=True,
+        message='如果该邮箱已注册，验证码已发送，请检查邮箱',
+    )
+
+
+@auth_bp.post('/api/auth/password-reset')
+def password_reset_api():
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    email = str(payload.get('email') or '').strip()
+    code = str(payload.get('code') or '').strip()
+    new_password = str(payload.get('new_password') or '').strip()
+    confirm_password = str(payload.get('confirm_password') or '').strip()
+    if not all([email, code, new_password, confirm_password]):
+        return jsonify(success=False, message='所有字段不能为空'), 400
+    if new_password != confirm_password:
+        return jsonify(success=False, message='两次输入的密码不一致'), 400
+    if not _verify_attempt_allowed(email):
+        return jsonify(success=False, message='验证次数过多，请稍后再试'), 429
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'SELECT * FROM verification_codes WHERE email=%s',
+                (email,),
+            )
+            record = cursor.fetchone()
+    finally:
+        conn.close()
+    if not record or record['code'] != code or datetime.now() > record['expires_at']:
+        return jsonify(success=False, message='验证码错误或已过期'), 400
+    user = get_user_by_email(email)
+    if not user:
+        return jsonify(success=False, message='验证码错误或已过期'), 400
+    _update_password_hash(email=email, new_hash=hash_password(new_password))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                'DELETE FROM verification_codes WHERE email = %s',
+                (email,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    _audit_auth('password.reset', 'success', user=user)
+    return jsonify(success=True, message='密码重置成功，请重新登录', next='/login')
 
 
 @auth_bp.route('/register', methods=['GET', 'POST'])
@@ -440,6 +563,7 @@ def forgot_password():
     )
 
 
+@auth_bp.post('/api/account/password/code')
 @auth_bp.route('/send_password_code', methods=['POST'])
 def send_password_code():
     if 'username' not in session:
@@ -462,6 +586,7 @@ def send_password_code():
     return jsonify(success=True, message="验证码已发送")
 
 
+@auth_bp.post('/api/account/password')
 @auth_bp.route('/change_password', methods=['POST'])
 def change_password():
     if 'username' not in session:
@@ -512,6 +637,7 @@ def change_password():
     return redirect(url_for('problem_core.problem_list', success="密码修改成功"))
 
 
+@auth_bp.delete('/api/session')
 @auth_bp.post('/logout')
 def logout():
     username = session.pop('username', None)
@@ -522,5 +648,5 @@ def logout():
         username=username,
     )
     if _wants_json_response():
-        return jsonify(success=True, next='/app/login')
-    return redirect('/app/login')
+        return jsonify(success=True, next='/login')
+    return redirect('/login')

@@ -974,6 +974,31 @@
   position: relative;
 }
 
+.repository-monaco-shell {
+  position: absolute;
+  inset: 0;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+}
+
+.repository-monaco-shell .problem-editor-loading-state {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  background: #1e1e1e;
+}
+
+.repository-monaco-shell[data-editor-state="ready"] .problem-editor-loading-state {
+  display: none;
+}
+
+.repository-editor-stage #repositoryCodeEditor.repository-code-fallback {
+  display: block;
+}
+
 .repository-monaco-container {
   position: absolute;
   inset: 0;
