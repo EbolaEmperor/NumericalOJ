@@ -1,11 +1,12 @@
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {useEffect, useMemo, useState} from 'react'
-import {Link, useNavigate, useParams} from 'react-router-dom'
+import {useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, CompetitionSummary, JsonRecord} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {Link, useNavigate} from '../components/PageNavigation'
 
 type AppealResponse = ApiEnvelope & {
   competition: CompetitionSummary

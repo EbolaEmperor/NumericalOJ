@@ -1,10 +1,10 @@
 import {useQuery} from '@tanstack/react-query'
 import {useEffect} from 'react'
-import {Link} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
 import type {ApiEnvelope} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
+import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 
 interface GuideResponse extends ApiEnvelope {html: string; toc_html: string}

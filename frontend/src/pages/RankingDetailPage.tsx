@@ -1,13 +1,14 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useState, type CSSProperties, type Dispatch, type DragEvent, type FormEvent, type ReactNode, type SetStateAction} from 'react'
 import {createPortal} from 'react-dom'
-import {Link, useNavigate, useParams, useSearchParams} from 'react-router-dom'
+import {useParams, useSearchParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage, queryString} from '../api/client'
 import type {ApiEnvelope, CompetitionSummary, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {ModelLogo, modelLogoClass} from '../components/ModelLogo'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useSession} from '../session'
 

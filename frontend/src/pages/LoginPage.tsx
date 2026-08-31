@@ -1,10 +1,11 @@
 import {useMutation} from '@tanstack/react-query'
 import {useEffect, useState, type FormEvent} from 'react'
-import {Link, useLocation, useNavigate} from 'react-router-dom'
+import {useLocation} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope} from '../api/types'
 import {AuthFrame, PasswordToggle} from '../components/AuthFrame'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {useSession} from '../session'
 
 export default function LoginPage() {

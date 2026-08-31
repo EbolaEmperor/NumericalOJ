@@ -1,10 +1,11 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useState} from 'react'
-import {Link, useParams, useSearchParams} from 'react-router-dom'
+import {useParams, useSearchParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {ModelLogo} from '../components/ModelLogo'
+import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useSession} from '../session'
 

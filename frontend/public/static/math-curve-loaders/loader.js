@@ -41,10 +41,9 @@
   const instances = new Set();
   let animationFrame = 0;
   let gradientSerial = 0;
-  let lastInteractionAt = 0;
   let lastInteractionTarget = null;
-  let overlay = null;
-  const overlayRequests = new Map();
+  const requestIndicators = new Map();
+  const busyTargets = new WeakMap();
   let pendingNavigationTarget = null;
 
   function customRose(petals, particleCount, trailSpan, durationMs, pulseDurationMs, rotationDurationMs) {
@@ -327,86 +326,91 @@
     return loader;
   }
 
-  function ensureOverlay() {
-    if (overlay && overlay.isConnected) return overlay;
-    overlay = document.createElement('div');
-    overlay.className = 'math-curve-loader-overlay';
-    overlay.setAttribute('aria-hidden', 'true');
-    overlay.innerHTML = '<div class="math-curve-loader-overlay__card"></div>';
-    document.body.appendChild(overlay);
-    return overlay;
+  function resolveRequestTarget(settings) {
+    const requested = typeof settings.target === 'string'
+      ? document.querySelector(settings.target)
+      : settings.target;
+    const interaction = requested && requested.nodeType === 1 ? requested : lastInteractionTarget;
+
+    if (settings.scope === 'control' && interaction && interaction.closest) {
+      const control = interaction.closest('button, a');
+      if (control) return { element: control, kind: 'control' };
+    }
+    if (settings.scope === 'component' && interaction && interaction.closest) {
+      const component = interaction.closest(
+        '[data-math-curve-scope="component"], form, section, article, .modal-content, main'
+      );
+      if (component) return { element: component, kind: 'component' };
+    }
+    if (requested && requested.nodeType === 1) return { element: requested, kind: 'component' };
+
+    const page = document.querySelector('.numoj-spa-route')
+      || document.querySelector('[data-math-curve-scope="page"]')
+      || document.querySelector('.numoj-content')
+      || document.querySelector('main')
+      || document.querySelector('#root');
+    return page ? { element: page, kind: 'page' } : null;
+  }
+
+  function setTargetBusy(target) {
+    let state = busyTargets.get(target);
+    if (!state) {
+      state = { count: 0, previous: target.getAttribute('aria-busy') };
+      busyTargets.set(target, state);
+    }
+    state.count += 1;
+    target.setAttribute('aria-busy', 'true');
+  }
+
+  function clearTargetBusy(target) {
+    const state = busyTargets.get(target);
+    if (!state) return;
+    state.count -= 1;
+    if (state.count > 0) return;
+    if (state.previous == null) target.removeAttribute('aria-busy');
+    else target.setAttribute('aria-busy', state.previous);
+    busyTargets.delete(target);
   }
 
   function begin(label, options) {
     const settings = options || {};
     const token = Symbol('math-curve-request');
-    const state = { shown: false, timer: 0, label: label || '正在处理…' };
-    overlayRequests.set(token, state);
+    const state = { indicator: null, target: null, timer: 0, label: label || '正在处理…' };
+    requestIndicators.set(token, state);
     state.timer = window.setTimeout(() => {
-      if (!overlayRequests.has(token)) return;
-      state.shown = true;
-      const layer = ensureOverlay();
-      replace(layer.querySelector('.math-curve-loader-overlay__card'), state.label, {
-        size: 'lg'
+      if (!requestIndicators.has(token)) return;
+      const resolved = resolveRequestTarget(settings);
+      if (!resolved) return;
+      const indicator = document.createElement(resolved.kind === 'control' ? 'span' : 'div');
+      indicator.className = `math-curve-loader-request math-curve-loader-request--${resolved.kind}`;
+      const loader = replace(indicator, state.label, {
+        size: resolved.kind === 'page' ? 'md' : resolved.kind === 'control' ? 'xs' : 'sm'
       });
-      layer.classList.add('is-visible');
-      layer.setAttribute('aria-hidden', 'false');
+      if (resolved.kind === 'control' && loader) {
+        loader.dataset.iconOnly = 'true';
+        loader.setAttribute('aria-label', state.label);
+        loader.querySelector('.math-curve-loader__label')?.remove();
+      }
+      state.indicator = indicator;
+      state.target = resolved.element;
+      setTargetBusy(resolved.element);
+      if (resolved.kind === 'page') resolved.element.prepend(indicator);
+      else resolved.element.appendChild(indicator);
     }, Math.max(0, Number(settings.delay == null ? 180 : settings.delay)));
 
     return function end() {
-      const current = overlayRequests.get(token);
+      const current = requestIndicators.get(token);
       if (!current) return;
       window.clearTimeout(current.timer);
-      overlayRequests.delete(token);
-      if (current.shown && !Array.from(overlayRequests.values()).some(item => item.shown)) {
-        const layer = ensureOverlay();
-        layer.classList.remove('is-visible');
-        layer.setAttribute('aria-hidden', 'true');
-      }
+      requestIndicators.delete(token);
+      current.indicator?.remove();
+      if (current.target) clearTargetBusy(current.target);
     };
-  }
-
-  function interactionLabel() {
-    if (!lastInteractionTarget || !lastInteractionTarget.closest) return '正在处理…';
-    const actionable = lastInteractionTarget.closest('[data-loader-label], button, input[type="submit"], a');
-    if (!actionable) return '正在处理…';
-    if (actionable.dataset.loaderLabel) return actionable.dataset.loaderLabel;
-    const text = (actionable.textContent || actionable.value || '').trim().replace(/\s+/g, ' ');
-    return text ? `${text.replace(/[.…]+$/, '')}中…` : '正在处理…';
   }
 
   function trackInteraction(event) {
     if (!event.isTrusted) return;
-    lastInteractionAt = performance.now();
     lastInteractionTarget = event.target;
-  }
-
-  function installFetchTracking() {
-    if (!window.fetch || window.fetch.__mathCurveTracked) return;
-    const originalFetch = window.fetch.bind(window);
-    const trackedFetch = function (input, init) {
-      let requestInit = init;
-      const explicit = init && Object.prototype.hasOwnProperty.call(init, 'mathCurveLoader')
-        ? init.mathCurveLoader
-        : undefined;
-      if (explicit !== undefined) {
-        requestInit = Object.assign({}, init);
-        delete requestInit.mathCurveLoader;
-      }
-      const recentInteraction = performance.now() - lastInteractionAt < 900;
-      const shouldShow = explicit === true || (explicit !== false && recentInteraction);
-      const end = shouldShow ? begin(interactionLabel()) : null;
-      let result;
-      try {
-        result = originalFetch(input, requestInit);
-      } catch (error) {
-        if (end) end();
-        throw error;
-      }
-      return Promise.resolve(result).finally(() => { if (end) end(); });
-    };
-    trackedFetch.__mathCurveTracked = true;
-    window.fetch = trackedFetch;
   }
 
   function installNavigationTracking() {
@@ -416,7 +420,11 @@
         if (event.defaultPrevented || !form || form.dataset.noMathCurveLoader === 'true') return;
         if (form.target && form.target !== '_self') return;
         markNavigationPending(event.submitter || form);
-        begin(form.dataset.loaderLabel || '正在提交…', { delay: 120 });
+        begin(form.dataset.loaderLabel || '正在提交…', {
+          delay: 120,
+          scope: event.submitter ? 'control' : 'component',
+          target: event.submitter || form
+        });
       }, 0);
     });
 
@@ -430,13 +438,13 @@
       let destination;
       try { destination = new URL(link.href, window.location.href); } catch (error) { return; }
       if (destination.origin !== window.location.origin) return;
-      // 服务端附件下载不会发生页面切换，若展示全页遮罩就没有机会自动收起。
-      // 除了显式 download 属性，也识别由脚本动态生成的常见下载 URL，避免遗漏。
+      // 服务端附件下载不会发生页面切换，页面内加载状态也就没有新的页面负责接管。
+      // 除了显式 download 属性，也识别由脚本动态生成的常见下载 URL，避免误报加载中。
       if (isDownloadDestination(destination)) return;
       window.setTimeout(() => {
         if (!event.defaultPrevented) {
           markNavigationPending(link);
-          begin(link.dataset.loaderLabel || '正在加载页面…', { delay: 140 });
+          begin(link.dataset.loaderLabel || '正在加载页面…', { delay: 140, scope: 'page' });
         }
       }, 0);
     });
@@ -471,7 +479,7 @@
     mount,
     replace,
     update,
-    withOverlay(promise, label, options) {
+    withLoader(promise, label, options) {
       const end = begin(label, options);
       return Promise.resolve(promise).finally(end);
     }
@@ -484,15 +492,15 @@
   document.addEventListener('input', trackInteraction, true);
   document.addEventListener('visibilitychange', startAnimation);
   window.addEventListener('pageshow', () => {
+    requestIndicators.forEach(state => {
+      window.clearTimeout(state.timer);
+      state.indicator?.remove();
+      if (state.target) clearTargetBusy(state.target);
+    });
+    requestIndicators.clear();
     clearNavigationPending();
-    overlayRequests.clear();
-    if (overlay) {
-      overlay.classList.remove('is-visible');
-      overlay.setAttribute('aria-hidden', 'true');
-    }
   });
 
-  installFetchTracking();
   installNavigationTracking();
 
   const initialize = function () {

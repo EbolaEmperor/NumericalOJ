@@ -171,36 +171,36 @@
   place-items: center;
 }
 
+#root > .numoj-spa-state {
+  min-height: 100dvh;
+}
+
 .numoj-spa-route {
   min-height: 1px;
-  animation: numoj-spa-enter 200ms cubic-bezier(.4, 0, .2, 1) both;
 }
 
-/* 原生 View Transition 只截取主内容区，侧栏保持稳定。路由切换发生在动画
- * 中间，因此数据请求与过渡并行；最终静止画面仍完全沿用旧版样式。 */
-.numoj-content {
-  view-transition-name: numoj-page-content;
+/* 路由统一使用浏览器的 root 快照，让侧栏、顶栏与正文作为一张完整页面
+ * 同时交叉淡化；不再单独移动或渐显正文容器。 */
+::view-transition-group(root) {
+  animation-duration: 320ms;
+  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
 }
 
-::view-transition-group(numoj-page-content) {
-  animation-duration: 220ms;
-  animation-timing-function: cubic-bezier(.4, 0, .2, 1);
+::view-transition-image-pair(root) {
+  isolation: isolate;
 }
 
-::view-transition-old(numoj-page-content) {
-  animation: numoj-page-out 220ms cubic-bezier(.4, 0, .2, 1) both;
-  mix-blend-mode: plus-lighter;
+::view-transition-old(root),
+::view-transition-new(root) {
+  mix-blend-mode: normal;
 }
 
-::view-transition-new(numoj-page-content) {
-  animation: numoj-page-in 220ms cubic-bezier(.4, 0, .2, 1) both;
-  mix-blend-mode: plus-lighter;
+::view-transition-old(root) {
+  animation: numoj-page-fade-out 320ms cubic-bezier(.4, 0, 1, 1) both;
 }
 
-/* 原生 View Transition 已经负责交叉淡化时，关闭 keyed 路由容器的回退动画，
- * 避免两层透明度与位移动画叠加后出现短促闪烁。 */
-html:active-view-transition .numoj-spa-route {
-  animation: none;
+::view-transition-new(root) {
+  animation: numoj-page-fade-in 320ms cubic-bezier(0, 0, .2, 1) both;
 }
 
 /* 旧版题目工作台依赖内容容器的确定高度；SPA 过渡层必须把这条尺寸链继续向下传递。 */
@@ -370,26 +370,20 @@ html:active-view-transition .numoj-spa-route {
   .detection-action-bar .btn { align-self: flex-end; }
 }
 
-@keyframes numoj-spa-enter {
-  from { opacity: .96; }
+@keyframes numoj-page-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes numoj-page-fade-in {
+  from { opacity: 0; }
   to { opacity: 1; }
 }
 
-@keyframes numoj-page-out {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(0); }
-}
-
-@keyframes numoj-page-in {
-  from { opacity: 0; transform: translateY(0); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .numoj-spa-route { animation: none; }
-  ::view-transition-group(numoj-page-content),
-  ::view-transition-old(numoj-page-content),
-  ::view-transition-new(numoj-page-content) { animation: none; }
+  ::view-transition-group(root),
+  ::view-transition-old(root),
+  ::view-transition-new(root) { animation: none; }
 }
 .appeal-review-page .ap-grid {display:flex;gap:1rem;align-items:flex-start;--gold:#f5c518;--gold-d:#b8910f;--ink:#1f2329;--muted:#70757c;--line:#e6e6e9;--ok:#1f7a4d;--info:#2563cb;--err:#b03a2e;--mono:'Menlo','SF Mono','JetBrains Mono',ui-monospace,monospace}
 .appeal-review-page .ap-left {flex:1 1 auto;min-width:0;padding-right:.25rem}

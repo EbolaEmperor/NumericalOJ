@@ -1,11 +1,12 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useRef, useState, type FormEvent} from 'react'
-import {useNavigate, useParams} from 'react-router-dom'
+import {useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {useNavigate} from '../components/PageNavigation'
 import {useSession} from '../session'
 
 interface ListResponse extends ApiEnvelope {threads?: JsonRecord[]; items?: JsonRecord[]}

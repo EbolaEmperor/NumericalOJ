@@ -1,10 +1,11 @@
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {useEffect, useState} from 'react'
-import {Link, useNavigate, useParams} from 'react-router-dom'
+import {useParams} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary} from '../api/types'
 import {MonacoEditor} from '../components/MonacoEditor'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 
 interface LeanFile extends JsonRecord {path: string; mode: string; content: string}

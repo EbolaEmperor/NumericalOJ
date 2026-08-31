@@ -1,10 +1,11 @@
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {useEffect, useRef} from 'react'
-import {Link, useLocation, useParams} from 'react-router-dom'
+import {useLocation, useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {usePageDisplayMode} from '../components/AppShell'
+import {Link} from '../components/PageNavigation'
 
 interface ProjectResponse extends ApiEnvelope {project: JsonRecord}
 interface LeaseResponse extends ApiEnvelope {lease_token: string; proxy_url: string; heartbeat_url: string; release_url: string}

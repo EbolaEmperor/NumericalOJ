@@ -1,10 +1,10 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {type FormEvent} from 'react'
-import {Link, useNavigate} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
 import type {ApiEnvelope, CompetitionSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {useSession} from '../session'
 
 interface Response extends ApiEnvelope {competitions: CompetitionSummary[]; count: number}

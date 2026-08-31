@@ -2,7 +2,7 @@ import type {PropsWithChildren, ReactNode} from 'react'
 
 export function LoadingState({label = '正在读取最新数据'}: {label?: string}) {
   return (
-    <div className="numoj-spa-state" role="status" aria-live="polite">
+    <div className="numoj-spa-state" data-math-curve-scope="page" role="status" aria-live="polite">
       <span className="math-curve-loader" data-math-curve-loader data-size="lg">
         <span className="math-curve-loader__label">{label}</span>
       </span>

@@ -1,11 +1,12 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useRef, useState, type FormEvent} from 'react'
 import {createPortal} from 'react-dom'
-import {Link, useSearchParams} from 'react-router-dom'
+import {useSearchParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {Link} from '../components/PageNavigation'
 import {useSession} from '../session'
 
 interface Response extends ApiEnvelope {

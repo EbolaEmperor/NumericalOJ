@@ -1,10 +1,11 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useMemo, useState} from 'react'
-import {Link, useSearchParams} from 'react-router-dom'
+import {useSearchParams} from 'react-router-dom'
 
 import {apiFetch, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {Link} from '../components/PageNavigation'
 import {frontierProjects, problemInsights} from '../content/problemDashboard'
 import {useSession} from '../session'
 

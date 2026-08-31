@@ -1,5 +1,6 @@
 import type {ReactNode} from 'react'
-import {Link} from 'react-router-dom'
+
+import {Link} from './PageNavigation'
 
 type AuthPage = 'login' | 'register' | 'forgot'
 

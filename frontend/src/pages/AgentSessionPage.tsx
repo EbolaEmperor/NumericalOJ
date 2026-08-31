@@ -1,11 +1,12 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useState, type FormEvent} from 'react'
-import {Link, useParams} from 'react-router-dom'
+import {useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {ModelLogo} from '../components/ModelLogo'
+import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 
 interface SessionResponse extends ApiEnvelope {

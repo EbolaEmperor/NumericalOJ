@@ -1,10 +1,11 @@
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {useEffect, useRef, useState, type FormEvent} from 'react'
-import {Link, useNavigate, useSearchParams} from 'react-router-dom'
+import {useSearchParams} from 'react-router-dom'
 
 import {apiFetch, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord, SubmissionSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {useSession} from '../session'
 
 interface ProblemOption extends JsonRecord {problem_id: number; filter_label: string}

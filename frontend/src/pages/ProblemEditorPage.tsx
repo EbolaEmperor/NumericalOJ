@@ -1,11 +1,12 @@
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {useEffect, useMemo, useState, type FormEvent} from 'react'
-import {Link, useNavigate, useParams} from 'react-router-dom'
+import {useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {ModelLogo} from '../components/ModelLogo'
 import {MonacoEditor} from '../components/MonacoEditor'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useSession} from '../session'
 

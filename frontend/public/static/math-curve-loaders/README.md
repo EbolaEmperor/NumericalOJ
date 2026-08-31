@@ -2,28 +2,22 @@
 
 [Live Preview](https://paidax01.github.io/math-curve-loaders/)
 
-A small gallery of mathematical curve based loading animations built with plain HTML, CSS, and JavaScript.
+A lightweight mathematical-curve loading indicator used by NumericalOJ.
 
-It includes:
+Loading placement follows two rules:
 
-- the original particle trail loader
-- a collection of curve variants such as rose curves, Lissajous curves, hypotrochoids, cardioids, Cassini ovals, and Fourier-style paths
-- click-to-open modal previews
-- per-curve formula notes and code snippets
-- copy support for formula and code
+- page loading renders directly in the current page region
+- component loading renders inside the component or its triggering control
+- loading never creates a backdrop or modal
 
 ## Files
 
-- `index.html`: gallery entry
-- `style.css`: layout, modal, and visual styles
-- `main.js`: animation engine, curve definitions, modal interactions
-- `original.html`: standalone original loader demo
-- `original.css`
-- `original.js`
+- `loader.css`: inline page/component loader styles
+- `loader.js`: curve renderer and local request-state helpers
 
 ## Run
 
-Open `index.html` directly in a browser.
+The application loads both files from `frontend/index.html`.
 
 ## Why
 

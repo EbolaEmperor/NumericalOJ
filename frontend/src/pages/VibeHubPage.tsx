@@ -1,10 +1,11 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useRef, useState, type FormEvent} from 'react'
-import {Link, useLocation} from 'react-router-dom'
+import {useLocation} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
+import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useSession} from '../session'
 

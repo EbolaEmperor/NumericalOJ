@@ -1,11 +1,12 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useRef, useState, type FormEvent, type RefObject} from 'react'
-import {Link, useNavigate, useParams} from 'react-router-dom'
+import {useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary, SubmissionSummary} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {MonacoEditor} from '../components/MonacoEditor'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {LeanWorkbench, type LeanWorkbenchController} from '../components/LeanWorkbench'
 import {useSession} from '../session'

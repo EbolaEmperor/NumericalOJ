@@ -1,10 +1,10 @@
 import {useMutation, useQuery} from '@tanstack/react-query'
 import {useEffect, useState, type FormEvent} from 'react'
-import {Link, useNavigate} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope} from '../api/types'
 import {AuthFrame, PasswordToggle} from '../components/AuthFrame'
+import {Link, useNavigate} from '../components/PageNavigation'
 
 interface MailContext extends ApiEnvelope {mail_configured: boolean}
 

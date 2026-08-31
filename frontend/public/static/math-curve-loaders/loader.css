@@ -55,60 +55,30 @@ html.numoj-navigation-pending button {
   line-height: 1.35;
 }
 
-.math-curve-loader-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2100;
-  display: grid;
-  place-items: center;
-  padding: 1.25rem;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(37, 99, 235, 0.12), transparent 34%),
-    rgba(246, 248, 252, 0.82);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 160ms ease, visibility 0s linear 160ms;
+.math-curve-loader-request {
+  --math-curve-color-a: currentColor;
+  --math-curve-color-b: currentColor;
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem;
+  color: #475569;
 }
 
-.math-curve-loader-overlay.is-visible {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  transition: opacity 160ms ease;
+.math-curve-loader-request--page {
+  min-height: 112px;
 }
 
-.math-curve-loader-overlay__card {
-  min-width: min(17rem, calc(100vw - 2.5rem));
-  padding: 1.25rem 1.5rem;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 1.15rem;
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.16);
-  color: #334155;
-  text-align: center;
-}
-
-.math-curve-loader-overlay__card .math-curve-loader {
-  --math-curve-color-a: #1e293b;
-  --math-curve-color-b: #0f172a;
-  flex-direction: column;
-}
-
-.math-curve-loader-overlay__card .math-curve-loader__label {
-  font-size: 0.92rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-@media (prefers-color-scheme: dark) {
-  .math-curve-loader-overlay {
-    background:
-      radial-gradient(circle at 50% 42%, rgba(148, 163, 184, 0.18), transparent 34%),
-      rgba(15, 23, 42, 0.78);
-  }
+.math-curve-loader-request--control {
+  display: inline-flex;
+  width: auto;
+  min-height: 0;
+  margin-inline-start: 0.45rem;
+  padding: 0;
+  color: inherit;
+  vertical-align: middle;
 }
 
 @media (prefers-reduced-motion: reduce) {

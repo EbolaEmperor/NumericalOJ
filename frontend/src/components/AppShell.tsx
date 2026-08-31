@@ -1,12 +1,13 @@
 import {useQueryClient} from '@tanstack/react-query'
 import {createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction} from 'react'
-import {Link, Outlet, useLocation, useNavigate} from 'react-router-dom'
+import {Outlet, useLocation} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
 import type {ApiEnvelope, NavigationItem} from '../api/types'
 import {preloadNavigationRoute} from '../routeLoaders'
 import {useSession} from '../session'
 import {AccountModals} from './AccountModals'
+import {Link, useNavigate} from './PageNavigation'
 
 interface PrefetchTarget {
   path: string
