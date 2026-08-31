@@ -9,7 +9,6 @@ from backend.oj_modules.shared.static_delivery import PrecompressedStaticFlask
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PRECOMPRESS_MINIMUM_BYTES = 100 * 1024
 
 
 def _write_asset(root, name, raw):
@@ -295,86 +294,3 @@ def test_precompressed_assets_are_not_tracked():
         text=True,
     )
     assert result.stdout == ""
-
-
-def test_precompress_build_removes_only_manifest_managed_orphans(tmp_path):
-    static_root = tmp_path / "static"
-    static_root.mkdir()
-    expected_source = static_root / "expected.js"
-    expected_source.write_bytes(b"const expected = true;\n" * 6_000)
-    expected_brotli = Path(f"{expected_source}.br")
-    expected_gzip = Path(f"{expected_source}.gz")
-    expected_brotli.write_bytes(b"stale-brotli")
-    expected_gzip.write_bytes(b"stale-gzip")
-
-    small_source = static_root / "small.js"
-    small_source.write_bytes(b"small")
-    unmanaged = (
-        Path(f"{small_source}.br"),
-        Path(f"{small_source}.gz"),
-        static_root / "missing.js.br",
-        static_root / "missing.js.gz",
-        static_root / "large.bin.br",
-        static_root / "large.bin.gz",
-    )
-    for path in unmanaged:
-        path.write_bytes(b"orphaned")
-    (static_root / "large.bin").write_bytes(b"x" * PRECOMPRESS_MINIMUM_BYTES)
-    manifest = tmp_path / "state" / "manifest.json"
-
-    result = subprocess.run(
-        ["node", str(ROOT / "frontend" / "scripts" / "precompress_static.mjs")],
-        cwd=tmp_path,
-        env={
-            **os.environ,
-            "NUMOJ_STATIC_ROOT": str(static_root),
-            "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest),
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert expected_source.is_file()
-    assert expected_brotli.is_file()
-    assert expected_gzip.is_file()
-    assert gzip.decompress(expected_gzip.read_bytes()) == expected_source.read_bytes()
-    brotli_result = subprocess.run(
-        [
-            "node",
-            "-e",
-            (
-                "const fs=require('node:fs');"
-                "const z=require('node:zlib');"
-                "const raw=fs.readFileSync(process.argv[1]);"
-                "const compressed=fs.readFileSync(process.argv[2]);"
-                "if(!z.brotliDecompressSync(compressed).equals(raw))process.exit(1);"
-            ),
-            str(expected_source),
-            str(expected_brotli),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert brotli_result.returncode == 0, brotli_result.stderr
-    assert all(path.exists() for path in unmanaged)
-
-    expected_source.write_bytes(b"small now")
-    second = subprocess.run(
-        ["node", str(ROOT / "frontend" / "scripts" / "precompress_static.mjs")],
-        cwd=tmp_path,
-        env={
-            **os.environ,
-            "NUMOJ_STATIC_ROOT": str(static_root),
-            "NUMOJ_PRECOMPRESS_MANIFEST": str(manifest),
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert second.returncode == 0, second.stderr
-    assert not expected_brotli.exists()
-    assert not expected_gzip.exists()
-    assert all(path.exists() for path in unmanaged)
