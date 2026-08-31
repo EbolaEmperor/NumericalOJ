@@ -1,7 +1,27 @@
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 
 const outputDirectory = "public/static/vendor/monaco";
+
+const safariClipboardGuard = {
+  name: "monaco-safari-clipboard-guard",
+  setup(buildContext) {
+    buildContext.onLoad({
+      filter: /monaco-editor\/esm\/vs\/platform\/clipboard\/browser\/clipboardService\.js$/,
+    }, async ({ path }) => {
+      const source = await readFile(path, "utf8");
+      const unguarded = "if (isSafari || isWebkitWebView) {";
+      const guarded = "if ((isSafari || isWebkitWebView) && mainWindow.navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {";
+      if (!source.includes(unguarded)) {
+        throw new Error("Monaco Safari clipboard guard target changed; update build_monaco.mjs before publishing.");
+      }
+      return {
+        contents: source.replace(unguarded, guarded),
+        loader: "js",
+      };
+    });
+  },
+};
 
 await rm(outputDirectory, { recursive: true, force: true });
 await mkdir(outputDirectory, { recursive: true });
@@ -11,6 +31,7 @@ const shared = {
   minify: true,
   legalComments: "linked",
   logLevel: "info",
+  plugins: [safariClipboardGuard],
 };
 
 for (const [entryPoint, outputName] of [
@@ -33,7 +54,7 @@ await build({
   ...shared,
   entryPoints: ["node_modules/monaco-editor/esm/vs/editor/editor.worker.js"],
   outfile: `${outputDirectory}/editor.worker.js`,
-  format: "iife",
+  format: "esm",
 });
 
 await Promise.all([
