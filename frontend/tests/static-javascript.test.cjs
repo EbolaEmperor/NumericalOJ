@@ -82,6 +82,7 @@ test('SPA 只在 React 启动前加载 MathJax 底层运行时', () => {
 
 test('React Hook 独立调度公式、代码和 Mermaid 增强', () => {
   const source = read('frontend/src/components/useMarkdownEnhancements.ts')
+  const component = read('frontend/src/components/MarkdownContent.tsx')
   const mathHook = source.indexOf('function useMathJax(')
   const codeEffect = source.indexOf('void highlightCode(')
   const mermaidEffect = source.indexOf('void renderMermaid(')
@@ -92,6 +93,7 @@ test('React Hook 独立调度公式、代码和 Mermaid 增强', () => {
   assert.ok(source.includes('useLayoutEffect(() => {'))
   assert.ok(source.includes('.then(() => enhanceSemanticCode('))
   assert.equal(source.includes('NumericalOJMarkdownRenderer'), false)
+  assert.ok(component.includes('memo(function MarkdownContent'))
 })
 
 test('React MathJax Hook 等待启动并校验当前挂载实例', () => {
