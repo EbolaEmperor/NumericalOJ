@@ -304,6 +304,14 @@ def test_public_competition_detail_exposes_safe_reverse_answer_endpoints(monkeyp
     )
     monkeypatch.setattr(ranking_api, "get_competition", lambda competition_id: comp)
     monkeypatch.setattr(ranking_api, "list_competition_files", lambda competition_id: [])
+    monkeypatch.setattr(
+        ranking_api,
+        "get_ranking_navigation_state",
+        lambda competition_id, username: {
+            "competition_id": competition_id,
+            "username": username,
+        },
+    )
     monkeypatch.setattr(ranking_api, "_agent_judge_endpoint_ready", lambda *args: True)
     monkeypatch.setattr(ranking_api, "_reverse_quality_gate_ready", lambda *args: True)
     monkeypatch.setattr(ranking_api, "_render_description", lambda text: text)

@@ -1247,6 +1247,14 @@ def _patch_competition_detail_common(monkeypatch, comp, user):
         ranking_api, "_competition_for_user", lambda *_args: (comp, None),
     )
     monkeypatch.setattr(ranking_api, "list_competition_files", lambda _cid: [])
+    monkeypatch.setattr(
+        ranking_api,
+        "get_ranking_navigation_state",
+        lambda competition_id, username: {
+            "competition_id": competition_id,
+            "username": username,
+        },
+    )
     monkeypatch.setattr(ranking_api, "_agent_judge_endpoint_ready", lambda *_args: True)
     monkeypatch.setattr(ranking_api, "_reverse_quality_gate_ready", lambda *_args: True)
     monkeypatch.setattr(ranking_api, "list_agent_judge_endpoints", lambda *_args, **_kwargs: [])
