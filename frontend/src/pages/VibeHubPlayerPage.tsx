@@ -5,6 +5,7 @@ import {useLocation, useParams} from 'react-router-dom'
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {usePageDisplayMode} from '../components/AppShell'
+import {MathCurveLoader} from '../components/MathCurveLoader'
 import {Link} from '../components/PageNavigation'
 
 interface ProjectResponse extends ApiEnvelope {project: JsonRecord}
@@ -44,7 +45,7 @@ export default function VibeHubPlayerPage() {
   </section>
   return <div className="vibe-player" data-vibehub-player data-project-slug={slug}>
     <iframe className="vibe-player-frame" title={String(project.data?.project?.title || slug)} src={acquire.data?.proxy_url || 'about:blank'} sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock allow-downloads allow-popups allow-popups-to-escape-sandbox" allow="fullscreen" referrerPolicy="no-referrer" />
-    {project.isPending || acquire.isPending || !acquire.data && !acquire.isError ? <div className="vibe-player-loading" role="status"><span className="math-curve-loader vibe-player-loader" data-math-curve-loader data-icon-only="true" data-size="lg" data-color-a="#c95d32" data-color-b="#c95d32" data-stroke-scale="1.08" aria-label="正在启动游戏运行环境" /><strong>正在启动游戏运行环境</strong><p>作品镜像已在保存时构建完成，容器启动后会自动进入。</p></div> : null}
+    {project.isPending || acquire.isPending || !acquire.data && !acquire.isError ? <div className="vibe-player-loading" role="status"><MathCurveLoader className="vibe-player-loader" iconOnly size="lg" colorA="#c95d32" colorB="#c95d32" strokeScale={1.08} ariaLabel="正在启动游戏运行环境" /><strong>正在启动游戏运行环境</strong><p>作品镜像已在保存时构建完成，容器启动后会自动进入。</p></div> : null}
     {acquire.isError ? <div className="vibe-player-error" role="alert"><span><i className="fas fa-triangle-exclamation" /></span><h1>作品暂时没有启动</h1><p>{errorMessage(acquire.error)}</p><div><button type="button" onClick={() => acquire.mutate()}><i className="fas fa-rotate-right" />重新尝试</button><Link to={channel === 'latest' ? '/vibehub?view=mine' : '/vibehub'}>返回{channel === 'latest' ? '我的作品' : '作品列表'}</Link></div></div> : null}
   </div>
 }

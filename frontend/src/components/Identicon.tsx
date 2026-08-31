@@ -1,27 +1,8 @@
-import {useEffect, useRef} from 'react'
+import {identiconCellFlags, identiconCellsForSeed, type IdenticonAvatar} from '../lib/identicon'
 
-type IdenticonRuntime = {
-  cellsForSeed: (seed: string) => unknown
-  paint: (element: Element, avatar: unknown, label: string) => void
-}
-
-declare global {
-  interface Window {
-    NumojIdenticon?: IdenticonRuntime
-  }
-}
-
-export function Identicon({seed, className}: {seed: string; className?: string}) {
-  const ref = useRef<HTMLSpanElement>(null)
-  useEffect(() => {
-    if (ref.current && window.NumojIdenticon) {
-      window.NumojIdenticon.paint(
-        ref.current,
-        window.NumojIdenticon.cellsForSeed(seed || 'numericaloj'),
-        seed || '未知用户',
-      )
-    }
-  }, [seed])
+export function Identicon({seed, avatar, className}: {seed: string; avatar?: IdenticonAvatar; className?: string}) {
+  const label = seed || '未知用户'
+  const cells = identiconCellFlags(avatar ?? identiconCellsForSeed(seed || 'numericaloj'))
   const classes = Array.from(new Set(['numoj-avatar', ...(className || '').split(/\s+/).filter(Boolean)])).join(' ')
-  return <span ref={ref} className={classes} data-avatar-seed={seed} data-avatar-label={seed} aria-hidden="true" />
+  return <span className={classes} data-avatar-seed={seed} data-avatar-label={seed} title={label} aria-label={`${label} 的头像`}>{cells.map((filled, index) => <span className={filled ? 'is-filled' : undefined} aria-hidden="true" key={index} />)}</span>
 }

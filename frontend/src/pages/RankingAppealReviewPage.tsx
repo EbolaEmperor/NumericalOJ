@@ -7,6 +7,7 @@ import type {ApiEnvelope, CompetitionSummary, JsonRecord} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {Link, useNavigate} from '../components/PageNavigation'
+import {useRuleTopology} from '../ranking/ruleTopology'
 
 type AppealResponse = ApiEnvelope & {
   competition: CompetitionSummary
@@ -43,15 +44,6 @@ function numberValue(value: unknown) {
   return Number.isFinite(numeric) ? numeric : 0
 }
 
-type RuleTopologyRoute = {x1: number; y1: number; x2: number; y2: number; laneY: number; arrowTipY: number; points?: {x: number; y: number}[]}
-type RuleTopologyLayout = {positions: Record<number, {x: number; y: number}>; width: number; height: number}
-type RuleTopologyEngine = {
-  layout: (rules: Rule[]) => RuleTopologyLayout | null
-  buildRoutes: (edges: {from: number; to: number}[], layout: RuleTopologyLayout) => Record<string, RuleTopologyRoute>
-  edgePath: (route: RuleTopologyRoute) => string
-  edgeKey: (from: number, to: number) => string
-}
-
 function formatNumber(value: unknown) {
   return String(Math.round(numberValue(value) * 100) / 100)
 }
@@ -73,15 +65,9 @@ function ruleTitle(rule: Rule) {
 
 function AppealTopology({rules, effective, openRule}: {rules: Rule[]; effective: (rule: Rule) => string; openRule: (ruleId: number) => void}) {
   const [focus, setFocus] = useState<{ruleId?: number; edgeKey?: string} | null>(null)
-  const engine = useMemo(() => {
-    const factory = (window as Window & {RuleTopology?: {create: (options: JsonRecord) => RuleTopologyEngine}}).RuleTopology
-    return factory?.create({nodeWidth: 176, nodeHeight: 96, marginX: 24, marginY: 20, columnGap: 88, rowGap: 72, slotPadding: 46, maxSlotStep: 18})
-  }, [])
+  const {engine, layout, edges, routes} = useRuleTopology(rules, {nodeWidth: 176, nodeHeight: 96, marginX: 24, marginY: 20, columnGap: 88, rowGap: 72, slotPadding: 46, maxSlotStep: 18})
   if (!rules.length) return <div className="ap-topo-empty">暂无评分规则或评测结果。</div>
-  const layout = engine?.layout(rules) || null
-  if (!layout || !engine) return <div className="ap-topo-empty text-danger">当前依赖存在环，无法生成拓扑图。</div>
-  const edges = rules.flatMap((rule) => (Array.isArray(rule.dependencies) ? rule.dependencies : []).map((dependency) => ({from: numberValue(dependency), to: numberValue(rule.rule_id)})))
-  const routes = engine.buildRoutes(edges, layout)
+  if (!layout) return <div className="ap-topo-empty text-danger">当前依赖存在环，无法生成拓扑图。</div>
   const edgeParts = focus?.edgeKey?.split(':') || []
   return <div className="ap-topo-stage" style={{width: Math.ceil(layout.width), height: Math.ceil(layout.height)}}><div className={`ap-topo-surface${focus ? ' has-focus' : ''}`} style={{width: layout.width, height: layout.height}}><svg className="ap-topo-svg" width={layout.width} height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`}>{edges.map((edge) => {
     const key = engine.edgeKey(edge.from, edge.to)

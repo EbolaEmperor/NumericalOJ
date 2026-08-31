@@ -7,10 +7,13 @@ import {apiFetch, errorMessage, queryString} from '../api/client'
 import type {ApiEnvelope, CompetitionSummary, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {MarkdownContent} from '../components/MarkdownContent'
+import {MathCurveLoader} from '../components/MathCurveLoader'
 import {ModelLogo, modelLogoClass} from '../components/ModelLogo'
 import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
+import {useRuleTopology} from '../ranking/ruleTopology'
 import {useSession} from '../session'
 
 type RankingFile = JsonRecord & {
@@ -268,7 +271,7 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
     {data.submit_block_reason ? <p className="ranking-submit-block-reason"><i className="fas fa-exclamation-triangle me-2" />{data.submit_block_reason}</p> : gitMode ? <div className="gitsub" id="reverseGitPanel">
       <div className="gitsub-head"><h3>Git 提交</h3><span>从你的仓库拉取最新内容并评测</span></div>
       <div className="gitsub-repo"><span className="k">仓库</span><code className="u" id="gitsubUrl">{data.git_repo_url || ''}</code>{data.git_repo_url ? <button type="button" className="gitsub-copy" title="复制地址" aria-label="复制仓库地址" onClick={() => void navigator.clipboard?.writeText(data.git_repo_url || '')}><i className="fas fa-copy" /></button> : null}</div>
-      {!data.git_repo_url ? <div className="gitsub-note">管理员尚未配置 Git 仓库标准命名，暂时无法提交。</div> : <><div className="gitsub-actions"><button type="button" className="gitsub-btn gitsub-btn-ghost" disabled={checkGit.isPending} onClick={() => checkGit.mutate()}><span className="math-curve-loader" data-math-curve-loader data-icon-only="true" data-size="xs" hidden={!checkGit.isPending} aria-label="检查中" /><span>{checkGit.isPending ? '检查中' : '检查仓库'}</span></button></div>{checkGit.isError ? <div className="gitsub-result"><div className="gitsub-status no"><span className="dot" />{errorMessage(checkGit.error)}</div></div> : gitResult ? <div className="gitsub-result">{gitResult.exists && gitInfo ? <><div className="gitsub-status ok"><span className="dot" />仓库已找到 · 最新提交</div><div className="gitsub-commit"><span className="ck">提交</span><span className="cv subj">{String(gitInfo.subject || '(无标题)')}</span><span className="ck">哈希</span><span className="cv mono">{String(gitInfo.short || '')}</span><span className="ck">作者</span><span className="cv">{String(gitInfo.author || '')}</span><span className="ck">时间</span><span className="cv">{String(gitInfo.date_iso || '')}</span>{String(gitInfo.body || '').trim() ? <><span className="ck">说明</span><span className="cv"><span className="body">{String(gitInfo.body)}</span></span></> : null}</div></> : <><div className={`gitsub-status ${gitResult.exists ? 'ok' : 'no'}`}><span className="dot" />{gitResult.exists ? '仓库已找到' : '未找到仓库'}</div><div className="gitsub-note">{gitResult.message || (gitResult.exists ? '仓库存在，但还没有任何提交。' : '无法访问该仓库，请确认已创建并具备读取权限。')}</div></>}</div> : null}{gitReady ? <div className="gitsub-confirm"><button type="button" className="gitsub-btn gitsub-btn-solid" disabled={submitGit.isPending} onClick={() => submitGit.mutate()}><span className="math-curve-loader" data-math-curve-loader data-icon-only="true" data-size="xs" hidden={!submitGit.isPending} aria-label="提交中" /><span>{submitGit.isPending ? '提交中' : '确认提交'}</span></button><span className={`gitsub-confirm-hint${submitGit.isError ? ' no' : ''}`}>{submitGit.isError ? errorMessage(submitGit.error) : ''}</span></div> : null}</>}
+      {!data.git_repo_url ? <div className="gitsub-note">管理员尚未配置 Git 仓库标准命名，暂时无法提交。</div> : <><div className="gitsub-actions"><button type="button" className="gitsub-btn gitsub-btn-ghost" disabled={checkGit.isPending} onClick={() => checkGit.mutate()}><MathCurveLoader iconOnly size="xs" hidden={!checkGit.isPending} ariaLabel="检查中" /><span>{checkGit.isPending ? '检查中' : '检查仓库'}</span></button></div>{checkGit.isError ? <div className="gitsub-result"><div className="gitsub-status no"><span className="dot" />{errorMessage(checkGit.error)}</div></div> : gitResult ? <div className="gitsub-result">{gitResult.exists && gitInfo ? <><div className="gitsub-status ok"><span className="dot" />仓库已找到 · 最新提交</div><div className="gitsub-commit"><span className="ck">提交</span><span className="cv subj">{String(gitInfo.subject || '(无标题)')}</span><span className="ck">哈希</span><span className="cv mono">{String(gitInfo.short || '')}</span><span className="ck">作者</span><span className="cv">{String(gitInfo.author || '')}</span><span className="ck">时间</span><span className="cv">{String(gitInfo.date_iso || '')}</span>{String(gitInfo.body || '').trim() ? <><span className="ck">说明</span><span className="cv"><span className="body">{String(gitInfo.body)}</span></span></> : null}</div></> : <><div className={`gitsub-status ${gitResult.exists ? 'ok' : 'no'}`}><span className="dot" />{gitResult.exists ? '仓库已找到' : '未找到仓库'}</div><div className="gitsub-note">{gitResult.message || (gitResult.exists ? '仓库存在，但还没有任何提交。' : '无法访问该仓库，请确认已创建并具备读取权限。')}</div></>}</div> : null}{gitReady ? <div className="gitsub-confirm"><button type="button" className="gitsub-btn gitsub-btn-solid" disabled={submitGit.isPending} onClick={() => submitGit.mutate()}><MathCurveLoader iconOnly size="xs" hidden={!submitGit.isPending} ariaLabel="提交中" /><span>{submitGit.isPending ? '提交中' : '确认提交'}</span></button><span className={`gitsub-confirm-hint${submitGit.isError ? ' no' : ''}`}>{submitGit.isError ? errorMessage(submitGit.error) : ''}</span></div> : null}</>}
     </div> : <form id="rankingSubmitForm" className="submit-form mb-4" onSubmit={submitForm}>
       <div className="row g-3">
         {needAnswer ? <div className="col-md-6"><FileDrop kind="answer" title="答案文件" extension={`.${answerFormat}`} icon={answerFormat === 'zip' ? 'fa-file-archive' : 'fa-file-code'} file={answerFile} onFile={setAnswerFile} /></div> : null}
@@ -356,6 +359,7 @@ function AllSubmissionsPanel({data}: {data: Response}) {
   const [maxSelected, setMaxSelected] = useState(500)
   const [tooMany, setTooMany] = useState(false)
   const [jobId, setJobId] = useState('')
+  const [bulkOpen, setBulkOpen] = useState(false)
 
   useEffect(() => {setSearch(data.submission_search_q || '')}, [data.submission_search_q])
   useEffect(() => {
@@ -428,13 +432,13 @@ function AllSubmissionsPanel({data}: {data: Response}) {
       <div className="sub-stat"><div className="sub-stat-value">{stats.top_score == null ? '—' : <>{numberValue(stats.top_score).toFixed(2)}<span className="sub-stat-sub"> / {maxScore}</span></>}</div><div className="sub-stat-label">最高分</div></div>
     </div>
     <div className="submissions-toolbar"><strong>提交记录</strong><div className="submissions-toolbar-actions">
-      <button type="button" className="rk-bulk-open" data-bs-toggle="modal" data-bs-target="#rankingBulkRejudgeModal" disabled={total === 0}><i className="fas fa-rotate-right" /><span>批量重测</span></button>
+      <button type="button" className="rk-bulk-open" onClick={() => setBulkOpen(true)} disabled={total === 0}><i className="fas fa-rotate-right" /><span>批量重测</span></button>
       {total > 0 ? <div className="submissions-search"><i className="fas fa-search" /><input type="search" id="subSearch" className="form-control form-control-sm" placeholder="按用户名筛选…" autoComplete="off" value={search} onChange={(event) => setSearch(event.target.value)} /></div> : null}
     </div></div>
 
-    <div className="modal fade rk-bulk-modal" id="rankingBulkRejudgeModal" tabIndex={-1} aria-labelledby="rankingBulkRejudgeLabel" aria-hidden="true">
-      <div className="modal-dialog modal-xl modal-dialog-scrollable"><div className="modal-content">
-        <div className="modal-header"><div><h5 className="modal-title" id="rankingBulkRejudgeLabel">批量重测</h5><div className="rk-bulk-subtitle">在原提交记录上清空旧结果并重新入队，按评测队列并发限制执行。</div></div><button type="button" className="btn-close" data-bs-dismiss="modal" aria-label="关闭" /></div>
+    <ReactModal open={bulkOpen} onClose={() => setBulkOpen(false)} id="rankingBulkRejudgeModal" labelledBy="rankingBulkRejudgeLabel" className="rk-bulk-modal" dialogClassName="modal-xl modal-dialog-scrollable">
+      <div className="modal-content">
+        <div className="modal-header"><div><h5 className="modal-title" id="rankingBulkRejudgeLabel">批量重测</h5><div className="rk-bulk-subtitle">在原提交记录上清空旧结果并重新入队，按评测队列并发限制执行。</div></div><button type="button" className="btn-close" onClick={() => setBulkOpen(false)} aria-label="关闭" /></div>
         <div className="modal-body">
           <div className="rk-bulk-filters">
             <label className="rk-bulk-field"><span>起始时间</span><input type="datetime-local" value={bulkStart} onChange={(event) => setBulkStart(event.target.value)} /></label>
@@ -451,9 +455,9 @@ function AllSubmissionsPanel({data}: {data: Response}) {
           }) : <div className="rk-bulk-empty">暂无筛选结果</div>}</div>
           {jobId ? <div className="rk-bulk-progress"><div className="rk-bulk-progress-track"><div className={`rk-bulk-progress-bar${job.data?.done ? ' is-done' : ''}`} style={{width: `${progress}%`}}>{progress}%</div></div><div className="rk-bulk-progress-text">重测入队进度 {numberValue(job.data?.processed)} / {numberValue(job.data?.total, selected.length)}，已入队 {numberValue(job.data?.requeued ?? job.data?.created)}，失败 {numberValue(job.data?.failed)}{job.data?.done ? '。重测已入队，原提交将按队列并发限制重新评测。' : ''}</div></div> : null}
         </div>
-        <div className="modal-footer"><button type="button" className="rk-bulk-secondary" data-bs-dismiss="modal">关闭</button><button type="button" className="rk-bulk-primary" disabled={!selected.length || selected.length > maxSelected || tooMany || running || start.isPending} onClick={() => start.mutate()}><i className="fas fa-play" /><span>确认重测</span></button></div>
-      </div></div>
-    </div>
+        <div className="modal-footer"><button type="button" className="rk-bulk-secondary" onClick={() => setBulkOpen(false)}>关闭</button><button type="button" className="rk-bulk-primary" disabled={!selected.length || selected.length > maxSelected || tooMany || running || start.isPending} onClick={() => start.mutate()}><i className="fas fa-play" /><span>确认重测</span></button></div>
+      </div>
+    </ReactModal>
 
     {rows.length ? <div className="aj-subs" data-ranking-submission-list>{rows.map((row) => <SubmissionCard row={row} competition={data.competition} isElo={isElo} key={row.id} onDelete={(item) => {if (window.confirm(`确认删除提交 #${item.id}？`)) remove.mutate(item.id)}} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>尚未有选手提交作品。</span></div>}
     {total > 0 ? <div className="submissions-pagination mt-3"><Pagination data={data} tab="all_submissions" /></div> : null}
@@ -703,15 +707,6 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   </>
 }
 
-type RuleTopologyRoute = {x1: number; y1: number; x2: number; y2: number; laneY: number; arrowTipY: number; points?: {x: number; y: number}[]}
-type RuleTopologyLayout = {positions: Record<number, {x: number; y: number}>; width: number; height: number}
-type RuleTopologyEngine = {
-  layout: (rules: JsonRecord[]) => RuleTopologyLayout | null
-  buildRoutes: (edges: {from: number; to: number}[], layout: RuleTopologyLayout) => Record<string, RuleTopologyRoute>
-  edgePath: (route: RuleTopologyRoute) => string
-  edgeKey: (from: number, to: number) => string
-}
-
 function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: Dispatch<SetStateAction<JsonRecord[]>>}) {
   const [deleteMode, setDeleteMode] = useState(false)
   const [deleteSelection, setDeleteSelection] = useState<number[]>([])
@@ -719,13 +714,7 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
   const [linkSource, setLinkSource] = useState<number | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<{from: number; to: number} | null>(null)
   const [modalIndex, setModalIndex] = useState<number | null>(null)
-  const engine = useMemo(() => {
-    const factory = (window as Window & {RuleTopology?: {create: (options: JsonRecord) => RuleTopologyEngine}}).RuleTopology
-    return factory?.create({nodeWidth: 168, nodeHeight: 100, marginX: 24, marginY: 20, columnGap: 88, rowGap: 80, slotPadding: 42, maxSlotStep: 17})
-  }, [])
-  const layout = engine?.layout(rules) || null
-  const edges = rules.flatMap((rule, index) => (Array.isArray(rule.dependencies) ? rule.dependencies : []).map((dependency) => ({from: numberValue(dependency), to: numberValue(rule.rule_id, index + 1)})))
-  const routes = layout && engine ? engine.buildRoutes(edges, layout) : {}
+  const {engine, layout, edges, routes} = useRuleTopology(rules, {nodeWidth: 168, nodeHeight: 100, marginX: 24, marginY: 20, columnGap: 88, rowGap: 80, slotPadding: 42, maxSlotStep: 17})
   const compact = (value: unknown, length: number) => {
     const text = String(value || '').replace(/\s+/g, ' ').trim()
     if (!text) return '未填写规则内容'

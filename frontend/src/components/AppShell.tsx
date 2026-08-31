@@ -1,5 +1,5 @@
 import {useQueryClient} from '@tanstack/react-query'
-import {createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction} from 'react'
+import {createContext, useContext, useEffect, useMemo, useState, type Dispatch, type SetStateAction} from 'react'
 import {Outlet, useLocation} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
@@ -7,7 +7,9 @@ import type {ApiEnvelope, NavigationItem} from '../api/types'
 import {preloadNavigationRoute} from '../routeLoaders'
 import {useSession} from '../session'
 import {AccountModals} from './AccountModals'
+import {Identicon} from './Identicon'
 import {Link, useNavigate} from './PageNavigation'
+import {ReactOffcanvas} from './ReactOffcanvas'
 
 interface PrefetchTarget {
   path: string
@@ -97,7 +99,7 @@ function isItemActive(item: NavigationItem, pathname: string, search: string) {
   return pathname === item.path || pathname.startsWith(`${item.path}/`)
 }
 
-function NavigationLink({item, mobile = false}: {item: NavigationItem; mobile?: boolean}) {
+function NavigationLink({item, mobile = false, onNavigate}: {item: NavigationItem; mobile?: boolean; onNavigate?: () => void}) {
   const {session} = useSession()
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -111,42 +113,37 @@ function NavigationLink({item, mobile = false}: {item: NavigationItem; mobile?: 
   const contents = <><LayoutIcon name={item.icon} /><span className="numoj-nav-label" {...(mobile && item.id === 'problems' ? {'data-problem-list-label': 'mobile'} : {})}>{item.label}</span>{typeof count === 'number' ? <span className="numoj-nav-count">{count}</span> : null}{item.id === 'agents' && session?.navigation.agent_active ? <span className="numoj-nav-dot" aria-label="存在运行中的 Agent 任务" /> : null}</>
   const className = `numoj-nav-item${active ? ' active' : ''}`
   return item.spa
-    ? <Link className={className} to={item.path} title={item.label} viewTransition onPointerEnter={prefetch} onFocus={prefetch}>{contents}</Link>
-    : <a className={className} href={item.path} title={item.label}>{contents}</a>
+    ? <Link className={className} to={item.path} title={item.label} viewTransition onPointerEnter={prefetch} onFocus={prefetch} onClick={onNavigate}>{contents}</Link>
+    : <a className={className} href={item.path} title={item.label} onClick={onNavigate}>{contents}</a>
 }
 
-function NavigationGroups({mobile = false, logout}: {mobile?: boolean; logout: () => void}) {
+function NavigationGroups({mobile = false, logout, onNavigate, onAccount}: {mobile?: boolean; logout: () => void; onNavigate?: () => void; onAccount: (modal: 'password' | 'classes') => void}) {
   const {session} = useSession()
   const items = session?.navigation.items || []
   const prefix = mobile ? 'numoj-mobile-nav' : 'numoj-nav'
   return <nav className="numoj-sidebar-nav" aria-label={mobile ? '移动主导航' : '主导航入口'}>
     <section className="numoj-nav-group" aria-labelledby={`${prefix}-workspace`}>
       <h2 id={`${prefix}-workspace`}>WORKSPACE</h2>
-      {items.filter((item) => item.group === 'workspace').map((item) => <NavigationLink item={item} mobile={mobile} key={item.id} />)}
+      {items.filter((item) => item.group === 'workspace').map((item) => <NavigationLink item={item} mobile={mobile} onNavigate={onNavigate} key={item.id} />)}
     </section>
-    {items.some((item) => item.group === 'admin') ? <section className="numoj-nav-group" aria-labelledby={`${prefix}-admin`}><h2 id={`${prefix}-admin`}>ADMIN</h2>{items.filter((item) => item.group === 'admin').map((item) => <NavigationLink item={item} mobile={mobile} key={item.id} />)}</section> : null}
+    {items.some((item) => item.group === 'admin') ? <section className="numoj-nav-group" aria-labelledby={`${prefix}-admin`}><h2 id={`${prefix}-admin`}>ADMIN</h2>{items.filter((item) => item.group === 'admin').map((item) => <NavigationLink item={item} mobile={mobile} onNavigate={onNavigate} key={item.id} />)}</section> : null}
     <section className="numoj-nav-group" aria-labelledby={`${prefix}-user`}>
       <h2 id={`${prefix}-user`}>USER</h2>
-      <a className="numoj-nav-item" href="#" data-bs-toggle="modal" data-bs-target="#changePasswordModal" title="修改密码"><LayoutIcon name="password" /><span className="numoj-nav-label">修改密码</span></a>
-      {session?.user?.is_admin || session?.capabilities.class_adjust_enabled ? <a className="numoj-nav-item" href="#" data-bs-toggle="modal" data-bs-target="#classManagerModal" title="调整班级"><LayoutIcon name="classes" /><span className="numoj-nav-label">调整班级</span></a> : null}
-      <form className="numoj-logout-form" onSubmit={(event) => {event.preventDefault(); logout()}}><button type="submit" className="numoj-nav-item" title="登出"><LayoutIcon name="logout" /><span className="numoj-nav-label">登出</span></button></form>
+      <button className="numoj-nav-item" type="button" title="修改密码" onClick={() => {onNavigate?.(); onAccount('password')}}><LayoutIcon name="password" /><span className="numoj-nav-label">修改密码</span></button>
+      {session?.user?.is_admin || session?.capabilities.class_adjust_enabled ? <button className="numoj-nav-item" type="button" title="调整班级" onClick={() => {onNavigate?.(); onAccount('classes')}}><LayoutIcon name="classes" /><span className="numoj-nav-label">调整班级</span></button> : null}
+      <form className="numoj-logout-form" onSubmit={(event) => {event.preventDefault(); onNavigate?.(); logout()}}><button type="submit" className="numoj-nav-item" title="登出"><LayoutIcon name="logout" /><span className="numoj-nav-label">登出</span></button></form>
     </section>
   </nav>
 }
 
-function UserFooter({mobile = false, collapsed = false, toggleSidebar}: {mobile?: boolean; collapsed?: boolean; toggleSidebar?: () => void}) {
+function UserFooter({mobile = false, collapsed = false, toggleSidebar, closeMobile}: {mobile?: boolean; collapsed?: boolean; toggleSidebar?: () => void; closeMobile?: () => void}) {
   const {session} = useSession()
-  const avatarRef = useRef<HTMLSpanElement>(null)
-  useEffect(() => {
-    const painter = (window as Window & {NumojIdenticon?: {paint: (element: Element, cells: unknown, label: string) => void; cellsForSeed: (seed: string) => unknown}}).NumojIdenticon
-    if (painter && avatarRef.current && session?.user?.username) painter.paint(avatarRef.current, painter.cellsForSeed(session.user.username), session.user.username)
-  }, [session?.user?.username])
   return <footer className={`numoj-sidebar-footer${mobile ? ' numoj-mobile-sidebar-footer' : ''}`}>
     <div className="numoj-user-summary">
-      <span ref={avatarRef} className="numoj-avatar" data-numoj-user-avatar data-avatar-seed={session?.user?.username} data-avatar-label={session?.user?.username} aria-hidden="true">{session?.user?.username.slice(0, 2).toUpperCase()}</span>
+      <Identicon seed={session?.user?.username || ''} />
       <span className="numoj-user-copy"><strong>{session?.user?.username}</strong><small>{session?.user?.is_admin ? '教师' : '学生'}</small></span>
     </div>
-    {mobile ? <button className="numoj-sidebar-toggle numoj-mobile-sidebar-close" type="button" data-bs-dismiss="offcanvas" aria-label="关闭侧边栏" title="关闭侧边栏"><LayoutIcon name="collapse-left" /></button> : <button className="numoj-sidebar-toggle" type="button" onClick={toggleSidebar} aria-expanded={!collapsed} aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'} title={collapsed ? '展开侧边栏' : '收起侧边栏'}><span className="numoj-collapse-expanded"><LayoutIcon name="collapse-left" /></span><span className="numoj-collapse-collapsed"><LayoutIcon name="collapse-right" /></span></button>}
+    {mobile ? <button className="numoj-sidebar-toggle numoj-mobile-sidebar-close" type="button" onClick={closeMobile} aria-label="关闭侧边栏" title="关闭侧边栏"><LayoutIcon name="collapse-left" /></button> : <button className="numoj-sidebar-toggle" type="button" onClick={toggleSidebar} aria-expanded={!collapsed} aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'} title={collapsed ? '展开侧边栏' : '收起侧边栏'}><span className="numoj-collapse-expanded"><LayoutIcon name="collapse-left" /></span><span className="numoj-collapse-collapsed"><LayoutIcon name="collapse-right" /></span></button>}
   </footer>
 }
 
@@ -175,6 +172,8 @@ export function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
   const [pageDisplayMode, setPageDisplayMode] = useState<PageDisplayMode>('default')
+  const [accountModal, setAccountModal] = useState<'password' | 'classes' | null>(null)
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try { return window.localStorage.getItem('numoj.desktopSidebarCollapsed') === '1' } catch { return false }
   })
@@ -227,24 +226,24 @@ export function AppShell() {
   return <div className={`numoj-site-shell numoj-site-shell-authenticated${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}${player ? ' vibehub-player-shell' : ''}`} data-numoj-shell>
     <aside className="numoj-sidebar d-none d-lg-flex" data-numoj-sidebar aria-label="桌面主导航">
       <Link className="numoj-brand" to="/problems" aria-label="Numerical OJ 首页"><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
-      <NavigationGroups logout={logout} />
+      <NavigationGroups logout={logout} onAccount={setAccountModal} />
       <UserFooter collapsed={sidebarCollapsed} toggleSidebar={() => setSidebarCollapsed((value) => !value)} />
     </aside>
 
     <header className="numoj-mobile-topbar d-lg-none" aria-label="移动顶栏">
       <Link className="numoj-mobile-topbar-logo" to="/problems" aria-label="Numerical OJ 首页"><BrandMark /></Link>
       <strong className="numoj-mobile-topbar-title">NumOJ</strong>
-      <button className="numoj-mobile-menu-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#offcanvasNavbar" aria-controls="offcanvasNavbar" aria-label="打开主导航"><svg className="numoj-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
+      <button className="numoj-mobile-menu-toggle" type="button" aria-controls="offcanvasNavbar" aria-expanded={mobileNavigationOpen} aria-label="打开主导航" onClick={() => setMobileNavigationOpen(true)}><svg className="numoj-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg></button>
     </header>
-    <aside className="offcanvas offcanvas-start d-lg-none layout-offcanvas-nav numoj-mobile-sidebar" tabIndex={-1} id="offcanvasNavbar" aria-labelledby="offcanvasNavbarLabel" data-numoj-mobile-sidebar>
+    <ReactOffcanvas open={mobileNavigationOpen} onClose={() => setMobileNavigationOpen(false)} id="offcanvasNavbar" labelledBy="offcanvasNavbarLabel" className="layout-offcanvas-nav numoj-mobile-sidebar">
       <h2 className="visually-hidden" id="offcanvasNavbarLabel">移动主导航</h2>
-      <Link className="numoj-brand numoj-mobile-sidebar-brand" to="/problems" aria-label="Numerical OJ 首页"><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
-      <NavigationGroups mobile logout={logout} />
-      <UserFooter mobile />
-    </aside>
+      <Link className="numoj-brand numoj-mobile-sidebar-brand" to="/problems" aria-label="Numerical OJ 首页" onClick={() => setMobileNavigationOpen(false)}><BrandMark /><span className="numoj-brand-copy"><strong>Numerical OJ</strong><small>AI-NATIVE JUDGE</small></span></Link>
+      <NavigationGroups mobile logout={logout} onNavigate={() => setMobileNavigationOpen(false)} onAccount={setAccountModal} />
+      <UserFooter mobile closeMobile={() => setMobileNavigationOpen(false)} />
+    </ReactOffcanvas>
 
     <main className="numoj-site-main">
-      <AccountModals />
+      <AccountModals active={accountModal} onClose={() => setAccountModal(null)} />
       <div className={`numoj-content ${contentClass(location.pathname, pageDisplayMode)}`}>
         <PageDisplayContext.Provider value={setPageDisplayMode}><div className="numoj-spa-route" key={`${location.pathname}${location.search}`}><Outlet /></div></PageDisplayContext.Provider>
       </div>

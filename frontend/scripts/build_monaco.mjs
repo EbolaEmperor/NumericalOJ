@@ -21,8 +21,7 @@ for (const [entryPoint, outputName] of [
     ...shared,
     entryPoints: [entryPoint],
     outfile: `${outputDirectory}/${outputName}.js`,
-    format: "iife",
-    globalName: "NumericalOJMonaco",
+    format: "esm",
     loader: {
       ".ttf": "file",
     },

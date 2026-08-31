@@ -39,44 +39,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script src="/static/bootstrap/bootstrap.bundle.min.js"></script>
-    <script src="/static/math-curve-loaders/loader.js"></script>
-    <script src="/static/app/model-family.js"></script>
-    <script src="/static/app/identicon.js"></script>
-    <script src="/static/app/ranking/topology.js"></script>
-    <script>
-      (() => {
-        let settleMathJaxReady;
-        window.NumOJMathJaxReady = new Promise((resolve) => {
-          settleMathJaxReady = resolve;
-        });
-        window.MathJax = {
-          startup: {
-            typeset: false,
-            ready: () => {
-              try {
-                window.MathJax.startup.defaultReady();
-                window.MathJax.startup.promise.then(
-                  () => settleMathJaxReady(true),
-                  () => settleMathJaxReady(false),
-                );
-              } catch (error) {
-                settleMathJaxReady(false);
-                throw error;
-              }
-            },
-          },
-          loader: {load: []},
-          tex: {
-            inlineMath: [['$', '$'], ['\\(', '\\)']],
-            displayMath: [['$$', '$$'], ['\\[', '\\]']],
-            packages: ['base', 'ams', 'newcommand', 'noundefined']
-          },
-          options: {enableMenu: false}
-        };
-      })();
-    </script>
-    <script src="/static/vendor/mathjax/tex-mml-chtml.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

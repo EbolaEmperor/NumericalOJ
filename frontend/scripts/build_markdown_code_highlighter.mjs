@@ -13,8 +13,7 @@ await build({
   minify: true,
   legalComments: "linked",
   logLevel: "info",
-  format: "iife",
-  globalName: "NumOJMarkdownCodeHighlighter",
+  format: "esm",
 });
 
 await copyFile(

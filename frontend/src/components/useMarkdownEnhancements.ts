@@ -1,44 +1,18 @@
 import {useEffect, useLayoutEffect, type RefObject} from 'react'
 
-type MathJaxRuntime = {
-  startup?: {promise?: Promise<unknown>}
-  typesetClear?: (roots: Element[]) => void
-  typesetPromise?: (roots: Element[]) => Promise<unknown>
-}
+import {getSemanticLegend, requestSemanticTokens, type SemanticLegend, type SemanticPayload, type TextPosition} from '../editor/semanticTokens'
+import {clearMath, typesetMath} from '../markdown/mathjaxRuntime'
 
 type HighlightToken = {content?: string; color?: string; fontStyle?: number}
 type HighlightResult = {tokens?: HighlightToken[][]}
 type CodeHighlighter = {tokenize: (source: string, language: string) => Promise<HighlightResult>}
-type SemanticLegend = {tokenTypes?: string[]; tokenModifiers?: string[]}
-type SemanticPayload = {
-  data?: number[]
-  inactive_regions?: Array<{start?: TextPosition; end?: TextPosition}>
-}
-type SemanticRuntime = {
-  getLegend: (language: string, options: {signal: AbortSignal}) => Promise<SemanticLegend>
-  requestTokens: (options: {context: string; language: string; source: string; signal: AbortSignal}) => Promise<SemanticPayload>
-}
 type MermaidRuntime = {
   initialize: (options: Record<string, unknown>) => void
   parse: (source: string, options?: Record<string, unknown>) => Promise<boolean>
   run: (options: {nodes: Element[]}) => Promise<void>
 }
-type TextPosition = {line?: number; character?: number}
 type SourceRange = {start: number; end: number}
 type SemanticRange = SourceRange & {type: string; modifiers: string[]}
-
-declare global {
-  interface Window {
-    MathJax?: MathJaxRuntime
-    NumOJMathJaxReady?: Promise<boolean>
-    NumOJMarkdownCodeHighlighter?: CodeHighlighter
-    mermaid?: MermaidRuntime
-  }
-}
-
-function semanticRuntime() {
-  return (window as Window & {NumOJSemanticTokens?: SemanticRuntime}).NumOJSemanticTokens
-}
 
 const LANGUAGE_BY_CLASS = new Map([
   ['language-bash', 'bash'], ['language-sh', 'bash'], ['language-shell', 'bash'],
@@ -55,29 +29,25 @@ const MAX_SEMANTIC_BLOCKS = 16
 const MAX_SOURCE_BYTES = 512 * 1024
 const MAX_SEMANTIC_TOKENS = 12_000
 const MAX_INACTIVE_RANGES = 4_096
-const assetPromises = new Map<string, Promise<boolean>>()
-let mathQueue: Promise<unknown> = Promise.resolve()
+let highlighterPromise: Promise<CodeHighlighter> | null = null
+let mermaidPromise: Promise<MermaidRuntime> | null = null
 let mermaidInitialized = false
 
-function scriptAsset(src: string, ready: () => boolean) {
-  if (ready()) return Promise.resolve(true)
-  const cached = assetPromises.get(src)
-  if (cached) return cached
-  const promise = new Promise<boolean>((resolve) => {
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${src}"]`)
-    const script = existing || document.createElement('script')
-    const finish = () => resolve(ready())
-    script.addEventListener('load', finish, {once: true})
-    script.addEventListener('error', () => resolve(false), {once: true})
-    if (!existing) {
-      script.src = src
-      script.async = true
-      script.dataset.numojReactAsset = 'true'
-      document.head.appendChild(script)
-    }
-  })
-  assetPromises.set(src, promise)
-  return promise
+function loadHighlighter() {
+  if (highlighterPromise) return highlighterPromise
+  const source = '/static/vendor/shiki-markdown/highlighter.js'
+  highlighterPromise = import(/* @vite-ignore */ source)
+    .then((module) => module as unknown as CodeHighlighter)
+    .catch((error) => {highlighterPromise = null; throw error})
+  return highlighterPromise
+}
+
+function loadMermaid() {
+  if (mermaidPromise) return mermaidPromise
+  mermaidPromise = import('mermaid')
+    .then((module) => module.default as unknown as MermaidRuntime)
+    .catch((error) => {mermaidPromise = null; throw error})
+  return mermaidPromise
 }
 
 function languageFor(block: Element) {
@@ -205,9 +175,8 @@ async function highlightCode(root: HTMLElement, signal: AbortSignal) {
   const blocks = Array.from(root.querySelectorAll<HTMLElement>('.codehilite'))
     .filter((block) => languageFor(block)).slice(0, MAX_CODE_BLOCKS)
   if (!blocks.length) return
-  const loaded = await scriptAsset('/static/vendor/shiki-markdown/highlighter.js', () => Boolean(window.NumOJMarkdownCodeHighlighter?.tokenize))
-  const highlighter = window.NumOJMarkdownCodeHighlighter
-  if (!loaded || !highlighter || signal.aborted) return
+  const highlighter = await loadHighlighter()
+  if (signal.aborted) return
   for (const block of blocks) {
     if (signal.aborted || !root.isConnected || !root.contains(block)) return
     const code = block.querySelector<HTMLElement>('pre code')
@@ -319,9 +288,7 @@ async function enhanceSemanticCode(root: HTMLElement, signal: AbortSignal) {
   const blocks = Array.from(root.querySelectorAll<HTMLElement>('.codehilite'))
     .filter((block) => languageFor(block)).slice(0, MAX_SEMANTIC_BLOCKS)
   if (!blocks.length || signal.aborted) return
-  const loaded = await scriptAsset('/static/app/editor-semantic-tokens.js', () => Boolean(semanticRuntime()?.requestTokens))
-  const runtime = semanticRuntime()
-  if (!loaded || !runtime || signal.aborted) return
+  if (signal.aborted) return
   for (const block of blocks) {
     const code = block.querySelector<HTMLElement>('pre code')
     const language = languageFor(block)
@@ -329,8 +296,8 @@ async function enhanceSemanticCode(root: HTMLElement, signal: AbortSignal) {
     if (!code || !source || sourceBytes(source) > MAX_SOURCE_BYTES) continue
     block.setAttribute('aria-busy', 'true')
     try {
-      const legend = await runtime.getLegend(language, {signal})
-      const payload = await runtime.requestTokens({context: 'markdown', language, source, signal})
+      const legend = await getSemanticLegend(language, {signal})
+      const payload = await requestSemanticTokens({context: 'markdown', language, source, signal})
       if (signal.aborted || !root.isConnected || !code.isConnected || code.textContent !== source) continue
       const semanticRanges = decodeSemantic(source, legend, payload.data || [])
       wrapRanges(code, semanticRanges, (range) => {
@@ -350,9 +317,8 @@ async function enhanceSemanticCode(root: HTMLElement, signal: AbortSignal) {
 async function renderMermaid(root: HTMLElement, signal: AbortSignal) {
   const blocks = Array.from(root.querySelectorAll<HTMLElement>('.codehilite.language-mermaid, .codehilite.language-mmd')).slice(0, 64)
   if (!blocks.length) return
-  const loaded = await scriptAsset('/static/vendor/mermaid/mermaid.min.js', () => Boolean(window.mermaid?.run))
-  const mermaid = window.mermaid
-  if (!loaded || !mermaid || signal.aborted) return
+  const mermaid = await loadMermaid()
+  if (signal.aborted) return
   if (!mermaidInitialized) {
     mermaid.initialize({startOnLoad: false, securityLevel: 'sandbox', suppressErrorRendering: true, maxTextSize: 50_000, maxEdges: 500, htmlLabels: false, logLevel: 'fatal', theme: 'base'})
     mermaidInitialized = true
@@ -384,14 +350,7 @@ function useMathJax(rootRef: RefObject<HTMLElement | null>, html: string) {
     if (!root) return
     let active = true
     root.dataset.numojMathState = 'pending'
-    mathQueue = mathQueue.catch(() => undefined).then(async () => {
-      const ready = window.NumOJMathJaxReady
-        ? await window.NumOJMathJaxReady.catch(() => false)
-        : (await window.MathJax?.startup?.promise?.then(() => true, () => false) ?? false)
-      const mathJax = window.MathJax
-      if (!active || !ready || !root.isConnected || !mathJax?.typesetPromise) return
-      mathJax.typesetClear?.([root])
-      await mathJax.typesetPromise([root])
+    void typesetMath(root).then(() => {
       if (active && root.isConnected) root.dataset.numojMathState = 'rendered'
     }).catch((error) => {
       if (active) {
@@ -401,9 +360,7 @@ function useMathJax(rootRef: RefObject<HTMLElement | null>, html: string) {
     })
     return () => {
       active = false
-      mathQueue = mathQueue.catch(() => undefined).then(() => {
-        window.MathJax?.typesetClear?.([root])
-      })
+      clearMath(root)
     }
   }, [html, rootRef])
 }
@@ -416,8 +373,11 @@ export function useMarkdownEnhancements(rootRef: RefObject<HTMLElement | null>, 
     const controller = new AbortController()
     enhanceLinks(root)
     ensureCopyButtons(root)
-    void highlightCode(root, controller.signal).then(() => enhanceSemanticCode(root, controller.signal))
+    void highlightCode(root, controller.signal)
+      .then(() => enhanceSemanticCode(root, controller.signal))
+      .catch((error) => {if (!controller.signal.aborted) console.warn('代码高亮增强失败，已保留当前配色。', error)})
     void renderMermaid(root, controller.signal)
+      .catch((error) => {if (!controller.signal.aborted) console.warn('Mermaid 图表渲染失败，已保留源码。', error)})
     return () => controller.abort()
   }, [html, rootRef])
 }

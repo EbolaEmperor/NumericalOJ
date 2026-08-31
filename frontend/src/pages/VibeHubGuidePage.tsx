@@ -14,5 +14,5 @@ export default function VibeHubGuidePage() {
   useEffect(() => {document.title = 'VibeHub 开发者手册 - Numerical OJ'}, [])
   if (guide.isPending) return <LoadingState label="正在读取开发者手册" />
   if (guide.isError) return <ErrorState message={guide.error.message} />
-  return <div className="vibe-guide vibe-guide--markdown"><Link className="vibe-guide-back" to="/vibehub"><i className="fas fa-arrow-left" />返回作品列表</Link><div className="vibe-guide-markdown-layout"><aside className="vibe-guide-markdown-toc" aria-label="开发者手册目录" dangerouslySetInnerHTML={{__html: guide.data.toc_html}} /><MarkdownContent html={guide.data.html} className="vibe-guide-markdown-body numoj-markdown numoj-problem-code-rendering" /></div></div>
+  return <div className="vibe-guide vibe-guide--markdown"><Link className="vibe-guide-back" to="/vibehub"><i className="fas fa-arrow-left" />返回作品列表</Link><div className="vibe-guide-markdown-layout"><MarkdownContent as="aside" ariaLabel="开发者手册目录" html={guide.data.toc_html} className="vibe-guide-markdown-toc" /><MarkdownContent html={guide.data.html} className="vibe-guide-markdown-body numoj-markdown numoj-problem-code-rendering" /></div></div>
 }

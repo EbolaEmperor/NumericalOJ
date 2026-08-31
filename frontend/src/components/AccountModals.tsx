@@ -5,6 +5,8 @@ import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {useSession} from '../session'
 import {useDismissibleDropdown} from './useDismissibleDropdown'
+import {MathCurveLoader} from './MathCurveLoader'
+import {ReactModal} from './ReactModal'
 
 interface ClassItem extends JsonRecord {
   class_en: string
@@ -28,7 +30,7 @@ function ClassLogo({item, className}: {item?: ClassItem; className: string}) {
   return <span className={className} aria-hidden="true"><svg viewBox="0 0 7 7" focusable="false" shapeRendering="crispEdges">{cells.map((cell, index) => Array.isArray(cell) && cell.length >= 2 ? <rect x={Number(cell[0]) + 1} y={Number(cell[1]) + 1} width="1" height="1" key={index} /> : null)}</svg></span>
 }
 
-function PasswordModal({notify}: {notify: (message: string) => void}) {
+function PasswordModal({notify, open, onClose}: {notify: (message: string) => void; open: boolean; onClose: () => void}) {
   const {session} = useSession()
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
@@ -53,17 +55,16 @@ function PasswordModal({notify}: {notify: (message: string) => void}) {
   })
   const save = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope>('/api/account/password', {method: 'POST', body: formData({code, new_password: password, confirm_password: confirmation})}),
-    onSuccess: (data) => {notify(data.message || '密码修改成功'); setCode(''); setPassword(''); setConfirmation('')},
+    onSuccess: (data) => {notify(data.message || '密码修改成功'); setCode(''); setPassword(''); setConfirmation(''); onClose()},
   })
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (code.length === 6 && longEnough && matches) save.mutate()
   }
 
-  return <div className="modal fade numoj-account-modal numoj-password-modal" id="changePasswordModal" tabIndex={-1} aria-labelledby="changePasswordModalLabel" aria-hidden="true">
-    <div className="modal-dialog modal-dialog-centered modal-dialog-scrollable"><div className="modal-content">
+  return <ReactModal open={open} onClose={onClose} id="changePasswordModal" labelledBy="changePasswordModalLabel" className="numoj-account-modal numoj-password-modal" dialogClassName="modal-dialog-centered modal-dialog-scrollable"><div className="modal-content">
       <span className="numoj-account-modal-accent" aria-hidden="true" />
-      <div className="modal-header"><div className="numoj-account-modal-title"><span className="numoj-account-kicker">SECURITY · PASSWORD</span><h2 className="modal-title" id="changePasswordModalLabel">修改密码</h2></div><button type="button" className="numoj-account-close" data-bs-dismiss="modal" aria-label="关闭修改密码弹窗"><span aria-hidden="true">×</span></button></div>
+      <div className="modal-header"><div className="numoj-account-modal-title"><span className="numoj-account-kicker">SECURITY · PASSWORD</span><h2 className="modal-title" id="changePasswordModalLabel">修改密码</h2></div><button type="button" className="numoj-account-close" onClick={onClose} aria-label="关闭修改密码弹窗"><span aria-hidden="true">×</span></button></div>
       <form id="passwordForm" noValidate onSubmit={submit}>
         <div className="modal-body numoj-account-modal-body">
           <section className="numoj-account-section" aria-labelledby="passwordIdentityTitle"><div className="numoj-account-section-heading"><h3 id="passwordIdentityTitle">验证身份</h3><span>STEP 01 / 02</span></div><div className="numoj-account-identity"><span className="numoj-account-identity-icon" aria-hidden="true">@</span><span className="numoj-account-identity-copy"><strong>{session?.user?.email || '尚未设置邮箱'}</strong><small>{mailConfigured ? '验证码仅发送至当前账户邮箱' : '站点尚未配置邮件服务，请联系管理员'}</small></span><span className="numoj-account-state">{mailConfigured ? '可用' : '不可用'}</span></div></section>
@@ -74,13 +75,13 @@ function PasswordModal({notify}: {notify: (message: string) => void}) {
           </div>
           {save.isError || save.isSuccess ? <p className={`numoj-account-form-status ${save.isSuccess ? 'is-success' : 'is-error'}`} role="status" aria-live="polite">{save.isError ? errorMessage(save.error) : save.data?.message || '密码修改成功'}</p> : null}
         </div>
-        <div className="modal-footer"><span className="numoj-account-footer-note">FORM · VALIDATION INLINE</span><div className="numoj-account-footer-actions"><button type="button" className="numoj-account-button" data-bs-dismiss="modal">取消</button><button type="submit" className="numoj-account-button numoj-account-button-dark" disabled={save.isPending || code.length !== 6 || !longEnough || !matches}>{save.isPending ? '正在保存…' : '确认修改'}</button></div></div>
+        <div className="modal-footer"><span className="numoj-account-footer-note">FORM · VALIDATION INLINE</span><div className="numoj-account-footer-actions"><button type="button" className="numoj-account-button" onClick={onClose}>取消</button><button type="submit" className="numoj-account-button numoj-account-button-dark" disabled={save.isPending || code.length !== 6 || !longEnough || !matches}>{save.isPending ? '正在保存…' : '确认修改'}</button></div></div>
       </form>
-    </div></div>
-  </div>
+    </div>
+  </ReactModal>
 }
 
-function ClassManagerModal({notify}: {notify: (message: string) => void}) {
+function ClassManagerModal({notify, open, onClose}: {notify: (message: string) => void; open: boolean; onClose: () => void}) {
   const {session, refresh} = useSession()
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState('')
@@ -101,25 +102,24 @@ function ClassManagerModal({notify}: {notify: (message: string) => void}) {
   const toggle = useMutation({mutationFn: (enabled: boolean) => apiFetch<ApiEnvelope & {enabled?: boolean}>('/api/admin/settings/class-adjust', {method: 'POST', body: formData({enabled: enabled ? '1' : '0'})}), onSuccess: async (data) => {setAdjustEnabled(Boolean(data.enabled)); notify(data.enabled ? '已允许学生自助调整班级' : '已禁止学生自助调整班级'); await refresh()}})
 
   if (!isAdmin && !adjustEnabled) return null
-  return <div className="modal fade numoj-account-modal numoj-class-modal" id="classManagerModal" tabIndex={-1} aria-labelledby="classManagerLabel" aria-hidden="true">
-    <div className="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"><div className="modal-content">
+  return <ReactModal open={open} onClose={onClose} id="classManagerModal" labelledBy="classManagerLabel" className="numoj-account-modal numoj-class-modal" dialogClassName="modal-lg modal-dialog-centered modal-dialog-scrollable"><div className="modal-content">
       <span className="numoj-account-modal-accent" aria-hidden="true" />
-      <div className="modal-header"><div className="numoj-account-modal-title"><span className="numoj-account-kicker">MEMBERSHIP · CLASSES</span><h2 className="modal-title" id="classManagerLabel">调整班级</h2></div><div className="numoj-class-header-actions">{isAdmin ? <label className="numoj-class-permission" htmlFor="classAdjustSwitch"><input type="checkbox" id="classAdjustSwitch" checked={adjustEnabled} disabled={toggle.isPending} onChange={(event) => toggle.mutate(event.target.checked)} /><span className="numoj-class-switch-track" aria-hidden="true"><span /></span><span>学生自助：{adjustEnabled ? '允许' : '禁止'}</span></label> : null}<button type="button" className="numoj-account-close" data-bs-dismiss="modal" aria-label="关闭调整班级弹窗"><span aria-hidden="true">×</span></button></div></div>
+      <div className="modal-header"><div className="numoj-account-modal-title"><span className="numoj-account-kicker">MEMBERSHIP · CLASSES</span><h2 className="modal-title" id="classManagerLabel">调整班级</h2></div><div className="numoj-class-header-actions">{isAdmin ? <label className="numoj-class-permission" htmlFor="classAdjustSwitch"><input type="checkbox" id="classAdjustSwitch" checked={adjustEnabled} disabled={toggle.isPending} onChange={(event) => toggle.mutate(event.target.checked)} /><span className="numoj-class-switch-track" aria-hidden="true"><span /></span><span>学生自助：{adjustEnabled ? '允许' : '禁止'}</span></label> : null}<button type="button" className="numoj-account-close" onClick={onClose} aria-label="关闭调整班级弹窗"><span aria-hidden="true">×</span></button></div></div>
       <div className="modal-body numoj-account-modal-body">
-        <section className="numoj-account-section" aria-labelledby="myClassesTitle"><div className="numoj-account-section-heading"><h3 id="myClassesTitle">我的班级</h3><span>{classes.isPending ? '正在加载' : `${memberships.length} MEMBERSHIP${memberships.length === 1 ? '' : 'S'}`}</span></div><div className="numoj-membership-list" aria-live="polite">{classes.isPending ? <div className="numoj-membership-state"><span className="math-curve-loader" data-math-curve-loader data-size="sm"><span className="math-curve-loader__label">正在加载班级…</span></span></div> : classes.isError ? <div className="numoj-membership-state is-error">{errorMessage(classes.error)}</div> : memberships.length ? memberships.map((item) => <div className="numoj-membership-row" key={item.class_en}><ClassLogo item={item} className="numoj-membership-logo" /><span className="numoj-membership-copy"><span className="numoj-membership-name"><strong>{item.class_cn || item.class_en}</strong></span><span className="numoj-membership-code">{item.class_en}</span></span><div className="numoj-membership-actions"><button type="button" className={`numoj-membership-action is-danger${confirmLeave === item.class_en ? ' is-confirming' : ''}`} disabled={!canAdjust || (!isAdmin && memberships.length <= 1) || leave.isPending} onClick={() => confirmLeave === item.class_en ? leave.mutate(item.class_en) : setConfirmLeave(item.class_en)}>{confirmLeave === item.class_en ? '再次点击确认' : '退出'}</button></div></div>) : <div className="numoj-membership-state">暂无班级</div>}</div></section>
+        <section className="numoj-account-section" aria-labelledby="myClassesTitle"><div className="numoj-account-section-heading"><h3 id="myClassesTitle">我的班级</h3><span>{classes.isPending ? '正在加载' : `${memberships.length} MEMBERSHIP${memberships.length === 1 ? '' : 'S'}`}</span></div><div className="numoj-membership-list" aria-live="polite">{classes.isPending ? <div className="numoj-membership-state"><MathCurveLoader size="sm" label="正在加载班级…" /></div> : classes.isError ? <div className="numoj-membership-state is-error">{errorMessage(classes.error)}</div> : memberships.length ? memberships.map((item) => <div className="numoj-membership-row" key={item.class_en}><ClassLogo item={item} className="numoj-membership-logo" /><span className="numoj-membership-copy"><span className="numoj-membership-name"><strong>{item.class_cn || item.class_en}</strong></span><span className="numoj-membership-code">{item.class_en}</span></span><div className="numoj-membership-actions"><button type="button" className={`numoj-membership-action is-danger${confirmLeave === item.class_en ? ' is-confirming' : ''}`} disabled={!canAdjust || (!isAdmin && memberships.length <= 1) || leave.isPending} onClick={() => confirmLeave === item.class_en ? leave.mutate(item.class_en) : setConfirmLeave(item.class_en)}>{confirmLeave === item.class_en ? '再次点击确认' : '退出'}</button></div></div>) : <div className="numoj-membership-state">暂无班级</div>}</div></section>
         <section className="numoj-account-section" aria-labelledby="joinClassTitle"><div className="numoj-account-section-heading"><h3 id="joinClassTitle">加入新班级</h3><span>AVAILABLE</span></div><div className="numoj-class-join-row"><div ref={pickerRef} className={`numoj-class-select${pickerOpen ? ' open' : ''}`}><input type="hidden" value={selected} readOnly /><button className="numoj-class-select-trigger" type="button" aria-haspopup="listbox" aria-expanded={pickerOpen} onClick={() => setPickerOpen((value) => !value)}><ClassLogo item={selectedItem} className={`numoj-class-select-logo${selectedItem ? '' : ' is-placeholder'}`} /><span className="numoj-class-select-current"><strong>{selectedItem?.class_cn || '请选择班级'}</strong><small>{selectedItem?.class_en || 'AVAILABLE'}</small></span><i className="fas fa-chevron-down numoj-class-select-chevron" aria-hidden="true" /></button><div className="numoj-class-select-menu" role="listbox" aria-label="可加入的班级" hidden={!pickerOpen}>{available.length ? available.map((item) => <button type="button" className={`numoj-class-select-option${selected === item.class_en ? ' is-selected' : ''}`} role="option" aria-selected={selected === item.class_en} onClick={() => {setSelected(item.class_en); setPickerOpen(false)}} key={item.class_en}><ClassLogo item={item} className="numoj-class-select-logo" /><span className="numoj-class-select-option-copy"><strong>{item.class_cn || item.class_en}</strong><small>{item.class_en}</small></span><span className="numoj-class-select-option-state" aria-hidden="true">✓</span></button>) : <div className="numoj-class-select-empty">暂无可选班级</div>}</div></div><button className="numoj-account-button numoj-account-button-brand" type="button" disabled={!selected || !canAdjust || join.isPending} onClick={() => join.mutate()}>加入班级</button></div>{join.isError || leave.isError || toggle.isError ? <p className="numoj-account-form-status is-error" role="alert">{errorMessage(join.error || leave.error || toggle.error)}</p> : null}</section>
       </div>
-      <div className="modal-footer"><span className="numoj-account-footer-note">CHANGES · SAVED IMMEDIATELY</span><div className="numoj-account-footer-actions"><button type="button" className="numoj-account-button numoj-account-button-dark" data-bs-dismiss="modal">完成</button></div></div>
-    </div></div>
-  </div>
+      <div className="modal-footer"><span className="numoj-account-footer-note">CHANGES · SAVED IMMEDIATELY</span><div className="numoj-account-footer-actions"><button type="button" className="numoj-account-button numoj-account-button-dark" onClick={onClose}>完成</button></div></div>
+    </div>
+  </ReactModal>
 }
 
-export function AccountModals() {
+export function AccountModals({active, onClose}: {active: 'password' | 'classes' | null; onClose: () => void}) {
   const [toast, setToast] = useState('')
   useEffect(() => {
     if (!toast) return
     const timer = window.setTimeout(() => setToast(''), 2_300)
     return () => window.clearTimeout(timer)
   }, [toast])
-  return <><div className={`numoj-account-toast${toast ? ' is-visible' : ''}`} role="status" aria-live="polite" hidden={!toast}>{toast}</div><PasswordModal notify={setToast} /><ClassManagerModal notify={setToast} /></>
+  return <><div className={`numoj-account-toast${toast ? ' is-visible' : ''}`} role="status" aria-live="polite" hidden={!toast}>{toast}</div><PasswordModal notify={setToast} open={active === 'password'} onClose={onClose} /><ClassManagerModal notify={setToast} open={active === 'classes'} onClose={onClose} /></>
 }

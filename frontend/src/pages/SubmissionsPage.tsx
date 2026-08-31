@@ -5,7 +5,9 @@ import {useSearchParams} from 'react-router-dom'
 import {apiFetch, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord, SubmissionSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {MathCurveLoader} from '../components/MathCurveLoader'
 import {Link, useNavigate} from '../components/PageNavigation'
+import {ReactModal} from '../components/ReactModal'
 import {useSession} from '../session'
 
 interface ProblemOption extends JsonRecord {problem_id: number; filter_label: string}
@@ -50,7 +52,7 @@ function Panel({id, isAdmin}: {id?: number; isAdmin: boolean}) {
   const result = useQuery({queryKey: ['submission-panel', id], queryFn: () => apiFetch<PanelResponse>(`/api/submissions/${id}?view=panel`), enabled: Boolean(id)})
   const rejudge = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(`/api/submissions/${id}/rejudge`, {method: 'POST'}), onSuccess: () => void result.refetch()})
   if (!id) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-empty"><span className="submission-detail-empty__mark" aria-hidden="true"><i className="fas fa-arrow-pointer" /></span><strong>选择一条提交</strong><span>点击左侧记录后，在这里查看判题摘要。</span></div></aside>
-  if (result.isPending) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-loading"><span className="math-curve-loader" data-math-curve-loader data-size="md"><span className="math-curve-loader__label">正在加载提交详情…</span></span></div></aside>
+  if (result.isPending) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-loading"><MathCurveLoader size="md" label="正在加载提交详情…" /></div></aside>
   if (result.isError) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-error"><span className="submission-detail-error__mark" aria-hidden="true"><i className="fas fa-triangle-exclamation" /></span><strong>详情加载失败</strong><span>{result.error.message}</span><button type="button" className="submission-button submission-button--ghost" onClick={() => void result.refetch()}><i className="fas fa-rotate-right" /> 重试</button></div></aside>
   const data = result.data!
   const submission = data.submission || {}
@@ -66,16 +68,9 @@ function Panel({id, isAdmin}: {id?: number; isAdmin: boolean}) {
   </article></aside>
 }
 
-function bootstrapModal(element: HTMLElement | null) {
-  const runtime = (window as unknown as {bootstrap?: {Modal?: {getOrCreateInstance?: (node: HTMLElement) => {show(): void; hide(): void}; getInstance?: (node: HTMLElement) => {show(): void; hide(): void} | null; new(node: HTMLElement): {show(): void; hide(): void}}}}).bootstrap
-  if (!element || !runtime?.Modal) return null
-  if (runtime.Modal.getOrCreateInstance) return runtime.Modal.getOrCreateInstance(element)
-  return runtime.Modal.getInstance?.(element) || new runtime.Modal(element)
-}
-
 function TimeRangeRejudge() {
-  const formModal = useRef<HTMLDivElement>(null)
-  const progressModal = useRef<HTMLDivElement>(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [progressOpen, setProgressOpen] = useState(false)
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
   const [progressActive, setProgressActive] = useState(false)
@@ -99,17 +94,17 @@ function TimeRangeRejudge() {
       const result = await request.mutateAsync({start, end, confirm_total: Number(preview.total)})
       setProgressTotal(Number(result.total || 0))
       setProgressActive(true)
-      bootstrapModal(formModal.current)?.hide()
-      bootstrapModal(progressModal.current)?.show()
+      setFormOpen(false)
+      setProgressOpen(true)
     } catch (error) {
       window.alert(`重测失败：${error instanceof Error ? error.message : '请稍后重试'}`)
     }
   }
 
   return <>
-    <button type="button" className="submission-button submission-button--dark" onClick={() => bootstrapModal(formModal.current)?.show()}><i className="fas fa-rotate-right" aria-hidden="true" /> 按时间范围重测</button>
-    <div className="modal fade" id="timeRangeRejudgeModal" tabIndex={-1} aria-labelledby="timeRangeRejudgeLabel" aria-hidden="true" ref={formModal}><div className="modal-dialog"><div className="modal-content"><div className="modal-header"><h2 className="modal-title fs-5" id="timeRangeRejudgeLabel"><i className="fas fa-rotate-right me-2" aria-hidden="true" />按时间范围重测</h2><button type="button" className="btn-close" aria-label="关闭" onClick={() => bootstrapModal(formModal.current)?.hide()} /></div><div className="modal-body"><div className="mb-3"><label htmlFor="rejudgeStartTime" className="form-label">起始时间</label><input type="datetime-local" className="form-control" id="rejudgeStartTime" value={start} onChange={(event) => setStart(event.target.value)} /></div><div><label htmlFor="rejudgeEndTime" className="form-label">结束时间</label><input type="datetime-local" className="form-control" id="rejudgeEndTime" value={end} onChange={(event) => setEnd(event.target.value)} /></div></div><div className="modal-footer"><button type="button" className="submission-button submission-button--ghost" onClick={() => bootstrapModal(formModal.current)?.hide()}>取消</button><button type="button" className="submission-button submission-button--accent" id="btnStartTimeRangeRejudge" disabled={request.isPending} onClick={() => void submit()}><i className="fas fa-play" aria-hidden="true" /> 开始重测</button></div></div></div></div>
-    <div className="modal fade" id="timeRangeRejudgeProgressModal" tabIndex={-1} aria-labelledby="timeRangeRejudgeProgressLabel" aria-hidden="true" ref={progressModal}><div className="modal-dialog"><div className="modal-content"><div className="modal-header"><h2 className="modal-title fs-5" id="timeRangeRejudgeProgressLabel">重测进度</h2><button type="button" className="btn-close" aria-label="关闭" onClick={() => bootstrapModal(progressModal.current)?.hide()} /></div><div className="modal-body"><div className="progress mb-2"><div className="progress-bar" role="progressbar" id="timeRangeRejudgeProgressBar" style={{width: `${percent}%`}} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>{percent}%</div></div><p className="small text-muted mb-0" id="timeRangeRejudgeProgressDetail">{progressActive || progress.data ? `已完成 ${done} / ${total}` : '尚未开始'}</p></div><div className="modal-footer"><button type="button" className="submission-button submission-button--ghost" onClick={() => bootstrapModal(progressModal.current)?.hide()}>关闭</button></div></div></div></div>
+    <button type="button" className="submission-button submission-button--dark" onClick={() => setFormOpen(true)}><i className="fas fa-rotate-right" aria-hidden="true" /> 按时间范围重测</button>
+    <ReactModal open={formOpen} onClose={() => setFormOpen(false)} id="timeRangeRejudgeModal" labelledBy="timeRangeRejudgeLabel"><div className="modal-content"><div className="modal-header"><h2 className="modal-title fs-5" id="timeRangeRejudgeLabel"><i className="fas fa-rotate-right me-2" aria-hidden="true" />按时间范围重测</h2><button type="button" className="btn-close" aria-label="关闭" onClick={() => setFormOpen(false)} /></div><div className="modal-body"><div className="mb-3"><label htmlFor="rejudgeStartTime" className="form-label">起始时间</label><input type="datetime-local" className="form-control" id="rejudgeStartTime" value={start} onChange={(event) => setStart(event.target.value)} /></div><div><label htmlFor="rejudgeEndTime" className="form-label">结束时间</label><input type="datetime-local" className="form-control" id="rejudgeEndTime" value={end} onChange={(event) => setEnd(event.target.value)} /></div></div><div className="modal-footer"><button type="button" className="submission-button submission-button--ghost" onClick={() => setFormOpen(false)}>取消</button><button type="button" className="submission-button submission-button--accent" id="btnStartTimeRangeRejudge" disabled={request.isPending} onClick={() => void submit()}><i className="fas fa-play" aria-hidden="true" /> 开始重测</button></div></div></ReactModal>
+    <ReactModal open={progressOpen} onClose={() => setProgressOpen(false)} id="timeRangeRejudgeProgressModal" labelledBy="timeRangeRejudgeProgressLabel"><div className="modal-content"><div className="modal-header"><h2 className="modal-title fs-5" id="timeRangeRejudgeProgressLabel">重测进度</h2><button type="button" className="btn-close" aria-label="关闭" onClick={() => setProgressOpen(false)} /></div><div className="modal-body"><div className="progress mb-2"><div className="progress-bar" role="progressbar" id="timeRangeRejudgeProgressBar" style={{width: `${percent}%`}} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>{percent}%</div></div><p className="small text-muted mb-0" id="timeRangeRejudgeProgressDetail">{progressActive || progress.data ? `已完成 ${done} / ${total}` : '尚未开始'}</p></div><div className="modal-footer"><button type="button" className="submission-button submission-button--ghost" onClick={() => setProgressOpen(false)}>关闭</button></div></div></ReactModal>
   </>
 }
 
