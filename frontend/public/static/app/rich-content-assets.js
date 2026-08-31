@@ -108,11 +108,20 @@
     return false;
   }
 
-  function ensureCodeAssets(root) {
+  function ensureCodeHighlighter(root) {
     if (!needsStructuredCode(root)) return Promise.resolve(false);
+    return loadAsset("highlighter");
+  }
+
+  function ensureSemanticTokens(root) {
+    if (!needsStructuredCode(root)) return Promise.resolve(false);
+    return loadAsset("semanticTokens");
+  }
+
+  function ensureCodeAssets(root) {
     return Promise.all([
-      loadAsset("highlighter"),
-      loadAsset("semanticTokens"),
+      ensureCodeHighlighter(root),
+      ensureSemanticTokens(root),
     ]).then((results) => results.some(Boolean));
   }
 
@@ -122,10 +131,13 @@
 
   async function ensureMathJax(root) {
     if (!needsMath(root)) return false;
-    const mathJax = global.MathJax;
-    if (!mathJax) return false;
     try {
-      if (mathJax.startup?.promise) await mathJax.startup.promise;
+      if (global.NumOJMathJaxReady) {
+        const ready = await global.NumOJMathJaxReady;
+        if (!ready) return false;
+      } else if (global.MathJax?.startup?.promise) {
+        await global.MathJax.startup.promise;
+      }
     } catch (_error) {
       return false;
     }
@@ -134,8 +146,10 @@
 
   global.NumOJRichContentAssets = Object.freeze({
     ensureCodeAssets,
+    ensureCodeHighlighter,
     ensureMathJax,
     ensureMermaid,
+    ensureSemanticTokens,
     needsMath,
     needsMermaid,
     needsStructuredCode,

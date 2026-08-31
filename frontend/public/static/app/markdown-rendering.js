@@ -1242,38 +1242,50 @@
     if (!root || typeof root.querySelectorAll !== "function") return;
     const enhancementGeneration = enhancementGenerationFor(root);
     const assetLoader = window.NumOJRichContentAssets;
-    const codeAssetsReady = assetLoader
-      ? assetLoader.ensureCodeAssets(root)
+    const ensureCodeHighlighter = assetLoader && (
+      assetLoader.ensureCodeHighlighter || assetLoader.ensureCodeAssets
+    );
+    const ensureSemanticTokens = assetLoader && (
+      assetLoader.ensureSemanticTokens || assetLoader.ensureCodeAssets
+    );
+    const codeHighlighterReady = assetLoader
+      ? ensureCodeHighlighter(root)
+      : Promise.resolve(true);
+    const semanticTokensReady = assetLoader
+      ? ensureSemanticTokens(root)
       : Promise.resolve(true);
     const mermaidAssetReady = assetLoader
       ? assetLoader.ensureMermaid(root)
       : Promise.resolve(true);
-    if (assetLoader) assetLoader.ensureMathJax(root);
     enhanceRenderedLinks(root);
     ensureCodeCopyButtons(root);
-    const bashHighlighting = codeAssetsReady.then(
+    const mathTypesetting = typesetMath(root, enhancementGeneration);
+    const bashHighlighting = codeHighlighterReady.then(
       () => renderBashTextMateHighlights(root),
     );
-    const structuredHighlighting = codeAssetsReady.then(
+    const structuredHighlighting = codeHighlighterReady.then(
       () => sharedStructuredTextMateTask(root),
     );
     const mermaidRendering = mermaidAssetReady.then(
       () => renderMermaidDiagrams(root),
     );
-    await structuredHighlighting;
-    if (!enhancementIsCurrent(root, enhancementGeneration)) {
-      await Promise.all([bashHighlighting, mermaidRendering]);
-      return;
-    }
-    // 语义 token 必须叠加在 Shiki TextMate DOM 之后，避免较慢的词法任务
-    // 覆盖已经插入的语言服务 token。
-    renderStructuredSemanticHighlights(root).catch((error) => {
+    // 首屏直接保留服务端产生的现有词法配色。语义 token 在词法
+    // DOM 就绪后独立叠加，不阻塞公式、Mermaid 或正文显示。
+    Promise.all([structuredHighlighting, semanticTokensReady]).then(() => {
+      if (!enhancementIsCurrent(root, enhancementGeneration)) return;
+      return renderStructuredSemanticHighlights(root);
+    }).catch((error) => {
       if (!semanticWarningShown) {
         console.warn("文章代码块语义高亮任务失败。", error);
         semanticWarningShown = true;
       }
     });
-    await Promise.all([bashHighlighting, mermaidRendering]);
+    await Promise.all([
+      bashHighlighting,
+      structuredHighlighting,
+      mermaidRendering,
+      mathTypesetting,
+    ]);
     if (!enhancementIsCurrent(root, enhancementGeneration)) return;
     // Mermaid 会重组容器并移动源码节点，因此绘制完成后幂等补回复制按钮。
     ensureCodeCopyButtons(root);

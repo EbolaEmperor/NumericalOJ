@@ -79,6 +79,9 @@ test('SPA 在 React 启动前加载 MathJax 必需运行时', () => {
   assert.ok(richContent < markdown)
   assert.ok(markdown < react)
   assert.equal(source.includes('data-mathjax-src='), false)
+  assert.ok(source.includes('window.NumOJMathJaxReady = new Promise'))
+  assert.ok(source.includes('window.MathJax.startup.defaultReady()'))
+  assert.ok(source.includes('window.MathJax.startup.promise.then('))
 })
 
 test('富内容资源等待已加载的 MathJax 启动完成', () => {
@@ -155,8 +158,8 @@ require(${source});
   assert.equal(appended.length, 3);
 
   let releaseStartup = null;
+  global.NumOJMathJaxReady = new Promise((resolve) => { releaseStartup = resolve; });
   global.MathJax = {
-    startup: {promise: new Promise((resolve) => { releaseStartup = resolve; })},
     typesetPromise() {}
   };
   const math = NumOJRichContentAssets.ensureMathJax(root("另一条公式 $y = 2$", ""));
@@ -165,7 +168,7 @@ require(${source});
   math.then(() => { mathReady = true; });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(mathReady, false);
-  releaseStartup();
+  releaseStartup(true);
   assert.equal(await math, true);
 
   assert.equal(
@@ -175,6 +178,20 @@ require(${source});
   assert.equal(appended.length, 3);
 })().catch((error) => { console.error(error); process.exit(1); });
 `)
+})
+
+test('词法、语义、公式和 Mermaid 增强互不阻塞', () => {
+  const source = read('frontend/public/static/app/markdown-rendering.js')
+  const mathStart = source.indexOf('const mathTypesetting = typesetMath(')
+  const semanticStart = source.indexOf('Promise.all([structuredHighlighting, semanticTokensReady])')
+  const finalWait = source.indexOf('await Promise.all([', semanticStart)
+
+  assert.ok(mathStart > 0)
+  assert.ok(semanticStart > mathStart)
+  assert.ok(finalWait > semanticStart)
+  assert.equal(source.includes('await structuredHighlighting;'), false)
+  assert.ok(source.includes('codeHighlighterReady'))
+  assert.ok(source.includes('semanticTokensReady'))
 })
 
 test('MathJax 等待 startup 完成后再排版', () => {
