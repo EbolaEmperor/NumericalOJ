@@ -4,6 +4,7 @@ import {Link, useNavigate, useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
+import {ModelLogo} from '../components/ModelLogo'
 import {MonacoEditor} from '../components/MonacoEditor'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useSession} from '../session'
@@ -22,14 +23,15 @@ interface FormResponse extends ApiEnvelope {
   }
 }
 
-function Choice({value, options, icon, disabled = false, onChange}: {value: string; options: Array<{value: string; label: string; icon?: string}>; icon: string; disabled?: boolean; onChange: (value: string) => void}) {
+function Choice({value, options, icon, disabled = false, onChange}: {value: string; options: Array<{value: string; label: string; icon?: string; model?: string}>; icon: string; disabled?: boolean; onChange: (value: string) => void}) {
   const [open, setOpen] = useState(false)
   const selected = options.find((option) => option.value === value) || options[0]
-  return <div className={`rk-choice${open ? ' open' : ''}${disabled ? ' is-disabled' : ''}`}><input type="text" className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main"><i className={`fas ${selected?.icon || icon}`} /><span>{selected?.label || value}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{options.map((option) => <button type="button" className={`rk-choice-option${option.value === value ? ' active' : ''}`} role="option" aria-selected={option.value === value} onClick={() => {onChange(option.value); setOpen(false)}} key={option.value}><span className="rk-choice-option-main"><i className={`fas ${option.icon || icon}`} /><span><span className="rk-choice-option-name">{option.label}</span></span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
+  const optionIcon = (option?: {icon?: string; model?: string}) => option?.model ? <ModelLogo model={option.model} /> : <i className={`fas ${option?.icon || icon}`} />
+  return <div className={`rk-choice${open ? ' open' : ''}${disabled ? ' is-disabled' : ''}`}><input type="text" className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main">{optionIcon(selected)}<span>{selected?.label || value}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{options.map((option) => <button type="button" className={`rk-choice-option${option.value === value ? ' active' : ''}`} role="option" aria-selected={option.value === value} onClick={() => {onChange(option.value); setOpen(false)}} key={option.value}><span className="rk-choice-option-main">{optionIcon(option)}<span><span className="rk-choice-option-name">{option.label}</span></span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
 }
 
 function EndpointChoice({name, label, value, items, help, onChange}: {name: string; label: string; value: string; items: JsonRecord[]; help?: string; onChange: (value: string) => void}) {
-  const options = [{value: '', label: '未配置', icon: 'fa-minus-circle'}, ...items.map((item) => ({value: String(item.id || ''), label: String(item.model || item.name || `节点 #${item.id}`), icon: 'fa-microchip'}))]
+  const options = [{value: '', label: '未配置', icon: 'fa-minus-circle'}, ...items.map((item) => ({value: String(item.id || ''), label: String(item.model || item.name || `节点 #${item.id}`), model: String(item.model || item.name || '')}))]
   return <div><label className="form-label" htmlFor={`${name}Picker`}><i className="fas fa-plug me-2" /> {label}</label><Choice value={value} options={options} icon="fa-microchip" onChange={onChange} />{help ? <div className="form-text">{help}</div> : null}</div>
 }
 

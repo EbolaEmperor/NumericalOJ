@@ -9,6 +9,10 @@
   --elo-ink: var(--rkv2-ink);
 }
 
+.elo-trajectory-portal {
+  display: contents;
+}
+
 .ranking-v2-detail .elo-trajectory-modal .modal-dialog {
   width: min(414px, calc(100vw - 28px));
   max-width: none;
@@ -417,10 +421,27 @@
 }
 
 @media (max-width: 760px) {
+  .ranking-v2-detail .elo-trajectory-modal {
+    padding: 0 !important;
+    overscroll-behavior: contain;
+  }
+
   .ranking-v2-detail .elo-trajectory-modal .modal-dialog,
   .ranking-v2-detail .elo-trajectory-modal.is-expanded .modal-dialog {
     width: calc(100vw - 16px);
+    min-height: calc(100dvh - 16px);
     margin: 8px auto;
+  }
+
+  .ranking-v2-detail .elo-trajectory-modal .modal-content {
+    max-height: calc(100dvh - 16px);
+    overflow: hidden;
+  }
+
+  .ranking-v2-detail .elo-trajectory-modal .modal-body {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .ranking-v2-detail .elo-trajectory-modal .modal-body,
@@ -431,6 +452,12 @@
 
   .ranking-v2-detail .elo-observer-picker {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ranking-v2-detail .elo-observer-dropdown {
+    position: static;
+    max-height: min(270px, 36dvh);
+    margin-top: 5px;
   }
 
   .ranking-v2-detail .elo-trajectory-footer {

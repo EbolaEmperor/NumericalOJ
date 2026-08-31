@@ -4,6 +4,7 @@ import {Link, useParams, useSearchParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
+import {ModelLogo} from '../components/ModelLogo'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useSession} from '../session'
 
@@ -36,7 +37,8 @@ function ChoiceSelect({value, options, placeholder, icon, ariaLabel, onChange}: 
   const [open, setOpen] = useState(false)
   const selected = options.find((item) => item.value === value)
   const choices = [{value: '', label: placeholder}, ...options]
-  return <div className={`rk-choice${open ? ' open' : ''}`}><input className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main"><i className={`fas ${icon}`} /><span>{selected?.label || placeholder}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{choices.map((item) => <button type="button" className={`rk-choice-option${item.value === value ? ' active' : ''}`} role="option" aria-selected={item.value === value} key={item.value || 'none'} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main"><i className={`fas ${icon}`} /><span className="rk-choice-option-name">{item.label}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
+  const choiceIcon = (item?: {value: string; label: string}) => ariaLabel.includes('端点') && item?.value ? <ModelLogo model={item.label} /> : <i className={`fas ${icon}`} />
+  return <div className={`rk-choice${open ? ' open' : ''}`}><input className="rk-choice-value" value={value} readOnly tabIndex={-1} aria-hidden="true" /><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main">{choiceIcon(selected)}<span>{selected?.label || placeholder}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox">{choices.map((item) => <button type="button" className={`rk-choice-option${item.value === value ? ' active' : ''}`} role="option" aria-selected={item.value === value} key={item.value || 'none'} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main">{choiceIcon(item)}<span className="rk-choice-option-name">{item.label}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div>
 }
 
 function EndpointSelect({value, endpoints, onChange}: {value: string; endpoints: JsonRecord[]; onChange: (value: string) => void}) {

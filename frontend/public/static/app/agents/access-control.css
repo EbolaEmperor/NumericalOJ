@@ -500,7 +500,12 @@
 }
 
 @media (max-width: 575.98px) {
-  .agent-access-fab { right: 16px; bottom: 18px; width: 48px; height: 48px; }
+  .agent-access-fab {
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+    width: 48px;
+    height: 48px;
+  }
   .agent-access-modal .modal-dialog { min-height: 100%; margin: 0; align-items: end; }
   .agent-access-modal > .modal-dialog > .modal-content { border-radius: 17px 17px 0 0; }
   .agent-access-modal-header { padding: 18px 17px 15px; }
