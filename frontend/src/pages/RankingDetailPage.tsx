@@ -13,6 +13,7 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
+import {JudgeDetailModal, MatchDetailModal, MediaPreviewModal, ReverseJudgeDetailModal, type RankingMatchDetail, type RankingMediaTarget, type RankingSubmissionOverlayTarget} from '../ranking/RankingDetailOverlays'
 import {useRuleTopology} from '../ranking/ruleTopology'
 import {useSession} from '../session'
 
@@ -37,6 +38,10 @@ type Submission = JsonRecord & {
   answer_download_url?: string
   code_filename?: string
   code_download_url?: string
+  agent_endpoint_label?: string
+  agent_endpoint_harness?: string
+  agent_endpoint_model?: string
+  ai_answer_download_url?: string
 }
 
 type NavigationState = {
@@ -95,15 +100,6 @@ interface Response extends ApiEnvelope {
   navigation?: NavigationState
 }
 
-type MatchDetail = ApiEnvelope & {
-  id: number
-  created_at?: string
-  username_a?: string
-  username_b?: string
-  winner?: number
-  detail_output?: {format?: string; content?: string; height?: number}
-}
-
 const statusClasses: Record<string, string> = {
   Accepted: 's-ok',
   Active: 's-ok',
@@ -146,7 +142,7 @@ function submissionScore(row: Submission, isElo: boolean) {
   return isElo ? row.elo_rating : row.score
 }
 
-function SubmissionCard({row, competition, isElo, onDelete}: {row: Submission; competition: Response['competition']; isElo: boolean; onDelete?: (row: Submission) => void}) {
+function SubmissionCard({row, competition, scoring, isElo, onDetail, onDelete}: {row: Submission; competition: Response['competition']; scoring: string; isElo: boolean; onDetail?: (row: Submission) => void; onDelete?: (row: Submission) => void}) {
   const status = String(row.status || '')
   const score = submissionScore(row, isElo)
   const maxScore = numberValue(competition.max_score, 100)
@@ -171,11 +167,12 @@ function SubmissionCard({row, competition, isElo, onDelete}: {row: Submission; c
     <div className="aj-sub-r2">
       <div className="aj-sub-meta">
         <span className="aj-time">{String(row.created_at || '')}</span>
+        {row.agent_endpoint_label ? <span className="aj-card-meta" title={`AI 节点：${row.agent_endpoint_label}`}><i className={harnessIconClass(row.agent_endpoint_harness)} aria-hidden="true" />{row.agent_endpoint_model ? <ModelLogo model={row.agent_endpoint_model} /> : null}<span>{row.agent_endpoint_label}</span></span> : null}
         {row.base_model ? <span className="aj-card-meta" title={`基座模型：${row.base_model}`}><ModelLogo model={row.base_model} /><span>{row.base_model}</span></span> : null}
         {row.answer_filename && row.answer_download_url ? <a className="aj-file" href={row.answer_download_url} download title={`下载 ${row.answer_filename}`}><i className="fas fa-file-code" />答案</a> : null}
         {row.code_filename && row.code_download_url ? <a className="aj-file" href={row.code_download_url} download title={`下载 ${row.code_filename}`}><i className="fas fa-file-archive" />{isElo ? '作品' : '代码'}</a> : null}
       </div>
-      <div className="aj-acts">{onDelete ? <button type="button" className="aj-del" aria-label={`删除提交 #${row.id}`} onClick={() => onDelete(row)}><i className="fas fa-trash" /></button> : null}</div>
+      <div className="aj-acts">{onDetail && (scoring === 'agent_judge' || scoring === 'reverse_judge') ? <button type="button" className={`aj-detail ${scoring === 'agent_judge' ? 'judge-detail-btn' : 'reverse-detail-btn'}`} onClick={() => onDetail(row)}><i className="fas fa-list-check" />{scoring === 'agent_judge' ? '评分详情' : '评测详情'}</button> : null}{onDelete ? <button type="button" className="aj-del" title="删除该提交" aria-label={`删除提交 #${row.id}`} onClick={() => onDelete(row)}><i className="fas fa-trash" /></button> : null}</div>
     </div>
   </article>
 }
@@ -214,6 +211,7 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
   const [answerFile, setAnswerFile] = useState<File | null>(null)
   const [codeFile, setCodeFile] = useState<File | null>(null)
   const [baseModel, setBaseModel] = useState('')
+  const [detailTarget, setDetailTarget] = useState<RankingSubmissionOverlayTarget | null>(null)
   const [gitResult, setGitResult] = useState<(ApiEnvelope & {exists?: boolean; info?: JsonRecord; url?: string}) | null>(null)
   const reverseModeRef = useDismissibleDropdown<HTMLDivElement>(reverseModeOpen, () => setReverseModeOpen(false))
   const endpointRef = useDismissibleDropdown<HTMLDivElement>(endpointOpen, () => setEndpointOpen(false))
@@ -283,8 +281,10 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
     </form>}
     <div data-ranking-submission-history>
       <div className="my-history-header"><strong>我的历史提交</strong>{submissions.length ? <div className="history-stats"><span className="history-stat"><span className="history-stat-val">{submissions.length}</span><span className="history-stat-label">次</span></span><span className="history-stat"><span className="history-stat-val">{best == null ? '—' : best.toFixed(isElo ? 0 : 2)}</span><span className="history-stat-label">{isElo ? '最高 ELO' : '最高分'}</span></span></div> : null}</div>
-      {submissions.length ? <div className="aj-subs">{submissions.map((row) => <SubmissionCard row={row} competition={data.competition} isElo={isElo} key={row.id} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>提交作品后，这里会显示每次评测结果。</span></div>}
+      {submissions.length ? <div className="aj-subs">{submissions.map((row) => <SubmissionCard row={row} competition={data.competition} scoring={scoring} isElo={isElo} onDetail={(item) => setDetailTarget({id: item.id, createdAt: item.created_at, status: item.status, username: item.username, answerDownloadUrl: item.ai_answer_download_url})} key={row.id} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>提交作品后，这里会显示每次评测结果。</span></div>}
     </div>
+    {isAgentJudge ? <JudgeDetailModal competitionId={competitionId} target={detailTarget} canAppeal onClose={() => setDetailTarget(null)} /> : null}
+    {isReverseJudge ? <ReverseJudgeDetailModal competitionId={competitionId} target={detailTarget} onClose={() => setDetailTarget(null)} /> : null}
   </section>
 }
 
@@ -301,11 +301,12 @@ function LeaderboardPanel({data, username}: {data: Response; username?: string})
 }
 
 function AttachmentList({files}: {files: RankingFile[]}) {
+  const [media, setMedia] = useState<RankingMediaTarget | null>(null)
   if (!files.length) return <div className="ranking-attachments-empty">暂无附件</div>
-  return <div className="ranking-file-list" data-ranking-attachment-list>{files.map((file) => {
+  return <><div className="ranking-file-list" data-ranking-attachment-list>{files.map((file) => {
     const size = fileSize(file.file_size)
-    return <div className="ranking-file-row" data-ranking-attachment-row title={`${file.filename} · ${size.long}`} key={file.id}><a href={file.download_url} className="ranking-file-download" download title={`下载 ${file.filename}`}><i className="fas fa-paperclip" /><b>{file.filename}</b><span>{size.short}</span></a>{file.media_kind ? <a className="ranking-file-action rk-media-btn" href={`${file.download_url}?inline=1`} target="_blank" rel="noreferrer" title={`${file.media_kind === 'video' ? '播放' : '查看'} ${file.filename}`}><i className={`fas ${file.media_kind === 'video' ? 'fa-play' : 'fa-eye'}`} /></a> : null}</div>
-  })}</div>
+    return <div className="ranking-file-row" data-ranking-attachment-row title={`${file.filename} · ${size.long}`} key={file.id}><a href={file.download_url} className="ranking-file-download" download title={`下载 ${file.filename}`}><i className="fas fa-paperclip" /><b>{file.filename}</b><span>{size.short}</span></a>{file.media_kind ? <button type="button" className="ranking-file-action rk-media-btn" title={`${file.media_kind === 'video' ? '播放' : '查看'} ${file.filename}`} onClick={() => setMedia({filename: file.filename, mediaKind: file.media_kind || 'image', inlineUrl: `${file.download_url}?inline=1`, downloadUrl: file.download_url})}><i className={`fas ${file.media_kind === 'video' ? 'fa-play' : 'fa-eye'}`} /></button> : null}</div>
+  })}</div><MediaPreviewModal target={media} onClose={() => setMedia(null)} /></>
 }
 
 function Pagination({data, tab}: {data: Response; tab: string}) {
@@ -349,6 +350,8 @@ function AllSubmissionsPanel({data}: {data: Response}) {
   const accepted = numberValue(stats.accepted)
   const maxScore = numberValue(data.competition.max_score, 100)
   const isElo = String(data.competition.scoring_mode || '').toLowerCase() === 'elo'
+  const scoring = String(data.competition.scoring_mode || '').toLowerCase()
+  const [detailTarget, setDetailTarget] = useState<RankingSubmissionOverlayTarget | null>(null)
   const [search, setSearch] = useState(data.submission_search_q || '')
   const [bulkStart, setBulkStart] = useState('')
   const [bulkEnd, setBulkEnd] = useState('')
@@ -459,8 +462,10 @@ function AllSubmissionsPanel({data}: {data: Response}) {
       </div>
     </ReactModal>
 
-    {rows.length ? <div className="aj-subs" data-ranking-submission-list>{rows.map((row) => <SubmissionCard row={row} competition={data.competition} isElo={isElo} key={row.id} onDelete={(item) => {if (window.confirm(`确认删除提交 #${item.id}？`)) remove.mutate(item.id)}} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>尚未有选手提交作品。</span></div>}
+    {rows.length ? <div className="aj-subs" data-ranking-submission-list>{rows.map((row) => <SubmissionCard row={row} competition={data.competition} scoring={scoring} isElo={isElo} onDetail={(item) => setDetailTarget({id: item.id, createdAt: item.created_at, status: item.status, username: item.username, answerDownloadUrl: item.ai_answer_download_url})} key={row.id} onDelete={(item) => {if (window.confirm(`确认删除提交 #${item.id}？`)) remove.mutate(item.id)}} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>尚未有选手提交作品。</span></div>}
     {total > 0 ? <div className="submissions-pagination mt-3"><Pagination data={data} tab="all_submissions" /></div> : null}
+    {scoring === 'agent_judge' ? <JudgeDetailModal competitionId={data.competition.id} target={detailTarget} canAppeal={false} onClose={() => setDetailTarget(null)} /> : null}
+    {scoring === 'reverse_judge' ? <ReverseJudgeDetailModal competitionId={data.competition.id} target={detailTarget} onClose={() => setDetailTarget(null)} /> : null}
   </section>
 }
 
@@ -474,7 +479,7 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
   const trajectorySearchRef = useDismissibleDropdown<HTMLElement>(trajectorySearchOpen, () => setTrajectorySearchOpen(false))
   const detail = useQuery({
     queryKey: ['ranking-match', data.competition.id, detailId],
-    queryFn: () => apiFetch<MatchDetail>(`/api/ranking/competitions/${data.competition.id}/matches/${detailId}`),
+    queryFn: () => apiFetch<RankingMatchDetail>(`/api/ranking/competitions/${data.competition.id}/matches/${detailId}`),
     enabled: detailId != null,
   })
   const remove = useMutation({
@@ -541,7 +546,7 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
     const polyline = points.map((point, pointIndex) => `${30 + pointIndex * 700 / Math.max(1, points.length - 1)},${270 - (numberValue(point.rating) - min) * 240 / Math.max(1, max - min)}`).join(' ')
     return <polyline className="elo-trajectory-line" points={polyline} fill="none" style={{stroke: ['#d55e00', '#0072b2', '#009e73', '#cc79a7', '#e69f00', '#56b4e9'][index % 6]}} key={numberValue(series.submission_id)} />
   })}</svg></div></div><div className="elo-trajectory-legend">{(trajectory.data.series || []).map((series, index) => <div className="elo-trajectory-legend-item" key={numberValue(series.submission_id)}><span className="elo-trajectory-legend-swatch" style={{background: ['#d55e00', '#0072b2', '#009e73', '#cc79a7', '#e69f00', '#56b4e9'][index % 6]}} /><span className="elo-trajectory-legend-copy"><strong>{String(series.username || '')}</strong><small>#{numberValue(series.submission_id)}</small></span><b>{numberValue(series.current_rating).toFixed(0)}</b></div>)}</div></section> : null}</div><div className="modal-footer elo-trajectory-footer"><div><button type="button" className="elo-trajectory-secondary" onClick={closeTrajectory}>关闭</button><button type="button" className="elo-trajectory-primary" disabled={!trajectorySelected.length || trajectory.isPending} onClick={() => {setTrajectorySearchOpen(false); trajectory.mutate()}}><i className="fas fa-play" /><span>{trajectory.isPending ? '分析中…' : '开始分析'}</span></button></div></div></div></div></div><div className="modal-backdrop fade show" /></div>, document.body) : null}
-  {detailId != null ? <><div className="modal fade show d-block" role="dialog" aria-modal="true"><div className="modal-dialog modal-xl modal-dialog-scrollable"><div className="modal-content match-detail-modal"><div className="modal-header"><h5 className="modal-title"><i className="fas fa-magnifying-glass me-2" />对战详情</h5><button type="button" className="btn-close" aria-label="Close" onClick={() => setDetailId(null)} /></div><div className="modal-body">{detail.isPending ? <LoadingState label="加载中…" /> : detail.isError ? <div className="match-detail-error">{errorMessage(detail.error)}</div> : <><div className="match-detail-toolbar"><div className="match-detail-meta">#{detail.data?.id} · {detail.data?.username_a} vs {detail.data?.username_b} · {detail.data?.created_at}</div><span className="match-detail-format"><i className={`fas ${detail.data?.detail_output?.format === 'html' ? 'fa-code' : 'fa-align-left'}`} /><span>{detail.data?.detail_output?.format === 'html' ? '互动页面' : '文本'}</span></span></div><h6 className="match-detail-heading">评测脚本给出的胜负理由</h6>{detail.data?.detail_output?.format === 'html' ? <iframe className="match-detail-html-frame" title="评分脚本生成的互动对战详情" sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={detail.data.detail_output.content || ''} style={{width: '100%', height: detail.data.detail_output.height || 520}} /> : <pre className="match-detail-text">{detail.data?.detail_output?.content}</pre>}</>}</div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={() => setDetailId(null)}>关闭</button></div></div></div></div><div className="modal-backdrop fade show" /></> : null}</section>
+  <MatchDetailModal open={detailId != null} detail={detail.data} pending={detail.isPending} error={detail.isError ? detail.error : null} onClose={() => setDetailId(null)} /></section>
 }
 
 function AppealsPanel({data}: {data: Response}) {
@@ -679,9 +684,7 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   return <>
     <div className="card mb-3"><div className="card-header"><i className="fas fa-robot me-2" /> {reverse ? 'AI 作答端点' : 'AI 评测模型端点'}</div><div className="card-body aje"><div className="aje-shell"><div className="aje-head"><div><div className="aje-title">{reverse ? 'AI 作答端点池' : '端点池'}</div></div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{endpoints.length} 个端点</span><span className="aje-total">并发 <b>{total(endpoints)}</b></span></div><button type="button" className="aje-add" title="添加端点" aria-label="添加端点" onClick={() => openNew('main')}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{endpoints.length ? endpoints.map((endpoint, index) => <EndpointCard endpoint={endpoint} onEdit={() => setEditor({kind: 'main', index, value: {...endpoint}})} key={String(endpoint.id || index)} />) : <div className="aje-empty">暂无端点</div>}</div><div className="aje-foot"><div className={`aje-settings${reverse ? ' reverse-timeout-settings' : ''}`}>{timeoutControl(reverse ? 'AI 作答超时' : '单次评测超时', 'fa-clock', timeout, setTimeoutValue, 60, 60)}{reverse ? timeoutControl('收尾超时', 'fa-hourglass-end', finalizeTimeout, setFinalizeTimeout, 30, 30) : <div className="aje-setting aje-mode"><span className="aje-setting-label"><i className="fas fa-diagram-project me-2" />编排</span><AjeChoice value={orchestration} onChange={setOrchestration} label="评测编排" options={[{value: 'single', label: '一次性评测', icon: 'fa-layer-group'}, {value: 'topological', label: '拓扑序编排', icon: 'fa-diagram-project'}]} /></div>}</div><div className="aje-actions"><span className="small">{save.isError ? errorMessage(save.error) : save.isSuccess ? '已保存' : ''}</span><button type="button" className="aje-save" disabled={save.isPending} onClick={() => save.mutate()}><i className="fas fa-save me-2" />保存</button></div></div></div></div></div>
     {reverse ? <div className="card mb-3"><div className="card-header"><i className="fas fa-shield-halved me-2" /> 质量门禁</div><div className="card-body aje"><div className="qge-config"><div className="qge-config-head"><span className="qge-config-title">审核标准</span><div className="form-check form-switch qge-switch"><input className="form-check-input" type="checkbox" id="qgeEnabled" checked={gateEnabled} onChange={(event) => setGateEnabled(event.target.checked)} /><label className="form-check-label" htmlFor="qgeEnabled">启用</label></div></div><textarea className="qge-prompt" maxLength={20000} aria-label="质量门禁审核标准" value={gatePrompt} onChange={(event) => setGatePrompt(event.target.value)} /></div><div className="aje-shell qge-shell"><div className="aje-head"><div className="aje-title">审核端点池</div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{gateEndpoints.length} 个端点</span><span className="aje-total">并发 <b>{total(gateEndpoints)}</b></span></div><button type="button" className="aje-add" title="添加端点" aria-label="添加质量门禁端点" onClick={() => openNew('gate')}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{gateEndpoints.length ? gateEndpoints.map((endpoint, index) => <EndpointCard endpoint={endpoint} onEdit={() => setEditor({kind: 'gate', index, value: {...endpoint}})} key={String(endpoint.id || index)} />) : <div className="aje-empty">暂无端点</div>}</div><div className="aje-foot"><div /><div className="aje-actions"><span className="small">{saveGate.isError ? errorMessage(saveGate.error) : saveGate.isSuccess ? '已保存' : ''}</span><button type="button" className="aje-save" disabled={saveGate.isPending} onClick={() => saveGate.mutate()}><i className="fas fa-save me-2" />保存</button></div></div></div></div></div> : null}
-    {editor ? <>
-      <div className="modal fade aje-modal show d-block" role="dialog" aria-modal="true" aria-labelledby="ajeEditModalLabel">
-        <div className="modal-dialog modal-lg modal-dialog-scrollable"><div className="modal-content">
+    {editor ? <ReactModal open onClose={() => setEditor(null)} id="ajeEditModal" labelledBy="ajeEditModalLabel" className="aje-modal" dialogClassName="modal-lg modal-dialog-scrollable"><div className="modal-content">
           <div className="modal-header"><h5 className="modal-title" id="ajeEditModalLabel">{editor.index < 0 ? '添加' : '编辑'}{editor.kind === 'gate' ? '质量门禁端点' : '端点'}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={() => setEditor(null)} /></div>
           <div className="modal-body"><div className={`aje-modal-grid${editor.index < 0 ? ' is-add' : ''}`}>
             <div className="aje-modal-field aje-col-pick"><span>Agent Harness</span><AjeChoice value={editorHarness} onChange={changeEditorHarness} label="Agent Harness" options={harnessOptions} /></div>
@@ -700,10 +703,8 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
             <div className="aje-modal-field aje-col-4"><span id="ajeEditThinkingLabel">Thinking 兼容</span><div className="aje-thinking-compatibility"><div className="form-check form-switch"><input className="form-check-input" type="checkbox" aria-labelledby="ajeEditThinkingLabel" checked={editor.value.thinking_compatibility !== false} onChange={(event) => updateEditorValue({thinking_compatibility: event.target.checked})} /></div></div></div>
           </div></div>
           <div className="modal-footer d-flex justify-content-between">{editor.index >= 0 ? <button type="button" className="aje-modal-delete" onClick={deleteEditor}><i className="fas fa-trash-can" /> 删除端点</button> : null}<div className="aje-modal-footer-actions"><button type="button" className="aje-modal-cancel" onClick={() => setEditor(null)}>取消</button><button type="button" className="aje-modal-apply" onClick={applyEditor}><i className="fas fa-check" /> 应用修改</button></div></div>
-        </div></div>
-      </div>
-      <div className="modal-backdrop fade show" />
-    </> : null}
+        </div>
+    </ReactModal> : null}
   </>
 }
 
@@ -794,7 +795,7 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
       const blocked = linkMode && linkSource != null && linkSource !== id && !canAddEdge(linkSource, id)
       return <button type="button" className={`aj-topo-node${deleteMode && deleteSelection.includes(index) ? ' delete-selected' : ''}${linkMode && linkSource === id ? ' link-source' : linkMode && linkSource != null && !blocked ? ' link-target' : blocked ? ' link-blocked' : linkMode ? ' link-ready' : ''}`} title={String(rule.rule_text || '未填写规则内容')} style={{left: position.x, top: position.y}} onClick={() => clickNode(index)} key={id}><span className="aj-topo-node-id">规则 {id} · {numberValue(rule.value)} 分</span><span className="aj-topo-node-title">{String(rule.rule_name || '').trim() || compact(rule.rule_text, 14)}</span><span className="aj-topo-node-text">{compact(rule.rule_text, 42)}</span></button>
     })}</div></div>}</div></div><aside className="aj-topo-panel" aria-label="拓扑工具"><div className="aj-topo-actions"><button type="button" className="aj-topo-icon-btn" aria-label="增加节点" title="增加节点" disabled={deleteMode} onClick={() => {setRules((current) => [...current, {rule_id: current.length + 1, rule_name: '', rule_text: '', value: 0, dependencies: []}]); setModalIndex(rules.length)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><path d="M12 9v6M9 12h6M12 2v3M12 19v3M2 12h3M19 12h3" /></svg></button><div className="aj-topo-delete-wrap"><button type="button" className={`aj-topo-icon-btn${deleteMode ? ' delete-active' : ''}`} aria-label="删除节点" title="删除节点" disabled={!rules.length} onClick={() => {setDeleteMode((current) => !current); setDeleteSelection([]); setLinkMode(false); setLinkSource(null)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg></button><button type="button" className={`aj-topo-confirm-btn${deleteMode ? ' show' : ''}`} aria-label="确认删除" title="确认删除" disabled={!deleteSelection.length} onClick={deleteSelectedNodes}><i className="fas fa-check" /></button></div><button type="button" className={`aj-topo-icon-btn${linkMode ? ' active' : ''}`} aria-label="添加连接" title="添加连接" disabled={rules.length < 2 || deleteMode} onClick={() => {setLinkMode((current) => !current); setLinkSource(null); setSelectedEdge(null)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="12" r="2.5" /><path d="M8 12h8.5M14 8.5 17.5 12 14 15.5" /><circle cx="20" cy="12" r="2.5" /></svg></button><button type="button" className="aj-topo-icon-btn" aria-label="简化拓扑关系" title="简化拓扑关系" disabled={!rules.length || deleteMode} onClick={simplify}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="17" r="2" /><circle cx="12" cy="7" r="2" /><circle cx="19" cy="17" r="2" /><path d="M6.5 15.2 10.5 8.8M13.5 8.8 17.5 15.2M7.5 17h9" /></svg></button></div></aside></div>
-    {modalRule && modalIndex != null ? <><div className="modal fade aj-rule-modal show d-block" role="dialog" aria-modal="true" aria-labelledby="ajRuleModalLabel"><div className="modal-dialog modal-lg modal-dialog-scrollable"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="ajRuleModalLabel">编辑规则 {numberValue(modalRule.rule_id, modalIndex + 1)}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={() => setModalIndex(null)} /></div><div className="modal-body"><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalName">规则名称</label><input type="text" className="form-control" id="ajRuleModalName" maxLength={120} placeholder="规则名称" value={String(modalRule.rule_name || '')} onChange={(event) => updateModalRule('rule_name', event.target.value)} /></div><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalText">规则原文</label><textarea className="form-control" id="ajRuleModalText" placeholder="用自然语言描述这条评分规则……" value={String(modalRule.rule_text || '')} onChange={(event) => updateModalRule('rule_text', event.target.value)} /></div><div><label className="form-label" htmlFor="ajRuleModalValue">分值</label><input type="number" min={0} step={0.5} className="form-control" id="ajRuleModalValue" value={numberValue(modalRule.value)} onChange={(event) => updateModalRule('value', numberValue(event.target.value))} /></div></div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={() => setModalIndex(null)}>取消</button><button type="button" className="btn btn-success" onClick={() => setModalIndex(null)}>保存修改</button></div></div></div></div><div className="modal-backdrop fade show" /></> : null}
+    {modalRule && modalIndex != null ? <ReactModal open onClose={() => setModalIndex(null)} id="ajRuleModal" labelledBy="ajRuleModalLabel" className="aj-rule-modal" dialogClassName="modal-lg modal-dialog-scrollable"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="ajRuleModalLabel">编辑规则 {numberValue(modalRule.rule_id, modalIndex + 1)}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={() => setModalIndex(null)} /></div><div className="modal-body"><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalName">规则名称</label><input type="text" className="form-control" id="ajRuleModalName" maxLength={120} placeholder="规则名称" value={String(modalRule.rule_name || '')} onChange={(event) => updateModalRule('rule_name', event.target.value)} /></div><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalText">规则原文</label><textarea className="form-control" id="ajRuleModalText" placeholder="用自然语言描述这条评分规则……" value={String(modalRule.rule_text || '')} onChange={(event) => updateModalRule('rule_text', event.target.value)} /></div><div><label className="form-label" htmlFor="ajRuleModalValue">分值</label><input type="number" min={0} step={0.5} className="form-control" id="ajRuleModalValue" value={numberValue(modalRule.value)} onChange={(event) => updateModalRule('value', numberValue(event.target.value))} /></div></div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={() => setModalIndex(null)}>取消</button><button type="button" className="btn btn-success" onClick={() => setModalIndex(null)}>保存修改</button></div></div></ReactModal> : null}
   </>
 }
 
@@ -832,6 +833,7 @@ function EditPanel({data}: {data: Response}) {
   const [referenceFile, setReferenceFile] = useState<File | null>(null)
   const [scriptFile, setScriptFile] = useState<File | null>(null)
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
+  const [attachmentPreview, setAttachmentPreview] = useState<RankingMediaTarget | null>(null)
   const save = useMutation({
     mutationFn: (body: FormData) => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${competition.id}`, {method: 'POST', body}),
     onSuccess: () => queryClient.invalidateQueries({queryKey: ['ranking', String(competition.id)]}),
@@ -877,9 +879,10 @@ function EditPanel({data}: {data: Response}) {
   {mode === 'absolute' || mode === 'elo' ? uploadCard(<><i className="fas fa-scroll me-2" /> 评测脚本（.py，必填）</>, scriptName ? <span className="text-success"><i className="fas fa-check-circle me-2" />{scriptName}</span> : <span className="text-warning"><i className="fas fa-exclamation-triangle me-2" />评测脚本必填</span>, 'scoring-script', 'scoring_script', scriptFile, setScriptFile, '.py') : null}
   {mode === 'agent_judge' || mode === 'reverse_judge' ? <AgentJudgeSettings data={data} reverse={mode === 'reverse_judge'} /> : null}
   {mode === 'agent_judge' ? <AgentRulesSettings data={data} /> : null}
-  <div className="card mb-3"><div className="card-header"><i className="fas fa-paperclip me-2" /> 附件</div><div className="card-body"><div className="row g-2 mb-3"><div className="col"><input type="file" className="form-control" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} /></div><div className="col-auto"><button type="button" className="btn btn-outline-primary" disabled={upload.isPending} onClick={(event) => {if (attachmentFile) upload.mutate({path: 'attachments', field: 'attachment', file: attachmentFile}); else event.currentTarget.closest('.row')?.querySelector<HTMLInputElement>('input[type=file]')?.click()}}><i className="fas fa-cloud-upload-alt me-1" /> 上传附件</button></div></div>{files.length ? <div className="list-group">{files.map((file) => <div className="list-group-item d-flex justify-content-between align-items-center" key={file.id}><div><i className="fas fa-file me-2" />{file.filename}<small className="text-muted ms-2">{Math.floor(numberValue(file.file_size) / 1024)} KB · {String(file.uploaded_at || '')}</small></div><div>{file.media_kind ? <a className="btn btn-sm btn-outline-primary me-1" href={`${file.download_url}?inline=1`} target="_blank" rel="noreferrer"><i className={`fas ${file.media_kind === 'video' ? 'fa-play' : 'fa-eye'}`} /></a> : null}<a href={file.download_url} className="btn btn-sm btn-outline-primary me-1" download><i className="fas fa-download" /></a><button type="button" className="btn btn-sm btn-outline-danger" onClick={() => {if (window.confirm(`删除附件：${file.filename} ?`)) command.mutate({path: `attachments/${file.id}`, method: 'DELETE'})}}><i className="fas fa-trash" /></button></div></div>)}</div> : <p className="text-muted mb-0">暂无附件。</p>}{upload.isError ? <div className="small text-danger mt-3">{errorMessage(upload.error)}</div> : null}</div></div>
+  <div className="card mb-3"><div className="card-header"><i className="fas fa-paperclip me-2" /> 附件</div><div className="card-body"><div className="row g-2 mb-3"><div className="col"><input type="file" className="form-control" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} /></div><div className="col-auto"><button type="button" className="btn btn-outline-primary" disabled={upload.isPending} onClick={(event) => {if (attachmentFile) upload.mutate({path: 'attachments', field: 'attachment', file: attachmentFile}); else event.currentTarget.closest('.row')?.querySelector<HTMLInputElement>('input[type=file]')?.click()}}><i className="fas fa-cloud-upload-alt me-1" /> 上传附件</button></div></div>{files.length ? <div className="list-group">{files.map((file) => <div className="list-group-item d-flex justify-content-between align-items-center" key={file.id}><div><i className="fas fa-file me-2" />{file.filename}<small className="text-muted ms-2">{Math.floor(numberValue(file.file_size) / 1024)} KB · {String(file.uploaded_at || '')}</small></div><div>{file.media_kind ? <button type="button" className="btn btn-sm btn-outline-primary me-1 rk-media-btn" title={`${file.media_kind === 'video' ? '播放' : '查看'} ${file.filename}`} onClick={() => setAttachmentPreview({filename: file.filename, mediaKind: file.media_kind || 'image', inlineUrl: `${file.download_url}?inline=1`, downloadUrl: file.download_url})}><i className={`fas ${file.media_kind === 'video' ? 'fa-play' : 'fa-eye'}`} /></button> : null}<a href={file.download_url} className="btn btn-sm btn-outline-primary me-1" download><i className="fas fa-download" /></a><button type="button" className="btn btn-sm btn-outline-danger" onClick={() => {if (window.confirm(`删除附件：${file.filename} ?`)) command.mutate({path: `attachments/${file.id}`, method: 'DELETE'})}}><i className="fas fa-trash" /></button></div></div>)}</div> : <p className="text-muted mb-0">暂无附件。</p>}{upload.isError ? <div className="small text-danger mt-3">{errorMessage(upload.error)}</div> : null}</div></div>
   {mode === 'elo' ? <div className="card mb-3"><div className="card-header d-flex justify-content-between align-items-center"><span><i className="fas fa-toggle-on me-2" /> 动态评分运行控制</span><span className={`badge ${eloRunning ? 'bg-success' : 'bg-secondary'}`}><i className={`${eloRunning ? 'fas' : 'far'} fa-circle me-1`} /> {eloRunning ? '运行中' : '已停止'}</span></div><div className="card-body"><div className="d-flex flex-wrap gap-2"><button type="button" className="btn btn-success" disabled={eloRunning || command.isPending} onClick={() => command.mutate({path: 'elo/start'})}><i className="fas fa-play me-1" /> 启动动态评分</button><button type="button" className="btn btn-warning" disabled={!eloRunning || command.isPending} onClick={() => command.mutate({path: 'elo/stop'})}><i className="fas fa-pause me-1" /> 停止动态评分</button><button type="button" className="btn btn-outline-danger" disabled={command.isPending} onClick={() => {if (window.confirm(`重置后将清空本场赛事的全部对战历史，并把池中所有提交的 ELO 分恢复到初始分（${numberValue(competition.elo_initial_rating, 1500).toFixed(0)}）。该操作不可撤销，确认重置吗？`)) command.mutate({path: 'elo/reset'})}}><i className="fas fa-undo me-1" /> 重置动态评分</button></div></div></div> : null}
   <div className="card border-danger"><div className="card-header text-danger"><i className="fas fa-exclamation-triangle me-2" /> 危险操作</div><div className="card-body"><button type="button" className="btn btn-outline-danger" disabled={removeCompetition.isPending} onClick={() => {if (window.confirm(`删除后将同时清除比赛的全部提交与附件，且无法恢复。确认删除 ${competition.title} 吗？`)) removeCompetition.mutate()}}><i className="fas fa-trash me-1" /> 删除比赛</button></div></div>
+  <MediaPreviewModal target={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
   </section>
 }
 

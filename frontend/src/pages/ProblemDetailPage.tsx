@@ -11,6 +11,7 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {LeanWorkbench, type LeanWorkbenchController} from '../components/LeanWorkbench'
 import {ReactModal} from '../components/ReactModal'
+import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {useSession} from '../session'
 
 interface DetailResponse extends ApiEnvelope {
@@ -29,6 +30,9 @@ interface DetailResponse extends ApiEnvelope {
 interface LastCodeResponse extends ApiEnvelope {code: string; submission_id: number; files?: Record<string, string>}
 interface ScoresResponse extends ApiEnvelope {problem_id: number; problem_title: string; max_score: number; scores: JsonRecord[]}
 interface RejudgeStatusResponse extends ApiEnvelope {progress: number; done: number; total: number}
+interface DeadlineWarningResponse extends ApiEnvelope {submit_warning?: JsonRecord}
+interface AgentLaunchOptions extends ApiEnvelope {harnesses?: JsonRecord[]; endpoints_by_harness?: Record<string, JsonRecord[]>; preference?: JsonRecord}
+interface AgentLaunchResponse extends ApiEnvelope {task_id?: string; view_url?: string}
 
 const abbreviations: Record<string, string> = {'Accepted': 'AC', 'Wrong Answer': 'WA', 'Unaccepted': 'UA', 'Compile Error': 'CE', 'Runtime Error': 'RE', 'Time Limit Exceeded': 'TL', 'Memory Limit Exceeded': 'ML', 'Output Limit Exceeded': 'OL', 'Forbidden': 'FB', 'No Output': 'NO', 'Nonzero Exit Status': 'NZ', 'Pending': 'PD', 'Waiting': 'WT', 'Running': 'RN', 'Generating': 'GN', 'Error': 'ER'}
 
@@ -179,6 +183,58 @@ function ScoresModal({open, onClose, data, pending, error}: {open: boolean; onCl
   return <ReactModal open={open} onClose={onClose} id="scoresModal" labelledBy="scoresModalLabel" dialogClassName="modal-lg"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="scoresModalLabel"><i className="fas fa-chart-bar me-2" /> 用户得分统计</h5><button type="button" className="btn-close" onClick={onClose} aria-label="关闭" /></div><div className="modal-body">{pending ? <div className="text-center"><MathCurveLoader size="md" label="正在加载用户得分…" /></div> : error ? <div className="alert alert-danger"><i className="fas fa-exclamation-triangle me-2" /><span>{errorMessage(error)}</span></div> : data ? <><div className="mb-3"><h6>{data.problem_id}. {data.problem_title}</h6><p className="text-muted mb-1">满分: <span>{data.max_score}</span> 分</p><p className="text-muted mb-0">平均分: <span>{average}</span> 分</p></div><div className="table-responsive"><table className="table table-striped table-hover"><thead className="table-dark"><tr><th>用户名</th><th>班级</th><th>得分</th><th>状态</th></tr></thead><tbody>{data.scores.map((row) => {const score = Number(row.score || 0); const status = score === Number(data.max_score) ? ['满分', 'text-success'] : score > 0 ? ['部分正确', 'text-warning'] : ['未通过', 'text-danger']; return <tr key={String(row.user_id)}><td>{String(row.username || '')}</td><td>{String(row.classes_display || '')}</td><td>{String(row.score ?? '')}</td><td className={status[1]}>{status[0]}</td></tr>})}</tbody></table></div></> : null}</div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={onClose}>关闭</button></div></div></ReactModal>
 }
 
+function AgentLaunchChoice({label, value, options, disabled, onChange}: {label: string; value: string; options: Array<{value: string; label: string; icon: string; meta?: string}>; disabled?: boolean; onChange: (value: string) => void}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useDismissibleDropdown<HTMLDivElement>(open, () => setOpen(false))
+  const selected = options.find((item) => item.value === value)
+  return <div className="agent-launch-field"><span className="agent-launch-field-label">{label}</span><div ref={rootRef} className={`rk-choice agent-launch-choice${open ? ' open' : ''}`}><button type="button" className="rk-choice-trigger" role="combobox" aria-haspopup="listbox" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}><span className="rk-choice-trigger-main"><i className={selected?.icon || (disabled ? 'fas fa-circle-notch fa-spin' : 'fas fa-unlink')} aria-hidden="true" /><span>{selected?.label || (disabled ? '正在加载…' : '无兼容节点')}</span></span><i className="fas fa-chevron-down rk-choice-caret" aria-hidden="true" /></button><div className="rk-choice-menu" role="listbox" aria-label={label} hidden={!open}>{options.map((item) => <button type="button" className={`rk-choice-option${item.value === value ? ' active' : ''}`} role="option" aria-selected={item.value === value} key={item.value} onClick={() => {onChange(item.value); setOpen(false)}}><span className="rk-choice-option-main"><i className={item.icon} aria-hidden="true" /><span><span className="rk-choice-option-name">{item.label}</span>{item.meta ? <span className="rk-choice-option-meta">{item.meta}</span> : null}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div></div>
+}
+
+function AgentLaunchModal({problemId, kind, maxScore, open, onClose, navigate}: {problemId: number; kind: 'solve' | 'testdata'; maxScore: number; open: boolean; onClose: () => void; navigate: ReturnType<typeof useNavigate>}) {
+  const [harness, setHarness] = useState('')
+  const [endpointId, setEndpointId] = useState('')
+  const [testPointCount, setTestPointCount] = useState(Math.max(1, maxScore || 10))
+  const [requirement, setRequirement] = useState('')
+  const [solution, setSolution] = useState<File | null>(null)
+  const options = useQuery({queryKey: ['problem-agent-launch-options', kind], queryFn: () => apiFetch<AgentLaunchOptions>(`/api/agent/launch-options?task_kind=${kind}`), enabled: open, staleTime: 0})
+  const harnesses = options.data?.harnesses || []
+  const endpointsByHarness = options.data?.endpoints_by_harness || {}
+  const endpoints = endpointsByHarness[harness] || endpointsByHarness[harness.replaceAll('-', '_')] || []
+  useEffect(() => {
+    if (!open || !options.data) return
+    const preferredHarness = String(options.data.preference?.harness || '')
+    const firstHarness = harnesses.find((item) => String(item.value || item.key || item.harness) === preferredHarness && (endpointsByHarness[preferredHarness] || []).length) || harnesses.find((item) => (endpointsByHarness[String(item.value || item.key || item.harness)] || []).length) || harnesses[0]
+    const nextHarness = String(firstHarness?.value || firstHarness?.key || firstHarness?.harness || '')
+    const nextEndpoints = endpointsByHarness[nextHarness] || []
+    const preferredEndpoint = String(options.data.preference?.endpoint_id || '')
+    setHarness(nextHarness)
+    setEndpointId(nextEndpoints.some((item) => String(item.id) === preferredEndpoint) ? preferredEndpoint : String(nextEndpoints[0]?.id || ''))
+  }, [endpointsByHarness, harnesses, open, options.data])
+  useEffect(() => {
+    if (open) return
+    setRequirement(''); setSolution(null); setTestPointCount(Math.max(1, maxScore || 10))
+  }, [maxScore, open])
+  const launch = useMutation({
+    mutationFn: () => {
+      if (kind === 'solve') return apiFetch<AgentLaunchResponse>(`/api/problems/${problemId}/agent/solve`, {method: 'POST', body: JSON.stringify({harness, endpoint_id: Number(endpointId)})})
+      const form = new FormData()
+      form.append('harness', harness); form.append('endpoint_id', endpointId); form.append('test_point_count', String(testPointCount)); form.append('data_requirement', requirement)
+      if (solution) form.append('standard_solution', solution, solution.name)
+      return apiFetch<AgentLaunchResponse>(`/api/problems/${problemId}/agent/generate-testdata`, {method: 'POST', body: form})
+    },
+    onSuccess: (payload) => {
+      const target = payload.view_url?.replace(/^\/agent\/tasks\//, '/agents/') || (payload.task_id ? `/agents/${payload.task_id}` : '/agents')
+      navigate(target)
+    },
+  })
+  const harnessOptions = harnesses.map((item) => {const value = String(item.value || item.key || item.harness || item.id || ''); const key = value.toLowerCase().replaceAll('-', '_'); const logo = key === 'claude_code' ? 'claude-code' : key === 'open_code' ? 'opencode' : key; return {value, label: String(item.label || item.name || value), icon: `harness-logo harness-logo--${logo}`}})
+  const endpointOptions = endpoints.map((item) => {const protocol = String(item.protocol || ''); const category = String(item.category || ''); return {value: String(item.id), label: String(item.model || `节点 #${item.id}`), icon: 'fas fa-microchip', meta: [`节点 #${item.id}`, protocol === 'anthropic' ? 'Anthropic 兼容' : protocol === 'openai' ? 'OpenAI 兼容' : protocol, category === 'omni' ? '全模态' : category === 'text' ? '纯文本' : category === 'vision' ? '视觉理解' : category].filter(Boolean).join(' · ')}})
+  const selectHarness = (value: string) => {setHarness(value); setEndpointId(String((endpointsByHarness[value] || [])[0]?.id || ''))}
+  const ready = Boolean(harness && endpointId && (kind === 'solve' || (solution && Number.isInteger(testPointCount) && testPointCount > 0)))
+  const title = kind === 'solve' ? '解题 Agent' : '造数据 Agent'
+  return <ReactModal open={open} onClose={onClose} id={kind === 'solve' ? 'agentSolveModal' : 'agentGenerateDataModal'} labelledBy={kind === 'solve' ? 'agentSolveModalLabel' : 'agentGenerateDataModalLabel'} className="agent-launch-modal" dialogClassName="modal-dialog-centered"><div className="modal-content"><div className="modal-header"><div className="agent-launch-heading"><span className="agent-launch-heading-icon"><i className={`fas ${kind === 'solve' ? 'fa-terminal' : 'fa-database'}`} /></span><div><p className="agent-launch-eyebrow">{kind === 'solve' ? 'PROBLEM AGENT' : 'TESTDATA AGENT'}</p><h5 className="modal-title" id={kind === 'solve' ? 'agentSolveModalLabel' : 'agentGenerateDataModalLabel'}>{title}</h5></div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="agent-launch-selector-grid"><AgentLaunchChoice label="Harness" value={harness} options={harnessOptions} disabled={options.isPending || launch.isPending || !harnessOptions.length} onChange={selectHarness} /><AgentLaunchChoice label="LLM 节点" value={endpointId} options={endpointOptions} disabled={options.isPending || launch.isPending || !endpointOptions.length} onChange={setEndpointId} /></div>{options.isPending ? <div className="agent-launch-feedback is-loading" role="status">正在读取可用的 Harness 和 LLM 节点…</div> : options.isError ? <div className="agent-launch-feedback is-error" role="status">{errorMessage(options.error)}</div> : !harnessOptions.length ? <div className="agent-launch-feedback is-error" role="status">当前没有可用的 Harness。</div> : harness && !endpointOptions.length ? <div className="agent-launch-feedback is-error" role="status">该 Harness 暂无兼容的 LLM 节点，请选择其他 Harness。</div> : launch.isError ? <div className="agent-launch-feedback is-error" role="status">{errorMessage(launch.error)}</div> : null}{kind === 'testdata' ? <><div className="agent-launch-divider" /><div className="agent-launch-data-grid"><div className="agent-launch-field agent-launch-count-field"><label className="agent-launch-field-label" htmlFor="agentTestPointCount">测试点数量</label><input type="number" min={1} step={1} className="form-control" id="agentTestPointCount" value={testPointCount} onChange={(event) => setTestPointCount(Number(event.target.value))} /></div><div className="agent-launch-field"><label className="agent-launch-field-label" htmlFor="agentDataRequirement">测试点要求</label><textarea className="form-control" id="agentDataRequirement" rows={3} value={requirement} onChange={(event) => setRequirement(event.target.value)} /></div><div className="agent-launch-field agent-launch-solution-field"><span className="agent-launch-field-label">正解</span><div className={`agent-launch-file${solution ? ' has-file' : ''}`}><input type="file" className="visually-hidden" id="agentStandardSolution" disabled={launch.isPending} onChange={(event) => setSolution(event.target.files?.[0] || null)} /><label className="agent-launch-file-trigger" htmlFor="agentStandardSolution"><span className="agent-launch-file-icon"><i className="fas fa-file-code" /></span><span className="agent-launch-file-copy"><span className="agent-launch-file-title">{solution ? '已选择正解' : '选择正解文件'}</span><span className="agent-launch-file-name">{solution?.name || '尚未选择文件'}</span></span><span className="agent-launch-file-action">{solution ? '重新选择' : '选择文件'}</span></label></div></div></div></> : null}</div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={onClose}>取消</button><button type="button" className="btn btn-primary" disabled={!ready || launch.isPending} onClick={() => launch.mutate()}>{launch.isPending ? <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" /> : <i className="fas fa-play me-2" />}{launch.isPending ? '启动中…' : kind === 'solve' ? '启动解题' : '启动造数据'}</button></div></div></ReactModal>
+}
+
 export default function ProblemDetailPage() {
   const {problemId} = useParams()
   const {session} = useSession()
@@ -190,6 +246,10 @@ export default function ProblemDetailPage() {
   const [rejudgePolling, setRejudgePolling] = useState(false)
   const [rejudgeProgress, setRejudgeProgress] = useState({percent: 0, done: 0, total: 0})
   const [adminModal, setAdminModal] = useState<'upload' | 'scores' | 'rejudge' | null>(null)
+  const [deadlineWarning, setDeadlineWarning] = useState<JsonRecord | null>(null)
+  const [deadlineWarningError, setDeadlineWarningError] = useState('')
+  const [deadlineChecking, setDeadlineChecking] = useState(false)
+  const [agentModal, setAgentModal] = useState<'solve' | 'testdata' | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const leanControllerRef = useRef<LeanWorkbenchController | null>(null)
   const pageRef = useRef<HTMLDivElement>(null)
@@ -206,7 +266,7 @@ export default function ProblemDetailPage() {
   const detailIsLean4 = Boolean(detail.data && Number(detail.data.problem.type || 1) === 1 && ['lean', 'lean4'].includes(String(detail.data.problem.lang || '').toLowerCase()))
   useProblemDetailLayout(pageRef, detail.data ? problemId : undefined, detailIsLean4)
   const submit = useMutation({
-    mutationFn: async () => {
+    mutationFn: async ({deadlineAck = false}: {deadlineAck?: boolean} = {}) => {
       if (!detail.data) throw new Error('题目上下文尚未加载')
       const form = new FormData()
       if (detail.data.submit.input_kind === 'lean_workspace') {
@@ -218,6 +278,7 @@ export default function ProblemDetailPage() {
         if (!file) throw new Error('请先选择文件')
         form.append(detail.data.submit.input_name, file)
       } else form.append(detail.data.submit.input_name, text)
+      if (deadlineAck) form.append('deadline_warning_ack', '1')
       return apiFetch<ApiEnvelope & {submission_id?: number}>(detail.data.submit.action, {method: 'POST', body: form})
     },
     onSuccess: async (payload) => {await queryClient.invalidateQueries({queryKey: ['submissions']}); if (payload.submission_id) navigate(`/submissions/${payload.submission_id}`)},
@@ -285,7 +346,21 @@ export default function ProblemDetailPage() {
   const writtenIsZip = writtenMode === 3 || String(data.submit.accept || '').toLowerCase().includes('zip')
   const writtenFileKind = writtenIsZip ? 'ZIP' : 'PDF'
   const lang = languageLabel(problem.lang)
-  const submitForm = (event: FormEvent) => {event.preventDefault(); submit.mutate()}
+  const submitForm = async (event: FormEvent) => {
+    event.preventDefault()
+    if (session?.user?.is_admin) {submit.mutate({deadlineAck: true}); return}
+    setDeadlineChecking(true)
+    setDeadlineWarningError('')
+    try {
+      const payload = await apiFetch<DeadlineWarningResponse>(`/api/problems/${problemId}/deadline-warning`)
+      const warning = payload.submit_warning
+      if (warning && Array.isArray(warning.homeworks) && warning.homeworks.length) setDeadlineWarning(warning)
+      else submit.mutate({deadlineAck: true})
+    } catch {
+      setDeadlineWarning({homeworks: []})
+      setDeadlineWarningError('暂时无法确认作业截止状态，请关闭提示后重试。')
+    } finally {setDeadlineChecking(false)}
+  }
   const acceptWrittenDrop = (files: FileList | null) => {
     const input = fileRef.current
     const file = files?.[0]
@@ -306,7 +381,7 @@ export default function ProblemDetailPage() {
       <div id="problemMeta" data-problem-id={problem.id} style={{display: 'none'}} />
       <div className="col-md-6 mb-3 problem-col-left" id="problemStatementPane">
           <div className="problem-header mb-3"><div className={`problem-heading-layout${data.last_submissions?.length ? ' has-recent-submissions' : ''}`}><div className="problem-heading-info"><div className="numoj-problem-kickers d-flex"><span>{programming ? '编程题' : '书面题'}</span>{problem.lang ? <span>{lang}</span> : null}</div><div className="problem-title-row"><h2 className="mb-0 problem-title-singleline" id="problemTitleHeading"><strong className="problem-number">{problem.id}.</strong><span className="problem-title-text">{problem.title}</span></h2></div>{session?.user?.is_admin ? <div className="problem-admin-actions mt-2">
-            {programming ? <><Link to={`/agents?problem_id=${problem.id}&mode=solve`} className="btn btn-outline-primary"><i className="fas fa-robot me-1" /> 解题</Link>{!isLean4 && Number(data.submit.programming_grading_mode || 1) === 1 ? <Link to={`/agents?problem_id=${problem.id}&mode=testdata`} className="btn btn-outline-primary"><i className="fas fa-robot me-1" /> 造数据</Link> : null}</> : null}
+            {programming ? <><button type="button" className="btn btn-outline-primary" title="AI Agent 自动解题" onClick={() => setAgentModal('solve')}><i className="fas fa-robot me-1" /> 解题</button>{!isLean4 && Number(data.submit.programming_grading_mode || 1) === 1 ? <button type="button" className="btn btn-outline-primary" onClick={() => setAgentModal('testdata')}><i className="fas fa-robot me-1" /> 造数据</button> : null}</> : null}
             <Link to={`/admin/problems/${problem.id}/edit`} className="btn btn-outline-warning me"><i className="fas fa-pencil-alt me-1" /> 编辑</Link>
             {isLean4 ? <><button type="button" className="btn btn-outline-warning" onClick={() => setAdminModal('upload')}><i className="fas fa-folder-open me-1" /> {data.lean_workspace ? '更新题目包' : '上传题目包'}</button>{data.lean_workspace ? <a href={`/api/admin/problems/${problem.id}/lean-workspace/download`} download className="btn btn-outline-secondary"><i className="fas fa-download me-1" /> v{data.lean_workspace.revision_number}</a> : null}</> : <button type="button" className="btn btn-outline-warning" onClick={() => setAdminModal('upload')}><i className="fas fa-cloud-upload-alt me-1" /> 上传</button>}
             <button type="button" className="btn btn-outline-danger" onClick={() => {if (window.confirm('确认要重测本题的所有提交吗？')) rejudge.mutate()}} disabled={rejudge.isPending}><i className="fas fa-redo-alt me-1" /> 重测</button><button type="button" className="btn btn-outline-info" onClick={() => {setAdminModal('scores'); scores.reset(); scores.mutate()}}><i className="fas fa-chart-bar me-1" /> 统计</button>
@@ -317,10 +392,10 @@ export default function ProblemDetailPage() {
       <div className="col-md-6 problem-col-right" id="problemSubmissionPane">
         <form className={`mb-4 problem-submit-form ${isPrompt ? 'problem-prompt-submit-form' : programming ? 'problem-code-submit-form' : 'problem-written-submit-form'}`} onSubmit={submitForm}>
           {programming ? <>
-            <div className="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar"><label className="form-label mb-0 code-label-wrap"><span className="code-title-line"><i className={`fas ${isPrompt ? 'fa-terminal' : isLean4 ? 'fa-square-root-alt' : 'fa-code'} me-2`} /> {isPrompt ? 'Prompt' : isLean4 ? 'Lean 4 工作区' : '代码'}</span><span className="code-meta-line">{problem.lang ? <span className="badge bg-secondary"><i className="fas fa-language me-2" />{lang}</span> : null}<span className="badge bg-secondary"><i className="fas fa-stopwatch me-2" />{problem.time_limit_ms || '—'} ms</span></span></label><div className="d-flex flex-column align-items-end">{!session?.user?.is_admin && data.remaining_submissions != null ? <small className={`${data.remaining_submissions <= 3 ? 'text-danger' : 'text-muted'} mb-1`}>剩余提交次数: <strong>{data.remaining_submissions}</strong>/{problem.submission_limit || 10}</small> : null}<div className={`problem-editor-actions${!session?.user?.is_admin ? ' student-code-actions' : ''}`}>{!isPrompt ? <button type="button" className="btn btn-outline-secondary" onClick={() => lastCode.mutate()} disabled={lastCode.isPending}><i className="fas fa-copy me-1" /><span className="d-none d-md-inline">复用上次代码</span><span className="d-inline d-md-none">复用</span></button> : null}<button type="submit" className="btn btn-outline-primary" disabled={!data.can_submit || submit.isPending}><i className="fas fa-paper-plane me-2" />{submit.isPending ? '提交中…' : data.can_submit ? isPrompt ? '提交 Prompt' : isLean4 ? '提交证明' : '提交' : '已达上限'}</button></div></div></div>
+            <div className="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar"><label className="form-label mb-0 code-label-wrap"><span className="code-title-line"><i className={`fas ${isPrompt ? 'fa-terminal' : isLean4 ? 'fa-square-root-alt' : 'fa-code'} me-2`} /> {isPrompt ? 'Prompt' : isLean4 ? 'Lean 4 工作区' : '代码'}</span><span className="code-meta-line">{problem.lang ? <span className="badge bg-secondary"><i className="fas fa-language me-2" />{lang}</span> : null}<span className="badge bg-secondary"><i className="fas fa-stopwatch me-2" />{problem.time_limit_ms || '—'} ms</span></span></label><div className="d-flex flex-column align-items-end">{!session?.user?.is_admin && data.remaining_submissions != null ? <small className={`${data.remaining_submissions <= 3 ? 'text-danger' : 'text-muted'} mb-1`}>剩余提交次数: <strong>{data.remaining_submissions}</strong>/{problem.submission_limit || 10}</small> : null}<div className={`problem-editor-actions${!session?.user?.is_admin ? ' student-code-actions' : ''}`}>{!isPrompt ? <button type="button" className="btn btn-outline-secondary" onClick={() => lastCode.mutate()} disabled={lastCode.isPending}><i className="fas fa-copy me-1" /><span className="d-none d-md-inline">复用上次代码</span><span className="d-inline d-md-none">复用</span></button> : null}<button type="submit" className="btn btn-outline-primary" disabled={!data.can_submit || submit.isPending || deadlineChecking}><i className="fas fa-paper-plane me-2" />{submit.isPending ? '提交中…' : deadlineChecking ? '检查中…' : data.can_submit ? isPrompt ? '提交 Prompt' : isLean4 ? '提交证明' : '提交' : '已达上限'}</button></div></div></div>
             {isPrompt ? <textarea id="promptEditor" name="prompt" className="form-control" rows={18} required value={text} onChange={(event) => setText(event.target.value)} placeholder="请描述你的解题思路，包括算法或数据结构、关键步骤、状态更新和边界处理。后台会先审查 prompt，通过后再生成代码并评测。" /> : <div className={`card problem-editor-card${isLean4 ? ' lean-workbench-card' : ''}`}><div className="card-body p-0">{isLean4 ? <LeanWorkbench problemId={problem.id} workspace={data.lean_workspace} value={text} onChange={setText} onController={(controller) => {leanControllerRef.current = controller}} /> : <MonacoEditor language={String(problem.lang || 'matlab')} problemId={problem.id} value={text} onChange={setText} />}</div></div>}
           </> : <>
-            <div className="problem-written-toolbar"><div className="problem-written-actions">{session?.user?.is_admin ? <button type="button" className="btn btn-outline-danger problem-written-cleanup-button" onClick={() => invalidateWrittenSubmissions.mutate()} disabled={invalidateWrittenSubmissions.isPending}><i className="fas fa-trash me-2" /> 移除无效提交</button> : data.remaining_submissions != null ? <span className={`problem-written-quota${data.remaining_submissions <= 2 ? ' is-low' : ''}`}>剩余提交次数: <strong>{data.remaining_submissions}</strong>/{problem.submission_limit || 10}</span> : null}<button type="submit" className="btn btn-outline-primary problem-written-submit-button" disabled={submit.isPending || (!session?.user?.is_admin && !data.can_submit)}><i className="fas fa-upload me-2" /> {submit.isPending ? '上传中…' : session?.user?.is_admin || data.can_submit ? '上传作业' : '已达上限'}</button></div></div>
+            <div className="problem-written-toolbar"><div className="problem-written-actions">{session?.user?.is_admin ? <button type="button" className="btn btn-outline-danger problem-written-cleanup-button" onClick={() => invalidateWrittenSubmissions.mutate()} disabled={invalidateWrittenSubmissions.isPending}><i className="fas fa-trash me-2" /> 移除无效提交</button> : data.remaining_submissions != null ? <span className={`problem-written-quota${data.remaining_submissions <= 2 ? ' is-low' : ''}`}>剩余提交次数: <strong>{data.remaining_submissions}</strong>/{problem.submission_limit || 10}</span> : null}<button type="submit" className="btn btn-outline-primary problem-written-submit-button" disabled={submit.isPending || deadlineChecking || (!session?.user?.is_admin && !data.can_submit)}><i className="fas fa-upload me-2" /> {submit.isPending ? '上传中…' : deadlineChecking ? '检查中…' : session?.user?.is_admin || data.can_submit ? '上传作业' : '已达上限'}</button></div></div>
             <div className="card problem-written-upload-card"><div className="card-body"><div className="problem-written-file-picker" data-file-kind={writtenFileKind}><input ref={fileRef} className="visually-hidden problem-written-file-input" type="file" id="file" name="file" accept={writtenIsZip ? '.zip' : '.pdf'} required onChange={(event) => setWrittenFileName(event.currentTarget.files?.[0]?.name || '')} /><label className={`problem-written-dropzone${writtenFileName ? ' has-file' : ''}${writtenDragDepth ? ' is-dragover' : ''}`} htmlFor="file" title={writtenFileName} onDragEnter={(event) => {event.preventDefault(); setWrittenDragDepth((depth) => depth + 1)}} onDragOver={(event) => {event.preventDefault(); event.dataTransfer.dropEffect = 'copy'}} onDragLeave={(event) => {event.preventDefault(); setWrittenDragDepth((depth) => Math.max(0, depth - 1))}} onDrop={(event) => {event.preventDefault(); setWrittenDragDepth(0); acceptWrittenDrop(event.dataTransfer.files)}}><span className="problem-written-dropzone-icon" aria-hidden="true"><i className={`fas ${writtenIsZip ? 'fa-file-archive' : 'fa-file-pdf'}`} /></span><span className="problem-written-dropzone-copy"><strong>上传文件</strong><small aria-live="polite">{writtenFileName || writtenFileKind}</small></span></label></div><div className="form-text problem-written-format-note">{writtenIsZip ? '请上传 zip 文件，压缩包内必须包含 main.tex 及其依赖文件。' : '请上传 pdf 文件。'}</div></div></div>
             {writtenMode === 4 ? <p className="text-muted problem-written-note"><i className="fas fa-info-circle me-1" /> 纯人工批改：重新提交将覆盖上一次提交，等待老师批改。</p> : <p className="text-muted problem-written-note">提示：书面作业可多次提交，以历史最高分计入成绩。</p>}
           </>}
@@ -328,6 +403,8 @@ export default function ProblemDetailPage() {
         </form>
       </div>
     </div>
+    <ReactModal open={Boolean(deadlineWarning)} onClose={() => {setDeadlineWarning(null); setDeadlineWarningError('')}} id="homeworkDeadlineWarningModal" labelledBy="homeworkDeadlineWarningModalLabel" className="problem-deadline-modal" dialogClassName="modal-dialog-centered"><div className="modal-content"><div className="modal-header"><div className="problem-deadline-modal-heading"><span className="problem-deadline-modal-icon" aria-hidden="true"><i className="fas fa-clock" /></span><div><p>HOMEWORK DEADLINE</p><h5 className="modal-title" id="homeworkDeadlineWarningModalLabel">部分班级作业已截止</h5></div></div><button type="button" className="btn-close" aria-label="关闭" onClick={() => {setDeadlineWarning(null); setDeadlineWarningError('')}} /></div><div className="modal-body">{deadlineWarningError ? <p className="problem-deadline-modal-error" role="alert">{deadlineWarningError}</p> : <><p className="problem-deadline-modal-lead">提交仍会正常评测，但不会计入以下作业的成绩：</p><ul className="problem-deadline-modal-list">{(Array.isArray(deadlineWarning?.homeworks) ? deadlineWarning.homeworks as JsonRecord[] : []).map((homework, index) => <li key={String(homework.homework_id || index)}><strong>{String(homework.class_cn || homework.class_en || '未命名班级')}</strong><span>截止 {String(homework.ddl || '—')}</span></li>)}</ul></>}</div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={() => {setDeadlineWarning(null); setDeadlineWarningError('')}}>{deadlineWarningError ? '关闭' : '取消'}</button>{!deadlineWarningError ? <button type="button" className="btn btn-primary" onClick={() => {setDeadlineWarning(null); submit.mutate({deadlineAck: true})}}>我明白了</button> : null}</div></div></ReactModal>
+    {session?.user?.is_admin && programming ? <><AgentLaunchModal problemId={problem.id} kind="solve" maxScore={Number(problem.max_score || 10)} open={agentModal === 'solve'} onClose={() => setAgentModal(null)} navigate={navigate} />{!isLean4 && Number(data.submit.programming_grading_mode || 1) === 1 ? <AgentLaunchModal problemId={problem.id} kind="testdata" maxScore={Number(problem.max_score || 10)} open={agentModal === 'testdata'} onClose={() => setAgentModal(null)} navigate={navigate} /> : null}</> : null}
     {session?.user?.is_admin ? <>
       <ReactModal open={adminModal === 'upload'} onClose={() => setAdminModal(null)} id={isLean4 ? 'uploadLeanWorkspaceModal' : 'uploadDataModal'} labelledBy={isLean4 ? 'uploadLeanWorkspaceModalLabel' : 'uploadDataModalLabel'}>
         <form onSubmit={(event) => {event.preventDefault(); (isLean4 ? uploadLeanWorkspace : uploadData).mutate(new FormData(event.currentTarget))}}>

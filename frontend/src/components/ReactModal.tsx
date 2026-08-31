@@ -1,4 +1,5 @@
 import {useEffect, useRef, type MouseEvent, type ReactNode} from 'react'
+import {createPortal} from 'react-dom'
 
 let openModalCount = 0
 
@@ -58,10 +59,10 @@ export function ReactModal({
   const backdropClick = (event: MouseEvent<HTMLDivElement>) => {
     if (closeOnBackdrop && event.target === event.currentTarget) onClose()
   }
-  return <>
+  return createPortal(<>
     <div ref={modalRef} className={`modal fade show${className ? ` ${className}` : ''}`} id={id} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={labelledBy} style={{display: 'block'}} onMouseDown={backdropClick}>
       <div className={`modal-dialog${dialogClassName ? ` ${dialogClassName}` : ''}`}>{children}</div>
     </div>
     <div className="modal-backdrop fade show" aria-hidden="true" />
-  </>
+  </>, document.body)
 }

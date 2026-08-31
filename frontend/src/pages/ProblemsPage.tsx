@@ -7,6 +7,7 @@ import type {ApiEnvelope, JsonRecord, ProblemSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {Link} from '../components/PageNavigation'
+import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {frontierProjects, problemInsights} from '../content/problemDashboard'
 import {useSession} from '../session'
@@ -60,6 +61,7 @@ export default function ProblemsPage() {
   const pickerRef = useDismissibleDropdown<HTMLDivElement>(pickerOpen, () => setPickerOpen(false))
   const [insightIndex, setInsightIndex] = useState(0)
   const [projectOffset, setProjectOffset] = useState(0)
+  const [plagiarismNotice, setPlagiarismNotice] = useState('')
   const prefetchClass = (classEn: string) => {
     void queryClient.prefetchQuery({
       queryKey: ['problems', 'homework', classEn],
@@ -122,7 +124,7 @@ export default function ProblemsPage() {
               const pending = Boolean(item.has_pending_submission)
               const hasSubmission = Boolean(item.has_submission)
               return <article className={`numoj-assignment-row numoj-assignment-row-homework${session?.user?.is_admin ? '' : ' is-student-homework'}`} data-numoj-assignment-kind="homework" key={`${id}-${index}`}>
-                {session?.user?.is_admin ? <div className="numoj-row-state neutral" aria-hidden="true" /> : completed ? <div className="numoj-row-state complete" aria-label="已完成">✓</div> : hasSubmission ? <div className="numoj-row-state failed" role="img" aria-label="有提交但未通过" /> : <div className="numoj-row-state neutral" aria-label="未提交" />}
+                {session?.user?.is_admin ? <div className="numoj-row-state neutral" aria-hidden="true" /> : item.plagiarism_notice ? <button type="button" className="numoj-row-state warning" aria-label="查看抄袭记录" title="查看抄袭记录" onClick={() => setPlagiarismNotice(String(item.plagiarism_notice))}>!</button> : completed ? <div className="numoj-row-state complete" aria-label="已完成">✓</div> : hasSubmission ? <div className="numoj-row-state failed" role="img" aria-label="有提交但未通过" /> : <div className="numoj-row-state neutral" aria-label="未提交" />}
                 <div className="numoj-row-identity"><div className="numoj-row-title-line"><span className="numoj-row-id">H{String(Number(item.homework_id || item.id || id)).padStart(4, '0')}</span><Link className="numoj-row-title-link" to={target} viewTransition>{item.title}</Link></div><div className="numoj-row-tags"><span>{isRanking ? '打榜赛' : Number(item.problem_type) === 2 ? '书面题' : '编程题'}</span>{item.problem_lang ? <span>{languageLabel(String(item.problem_lang))}</span> : null}</div></div>
                 {!session?.user?.is_admin ? <div className="numoj-row-result"><div className="numoj-row-grade"><strong>{item.max_score == null ? pending ? '评测中' : deadline.state === 'expired' ? '0' : '-' : String(item.max_score)}{item.total_score != null ? `/${String(item.total_score)}` : ''}</strong><span>{pending ? '以提交时间为准' : item.max_score != null ? deadline.state === 'expired' ? '已结算' : '最高成绩' : deadline.state === 'expired' ? '未按时提交' : '未提交'}</span></div><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></div> : <><SubmissionMetric value={item.submission_metrics} /><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></>}
                 <Link className="numoj-row-arrow" to={target} aria-label={`查看 ${item.title}`} viewTransition>›</Link>
@@ -140,5 +142,6 @@ export default function ProblemsPage() {
         <section className="numoj-panel numoj-resource-card"><header><h2><span className="numoj-card-mark" aria-hidden="true"><i className="fas fa-compass" /></span>Resources</h2></header><ul><li><a href="https://github.com/EbolaEmperor/NumericalOJ" target="_blank" rel="noopener noreferrer"><span>NumericalOJ · GitHub<small>github.com/EbolaEmperor/NumericalOJ</small></span><b>↗</b></a></li><li><a href="/api/downloads/numoj-cli.zip" download><span>{result.data?.numoj_cli_resource?.label || (session?.user?.is_admin ? 'numoj-admin CLI' : 'numoj-user CLI')}<small>{result.data?.numoj_cli_resource?.description || (session?.user?.is_admin ? 'Download for agents to manage NumOJ' : 'Download for agents to use NumOJ.')}</small></span><b>↓</b></a></li></ul></section>
       </aside>
     </div>
+    <ReactModal open={Boolean(plagiarismNotice)} onClose={() => setPlagiarismNotice('')} id="plagiarismNoticeModal" labelledBy="plagiarismNoticeModalTitle" dialogClassName="modal-dialog-centered"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="plagiarismNoticeModalTitle"><i className="fas fa-exclamation-triangle me-2 text-warning" />抄袭记录</h5><button type="button" className="btn-close" aria-label="Close" onClick={() => setPlagiarismNotice('')} /></div><div className="modal-body"><p className="mb-0">{plagiarismNotice}</p></div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={() => setPlagiarismNotice('')}>关闭</button></div></div></ReactModal>
   </section>
 }

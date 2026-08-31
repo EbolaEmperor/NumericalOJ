@@ -1467,6 +1467,7 @@ def problem_detail(problem_id):
     return redirect(f'/problems/{problem_id}')
 
 
+@problem_core_bp.get('/api/agent/launch-options')
 @problem_core_bp.get('/agent/launch-options')
 def agent_launch_options():
     """返回本次启动可选项和当前用户在此类任务中的上次选择。"""
