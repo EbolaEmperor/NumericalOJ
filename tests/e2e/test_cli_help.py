@@ -409,7 +409,7 @@ def test_admin_problem_agent_commands_send_current_launch_contract(tmp_path):
     assert len(requests) == 2
 
     solve_request = requests[0]
-    assert solve_request["path"] == "/agent/problems/19/solve"
+    assert solve_request["path"] == "/api/problems/19/agent/solve"
     assert solve_request["content_type"].startswith("application/json")
     assert json.loads(solve_request["body"]) == {
         "harness": "codex",
@@ -417,7 +417,7 @@ def test_admin_problem_agent_commands_send_current_launch_contract(tmp_path):
     }
 
     generate_request = requests[1]
-    assert generate_request["path"] == "/agent/problems/19/generate-testdata"
+    assert generate_request["path"] == "/api/problems/19/agent/generate-testdata"
     assert generate_request["content_type"].startswith("multipart/form-data;")
     message = BytesParser(policy=policy.default).parsebytes(
         (
