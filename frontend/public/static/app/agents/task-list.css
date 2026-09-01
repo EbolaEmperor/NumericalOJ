@@ -793,6 +793,41 @@
 
   .agent-choice .rk-choice-caret { display: none; }
 
+  .agent-composer-choice--harness,
+  .agent-composer-choice--role {
+    flex: 0 0 40px;
+    width: 40px;
+    max-width: 40px;
+  }
+
+  .agent-composer-choice--harness .agent-choice,
+  .agent-composer-choice--role .agent-choice,
+  .agent-composer-choice--harness .rk-choice-trigger,
+  .agent-composer-choice--role .rk-choice-trigger {
+    width: 40px;
+    min-width: 40px;
+  }
+
+  .agent-composer-choice--harness .rk-choice-trigger,
+  .agent-composer-choice--role .rk-choice-trigger {
+    justify-content: center;
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .agent-composer-choice--harness .rk-choice-trigger-main > span,
+  .agent-composer-choice--role .rk-choice-trigger-main > span {
+    display: none;
+  }
+
+  .agent-composer-choice--harness .rk-choice-trigger-main > i,
+  .agent-composer-choice--role .rk-choice-trigger-main > i {
+    width: 18px;
+    height: 18px;
+    flex-basis: 18px;
+    font-size: 12px;
+  }
+
   .agent-history { margin-top: 54px; }
   .agent-history-heading { padding-right: 4px; padding-left: 4px; }
 

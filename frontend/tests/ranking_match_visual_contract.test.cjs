@@ -4,6 +4,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const source = fs.readFileSync(path.resolve(__dirname, '../src/pages/RankingDetailPage.tsx'), 'utf8')
+const trajectoryChart = fs.readFileSync(path.resolve(__dirname, '../src/ranking/EloTrajectoryChart.tsx'), 'utf8')
 const styles = fs.readFileSync(path.resolve(__dirname, '../public/static/app/ranking/content-v2.css'), 'utf8')
 
 test('ELO 对战胜负标记保留 Jinja 版圆形徽章与中央对战线', () => {
@@ -19,4 +20,14 @@ test('手机端胜负徽章继续使用原来的 25px 紧凑尺寸', () => {
 test('轨迹弹窗在 pointerdown 阶段固定遮罩命中目标', () => {
   assert.match(source, /id="eloTrajectoryModal"[\s\S]*?onPointerDown=\{\(event\) => \{if \(event\.target === event\.currentTarget\) closeTrajectory\(\)\}\}/)
   assert.doesNotMatch(source, /id="eloTrajectoryModal"[^\n]*onMouseDown=/)
+})
+
+test('ELO 轨迹分析保留 Jinja 版完整图表视觉契约', () => {
+  assert.match(trajectoryChart, /CHART_HEIGHT = 390/)
+  assert.match(trajectoryChart, /className="elo-trajectory-grid-line"/)
+  assert.match(trajectoryChart, /className="elo-trajectory-axis-label"/)
+  assert.match(trajectoryChart, /className="elo-trajectory-point"/)
+  assert.match(trajectoryChart, /className="elo-trajectory-tooltip"/)
+  assert.match(trajectoryChart, /hsl\(207 55%/)
+  assert.doesNotMatch(source, /<polyline className="elo-trajectory-line"/)
 })

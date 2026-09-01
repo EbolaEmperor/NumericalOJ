@@ -1052,11 +1052,11 @@
   }
 
   .submission-page-header {
-    padding-bottom: 10px;
-    padding-left: 12px;
+    padding: 0 12px 10px;
   }
 
   .submission-filter-panel {
+    padding-right: 12px;
     padding-left: 12px;
   }
 
@@ -1086,8 +1086,8 @@
 
   .submission-status-filters {
     flex-wrap: nowrap;
-    margin-right: -14px;
-    padding-right: 14px;
+    margin-right: 0;
+    padding-right: 0;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -1102,7 +1102,7 @@
   }
 
   .submission-master-detail {
-    padding: 14px 0 0 12px;
+    padding: 14px 12px 0;
   }
 
   .submission-data-table {

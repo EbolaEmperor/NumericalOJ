@@ -1,9 +1,9 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useEffect, useMemo, useState, type CSSProperties, type Dispatch, type DragEvent, type FormEvent, type ReactNode, type SetStateAction} from 'react'
+import {useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type DragEvent, type FormEvent, type ReactNode, type SetStateAction} from 'react'
 import {createPortal} from 'react-dom'
 import {useParams, useSearchParams} from 'react-router-dom'
 
-import {apiFetch, errorMessage, queryString} from '../api/client'
+import {ApiError, apiFetch, errorMessage, queryString} from '../api/client'
 import type {ApiEnvelope, CompetitionSummary, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {MarkdownContent} from '../components/MarkdownContent'
@@ -13,6 +13,7 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
+import {EloTrajectoryResult, type EloTrajectorySeries} from '../ranking/EloTrajectoryChart'
 import {JudgeDetailModal, MatchDetailModal, MediaPreviewModal, ReverseJudgeDetailModal, type RankingMatchDetail, type RankingMediaTarget, type RankingSubmissionOverlayTarget} from '../ranking/RankingDetailOverlays'
 import {useRuleTopology} from '../ranking/ruleTopology'
 import {useSession} from '../session'
@@ -480,8 +481,11 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
   const [detailId, setDetailId] = useState<number | null>(null)
   const [trajectoryOpen, setTrajectoryOpen] = useState(false)
   const [trajectorySearch, setTrajectorySearch] = useState('')
+  const [trajectorySearchQuery, setTrajectorySearchQuery] = useState('')
   const [trajectorySearchOpen, setTrajectorySearchOpen] = useState(false)
   const [trajectorySelected, setTrajectorySelected] = useState<JsonRecord[]>([])
+  const [trajectoryExpanded, setTrajectoryExpanded] = useState(false)
+  const trajectoryResultRef = useRef<HTMLElement>(null)
   const trajectorySearchRef = useDismissibleDropdown<HTMLElement>(trajectorySearchOpen, () => setTrajectorySearchOpen(false))
   const detail = useQuery({
     queryKey: ['ranking-match', data.competition.id, detailId],
@@ -497,16 +501,48 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
     onSuccess: () => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]}),
   })
   const trajectoryCandidates = useQuery({
-    queryKey: ['ranking-elo-trajectory-submissions', data.competition.id, trajectorySearch],
-    queryFn: () => apiFetch<ApiEnvelope & {submissions?: JsonRecord[]; truncated?: boolean; max_selected?: number}>(`/api/ranking/competitions/${data.competition.id}/elo/trajectory/submissions${queryString({q: trajectorySearch.trim() || null})}`),
+    queryKey: ['ranking-elo-trajectory-submissions', data.competition.id, trajectorySearchQuery],
+    queryFn: () => apiFetch<ApiEnvelope & {submissions?: JsonRecord[]; truncated?: boolean; max_selected?: number}>(`/api/ranking/competitions/${data.competition.id}/elo/trajectory/submissions${queryString({q: trajectorySearchQuery || null})}`),
+    enabled: trajectoryOpen && trajectorySearchOpen,
   })
   const trajectory = useMutation({
-    mutationFn: () => apiFetch<ApiEnvelope & {series?: JsonRecord[]}>(`/api/ranking/competitions/${data.competition.id}/elo/trajectory`, {method: 'POST', body: JSON.stringify({submission_ids: trajectorySelected.map((item) => numberValue(item.id))})}),
+    mutationFn: () => apiFetch<ApiEnvelope & {series?: EloTrajectorySeries[]}>(`/api/ranking/competitions/${data.competition.id}/elo/trajectory`, {method: 'POST', body: JSON.stringify({submission_ids: trajectorySelected.map((item) => numberValue(item.id))})}),
+    onError: (error) => {
+      if (!(error instanceof ApiError) || !Array.isArray(error.payload?.missing_submission_ids)) return
+      const missing = new Set(error.payload.missing_submission_ids.map(numberValue))
+      setTrajectorySelected((current) => current.filter((item) => !missing.has(numberValue(item.id))))
+    },
   })
   const closeTrajectory = () => {
     setTrajectoryOpen(false)
     setTrajectorySearchOpen(false)
+    setTrajectoryExpanded(false)
+    trajectory.reset()
   }
+  const invalidateTrajectory = () => trajectory.reset()
+  const toggleTrajectorySelection = (item: JsonRecord, checked: boolean) => {
+    invalidateTrajectory()
+    setTrajectorySelected((current) => checked ? [...current, item] : current.filter((selected) => numberValue(selected.id) !== numberValue(item.id)))
+  }
+  const removeTrajectorySelection = (submissionId: number) => {
+    invalidateTrajectory()
+    setTrajectorySelected((current) => current.filter((selected) => numberValue(selected.id) !== submissionId))
+  }
+  const analyzeTrajectory = () => {
+    setTrajectorySearchOpen(false)
+    setTrajectoryExpanded(true)
+    trajectory.mutate()
+  }
+  useEffect(() => {
+    if (!trajectoryOpen) return undefined
+    const timer = window.setTimeout(() => setTrajectorySearchQuery(trajectorySearch.trim()), 220)
+    return () => window.clearTimeout(timer)
+  }, [trajectoryOpen, trajectorySearch])
+  useEffect(() => {
+    if (!trajectory.data) return
+    const frame = window.requestAnimationFrame(() => trajectoryResultRef.current?.scrollIntoView({behavior: 'smooth', block: 'nearest'}))
+    return () => window.cancelAnimationFrame(frame)
+  }, [trajectory.data])
   useEffect(() => {
     if (!trajectoryOpen) return undefined
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -520,6 +556,11 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
     }
   }, [trajectoryOpen])
   const rows = data.matches || []
+  const trajectorySearchNote = trajectoryCandidates.isFetching
+    ? '正在匹配 username…'
+    : trajectoryCandidates.isError
+      ? errorMessage(trajectoryCandidates.error)
+      : ''
   return <section className="ranking-v2-tab ranking-v2-matches" data-ranking-tab-panel="matches"><div className="matches-card">
     <header className="matches-head"><nav className="matches-filter" aria-label="过滤"><Link className={`matches-filter-pill${!data.matches_mine ? ' is-active' : ''}`} to={`/rankings/${data.competition.id}?tab=matches`}>全部</Link><Link className={`matches-filter-pill${data.matches_mine ? ' is-active' : ''}`} to={`/rankings/${data.competition.id}?tab=matches&mine=1`}>与我相关</Link></nav><div className="matches-head-actions"><span className="matches-meta"><span className={`matches-meta-dot ${numberValue(data.competition.elo_running) === 1 ? 'is-live' : 'is-paused'}`} />{numberValue(data.competition.elo_running) === 1 ? `每 ${numberValue(data.competition.elo_match_interval_seconds, 60)} 秒一轮` : '匹配引擎已暂停'}</span><button type="button" className="matches-rebuild-btn matches-observe-btn" aria-haspopup="dialog" aria-expanded={trajectoryOpen} title="选择在役提交并观察每场对战后的 ELO 变化" onClick={() => setTrajectoryOpen(true)}><i className="fas fa-chart-line" /><span>观察变化</span></button>{isAdmin && rows.length ? <button type="button" className="matches-rebuild-btn" title="按时间顺序重放现存对战、刷新历史 rating 快照" disabled={rebuild.isPending} onClick={() => {if (window.confirm('确认按时间顺序重新计算所有对战的历史 rating 快照，并把每份提交的当前 ELO 同步到重放终态？\n\n这不会删除任何对战行，只是修正因删除操作导致的历史显示错位。')) rebuild.mutate()}}><i className="fas fa-wrench" /><span>重构历史轨迹</span></button> : null}</div></header>
     <div className="matches-scroll">{rows.length ? <div className="matches-list">{rows.map((match) => {
@@ -540,18 +581,57 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
       </article>
     })}</div> : <div className="ranking-v2-empty matches-empty"><i className="fas fa-chess-board" /><strong>{data.matches_mine ? '你还没有踏上擂台' : '擂台尚无对决'}</strong><span>{numberValue(data.competition.elo_running) === 1 ? `等待匹配引擎调度首场对战，每 ${numberValue(data.competition.elo_match_interval_seconds, 60)} 秒一轮。` : '动态评分尚未启动，匹配引擎不会调度对战。'}</span></div>}<Pagination data={data} tab="matches" /></div>
   </div>
-  {trajectoryOpen ? createPortal(<div className="ranking-v2-detail elo-trajectory-portal"><div className={`modal fade show d-block elo-trajectory-modal${trajectory.data?.series?.length ? ' is-expanded' : ''}`} id="eloTrajectoryModal" tabIndex={-1} role="dialog" aria-modal="true" aria-label="观察得分变化" onPointerDown={(event) => {if (event.target === event.currentTarget) closeTrajectory()}}><div className="modal-dialog"><div className="modal-content"><div className="modal-body"><div className="elo-observer-picker"><section ref={trajectorySearchRef} className="elo-observer-search-panel" aria-label="查找提交"><div className="submissions-search elo-observer-search"><i className="fas fa-search" /><input type="search" className="form-control form-control-sm" placeholder="按用户名筛选…" autoComplete="off" value={trajectorySearch} onFocus={() => setTrajectorySearchOpen(true)} onChange={(event) => {setTrajectorySearch(event.target.value); setTrajectorySearchOpen(true)}} aria-controls="eloTrajectoryOptions" aria-expanded={trajectorySearchOpen} /></div><div className="elo-observer-dropdown" id="eloTrajectoryOptions" role="listbox" aria-multiselectable="true" hidden={!trajectorySearchOpen}>{trajectoryCandidates.isPending ? <div className="elo-observer-dropdown-state">正在查找…</div> : (trajectoryCandidates.data?.submissions || []).length ? (trajectoryCandidates.data?.submissions || []).map((item) => {
-    const id = numberValue(item.id)
-    const checked = trajectorySelected.some((selected) => numberValue(selected.id) === id)
-    return <label className={`elo-observer-option${checked ? ' is-selected' : ''}`} key={id}><input type="checkbox" checked={checked} disabled={!checked && trajectorySelected.length >= numberValue(trajectoryCandidates.data?.max_selected, 6)} onChange={(event) => setTrajectorySelected((current) => event.target.checked ? [...current, item] : current.filter((selected) => numberValue(selected.id) !== id))} /><span className="elo-observer-option-main"><strong>{String(item.username || '')}</strong><small>#{id} · {numberValue(item.match_count)} 场</small></span><span className="elo-observer-option-rating">{numberValue(item.rating).toFixed(0)}</span></label>
-  }) : <div className="elo-observer-dropdown-state">没有匹配的在役提交</div>}</div><div className="elo-observer-search-note">{trajectoryCandidates.data?.truncated ? '仅显示前 50 条，请继续输入用户名缩小范围。' : ''}</div></section><div className="elo-observer-selected" aria-label="已选提交" aria-live="polite">{trajectorySelected.length ? trajectorySelected.map((item) => <div className="elo-observer-chip" key={numberValue(item.id)}><span><strong>{String(item.username || '')}</strong><small>#{numberValue(item.id)}</small></span><button type="button" aria-label={`移除 ${String(item.username || '')}`} onClick={() => setTrajectorySelected((current) => current.filter((selected) => numberValue(selected.id) !== numberValue(item.id)))}><i className="fas fa-times" /></button></div>) : <div className="elo-observer-selected-empty"><i className="fas fa-wave-square" /><span>尚未选择提交</span></div>}</div></div>{trajectory.isError ? <div className="elo-trajectory-status is-error">{errorMessage(trajectory.error)}</div> : null}{trajectory.data?.series?.length ? <section className="elo-trajectory-result" aria-label="得分轨迹"><div className="elo-trajectory-chart-shell"><div className="elo-trajectory-chart"><svg className="elo-trajectory-svg" viewBox="0 0 760 300" role="img" aria-label="ELO 得分变化图">{(trajectory.data.series || []).map((series, index) => {
-    const points = Array.isArray(series.points) ? series.points as JsonRecord[] : []
-    const ratings = points.map((point) => numberValue(point.rating))
-    const min = Math.min(...ratings, 1400) - 20
-    const max = Math.max(...ratings, 1600) + 20
-    const polyline = points.map((point, pointIndex) => `${30 + pointIndex * 700 / Math.max(1, points.length - 1)},${270 - (numberValue(point.rating) - min) * 240 / Math.max(1, max - min)}`).join(' ')
-    return <polyline className="elo-trajectory-line" points={polyline} fill="none" style={{stroke: ['#d55e00', '#0072b2', '#009e73', '#cc79a7', '#e69f00', '#56b4e9'][index % 6]}} key={numberValue(series.submission_id)} />
-  })}</svg></div></div><div className="elo-trajectory-legend">{(trajectory.data.series || []).map((series, index) => <div className="elo-trajectory-legend-item" key={numberValue(series.submission_id)}><span className="elo-trajectory-legend-swatch" style={{background: ['#d55e00', '#0072b2', '#009e73', '#cc79a7', '#e69f00', '#56b4e9'][index % 6]}} /><span className="elo-trajectory-legend-copy"><strong>{String(series.username || '')}</strong><small>#{numberValue(series.submission_id)}</small></span><b>{numberValue(series.current_rating).toFixed(0)}</b></div>)}</div></section> : null}</div><div className="modal-footer elo-trajectory-footer"><div><button type="button" className="elo-trajectory-secondary" onClick={closeTrajectory}>关闭</button><button type="button" className="elo-trajectory-primary" disabled={!trajectorySelected.length || trajectory.isPending} onClick={() => {setTrajectorySearchOpen(false); trajectory.mutate()}}><i className="fas fa-play" /><span>{trajectory.isPending ? '分析中…' : '开始分析'}</span></button></div></div></div></div></div><div className="modal-backdrop fade show" /></div>, document.body) : null}
+  {trajectoryOpen ? createPortal(<div className="ranking-v2-detail elo-trajectory-portal">
+    <div className={`modal fade show d-block elo-trajectory-modal${trajectoryExpanded ? ' is-expanded' : ''}`} id="eloTrajectoryModal" tabIndex={-1} role="dialog" aria-modal="true" aria-label="观察得分变化" onPointerDown={(event) => {if (event.target === event.currentTarget) closeTrajectory()}}>
+      <div className="modal-dialog">
+        <div className="modal-content">
+          <div className="modal-body">
+            <div className="elo-observer-picker">
+              <section ref={trajectorySearchRef} className="elo-observer-search-panel" aria-label="查找提交">
+                <div className="submissions-search elo-observer-search">
+                  <i className="fas fa-search" aria-hidden="true" />
+                  <input type="search" className="form-control form-control-sm" placeholder="按用户名筛选…" autoComplete="off" value={trajectorySearch} onFocus={() => setTrajectorySearchOpen(true)} onChange={(event) => {setTrajectorySearch(event.target.value); setTrajectorySearchOpen(true)}} aria-controls="eloTrajectoryOptions" aria-expanded={trajectorySearchOpen} />
+                </div>
+                <div className="elo-observer-dropdown" id="eloTrajectoryOptions" role="listbox" aria-multiselectable="true" hidden={!trajectorySearchOpen} onPointerDown={(event) => {if ((event.target as Element).closest('.elo-observer-option')) event.preventDefault()}}>
+                  {trajectoryCandidates.isFetching
+                    ? <div className="elo-observer-dropdown-state">正在查找在役提交…</div>
+                    : trajectoryCandidates.isError
+                      ? <div className="elo-observer-dropdown-state">{errorMessage(trajectoryCandidates.error) || '搜索失败'}</div>
+                      : (trajectoryCandidates.data?.submissions || []).length
+                        ? (trajectoryCandidates.data?.submissions || []).map((item) => {
+                          const id = numberValue(item.id)
+                          const checked = trajectorySelected.some((selected) => numberValue(selected.id) === id)
+                          const createdAt = String(item.created_at || '').slice(0, 16)
+                          return <label className={`elo-observer-option${checked ? ' is-selected' : ''}`} role="option" aria-selected={checked} key={id}>
+                            <input type="checkbox" checked={checked} disabled={!checked && trajectorySelected.length >= numberValue(trajectoryCandidates.data?.max_selected, 6)} aria-label={`选择 ${String(item.username || '')} 的提交 #${id}`} onChange={(event) => toggleTrajectorySelection(item, event.target.checked)} />
+                            <span className="elo-observer-option-main"><strong>{String(item.username || '')}</strong><small>#{id} · {numberValue(item.match_count)} 战{createdAt ? ` · ${createdAt}` : ''}</small></span>
+                            <span className="elo-observer-option-rating">{numberValue(item.rating).toFixed(0)}</span>
+                          </label>
+                        })
+                        : <div className="elo-observer-dropdown-state">没有匹配的在役提交</div>}
+                </div>
+                <div className={`elo-observer-search-note${trajectoryCandidates.isError ? ' is-error' : ''}`} aria-live="polite">{trajectorySearchNote}</div>
+              </section>
+              <div className="elo-observer-selected" aria-label="已选提交" aria-live="polite">
+                {trajectorySelected.length ? trajectorySelected.map((item) => {
+                  const id = numberValue(item.id)
+                  return <div className="elo-observer-chip" key={id}><span>{String(item.username || '')}<small>#{id}</small></span><button type="button" aria-label={`移除 ${String(item.username || '')} 的提交 #${id}`} onClick={() => removeTrajectorySelection(id)}>×</button></div>
+                }) : <div className="elo-observer-selected-empty"><i className="fas fa-wave-square" aria-hidden="true" /><span>尚未选择提交</span></div>}
+              </div>
+            </div>
+            {trajectory.isPending ? <div className="elo-trajectory-status" role="status">正在从数据库整理所选提交的完整对战轨迹…</div> : null}
+            {trajectory.isError ? <div className="elo-trajectory-status is-error" role="status">{errorMessage(trajectory.error)}</div> : null}
+            {trajectory.data ? <EloTrajectoryResult ref={trajectoryResultRef} series={trajectory.data.series || []} /> : null}
+          </div>
+          <div className="modal-footer elo-trajectory-footer"><div>
+            <button type="button" className="elo-trajectory-secondary" onClick={closeTrajectory}>关闭</button>
+            <button type="button" className="elo-trajectory-primary" disabled={!trajectorySelected.length || trajectory.isPending} aria-busy={trajectory.isPending || undefined} onClick={analyzeTrajectory}><i className="fas fa-play" aria-hidden="true" /><span>开始分析</span></button>
+          </div></div>
+        </div>
+      </div>
+    </div>
+    <div className="modal-backdrop fade show" aria-hidden="true" />
+  </div>, document.body) : null}
   <MatchDetailModal open={detailId != null} detail={detail.data} pending={detail.isPending} error={detail.isError ? detail.error : null} onClose={() => setDetailId(null)} /></section>
 }
 
