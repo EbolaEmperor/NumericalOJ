@@ -16,8 +16,10 @@ export type MonacoModel = {
 }
 
 export type MonacoEditorInstance = {
+  blur?: () => void
   dispose: () => void
   focus: () => void
+  getDomNode?: () => HTMLElement | null
   getModel?: () => MonacoModel | null
   getPosition?: () => MonacoPosition | null
   getLayoutInfo?: () => {height: number; [key: string]: unknown}

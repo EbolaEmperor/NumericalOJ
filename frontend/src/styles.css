@@ -164,6 +164,38 @@
   font: 14px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
+.submission-code-viewer [data-editor-mode="viewer"] .cursor,
+.submission-code-viewer [data-editor-mode="viewer"] .cursors-layer {
+  display: none !important;
+}
+
+.submission-code-viewer [data-editor-mode="viewer"] textarea.inputarea,
+.submission-code-viewer .monaco-viewer-fallback {
+  caret-color: transparent !important;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .submission-code-viewer,
+  .submission-code-viewer * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .submission-code-viewer .monaco-viewer-fallback {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: auto;
+  }
+}
+
+@media (max-width: 991.98px) {
+  .submission-code-surface .submission-editor-shell,
+  .submission-code-surface .submission-code-fallback {
+    height: 100%;
+    min-height: 0;
+  }
+}
+
 .numoj-spa-state {
   display: grid;
   min-height: 240px;
