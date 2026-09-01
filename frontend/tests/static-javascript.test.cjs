@@ -65,19 +65,20 @@ for (const relativePath of javascriptAssets) {
   })
 }
 
-test('SPA 只在 React 启动前加载 MathJax 底层运行时', () => {
-  const source = read('frontend/index.html')
-  const mathJax = source.indexOf('<script src="/static/vendor/mathjax/tex-mml-chtml.js"></script>')
-  const react = source.indexOf('<script type="module" src="/src/main.tsx"></script>')
+test('SPA 按需加载 MathJax 底层运行时', () => {
+  const document = read('frontend/index.html')
+  const runtime = read('frontend/src/markdown/mathjaxRuntime.ts')
 
-  assert.ok(mathJax > 0)
-  assert.ok(mathJax < react)
-  assert.equal(source.includes('src="/static/app/rich-content-assets.js"'), false)
-  assert.equal(source.includes('src="/static/app/markdown-rendering.js"'), false)
-  assert.equal(source.includes('data-mathjax-src='), false)
-  assert.ok(source.includes('window.NumOJMathJaxReady = new Promise'))
-  assert.ok(source.includes('window.MathJax.startup.defaultReady()'))
-  assert.ok(source.includes('window.MathJax.startup.promise.then('))
+  assert.ok(document.includes('<script type="module" src="/src/main.tsx"></script>'))
+  assert.equal(document.includes('/static/vendor/mathjax/tex-mml-chtml.js'), false)
+  assert.equal(document.includes('src="/static/app/rich-content-assets.js"'), false)
+  assert.equal(document.includes('src="/static/app/markdown-rendering.js"'), false)
+  assert.ok(runtime.includes("const SCRIPT_URL = '/static/vendor/mathjax/tex-mml-chtml.js'"))
+  assert.ok(runtime.includes("document.createElement('script')"))
+  assert.ok(runtime.includes("script.dataset.numojReactAsset = 'true'"))
+  assert.ok(runtime.includes('document.head.appendChild(script)'))
+  assert.ok(runtime.includes('runtime?.startup?.defaultReady?.()'))
+  assert.ok(runtime.includes('runtime?.startup?.promise?.then('))
 })
 
 test('React Hook 独立调度公式、代码和 Mermaid 增强', () => {
@@ -97,13 +98,17 @@ test('React Hook 独立调度公式、代码和 Mermaid 增强', () => {
 })
 
 test('React MathJax Hook 等待启动并校验当前挂载实例', () => {
-  const source = read('frontend/src/components/useMarkdownEnhancements.ts')
+  const hook = read('frontend/src/components/useMarkdownEnhancements.ts')
+  const runtime = read('frontend/src/markdown/mathjaxRuntime.ts')
 
-  assert.ok(source.includes('await window.NumOJMathJaxReady.catch(() => false)'))
-  assert.ok(source.includes('!active || !ready || !root.isConnected'))
-  assert.ok(source.includes('mathJax.typesetClear?.([root])'))
-  assert.ok(source.includes('await mathJax.typesetPromise([root])'))
-  assert.ok(source.includes("root.dataset.numojMathState = 'rendered'"))
+  assert.ok(hook.includes("import {clearMath, typesetMath} from '../markdown/mathjaxRuntime'"))
+  assert.ok(hook.includes('void typesetMath(root).then(() => {'))
+  assert.ok(hook.includes('if (active && root.isConnected)'))
+  assert.ok(hook.includes("root.dataset.numojMathState = 'rendered'"))
+  assert.ok(hook.includes('clearMath(root)'))
+  assert.ok(runtime.includes('if (!root.isConnected) return'))
+  assert.ok(runtime.includes('runtime.typesetClear?.([root])'))
+  assert.ok(runtime.includes('await runtime.typesetPromise?.([root])'))
 })
 
 test('React 富内容增强失败时保留当前正文与代码配色', () => {
@@ -120,9 +125,9 @@ test('Markdown 高亮产物为常用语言使用 GitHub Light 配色', () => {
   runIsolated(`
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const vm = require("node:vm");
-vm.runInThisContext(fs.readFileSync(${source}, "utf8"));
 (async function() {
+  const moduleSource = fs.readFileSync(${source}, "base64");
+  const highlighter = await import("data:text/javascript;base64," + moduleSource);
   const samples = [
     ["bash", 'curl -fsSL "$URL"', ["#953800", "#0550AE", "#0A3069"]],
     ["c", "struct Widget { int value; };", ["#CF222E", "#1F2328"]],
@@ -133,7 +138,7 @@ vm.runInThisContext(fs.readFileSync(${source}, "utf8"));
     ["lean4", "theorem answer (n : Nat) : n + 0 = n := by\\n  simpa -- done\\n\\nsorry", ["#CF222E", "#8250DF", "#953800", "#0550AE", "#1F2328", "#6E7781", "#82071E"]]
   ];
   for (const [language, code, expectedColors] of samples) {
-    const result = await NumOJMarkdownCodeHighlighter.tokenize(code, language);
+    const result = await highlighter.tokenize(code, language);
     const tokens = result.tokens.flat();
     const rebuilt = result.tokens.map((line) => line.map((token) => token.content).join("")).join("\\n");
     assert.equal(rebuilt, code);
@@ -309,10 +314,10 @@ test('精简 Monaco 包仅保留支持语言并满足体积预算', () => {
   const fullEntry = read('frontend/monaco/editor.js')
   const runtime = read('frontend/monaco/runtime.js')
   const buildScript = read('frontend/scripts/build_monaco.mjs')
-  const component = read('frontend/src/components/MonacoEditor.tsx')
+  const loader = read('frontend/src/editor/monacoLoader.ts')
 
-  assert.ok(component.includes('/static/vendor/monaco/editor-minimal.css'))
-  assert.ok(component.includes('/static/vendor/monaco/editor-minimal.js'))
+  assert.ok(loader.includes('/static/vendor/monaco/editor-minimal.css'))
+  assert.ok(loader.includes("const source = '/static/vendor/monaco/editor-minimal.js'"))
   for (const language of ['c', 'cpp', 'python', 'matlab']) {
     assert.ok(minimalEntry.includes(`from "@shikijs/langs/${language}"`))
   }
@@ -370,9 +375,9 @@ test('Lean4 Markdown 高亮使用结构化 scope', () => {
   runIsolated(`
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const vm = require("node:vm");
-vm.runInThisContext(fs.readFileSync(${source}, "utf8"));
 (async function() {
+  const moduleSource = fs.readFileSync(${source}, "base64");
+  const highlighter = await import("data:text/javascript;base64," + moduleSource);
   const code = [
     "/-! Fibonacci docs -/",
     "import Mathlib",
@@ -387,7 +392,7 @@ vm.runInThisContext(fs.readFileSync(${source}, "utf8"));
     "· exact n",
     "sorry"
   ].join("\\n");
-  const result = await NumOJMarkdownCodeHighlighter.tokenize(code, "lean4");
+  const result = await highlighter.tokenize(code, "lean4");
   const tokens = result.tokens.flat();
   function has(content, color, style) {
     return tokens.some((token) => token.content === content

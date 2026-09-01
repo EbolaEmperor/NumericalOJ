@@ -7,6 +7,7 @@
 }
 
 .submission-detail-page {
+  --submission-detail-information-width: calc((100% - 7px) / 2);
   --submission-ink: #111111;
   --submission-ink-2: #303030;
   --submission-ink-3: #6b6b6b;
@@ -32,9 +33,12 @@
   display: grid;
   width: 100%;
   grid-template-areas:
-    "summary primary"
-    "results primary";
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+    "summary splitter primary"
+    "results splitter primary";
+  grid-template-columns:
+    minmax(0, var(--submission-detail-information-width))
+    7px
+    minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   align-items: start;
   min-height: 100vh;
@@ -45,6 +49,51 @@
 
 .submission-detail-page [hidden] {
   display: none !important;
+}
+
+.submission-detail-splitter {
+  position: sticky;
+  z-index: 8;
+  top: 0;
+  grid-area: splitter;
+  align-self: start;
+  width: 7px;
+  min-width: 7px;
+  max-width: 7px;
+  height: 100vh;
+  padding: 0;
+  background: var(--submission-paper);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.submission-detail-splitter::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--submission-line);
+  content: "";
+  transition: left 100ms ease, width 100ms ease, background-color 100ms ease;
+}
+
+.submission-detail-splitter:hover::after,
+.submission-detail-splitter:focus-visible::after,
+.submission-detail-splitter.is-dragging::after {
+  left: 2px;
+  width: 3px;
+  background: rgba(217, 119, 6, 0.58);
+}
+
+.submission-detail-splitter:focus-visible {
+  outline: 0;
+}
+
+html.is-submission-detail-resizing,
+html.is-submission-detail-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .submission-detail-primary {
@@ -898,6 +947,10 @@
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
     gap: 0;
+  }
+
+  .submission-detail-splitter {
+    display: none;
   }
 
   .submission-detail-primary {

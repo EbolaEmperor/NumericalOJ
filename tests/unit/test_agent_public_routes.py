@@ -32,7 +32,7 @@ def test_agent_routes_expose_api_canonical_urls():
 
     assert rules["problem_core.agent_tasks"] == "/api/agent/sessions"
     assert rules["problem_core.agent_task_detail"] == "/api/agent/sessions/<session_id>"
-    assert rules["problem_core.agent_launch_options"] == "/agent/launch-options"
+    assert rules["problem_core.agent_launch_options"] == "/api/agent/launch-options"
     assert rules["problem_core.agent_run_status"] == "/api/agent/runs/<task_id>"
     assert rules["problem_core.agent_run_cancel"] == "/agent/runs/<task_id>/cancel"
     assert rules["problem_core.agent_run_stream"] == "/api/agent/runs/<task_id>/events"
