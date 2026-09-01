@@ -6,6 +6,7 @@ import {MarkdownContent} from '../components/MarkdownContent'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {ReactModal} from '../components/ReactModal'
 import {useRuleTopology} from './ruleTopology'
+import {useMatchHtmlFrame} from './useMatchHtmlFrame'
 
 export type RankingSubmissionOverlayTarget = {
   id: number
@@ -62,64 +63,9 @@ function legacyMatchOutput(data: RankingMatchDetail) {
   return {format: 'text', content: String(data.details), height: 520}
 }
 
-function safariScaleHint() {
-  const userAgent = navigator.userAgent || ''
-  const isSafari = /Safari\//.test(userAgent) && !/(?:Chrome|Chromium|CriOS|Edg|OPR)\//.test(userAgent)
-  if (!isSafari || !window.innerWidth || !window.outerWidth) return 1
-  const scale = window.outerWidth / window.innerWidth
-  if (!Number.isFinite(scale) || scale <= .25 || scale >= 4) return 1
-  const nativeDpr = (window.devicePixelRatio || 1) / scale
-  const roundedDpr = Math.round(nativeDpr)
-  if (roundedDpr < 1 || roundedDpr > 4 || Math.abs(nativeDpr - roundedDpr) > .03) return 1
-  return Math.abs(scale - 1) < .005 ? 1 : scale
-}
-
-function htmlDetailDocument(content: string, readyToken: string, scaleHint: number) {
-  const csp = [
-    "default-src 'none'", "img-src data: blob: https: http:", "media-src data: blob: https: http:",
-    "font-src data: blob: https: http:", "style-src 'unsafe-inline' https: http:",
-    "script-src 'unsafe-inline' blob: https: http:", "connect-src https: http: wss: ws:",
-    "worker-src blob:", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'",
-  ].join('; ')
-  const readyScript = `<script>(function(){var token=${JSON.stringify(readyToken)};var scale=${JSON.stringify(scaleHint)};var root=document.documentElement;root.setAttribute("data-numoj-embedded-scale",String(scale));if(isFinite(scale)&&scale>0&&Math.abs(scale-1)>=.005){var percent=scale*100;var style=document.createElement("style");style.setAttribute("data-numoj-viewport-fix","");style.textContent="body{transform-origin:0 0!important;transform:scale("+(1/scale)+")!important;width:"+percent+"%!important;height:"+percent+"%!important;min-height:"+percent+"%!important}";document.head.appendChild(style);var body=document.body;var observer=new MutationObserver(function(records){if(!records.some(function(record){return record.type==="childList"||record.type==="characterData"}))return;var visibility=body.style.getPropertyValue("visibility");var priority=body.style.getPropertyPriority("visibility");body.style.setProperty("visibility","hidden","important");void body.offsetHeight;if(visibility)body.style.setProperty("visibility",visibility,priority);else body.style.removeProperty("visibility")});observer.observe(body,{subtree:true,childList:true,characterData:true})}window.parent.postMessage({type:"numoj:html-detail-ready",token:token},"*")})()<\/script>`
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html{color-scheme:light}html,body{min-height:100%;margin:0}body{overflow:auto;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}</style></head><body>${content}${readyScript}</body></html>`
-}
-
-function MatchHtmlDetail({content, requestedHeight}: {content: string; requestedHeight?: number}) {
-  const frameRef = useRef<HTMLIFrameElement>(null)
-  const [ready, setReady] = useState(false)
-  const height = Math.max(240, Math.min(1200, numberValue(requestedHeight, 520)))
-
-  useEffect(() => {
-    const frame = frameRef.current
-    if (!frame) return undefined
-    let active = true
-    setReady(false)
-    const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const objectUrl = URL.createObjectURL(new Blob([htmlDetailDocument(content, token, safariScaleHint())], {type: 'text/html;charset=utf-8'}))
-    const markReady = () => { if (active) setReady(true) }
-    let fallback = 0
-    const onMessage = (event: MessageEvent) => {
-      if (event.source === frame.contentWindow && event.data?.type === 'numoj:html-detail-ready' && event.data?.token === token) markReady()
-    }
-    const onLoad = () => {
-      frame.removeEventListener('load', onLoad)
-      fallback = window.setTimeout(markReady, 1500)
-    }
-    frame.addEventListener('load', onLoad)
-    window.addEventListener('message', onMessage)
-    frame.src = objectUrl
-    return () => {
-      active = false
-      frame.removeEventListener('load', onLoad)
-      if (fallback) window.clearTimeout(fallback)
-      window.removeEventListener('message', onMessage)
-      frame.removeAttribute('src')
-      URL.revokeObjectURL(objectUrl)
-    }
-  }, [content])
-
-  return <div className="match-detail-html"><iframe ref={frameRef} title="评分脚本生成的互动对战详情" sandbox="allow-scripts" referrerPolicy="no-referrer" aria-busy={!ready} style={{height, visibility: ready ? 'visible' : 'hidden', opacity: ready ? 1 : 0, pointerEvents: ready ? 'auto' : 'none'}} /></div>
+function MatchHtmlDetail({matchId, content, requestedHeight}: {matchId: number; content: string; requestedHeight?: number}) {
+  const frame = useMatchHtmlFrame({matchId, content, requestedHeight})
+  return <div className="match-detail-html"><iframe key={frame.documentKey} ref={frame.frameRef} title="评分脚本生成的互动对战详情" sandbox="allow-scripts" referrerPolicy="no-referrer" aria-busy={!frame.ready} style={frame.frameStyle} /></div>
 }
 
 export function MatchDetailModal({open, detail, pending, error, onClose}: {open: boolean; detail?: RankingMatchDetail; pending: boolean; error?: Error | null; onClose: () => void}) {
@@ -131,7 +77,7 @@ export function MatchDetailModal({open, detail, pending, error, onClose}: {open:
     <div className="modal-content match-detail-modal"><div className="modal-header"><h5 className="modal-title" id="matchDetailModalLabel"><i className="fas fa-magnifying-glass me-2" />对战详情</h5><button type="button" className="btn-close" aria-label="Close" onClick={onClose} /></div><div className="modal-body">
       {pending ? <div className="text-center text-muted py-4"><MathCurveLoader size="md" label="加载中…" /></div> : error ? <div className="match-detail-error" role="alert">{errorMessage(error)}</div> : detail && output ? <div>
         <div className="match-detail-toolbar" hidden={isHtml}><div className="match-detail-meta">#{detail.id} · {detail.created_at} · {winnerLabel}</div><div className="match-detail-tools"><span className={`match-detail-format${isHtml ? ' is-html' : ''}`}><i className={`fas ${isHtml ? 'fa-code' : 'fa-align-left'}`} /><span>{isHtml ? '互动 HTML' : '文本'}</span></span></div></div>
-        {!isHtml ? <><h6 className="match-detail-heading">评测脚本给出的胜负理由</h6><pre className="match-detail-text">{output.content || ''}</pre></> : <MatchHtmlDetail content={output.content || ''} requestedHeight={output.height} />}
+        {!isHtml ? <><h6 className="match-detail-heading">评测脚本给出的胜负理由</h6><pre className="match-detail-text">{output.content || ''}</pre></> : <MatchHtmlDetail matchId={detail.id} content={output.content || ''} requestedHeight={output.height} />}
       </div> : null}
     </div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={onClose}>关闭</button></div></div>
   </ReactModal>
