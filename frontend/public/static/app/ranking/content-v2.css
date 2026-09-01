@@ -453,13 +453,69 @@
 }
 
 .ranking-v2-detail .match-vs {
+  position: relative;
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
   color: var(--rkv2-ink-4);
   font: 700 9px/1 var(--rkv2-mono);
   text-align: center;
 }
 
+.ranking-v2-detail .match-vs::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--rkv2-line);
+  transform: translateX(-50%);
+}
+
+.ranking-v2-detail .match-vs > * {
+  position: relative;
+  z-index: 1;
+}
+
+.ranking-v2-detail .match-vs-badge {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid #c89b30;
+  border-radius: 50%;
+  background: #fff;
+  color: #a67e1e;
+  box-shadow:
+    0 0 0 3px #fff,
+    0 4px 10px -3px rgb(200 155 48 / 35%);
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+
 .ranking-v2-detail .match-vs-badge i {
   font-size: 11px;
+}
+
+.ranking-v2-detail .match-row:hover .match-vs-badge {
+  transform: scale(1.12);
+  box-shadow:
+    0 0 0 3px #fff,
+    0 6px 14px -3px rgb(200 155 48 / 55%);
+}
+
+.ranking-v2-detail .match-vs-draw,
+.ranking-v2-detail .match-vs-failed {
+  border: 1px solid var(--rkv2-line);
+  background: #fff;
+  box-shadow: 0 0 0 3px #fff;
+}
+
+.ranking-v2-detail .match-vs-draw {
+  color: var(--rkv2-ink-3);
 }
 
 .ranking-v2-detail .match-action {

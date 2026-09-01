@@ -7,6 +7,20 @@
   min-height: 100vh;
 }
 
+/*
+ * iOS Safari 会在聚焦字号小于 16px 的文字输入控件时自动放大视觉视口。
+ * 只提高触屏 WebKit 上可输入控件的字号，并保留页面的双指缩放能力与焦点样式。
+ */
+@supports (-webkit-touch-callout: none) {
+  @media (hover: none) and (pointer: coarse) {
+    input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]),
+    select,
+    textarea {
+      font-size: max(16px, 1em) !important;
+    }
+  }
+}
+
 .problem-detail-page .numoj-code-textarea-fallback {
   display: block;
   width: 100%;

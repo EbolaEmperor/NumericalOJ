@@ -13,8 +13,8 @@ test('提交列表整行统一打开提交详情，题目标题不再跳转题�
   assert.match(source, /to={`\/submissions\/\$\{row\.id\}`}\s+state=/)
 })
 
-test('提交列表不渲染表头，手机端列表使用对称水平留白', () => {
+test('提交列表不渲染表头，手机端只补齐缺失的左侧留白', () => {
   assert.doesNotMatch(source, /<thead>|提交号<\/th>|状态<\/th>|得分<\/th>|题目<\/th>/)
   assert.match(source, /<table className="submission-data-table" aria-label="提交记录"><tbody>/)
-  assert.match(styles, /@media \(max-width: 767\.98px\)[\s\S]*\.submission-master-detail \{\s*padding: 14px 12px 0;/)
+  assert.match(styles, /@media \(max-width: 767\.98px\)[\s\S]*\.submission-master-detail \{\s*padding: 14px 0 0 12px;/)
 })
