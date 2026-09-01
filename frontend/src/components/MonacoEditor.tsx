@@ -16,7 +16,6 @@ export function MonacoEditor({
   idPrefix = 'problem',
   ariaLabel = '代码编辑器',
   readOnly = false,
-  viewer = false,
   fontSize = 12.5,
   lineHeight = 20,
   shellClassName = '',
@@ -32,7 +31,6 @@ export function MonacoEditor({
   idPrefix?: string
   ariaLabel?: string
   readOnly?: boolean
-  viewer?: boolean
   fontSize?: number
   lineHeight?: number
   shellClassName?: string
@@ -49,8 +47,6 @@ export function MonacoEditor({
   const onReadyRef = useRef(onReady)
   const [fallback, setFallback] = useState(false)
   const [ready, setReady] = useState(false)
-  const effectiveReadOnly = readOnly || viewer
-
   valueRef.current = value
   onChangeRef.current = onChange
   onReadyRef.current = onReady
@@ -80,19 +76,11 @@ export function MonacoEditor({
           language: spec.monacoLanguage,
           theme,
           ariaLabel,
-          readOnly: effectiveReadOnly,
-          domReadOnly: effectiveReadOnly,
+          readOnly,
+          domReadOnly: readOnly,
           fontSize,
           lineHeight,
           tabSize: ['lean', 'lean4'].includes(normalizedLanguage) ? 2 : 4,
-          ...(viewer ? {
-            contextmenu: false,
-            cursorBlinking: 'hidden',
-            matchBrackets: 'never',
-            occurrencesHighlight: 'off',
-            renderLineHighlight: 'none',
-            selectionHighlight: false,
-          } : {}),
         }))
         editorRef.current = editor
         if (['lean', 'lean4'].includes(normalizedLanguage)) unicodeSubscription = attachLeanUnicodeInput(monaco, editor)
@@ -152,7 +140,7 @@ export function MonacoEditor({
       editorRef.current?.dispose()
       editorRef.current = null
     }
-  }, [ariaLabel, effectiveReadOnly, fontSize, language, lineHeight, problemId, viewer])
+  }, [ariaLabel, fontSize, language, lineHeight, problemId, readOnly])
 
   useEffect(() => {
     const editor = editorRef.current
@@ -164,15 +152,12 @@ export function MonacoEditor({
       ref={textareaRef}
       id={`${idPrefix}CodeEditor`}
       name="code"
-      className={fallback ? `${fallbackClassName}${viewer ? ' monaco-viewer-fallback' : ''}` : undefined}
+      className={fallback ? fallbackClassName : undefined}
       hidden={!fallback}
-      readOnly={effectiveReadOnly}
-      tabIndex={viewer ? -1 : undefined}
-      data-editor-mode={viewer ? 'viewer' : 'editor'}
+      readOnly={readOnly}
       spellCheck={false}
       autoComplete="off"
       value={value}
-      onFocus={viewer ? (event) => event.currentTarget.blur() : undefined}
       onChange={(event) => onChange(event.target.value)}
     />
     <div
@@ -180,13 +165,12 @@ export function MonacoEditor({
       className={`${shellBaseClassName}${shellClassName ? ` ${shellClassName}` : ''}`}
       data-editor-state={ready ? 'ready' : 'loading'}
       aria-busy={ready ? 'false' : 'true'}
-      data-editor-mode={viewer ? 'viewer' : 'editor'}
       hidden={fallback}
     >
       <div id={`${idPrefix}EditorLoading`} className="problem-editor-loading-state" hidden={ready}>
         <MathCurveLoader className="problem-editor-loading-indicator" size="lg" colorA="#fb923c" colorB="#f97316" label="代码编辑器正在加载" />
       </div>
-      <div ref={hostRef} id={`${idPrefix}EditorContainer`} className={hostClassName || undefined} data-language={language} data-editor-mode={viewer ? 'viewer' : 'editor'} />
+      <div ref={hostRef} id={`${idPrefix}EditorContainer`} className={hostClassName || undefined} data-language={language} />
     </div>
   </>
 }

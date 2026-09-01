@@ -154,6 +154,36 @@ const fs = require("node:fs");
 `)
 })
 
+test('提交静态只读查看器为 MATLAB 与 Lean 使用 Dark+ 配色', () => {
+  const source = JSON.stringify(asset('vendor/shiki-markdown/highlighter.js'))
+  runIsolated(`
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+(async function() {
+  const moduleSource = fs.readFileSync(${source}, "base64");
+  const highlighter = await import("data:text/javascript;base64," + moduleSource);
+  const darkPlusColors = new Set([
+    "#4EC9B0", "#4FC1FF", "#569CD6", "#608B4E", "#646695", "#6A9955",
+    "#808080", "#9CDCFE", "#B5CEA8", "#C586C0", "#C8C8C8", "#CE9178",
+    "#D16969", "#D4D4D4", "#D7BA7D", "#DCDCAA", "#F44747"
+  ]);
+  const samples = [
+    ["matlab", "% comment\\nfunction y = solve(x)\\n  y = sin(x) + 3.14;\\nend"],
+    ["lean4", "/- comment -/\\ntheorem demo (n : Nat) : n = n := by\\n  rfl"]
+  ];
+  for (const [language, code] of samples) {
+    const result = await highlighter.tokenize(code, language, "dark");
+    const tokens = result.tokens.flat();
+    const rebuilt = result.tokens.map((line) => line.map((token) => token.content).join("")).join("\\n");
+    assert.equal(rebuilt, code);
+    const colors = new Set(tokens.map((token) => String(token.color).toUpperCase()));
+    assert.ok(colors.size >= 2, language + ": expected syntax highlighting");
+    for (const color of colors) assert.ok(darkPlusColors.has(color), language + ": " + color);
+  }
+})().catch((error) => { console.error(error); process.exit(1); });
+`)
+})
+
 test('Lean4 Monarch 回退支持 Unicode 标识符', () => {
   const source = JSON.stringify(asset('app/code-editor-runtime.js'))
   runIsolated(`

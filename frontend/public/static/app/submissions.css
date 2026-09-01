@@ -266,19 +266,6 @@
   font-size: 13px;
 }
 
-.submission-data-table thead th {
-  padding: 11px 13px;
-  border-bottom: 1px solid var(--submission-line);
-  background: var(--submission-paper-soft);
-  color: var(--submission-ink-4);
-  font-size: 10.5px;
-  font-weight: 650;
-  letter-spacing: 0.13em;
-  text-align: left;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
 .submission-data-table tbody td {
   height: 52px;
   padding: 9px 13px;
@@ -1115,7 +1102,7 @@
   }
 
   .submission-master-detail {
-    padding-top: 14px;
+    padding: 14px 12px 0;
   }
 
   .submission-data-table {
@@ -1152,7 +1139,6 @@
     min-width: 0;
   }
 
-  .submission-data-table thead th,
   .submission-data-table tbody td {
     padding-right: 7px;
     padding-left: 7px;

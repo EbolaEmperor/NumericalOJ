@@ -4,14 +4,13 @@ import {useLocation, useParams} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary} from '../api/types'
-import {MonacoEditor} from '../components/MonacoEditor'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {MarkdownContent} from '../components/MarkdownContent'
+import {ReadonlyCodeViewer} from '../components/ReadonlyCodeViewer'
 import {ReactModal} from '../components/ReactModal'
 import {usePersistentVerticalSplitter} from '../components/usePersistentVerticalSplitter'
-import {attachReadonlyEditorTouchHandoff} from '../editor/touchScroll'
 import {loadSubmissionOrigin, rememberSubmissionOrigin, submissionOriginFromState} from '../lib/submissionNavigation'
 
 interface LeanFile extends JsonRecord {path: string; mode: string; content: string}
@@ -59,24 +58,6 @@ function TestPointDetail({point, index, submissionId, lean, onOpenImage}: {point
 
 type LeanTreeNode = {folders: Map<string, LeanTreeNode>; files: LeanFile[]}
 
-function SubmissionCodeViewer({language, problemId, value, idPrefix, ariaLabel}: {language: string; problemId: number; value: string; idPrefix: string; ariaLabel: string}) {
-  return <MonacoEditor
-    language={language}
-    problemId={problemId}
-    value={value}
-    onChange={() => undefined}
-    idPrefix={idPrefix}
-    ariaLabel={ariaLabel}
-    viewer
-    fontSize={14}
-    lineHeight={22}
-    shellClassName="submission-editor-shell"
-    hostClassName="submission-monaco-container"
-    fallbackClassName="submission-code-fallback"
-    onReady={({editor}) => attachReadonlyEditorTouchHandoff(editor)}
-  />
-}
-
 function LeanTree({files, active, select}: {files: LeanFile[]; active: string; select: (path: string) => void}) {
   const root: LeanTreeNode = {folders: new Map(), files: []}
   files.forEach((file) => {
@@ -95,7 +76,7 @@ function LeanTree({files, active, select}: {files: LeanFile[]; active: string; s
   return <Branch node={root} />
 }
 
-function LeanSubmissionSurface({workspace, problemId}: {workspace: LeanWorkspace; problemId: number}) {
+function LeanSubmissionSurface({workspace}: {workspace: LeanWorkspace}) {
   const files = (workspace.files || []).filter((file) => file.path)
   const requested = String(workspace.default_file || '')
   const [active, setActive] = useState(files.some((file) => file.path === requested) ? requested : files[0]?.path || '')
@@ -103,7 +84,7 @@ function LeanSubmissionSurface({workspace, problemId}: {workspace: LeanWorkspace
   const readonly = file?.mode === 'readonly'
   return <div className="submission-code-surface submission-code-viewer submission-lean-workspace" id="submissionEditorShell">
     <aside className="lean-file-explorer submission-lean-file-explorer" aria-label="本次提交的 Lean 文件"><header className="lean-file-explorer-bar"><span>Files</span><span className="lean-file-count">{files.length}</span></header><div className="lean-file-tree" role="tree"><LeanTree files={files} active={file?.path || ''} select={setActive} /></div></aside>
-    <section className="submission-lean-editor-pane" aria-label="Lean 4 文件内容"><header className="submission-lean-editor-bar"><span className="submission-lean-active-file"><span className="lean-file-mark" aria-hidden="true">λ</span><span title={file?.path}>{file?.path || 'Submission.lean'}</span><span className={`submission-lean-file-mode${readonly ? ' is-readonly' : ''}`}>{readonly ? '题目只读' : '学生提交'}</span></span><span className="submission-lean-revision" title={`工作区版本 ${String(workspace.revision || '')}`}>R{String(workspace.revision_number || 0)}</span></header><div className="submission-lean-editor-body">{file ? <SubmissionCodeViewer key={file.path} language="lean4" problemId={problemId} value={file.content || ''} idPrefix={`submission-lean-${file.path.replace(/[^a-z0-9]/gi, '-')}`} ariaLabel="Lean 4 提交文件，只读" /> : null}</div></section>
+    <section className="submission-lean-editor-pane" aria-label="Lean 4 文件内容"><header className="submission-lean-editor-bar"><span className="submission-lean-active-file"><span className="lean-file-mark" aria-hidden="true">λ</span><span title={file?.path}>{file?.path || 'Submission.lean'}</span><span className={`submission-lean-file-mode${readonly ? ' is-readonly' : ''}`}>{readonly ? '题目只读' : '学生提交'}</span></span><span className="submission-lean-revision" title={`工作区版本 ${String(workspace.revision || '')}`}>R{String(workspace.revision_number || 0)}</span></header><div className="submission-lean-editor-body">{file ? <ReadonlyCodeViewer key={file.path} language="lean4" value={file.content || ''} ariaLabel="Lean 4 提交文件，只读" /> : null}</div></section>
   </div>
 }
 
@@ -186,7 +167,7 @@ export default function SubmissionDetailPage() {
   const returnTo = routedOrigin || rememberedOrigin || `/submissions?problem_id=${submission.problem_id}`
   const returnLabel = returnTo.startsWith('/problems/') ? 'PROBLEM' : 'SUBMISSIONS'
   return <div ref={pageRef} className="submission-detail-page" data-math-curve-stroke-scale="1.2">
-    <section className="submission-detail-primary" id="submissionDetailPrimary" aria-label={lean ? 'Lean 4 提交文件' : programming ? '提交代码' : '书面作业 PDF'}>{programming ? lean && data.lean_workspace ? <LeanSubmissionSurface workspace={data.lean_workspace} problemId={submission.problem_id} /> : <div className="submission-code-surface submission-code-viewer"><SubmissionCodeViewer language={data.plang || 'matlab'} problemId={submission.problem_id} value={submission.code || ''} idPrefix="submission" ariaLabel="提交代码，只读" /></div> : <WrittenPdf submission={submission} />}</section>
+    <section className="submission-detail-primary" id="submissionDetailPrimary" aria-label={lean ? 'Lean 4 提交文件' : programming ? '提交代码' : '书面作业 PDF'}>{programming ? lean && data.lean_workspace ? <LeanSubmissionSurface workspace={data.lean_workspace} /> : <div className="submission-code-surface submission-code-viewer"><ReadonlyCodeViewer language={data.plang || 'matlab'} value={submission.code || ''} ariaLabel="提交代码，只读" /></div> : <WrittenPdf submission={submission} />}</section>
     <aside className="submission-detail-summary-card" id="submissionDetailSummary" aria-label="提交摘要"><div className="submission-detail-topline"><Link className="submission-detail-back" to={returnTo}><i className="fas fa-arrow-left" /> {returnLabel}</Link><span className="submission-detail-id">#{submission.id}</span></div><h1 className="visually-hidden">提交 #{submission.id}</h1><div className="submission-detail-result"><span className={`submission-verdict submission-verdict--${statusClass(submission.status)}`}><span className="submission-verdict__dot" /><span>{submission.status || 'Unknown'}</span></span><div className="submission-detail-score"><strong className={accepted ? 'is-accepted' : submission.score ? 'is-partial' : 'is-failed'}>{submission.score ?? '—'}</strong><span>/ <span>{maxScore}</span></span></div></div><dl className="submission-detail-meta"><dt>题目</dt><dd className="submission-detail-problem-meta"><Link to={`/problems/${submission.problem_id}`}>{data.problem?.title || submission.problem_title || '未命名题目'}</Link><span>P{String(submission.problem_id).padStart(4, '0')}</span></dd><dt>提交者</dt><dd>{submission.username}</dd><dt>提交时间</dt><dd>{submission.created_at || '—'}</dd></dl>{submission.generated_from_prompt ? <details className="submission-detail-disclosure submission-prompt-card" open><summary><span>ORIGINAL PROMPT</span><i className="fas fa-chevron-down" /></summary><pre>{submission.prompt_text || ''}</pre>{submission.prompt_generation_error ? <div className="submission-inline-error">{submission.prompt_generation_error}</div> : null}</details> : null}{Number(data.user?.is_admin) === 1 ? <><button type="button" className="submission-button submission-button--accent submission-detail-rejudge" disabled={rejudge.isPending} onClick={() => {if (window.confirm('确认重测这条提交吗？')) rejudge.mutate()}}><i className="fas fa-rotate-right" />{rejudge.isPending ? '正在提交重测…' : '重测此提交'}</button><div className={`submission-action-feedback${rejudge.isSuccess ? ' is-success' : rejudge.isError ? ' is-error' : ''}`} role="status">{rejudge.isSuccess ? '已加入重测队列' : rejudge.isError ? `重测失败：${rejudge.error.message}` : ''}</div></> : null}</aside>
     <div ref={splitterRef} className="submission-detail-splitter" role="separator" tabIndex={0} aria-label="调整提交信息与提交内容宽度" aria-orientation="vertical" aria-controls="submissionDetailSummary submissionDetailResults submissionDetailPrimary" aria-valuemin={26} aria-valuemax={66} aria-valuenow={50} />
     <aside className="submission-detail-results" id="submissionDetailResults" aria-label={lean ? '证明验证详情' : programming ? '测试点详情' : '批改详情'}>{programming ? <><section className="submission-detail-section"><header className="submission-detail-section-heading"><div><span>{lean ? 'PROOF CHECK' : 'TEST POINTS'}</span></div></header><div className="test-point-grid">{data.test_points.map((point, index) => <button className={`test-point-card ${pointClass(point.status)}${index === activePointIndex ? ' selected' : ''}`} type="button" title={lean ? `证明验证 · ${String(point.status || 'Unknown')}` : `测试点 #${index + 1} · ${String(point.status || 'Unknown')}`} aria-label={lean ? `证明验证，${String(point.status || 'Unknown')}` : `测试点 ${index + 1}，${String(point.status || 'Unknown')}`} aria-pressed={index === activePointIndex} onClick={() => setSelectedPoint(index)} key={index}><span className="tp-index">{lean ? '⊢' : String(index + 1).padStart(2, '0')}</span>{pointClass(point.status) === 'is-active' ? <MathCurveLoader iconOnly size="xs" /> : null}</button>)}</div>{activePoint ? <TestPointDetail point={activePoint} index={activePointIndex} submissionId={submission.id} lean={lean} onOpenImage={setImagePreview} /> : <div className="submission-test-detail-hint">{lean ? '证明验证中，结果稍后显示。' : '判题中，暂时没有可展示的测试点结果。'}</div>}</section>{submission.status === 'Unaccepted' ? <AiTutor submissionId={submission.id} cached={data.cached_ai_code_marks} /> : null}</> : <WrittenResults data={data} refresh={() => void result.refetch()} />}</aside>

@@ -121,78 +121,84 @@
   }
 }
 
-.submission-code-surface .submission-editor-shell {
-  position: relative;
-  display: block;
+.submission-static-code-viewer {
   width: 100%;
   height: 100%;
-  min-height: 560px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   background: #1e1e1e;
+  color: #d4d4d4;
+  caret-color: transparent;
+  scrollbar-color: #424242 transparent;
 }
 
-.submission-code-surface .submission-editor-shell > .submission-monaco-container {
-  width: 100%;
-  height: 100%;
+.submission-static-code {
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 14px 0;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font: 14px/22px "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  tab-size: 4;
+  white-space: normal;
 }
 
-.submission-code-surface .problem-editor-loading-state {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
+.submission-static-code-line {
   display: grid;
-  place-items: center;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  grid-template-columns: 54px minmax(0, 1fr);
+  min-height: 22px;
 }
 
-.submission-code-surface .problem-editor-loading-indicator {
-  --math-curve-color-a: #ffffff;
-  --math-curve-color-b: #ffffff;
+.submission-static-code-line-number {
+  padding: 0 12px 0 6px;
+  color: #858585;
+  text-align: right;
+  user-select: none;
 }
 
-.submission-code-surface .submission-code-fallback {
-  display: block;
-  width: 100%;
-  height: 100%;
-  min-height: 560px;
-  padding: 18px;
-  border: 0;
-  resize: none;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  font: 14px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+.submission-static-code-line-content {
+  min-width: 0;
+  padding-right: 18px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
-.submission-code-viewer [data-editor-mode="viewer"] .cursor,
-.submission-code-viewer [data-editor-mode="viewer"] .cursors-layer {
-  display: none !important;
-}
+.submission-code-token.is-color-4ec9b0 { color: #4ec9b0; }
+.submission-code-token.is-color-4fc1ff { color: #4fc1ff; }
+.submission-code-token.is-color-569cd6 { color: #569cd6; }
+.submission-code-token.is-color-608b4e { color: #608b4e; }
+.submission-code-token.is-color-646695 { color: #646695; }
+.submission-code-token.is-color-6a9955 { color: #6a9955; }
+.submission-code-token.is-color-808080 { color: #808080; }
+.submission-code-token.is-color-9cdcfe { color: #9cdcfe; }
+.submission-code-token.is-color-b5cea8 { color: #b5cea8; }
+.submission-code-token.is-color-c586c0 { color: #c586c0; }
+.submission-code-token.is-color-c8c8c8 { color: #c8c8c8; }
+.submission-code-token.is-color-ce9178 { color: #ce9178; }
+.submission-code-token.is-color-d16969 { color: #d16969; }
+.submission-code-token.is-color-d4d4d4 { color: #d4d4d4; }
+.submission-code-token.is-color-d7ba7d { color: #d7ba7d; }
+.submission-code-token.is-color-dcdcaa { color: #dcdcaa; }
+.submission-code-token.is-color-f44747 { color: #f44747; }
+.submission-code-token.is-italic { font-style: italic; }
+.submission-code-token.is-bold { font-weight: 700; }
+.submission-code-token.is-underlined { text-decoration: underline; }
 
-.submission-code-viewer [data-editor-mode="viewer"] textarea.inputarea,
-.submission-code-viewer .monaco-viewer-fallback {
-  caret-color: transparent !important;
+.submission-static-code-viewer:focus,
+.submission-static-code-viewer:focus-visible {
+  outline: 0;
 }
 
 @media (hover: none), (pointer: coarse) {
-  .submission-code-viewer,
-  .submission-code-viewer * {
+  .submission-static-code-viewer,
+  .submission-static-code-viewer * {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
-  }
-
-  .submission-code-viewer .monaco-viewer-fallback {
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-y: auto;
-  }
-}
-
-@media (max-width: 991.98px) {
-  .submission-code-surface .submission-editor-shell,
-  .submission-code-surface .submission-code-fallback {
-    height: 100%;
-    min-height: 0;
   }
 }
 

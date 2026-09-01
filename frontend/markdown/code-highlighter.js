@@ -6,6 +6,7 @@ import cpp from "@shikijs/langs/cpp";
 import matlab from "@shikijs/langs/matlab";
 import python from "@shikijs/langs/python";
 import lean4 from "../lean4-grammar.js";
+import darkPlus from "../lean4-theme.js";
 import githubLight from "./github-light-theme.js";
 
 let highlighterPromise;
@@ -38,7 +39,7 @@ function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighterCore({
       langs: [bash, c, cpp, lean4, matlab, python],
-      themes: [githubLight],
+      themes: [darkPlus, githubLight],
       engine: createJavaScriptRegexEngine(),
     }).catch((error) => {
       highlighterPromise = null;
@@ -49,19 +50,19 @@ function getHighlighter() {
 }
 
 /**
- * 使用与 Monaco 编辑器相同的 TextMate grammar 和 GitHub Light 主题返回
- * 最小化 token 数据。编辑器本身仍可保持 Dark+；这里只改变 Markdown 画布。
+ * 使用与 Monaco 编辑器相同的 TextMate grammar 返回最小化 token 数据。
+ * Markdown 默认使用 GitHub Light；提交详情的静态只读代码区显式选择 Dark+。
  *
  * DOM 由共享 Markdown 渲染器通过 createTextNode 构造，避免把用户源码重新
  * 作为 HTML 注入；这里只返回颜色、字体样式和原始文本。
  */
-export async function tokenize(source, language) {
+export async function tokenize(source, language, appearance = "light") {
   const normalized = LANGUAGE_ALIASES[String(language || "").toLowerCase()];
   if (!normalized) throw new Error("该语言不支持 Markdown TextMate 高亮");
   const highlighter = await getHighlighter();
   const result = highlighter.codeToTokens(String(source ?? ""), {
     lang: normalized,
-    theme: "github-light-default",
+    theme: appearance === "dark" ? "dark-plus" : "github-light-default",
   });
   return {
     tokens: result.tokens.map((line) => line.map((token) => ({
