@@ -1,4 +1,5 @@
 import {forwardRef, useCallback, type MouseEvent} from 'react'
+import {flushSync} from 'react-dom'
 import {
   Link as RouterLink,
   useNavigate as useRouterNavigate,
@@ -14,6 +15,7 @@ const PAGE_ENTER_MS = 260
 const PAGE_TRANSITION_SNAPSHOT_SELECTOR = '[data-numoj-page-transition-snapshot]'
 let pageSnapshotCleanupTimer: number | undefined
 let pageEnteringCleanupTimer: number | undefined
+let activeViewTransition: ViewTransition | undefined
 
 function copyScrollOffsets(source: HTMLElement, clone: HTMLElement) {
   clone.scrollTop = source.scrollTop
@@ -26,26 +28,65 @@ function copyScrollOffsets(source: HTMLElement, clone: HTMLElement) {
     if (!clonedElement) return
     clonedElement.scrollTop = element.scrollTop
     clonedElement.scrollLeft = element.scrollLeft
+    if (element instanceof HTMLImageElement && clonedElement instanceof HTMLImageElement) {
+      clonedElement.loading = 'eager'
+      clonedElement.decoding = 'sync'
+      if (element.currentSrc) clonedElement.src = element.currentSrc
+    }
   })
 }
 
+function prefersReducedMotion() {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function startNativePageTransition(update: () => void) {
+  if (typeof document.startViewTransition !== 'function') return false
+
+  try {
+    activeViewTransition?.skipTransition()
+    const transition = document.startViewTransition(() => {
+      flushSync(update)
+    })
+    activeViewTransition = transition
+    void transition.finished.then(
+      () => {if (activeViewTransition === transition) activeViewTransition = undefined},
+      () => {if (activeViewTransition === transition) activeViewTransition = undefined},
+    )
+    return true
+  } catch {
+    activeViewTransition = undefined
+    return false
+  }
+}
+
 /**
- * 声明式 BrowserRouter 不会执行 React Router 的 viewTransition 选项。这里
- * 只保留正文可见区域的短暂快照，让侧栏和移动端顶栏保持稳定；新正文淡入并
- * 上移少量距离，避免整页截图式过渡带来的漂浮感。
+ * 保留原来的旧页下沉淡出和新页延迟上浮淡入时序。支持 View Transition 的
+ * 浏览器直接使用合成层快照，避免 cloneNode 重新绘制图片和复杂背景；旧浏览器
+ * 才使用 DOM 快照回退。
  */
-export function startPageTransition() {
-  if (typeof document === 'undefined') return
+export function startPageTransition(update: () => void) {
+  if (typeof document === 'undefined' || prefersReducedMotion()) {
+    update()
+    return
+  }
+  if (startNativePageTransition(update)) return
 
   const content = document.querySelector<HTMLElement>('.numoj-content')
-  if (!content) return
+  if (!content) {
+    update()
+    return
+  }
 
   const contentRect = content.getBoundingClientRect()
   const visibleLeft = Math.max(0, contentRect.left)
   const visibleTop = Math.max(0, contentRect.top)
   const visibleRight = Math.min(window.innerWidth, contentRect.right)
   const visibleBottom = Math.min(window.innerHeight, contentRect.bottom)
-  if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) return
+  if (visibleRight <= visibleLeft || visibleBottom <= visibleTop) {
+    update()
+    return
+  }
 
   document.querySelector(PAGE_TRANSITION_SNAPSHOT_SELECTOR)?.remove()
   if (pageSnapshotCleanupTimer !== undefined) window.clearTimeout(pageSnapshotCleanupTimer)
@@ -75,6 +116,7 @@ export function startPageTransition() {
   document.documentElement.classList.remove('numoj-page-transition-entering')
   void content.offsetWidth
   document.documentElement.classList.add('numoj-page-transition-entering')
+  update()
 
   pageSnapshotCleanupTimer = window.setTimeout(() => {
     snapshotLayer.remove()
@@ -87,34 +129,50 @@ export function startPageTransition() {
   }, PAGE_ENTER_DELAY_MS + PAGE_ENTER_MS + 40)
 }
 
-function shouldAnimateClick(event: MouseEvent<HTMLAnchorElement>, target?: string) {
-  return event.button === 0
-    && !event.defaultPrevented
-    && !event.metaKey
-    && !event.ctrlKey
-    && !event.shiftKey
-    && !event.altKey
-    && (!target || target === '_self')
+function shouldAnimateClick(event: MouseEvent<HTMLAnchorElement>, target?: string, reloadDocument?: boolean) {
+  if (event.button !== 0
+    || event.defaultPrevented
+    || event.metaKey
+    || event.ctrlKey
+    || event.shiftKey
+    || event.altKey
+    || reloadDocument
+    || target && target !== '_self') return false
+
+  const currentUrl = new URL(window.location.href)
+  const destinationUrl = new URL(event.currentTarget.href, currentUrl)
+  return destinationUrl.origin === currentUrl.origin && destinationUrl.href !== currentUrl.href
 }
 
 export const Link = forwardRef<HTMLAnchorElement, LinkProps>(function PageLink(
-  {viewTransition = true, onClick, target, ...props},
+  {viewTransition = true, onClick, target, reloadDocument, replace, state, preventScrollReset, relative, to, ...props},
   ref,
 ) {
+  const navigate = useRouterNavigate()
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(event)
-    if (viewTransition && shouldAnimateClick(event, target)) {
-      startPageTransition()
-    }
+    if (!viewTransition || !shouldAnimateClick(event, target, reloadDocument)) return
+
+    event.preventDefault()
+    startPageTransition(() => navigate(to, {
+      replace,
+      state,
+      preventScrollReset,
+      relative,
+      viewTransition: false,
+    }))
   }
-  return <RouterLink ref={ref} viewTransition={false} onClick={handleClick} target={target} {...props} />
+  return <RouterLink ref={ref} viewTransition={false} onClick={handleClick} target={target} reloadDocument={reloadDocument} replace={replace} state={state} preventScrollReset={preventScrollReset} relative={relative} to={to} {...props} />
 })
 
 export function useNavigate(): NavigateFunction {
   const navigate = useRouterNavigate()
   return useCallback(((to: To | number, options?: NavigateOptions) => {
-    if (options?.viewTransition !== false) startPageTransition()
-    if (typeof to === 'number') return navigate(to)
-    return navigate(to, {...options, viewTransition: false})
+    const update = () => {
+      if (typeof to === 'number') navigate(to)
+      else navigate(to, {...options, viewTransition: false})
+    }
+    if (options?.viewTransition === false) return update()
+    startPageTransition(update)
   }) as NavigateFunction, [navigate])
 }

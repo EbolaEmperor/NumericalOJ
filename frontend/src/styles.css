@@ -178,8 +178,35 @@
   min-height: 1px;
 }
 
-/* BrowserRouter 只为正文可见区域保留旧内容快照；桌面侧栏与移动端顶栏不参与
- * 动画。路由和数据加载立即开始，旧正文先退场；过半后新正文才开始上浮。 */
+/* 原有页面过渡的时序与曲线保持不变。现代浏览器由合成层持有旧、新正文快照；
+ * 侧栏和移动端顶栏不参与动画。 */
+.numoj-content {
+  view-transition-name: numoj-page-content;
+}
+
+::view-transition-group(numoj-page-content) {
+  animation-duration: 390ms;
+}
+
+::view-transition-image-pair(numoj-page-content) {
+  isolation: isolate;
+}
+
+::view-transition-old(numoj-page-content) {
+  animation:
+    numoj-content-sink 260ms cubic-bezier(.45, 0, .55, 1) both,
+    numoj-content-dissolve 260ms linear both;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(numoj-page-content) {
+  animation:
+    numoj-content-rise 260ms 130ms cubic-bezier(.45, 0, .55, 1) both,
+    numoj-content-appear 260ms 130ms linear both;
+  mix-blend-mode: normal;
+}
+
+/* 不支持合成层快照时的 DOM 回退。 */
 .numoj-page-transition-snapshot {
   position: fixed;
   z-index: 1020;
@@ -199,8 +226,6 @@
   pointer-events: none;
 }
 
-/* 快照保留旧页面的最终画面，只允许外层执行退场；不能继承真实新页面的
- * 延迟入场动画，否则旧正文会在切换瞬间被置为透明。 */
 .numoj-page-transition-clone > .numoj-spa-route,
 .numoj-page-transition-clone.numoj-auth-page {
   opacity: 1 !important;
@@ -216,8 +241,6 @@ html.numoj-page-transition-entering #root .numoj-auth-page {
   will-change: opacity, transform;
 }
 
-/* Agent 与 VibeHub 的首屏容器恰好等于 100dvh/100vh。上浮动画的视觉
- * 位移不应被计入页面滚动范围，否则右侧会短暂多出滚动条。 */
 html.numoj-page-transition-entering #root .numoj-content {
   overflow-y: clip;
 }
@@ -240,6 +263,14 @@ html.numoj-page-transition-entering #root .numoj-content {
 @keyframes numoj-content-appear {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(numoj-page-content),
+  ::view-transition-old(numoj-page-content),
+  ::view-transition-new(numoj-page-content) {
+    animation: none;
+  }
 }
 
 /* 旧版题目工作台依赖内容容器的确定高度；SPA 过渡层必须把这条尺寸链继续向下传递。 */
