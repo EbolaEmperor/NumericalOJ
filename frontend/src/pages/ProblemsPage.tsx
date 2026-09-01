@@ -6,10 +6,11 @@ import {apiFetch, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {MathCurveLoader} from '../components/MathCurveLoader'
-import {Link} from '../components/PageNavigation'
+import {Link, useNavigate} from '../components/PageNavigation'
 import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {frontierProjects, problemInsights} from '../content/problemDashboard'
+import {shouldNavigateFromCardClick} from '../lib/clickableCard'
 import {useSession} from '../session'
 
 interface Response extends ApiEnvelope {
@@ -53,6 +54,7 @@ function deadlineParts(value: unknown) {
 
 export default function ProblemsPage() {
   const {session} = useSession()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [params] = useSearchParams()
   const library = params.get('view') === 'library'
@@ -113,7 +115,7 @@ export default function ProblemsPage() {
               const isRanking = item.kind === 'ranking'
               const id = Number(item.problem_id || item.competition_id || item.id)
               const target = isRanking ? `/rankings/${id}` : `/problems/${id}`
-              if (library) return <article className="numoj-assignment-row numoj-assignment-row-library" data-numoj-assignment-kind="library" key={`${id}-${index}`}>
+              if (library) return <article className="numoj-assignment-row numoj-assignment-row-library" data-numoj-assignment-kind="library" key={`${id}-${index}`} onClick={(event) => {if (shouldNavigateFromCardClick(event)) navigate(target)}}>
                 <div className="numoj-row-state neutral" aria-hidden="true" />
                 <div className="numoj-row-identity"><div className="numoj-row-title-line"><span className="numoj-row-id">P{String(id).padStart(4, '0')}</span><Link className="numoj-row-title-link" to={target} viewTransition>{item.title}</Link></div><div className="numoj-row-tags"><span>{Number(item.type) === 1 ? '编程题' : '书面题'}</span>{item.lang ? <span>{languageLabel(item.lang)}</span> : null}</div></div>
                 <SubmissionMetric value={item.submission_metrics} />
@@ -123,7 +125,7 @@ export default function ProblemsPage() {
               const completed = Boolean(item.is_completed)
               const pending = Boolean(item.has_pending_submission)
               const hasSubmission = Boolean(item.has_submission)
-              return <article className={`numoj-assignment-row numoj-assignment-row-homework${session?.user?.is_admin ? '' : ' is-student-homework'}`} data-numoj-assignment-kind="homework" key={`${id}-${index}`}>
+              return <article className={`numoj-assignment-row numoj-assignment-row-homework${session?.user?.is_admin ? '' : ' is-student-homework'}`} data-numoj-assignment-kind="homework" key={`${id}-${index}`} onClick={(event) => {if (shouldNavigateFromCardClick(event)) navigate(target)}}>
                 {session?.user?.is_admin ? <div className="numoj-row-state neutral" aria-hidden="true" /> : item.plagiarism_notice ? <button type="button" className="numoj-row-state warning" aria-label="查看抄袭记录" title="查看抄袭记录" onClick={() => setPlagiarismNotice(String(item.plagiarism_notice))}>!</button> : completed ? <div className="numoj-row-state complete" aria-label="已完成">✓</div> : hasSubmission ? <div className="numoj-row-state failed" role="img" aria-label="有提交但未通过" /> : <div className="numoj-row-state neutral" aria-label="未提交" />}
                 <div className="numoj-row-identity"><div className="numoj-row-title-line"><span className="numoj-row-id">H{String(Number(item.homework_id || item.id || id)).padStart(4, '0')}</span><Link className="numoj-row-title-link" to={target} viewTransition>{item.title}</Link></div><div className="numoj-row-tags"><span>{isRanking ? '打榜赛' : Number(item.problem_type) === 2 ? '书面题' : '编程题'}</span>{item.problem_lang ? <span>{languageLabel(String(item.problem_lang))}</span> : null}</div></div>
                 {!session?.user?.is_admin ? <div className="numoj-row-result"><div className="numoj-row-grade"><strong>{item.max_score == null ? pending ? '评测中' : deadline.state === 'expired' ? '0' : '-' : String(item.max_score)}{item.total_score != null ? `/${String(item.total_score)}` : ''}</strong><span>{pending ? '以提交时间为准' : item.max_score != null ? deadline.state === 'expired' ? '已结算' : '最高成绩' : deadline.state === 'expired' ? '未按时提交' : '未提交'}</span></div><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></div> : <><SubmissionMetric value={item.submission_metrics} /><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></>}

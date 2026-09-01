@@ -31,6 +31,8 @@
   background: var(--agent-paper);
 }
 
+.agent-workspace-backdrop { display: none; }
+
 .agent-session.has-file {
   grid-template-columns: minmax(300px, 4.5fr) 5px minmax(300px, 4.5fr) 5px minmax(190px, 1fr);
 }
@@ -2039,6 +2041,18 @@
 
   .agent-session.workspace-open .agent-workspace-pane { transform: translateX(0); }
   .agent-workspace-header button { display: grid; }
+
+  .agent-workspace-backdrop {
+    position: fixed;
+    z-index: 1040;
+    inset: 0;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: rgb(24 24 27 / 24%);
+  }
+
+  .agent-workspace-backdrop[hidden] { display: none; }
 
   .agent-file-pane {
     position: fixed;

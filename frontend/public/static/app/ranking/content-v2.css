@@ -1313,6 +1313,17 @@
   gap: .4rem;
 }
 
+.ranking-v2-detail .ranking-endpoint-identity {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: .4rem;
+}
+
+.ranking-v2-detail .ranking-endpoint-identity > i {
+  flex: 0 0 auto;
+}
+
 .ranking-v2-detail .rj-endpoint-trigger-main .rj-endpoint-harness-name,
 .ranking-v2-detail .rj-endpoint-trigger-main .rj-endpoint-model-name,
 .ranking-v2-detail .rj-endpoint-option-main .rj-endpoint-harness-name,
@@ -2649,14 +2660,19 @@
   }
 
   .ranking-v2-detail .gitsub-head,
-  .ranking-v2-detail .gitsub-repo,
   .ranking-v2-detail .gitsub-confirm {
     align-items: flex-start;
     flex-direction: column;
   }
 
   .ranking-v2-detail .gitsub-repo .u {
-    width: 100%;
+    width: auto;
+  }
+
+  .ranking-v2-detail .gitsub-copy {
+    flex: 0 0 auto;
+    align-self: center;
+    white-space: nowrap;
   }
 
   .ranking-v2-detail .submit-actions {

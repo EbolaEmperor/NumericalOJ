@@ -1,6 +1,6 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useRef, useState, type FormEvent, type RefObject} from 'react'
-import {useParams} from 'react-router-dom'
+import {useLocation, useParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary, SubmissionSummary} from '../api/types'
@@ -12,6 +12,7 @@ import {ErrorState, LoadingState} from '../components/PageState'
 import {LeanWorkbench, type LeanWorkbenchController} from '../components/LeanWorkbench'
 import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
+import {submissionNavigationState} from '../lib/submissionNavigation'
 import {useSession} from '../session'
 
 interface DetailResponse extends ApiEnvelope {
@@ -237,6 +238,7 @@ function AgentLaunchModal({problemId, kind, maxScore, open, onClose, navigate}: 
 
 export default function ProblemDetailPage() {
   const {problemId} = useParams()
+  const location = useLocation()
   const {session} = useSession()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -281,7 +283,7 @@ export default function ProblemDetailPage() {
       if (deadlineAck) form.append('deadline_warning_ack', '1')
       return apiFetch<ApiEnvelope & {submission_id?: number}>(detail.data.submit.action, {method: 'POST', body: form})
     },
-    onSuccess: async (payload) => {await queryClient.invalidateQueries({queryKey: ['submissions']}); if (payload.submission_id) navigate(`/submissions/${payload.submission_id}`)},
+    onSuccess: async (payload) => {await queryClient.invalidateQueries({queryKey: ['submissions']}); if (payload.submission_id) navigate(`/submissions/${payload.submission_id}`, {state: submissionNavigationState(`${location.pathname}${location.search}`)})},
   })
   const lastCode = useMutation({
     mutationFn: () => apiFetch<LastCodeResponse>(`/api/problems/${problemId}/last-submission-code`),
@@ -385,7 +387,7 @@ export default function ProblemDetailPage() {
             <Link to={`/admin/problems/${problem.id}/edit`} className="btn btn-outline-warning me"><i className="fas fa-pencil-alt me-1" /> 编辑</Link>
             {isLean4 ? <><button type="button" className="btn btn-outline-warning" onClick={() => setAdminModal('upload')}><i className="fas fa-folder-open me-1" /> {data.lean_workspace ? '更新题目包' : '上传题目包'}</button>{data.lean_workspace ? <a href={`/api/admin/problems/${problem.id}/lean-workspace/download`} download className="btn btn-outline-secondary"><i className="fas fa-download me-1" /> v{data.lean_workspace.revision_number}</a> : null}</> : <button type="button" className="btn btn-outline-warning" onClick={() => setAdminModal('upload')}><i className="fas fa-cloud-upload-alt me-1" /> 上传</button>}
             <button type="button" className="btn btn-outline-danger" onClick={() => {if (window.confirm('确认要重测本题的所有提交吗？')) rejudge.mutate()}} disabled={rejudge.isPending}><i className="fas fa-redo-alt me-1" /> 重测</button><button type="button" className="btn btn-outline-info" onClick={() => {setAdminModal('scores'); scores.reset(); scores.mutate()}}><i className="fas fa-chart-bar me-1" /> 统计</button>
-          </div> : null}</div>{data.last_submissions?.length ? <aside className="recent-submissions-card" aria-label="最近提交"><ul>{data.last_submissions.map((item) => <li key={item.id}><span className={`badge submission-status ${String(item.status || '').toLowerCase().replaceAll(' ', '-')}`} title={item.status}>{abbreviations[String(item.status)] || 'UN'}</span><span className="recent-submission-score">{item.score ?? '—'}/{problem.max_score ?? 100}</span><Link to={`/submissions/${item.id}`} className="recent-submission-arrow" aria-label={`查看提交 ${item.id} 详情`} title="查看详情"><svg viewBox="0 0 16 16"><path d="M3.5 8h8M8.5 4.5 12 8l-3.5 3.5" /></svg></Link></li>)}</ul></aside> : null}</div></div>
+          </div> : null}</div>{data.last_submissions?.length ? <aside className="recent-submissions-card" aria-label="最近提交"><ul>{data.last_submissions.map((item) => <li key={item.id}><span className={`badge submission-status ${String(item.status || '').toLowerCase().replaceAll(' ', '-')}`} title={item.status}>{abbreviations[String(item.status)] || 'UN'}</span><span className="recent-submission-score">{item.score ?? '—'}/{problem.max_score ?? 100}</span><Link to={`/submissions/${item.id}`} state={submissionNavigationState(`${location.pathname}${location.search}`)} className="recent-submission-arrow" aria-label={`查看提交 ${item.id} 详情`} title="查看详情"><svg viewBox="0 0 16 16"><path d="M3.5 8h8M8.5 4.5 12 8l-3.5 3.5" /></svg></Link></li>)}</ul></aside> : null}</div></div>
         <MarkdownContent html={data.rendered_content} className="problem-content numoj-markdown numoj-problem-code-rendering my-3" />
       </div>
       <div className="problem-detail-splitter" id="problemDetailSplitter" role="separator" tabIndex={0} aria-label="调整题面与作答区宽度" aria-orientation="vertical" aria-controls="problemStatementPane problemSubmissionPane" aria-valuemin={20} aria-valuemax={80} aria-valuenow={50} data-problem-detail-splitter />

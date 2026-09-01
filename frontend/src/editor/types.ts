@@ -20,6 +20,9 @@ export type MonacoEditorInstance = {
   focus: () => void
   getModel?: () => MonacoModel | null
   getPosition?: () => MonacoPosition | null
+  getLayoutInfo?: () => {height: number; [key: string]: unknown}
+  getScrollHeight?: () => number
+  getScrollTop?: () => number
   getValue: () => string
   layout: () => void
   onDidChangeCursorPosition?: (listener: (event: {position?: MonacoPosition}) => void) => Disposable

@@ -1903,6 +1903,7 @@
     gap: 14px;
     padding: 13px 20px;
     border-bottom: 1px solid var(--numoj-line);
+    cursor: pointer;
   }
 
   .numoj-library-grid .numoj-assignment-row {

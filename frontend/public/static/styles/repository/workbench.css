@@ -1962,7 +1962,7 @@
 
   .repository-header {
     gap: 10px;
-    padding: 9px 72px 9px 10px;
+    padding: 9px 10px;
   }
 
   .repository-mobile-files {
@@ -2042,10 +2042,6 @@
 }
 
 @media (max-width: 720px) {
-  .repository-header {
-    padding-right: 66px;
-  }
-
   .repository-header-actions .repository-button span {
     display: none;
   }
