@@ -591,12 +591,15 @@ def register_agent_run_turn_task(celery_app):
                     state["quota_summary"] = get_agent_runtime_quota_summary(
                         user["id"]
                     )
-                    _publish_agent_trace(state)
                 except Exception:
-                    # 账本事务已经提交后，额度摘要/Redis 只是界面旁路。
-                    # 发布失败不能把已扣费的正常请求误判成记账失败并杀掉任务；
-                    # 后续状态读取会直接从额度账户恢复最新余额。
+                    # 账本事务已经提交后，额度摘要只是界面旁路。刷新失败不能
+                    # 把已扣费的正常请求误判成记账失败并杀掉任务；后续状态读取
+                    # 会直接从额度账户恢复最新余额。
                     pass
+                # 不在 relay 的 usage 回调里提前发布。adapter 只有拿到完整响应
+                # 后才会写入规范 trace；紧随其后的 trace tick 会把轨迹、用量和
+                # 额度作为同一份 SSE 快照发布，避免一次 LLM 请求产生两个视觉
+                # 更新，也不会退化为 token 级流式渲染。
                 return {
                     **result,
                     "remaining_rmb": result.get("remaining_amount"),

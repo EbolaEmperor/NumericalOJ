@@ -909,7 +909,7 @@ def test_generic_uses_current_endpoint_after_session_revision_changes(monkeypatc
     assert snapshots[-1]["status"] == "Completed"
 
 
-def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypatch):
+def test_committed_usage_charge_survives_quota_summary_refresh_failure(monkeypatch):
     task_id = "metered-summary-offline"
     session = {
         "session_id": "metered-session",
@@ -981,7 +981,9 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
     monkeypatch.setattr(
         generic,
         "get_agent_runtime_quota_summary",
-        lambda _user_id: {"remaining_amount": "8.5"},
+        lambda _user_id: (_ for _ in ()).throw(
+            RuntimeError("quota summary database offline")
+        ),
     )
     ledger_costs = iter((None, "1.5"))
     monkeypatch.setattr(
@@ -989,14 +991,6 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
         "get_agent_session_usage_cost",
         lambda _session_id: next(ledger_costs),
     )
-    monkeypatch.setattr(
-        generic,
-        "_publish_agent_trace",
-        lambda _state: (_ for _ in ()).throw(
-            RuntimeError("quota summary redis offline")
-        ),
-    )
-
     def run_harness(**kwargs):
         assert kwargs["reasoning_effort"] == "high"
         result = kwargs["usage_callback"]({
@@ -1046,7 +1040,7 @@ def test_committed_usage_charge_survives_quota_summary_publish_failure(monkeypat
     assert snapshots[-1]["session_charged_amount_rmb"] == "1.5"
 
 
-def test_admin_usage_is_recorded_and_published_in_realtime(monkeypatch):
+def test_admin_usage_is_recorded_for_the_next_trace_snapshot(monkeypatch):
     task_id = "admin-realtime-cost"
     session = {
         "session_id": "admin-cost-session",
@@ -1066,6 +1060,12 @@ def test_admin_usage_is_recorded_and_published_in_realtime(monkeypatch):
         "is_legacy": False,
     }
     snapshots = _patch_generic(monkeypatch, session)
+    trace_publications = []
+    monkeypatch.setattr(
+        generic,
+        "_publish_agent_trace",
+        lambda state: trace_publications.append(deepcopy(state)),
+    )
     endpoint = {**_endpoint(), "revision": 5}
     monkeypatch.setattr(
         generic,
@@ -1114,6 +1114,8 @@ def test_admin_usage_is_recorded_and_published_in_realtime(monkeypatch):
                 "reasoning_output_tokens": 0,
             },
         })
+        assert trace_publications == []
+        kwargs["trace_callback"]()
         return HarnessRunResult(
             0,
             False,
@@ -1139,4 +1141,6 @@ def test_admin_usage_is_recorded_and_published_in_realtime(monkeypatch):
     assert result["success"] is True
     assert charged[0]["is_admin"] is True
     assert charged[0]["endpoint_revision"] == 5
+    assert len(trace_publications) == 1
+    assert trace_publications[0]["session_charged_amount_rmb"] == "0.125"
     assert snapshots[-1]["session_charged_amount_rmb"] == "0.125"
