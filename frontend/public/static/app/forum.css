@@ -718,6 +718,7 @@
   min-height: 0;
   overflow-y: auto;
   padding: 22px 24px calc(32px + var(--forum-reply-overlay-height));
+  scroll-padding-bottom: calc(32px + var(--forum-reply-overlay-height));
   overscroll-behavior: contain;
   scrollbar-color: var(--forum-line) transparent;
 }
