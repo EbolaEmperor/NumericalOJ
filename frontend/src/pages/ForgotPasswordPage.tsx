@@ -33,7 +33,7 @@ export default function ForgotPasswordPage() {
 
   return <AuthFrame active="forgot">
     {step === 'email' && !context.isPending && !context.data?.mail_configured ? <p className="numoj-auth-notice" role="status">站点尚未配置邮件服务，请联系管理员</p> : null}
-    {context.isError || send.isError || reset.isError ? <div className="numoj-auth-alert is-error" role="alert">{errorMessage(context.error || send.error || reset.error)}</div> : null}
+    {context.isError ? <div className="numoj-auth-alert is-error" role="alert"><span>{errorMessage(context.error)}</span><button type="button" className="numoj-auth-link-button" onClick={() => void context.refetch()}>重新加载</button></div> : send.isError || reset.isError ? <div className="numoj-auth-alert is-error" role="alert">{errorMessage(send.error || reset.error)}</div> : null}
     {step === 'email' ? <form className="numoj-auth-form" onSubmit={submitEmail}>
       <div className="numoj-auth-field"><label htmlFor="email">邮箱</label><span className="numoj-auth-control"><input id="email" name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入注册邮箱" required autoFocus /></span></div>
       <button className="numoj-auth-primary" type="submit" disabled={context.isPending || !context.data?.mail_configured || send.isPending}>{send.isPending ? '正在发送…' : '发送验证码'}</button>

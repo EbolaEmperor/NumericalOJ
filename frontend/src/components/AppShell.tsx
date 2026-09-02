@@ -14,6 +14,7 @@ import {ReactOffcanvas} from './ReactOffcanvas'
 interface PrefetchTarget {
   path: string
   queryKey: readonly unknown[]
+  infinite?: boolean
 }
 
 type PageDisplayMode = 'default' | 'vibehub-not-found'
@@ -31,7 +32,7 @@ const prefetchTargets: Record<string, readonly PrefetchTarget[]> = {
   rankings: [{path: '/api/ranking/competitions', queryKey: ['rankings']}],
   agents: [{path: '/api/agent/sessions?page=1', queryKey: ['agent-tasks', 1, '']}],
   forum: [
-    {path: '/api/forum?scope=all', queryKey: ['forum', 'all']},
+    {path: '/api/forum?scope=all&page=1&limit=30', queryKey: ['forum', 'list', 'all', ''], infinite: true},
     {path: '/api/forum/identity', queryKey: ['forum', 'identity']},
   ],
   repository: [
@@ -56,6 +57,16 @@ const prefetchTargets: Record<string, readonly PrefetchTarget[]> = {
 function warmNavigationItem(id: string, queryClient: ReturnType<typeof useQueryClient>, staleTime: number) {
   preloadNavigationRoute(id === 'library' ? 'problems' : id)
   for (const target of prefetchTargets[id] || []) {
+    if (target.infinite) {
+      void queryClient.prefetchInfiniteQuery({
+        queryKey: target.queryKey,
+        queryFn: () => apiFetch<ApiEnvelope>(target.path),
+        initialPageParam: 1,
+        getNextPageParam: () => undefined,
+        staleTime,
+      })
+      continue
+    }
     void queryClient.prefetchQuery({
       queryKey: target.queryKey,
       queryFn: () => apiFetch<ApiEnvelope>(target.path),

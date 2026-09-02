@@ -1,6 +1,7 @@
 import {useEffect, useLayoutEffect, type RefObject} from 'react'
 
 import {getSemanticLegend, requestSemanticTokens, type SemanticLegend, type SemanticPayload, type TextPosition} from '../editor/semanticTokens'
+import {copyText} from '../lib/clipboard'
 import {clearMath, typesetMath} from '../markdown/mathjaxRuntime'
 
 type HighlightToken = {content?: string; color?: string; fontStyle?: number}
@@ -70,25 +71,6 @@ function enhanceLinks(root: HTMLElement) {
       link.removeAttribute('href')
     }
   })
-}
-
-async function copyText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return
-    } catch { /* Safari 的非安全上下文继续走兼容复制。 */ }
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.readOnly = true
-  textarea.setAttribute('aria-hidden', 'true')
-  Object.assign(textarea.style, {position: 'fixed', left: '-9999px', opacity: '0'})
-  document.body.appendChild(textarea)
-  textarea.select()
-  const copied = document.execCommand('copy')
-  textarea.remove()
-  if (!copied) throw new Error('clipboard-unavailable')
 }
 
 function ensureCopyButtons(root: HTMLElement) {

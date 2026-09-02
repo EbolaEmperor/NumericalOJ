@@ -1,5 +1,5 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useMemo, useState} from 'react'
+import {useMemo, useRef, useState} from 'react'
 import {useSearchParams} from 'react-router-dom'
 
 import {apiFetch, queryString} from '../api/client'
@@ -52,6 +52,19 @@ function deadlineParts(value: unknown) {
   return {absolute, relative: `剩 ${Math.ceil(remaining / 86_400_000)} 天`, state: ''}
 }
 
+function shuffledIndexes(length: number) {
+  const indexes = Array.from({length}, (_, index) => index)
+  for (let index = indexes.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(Math.random() * (index + 1))
+    ;[indexes[index], indexes[target]] = [indexes[target], indexes[index]]
+  }
+  return indexes
+}
+
+function randomProjects() {
+  return shuffledIndexes(frontierProjects.length).slice(0, 3).map((index) => frontierProjects[index])
+}
+
 export default function ProblemsPage() {
   const {session} = useSession()
   const navigate = useNavigate()
@@ -61,8 +74,21 @@ export default function ProblemsPage() {
   const classEn = params.get('class_en') || ''
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerRef = useDismissibleDropdown<HTMLDivElement>(pickerOpen, () => setPickerOpen(false))
-  const [insightIndex, setInsightIndex] = useState(0)
-  const [projectOffset, setProjectOffset] = useState(0)
+  const insightQueue = useRef<number[]>([])
+  const previousInsight = useRef<number | null>(null)
+  const nextInsight = () => {
+    if (!insightQueue.current.length) {
+      insightQueue.current = shuffledIndexes(problemInsights.length)
+      if (insightQueue.current.length > 1 && insightQueue.current[0] === previousInsight.current) {
+        ;[insightQueue.current[0], insightQueue.current[1]] = [insightQueue.current[1], insightQueue.current[0]]
+      }
+    }
+    const index = insightQueue.current.shift() ?? 0
+    previousInsight.current = index
+    return index
+  }
+  const [insightIndex, setInsightIndex] = useState(nextInsight)
+  const [projects, setProjects] = useState(randomProjects)
   const [plagiarismNotice, setPlagiarismNotice] = useState('')
   const prefetchClass = (classEn: string) => {
     void queryClient.prefetchQuery({
@@ -105,7 +131,6 @@ export default function ProblemsPage() {
   const rows = result.data?.problems || []
   const title = library ? '总题库' : result.data?.selected_class_cn || (session?.user?.is_admin ? '班级作业' : '我的作业')
   const insight = problemInsights[insightIndex]
-  const projects = [0, 1, 2].map((index) => frontierProjects[(projectOffset + index) % frontierProjects.length])
 
   return <section className="numoj-problem-dashboard" aria-labelledby="problem-dashboard-title">
     <div className={`numoj-dashboard-grid${library ? ' numoj-library-grid' : ''}`}>
@@ -140,7 +165,7 @@ export default function ProblemsPage() {
               return <article className={`numoj-assignment-row numoj-assignment-row-homework${session?.user?.is_admin ? '' : ' is-student-homework'}`} data-numoj-assignment-kind="homework" key={`${id}-${index}`} onClick={(event) => {if (shouldNavigateFromCardClick(event)) navigate(target)}}>
                 {session?.user?.is_admin ? <div className="numoj-row-state neutral" aria-hidden="true" /> : item.plagiarism_notice ? <button type="button" className="numoj-row-state warning" aria-label="查看抄袭记录" title="查看抄袭记录" onClick={() => setPlagiarismNotice(String(item.plagiarism_notice))}>!</button> : completed ? <div className="numoj-row-state complete" aria-label="已完成">✓</div> : hasSubmission ? <div className="numoj-row-state failed" role="img" aria-label="有提交但未通过" /> : <div className="numoj-row-state neutral" aria-label="未提交" />}
                 <div className="numoj-row-identity"><div className="numoj-row-title-line"><span className="numoj-row-id">H{String(Number(item.homework_id || item.id || id)).padStart(4, '0')}</span><Link className="numoj-row-title-link" to={target} viewTransition>{item.title}</Link></div><div className="numoj-row-tags"><span>{isRanking ? '打榜赛' : Number(item.problem_type) === 2 ? '书面题' : '编程题'}</span>{item.problem_lang ? <span>{languageLabel(String(item.problem_lang))}</span> : null}</div></div>
-                {!session?.user?.is_admin ? <div className="numoj-row-result"><div className="numoj-row-grade"><strong>{item.max_score == null ? pending ? '评测中' : deadline.state === 'expired' ? '0' : '-' : String(item.max_score)}{item.total_score != null ? `/${String(item.total_score)}` : ''}</strong><span>{pending ? '以提交时间为准' : item.max_score != null ? deadline.state === 'expired' ? '已结算' : '最高成绩' : deadline.state === 'expired' ? '未按时提交' : '未提交'}</span></div><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></div> : <><SubmissionMetric value={item.submission_metrics} /><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></>}
+                {!session?.user?.is_admin ? <div className="numoj-row-result"><div className="numoj-row-grade"><strong>{item.max_score == null ? pending ? '评测中' : deadline.state === 'expired' ? '0' : '-' : isRanking ? String(Math.floor(Number(item.max_score) + 0.5)) : String(item.max_score)}{item.total_score != null ? `/${String(item.total_score)}` : ''}</strong><span>{item.max_score != null && pending ? '暂定，另有提交评测中' : item.max_score != null ? deadline.state === 'expired' ? '已结算' : '最高成绩' : pending ? '以提交时间为准' : deadline.state === 'expired' ? '未按时提交' : '未提交'}</span></div><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></div> : <><SubmissionMetric value={item.submission_metrics} /><div className="numoj-row-deadline">{deadline.absolute ? <strong className="numoj-row-deadline-absolute">{deadline.absolute}</strong> : null}<span className={`numoj-row-deadline-relative ${deadline.state}`}>{deadline.relative}</span></div></>}
                 <Link className="numoj-row-arrow" to={target} aria-label={`查看 ${item.title}`} viewTransition>›</Link>
               </article>
             })}
@@ -150,9 +175,9 @@ export default function ProblemsPage() {
       </div>
 
       <aside className="numoj-dashboard-aside" aria-label="学习辅助信息">
-        {!library ? <section className="numoj-panel numoj-activity-card"><header><h2>班级活跃度</h2><span>近 12 周</span></header><div className="numoj-heatmap-frame">{activity.isPending ? <div className="numoj-heatmap-loading" role="status"><MathCurveLoader size="lg" label="正在加载班级活跃度" /></div> : activity.data?.activity?.length ? <><div className="numoj-weekday-labels" aria-hidden="true"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="numoj-heatmap" role="img" aria-label={`${activity.data.class_cn || '当前班级'}近十二周提交活跃度`}>{activity.data.activity.map((item) => <span className={`level-${Math.max(0, Math.min(4, Number(item.intensity) || 0))}${item.future ? ' future' : ''}`} title={`${item.day}：${item.count} 次提交`} aria-hidden="true" key={item.day} />)}</div></> : <div className="numoj-heatmap-message">当前没有可展示的班级活跃度</div>}</div>{activity.data?.activity?.length ? <footer><span>{activity.data.activity[0]?.day.slice(5).replace('-', '/')}</span><span className="numoj-heatmap-legend">少 <i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /> 多</span><span>更新至今日</span></footer> : null}</section> : null}
-        <section className="numoj-panel numoj-tip-card"><header><h2><span className="numoj-card-mark" aria-hidden="true"><i className="fas fa-lightbulb" /></span>Insights Everyday</h2></header><div className="numoj-insight" aria-live="polite"><p className="numoj-insight-quote">“{insight[0]}”</p><p className="numoj-insight-translation" lang="zh-CN">{insight[1]}</p><cite>— {insight[2]}</cite></div><button type="button" className="numoj-text-button" onClick={() => setInsightIndex((value) => (value + 1) % problemInsights.length)}><i className="fas fa-sync-alt" aria-hidden="true" /><span>换一换</span></button></section>
-        <section className="numoj-panel numoj-resource-card"><header><h2><span className="numoj-card-mark" aria-hidden="true"><i className="fab fa-github" /></span>Explore the Frontier</h2></header><ul aria-live="polite">{projects.map((project) => <li key={project}><a href={`https://github.com/${project}`} target="_blank" rel="noopener noreferrer"><span>{project}</span><b>↗</b></a></li>)}</ul><button type="button" className="numoj-text-button" onClick={() => setProjectOffset((value) => (value + 3) % frontierProjects.length)}><i className="fas fa-sync-alt" aria-hidden="true" /><span>换一换</span></button></section>
+        {!library ? <section className="numoj-panel numoj-activity-card"><header><h2>班级活跃度</h2><span>近 12 周</span></header><div className="numoj-heatmap-frame">{activity.isPending ? <div className="numoj-heatmap-loading" role="status"><MathCurveLoader size="lg" label="正在加载班级活跃度" /></div> : activity.isError ? <div className="numoj-heatmap-message numoj-heatmap-error"><span>{activity.error.message || '班级活跃度加载失败'}</span><button type="button" className="numoj-text-button" onClick={() => void activity.refetch()}>重试</button></div> : activity.data?.activity?.length ? <><div className="numoj-weekday-labels" aria-hidden="true"><span>一</span><span>三</span><span>五</span><span>日</span></div><div className="numoj-heatmap" role="img" aria-label={`${activity.data.class_cn || '当前班级'}近十二周提交活跃度`}>{activity.data.activity.map((item) => <span className={`level-${Math.max(0, Math.min(4, Number(item.intensity) || 0))}${item.future ? ' future' : ''}`} title={`${item.day}：${item.count} 次提交`} aria-hidden="true" key={item.day} />)}</div></> : <div className="numoj-heatmap-message">当前没有可展示的班级活跃度</div>}</div>{activity.data?.activity?.length ? <footer><span>{activity.data.activity[0]?.day.slice(5).replace('-', '/')}</span><span className="numoj-heatmap-legend">少 <i className="level-1" /><i className="level-2" /><i className="level-3" /><i className="level-4" /> 多</span><span>更新至今日</span></footer> : null}</section> : null}
+        <section className="numoj-panel numoj-tip-card"><header><h2><span className="numoj-card-mark" aria-hidden="true"><i className="fas fa-lightbulb" /></span>Insights Everyday</h2></header><div className="numoj-insight" aria-live="polite"><p className="numoj-insight-quote">“{insight[0]}”</p><p className="numoj-insight-translation" lang="zh-CN">{insight[1]}</p><cite>— {insight[2]}</cite></div><button type="button" className="numoj-text-button" onClick={() => setInsightIndex(nextInsight)}><i className="fas fa-sync-alt" aria-hidden="true" /><span>换一换</span></button></section>
+        <section className="numoj-panel numoj-resource-card"><header><h2><span className="numoj-card-mark" aria-hidden="true"><i className="fab fa-github" /></span>Explore the Frontier</h2></header><ul aria-live="polite">{projects.map((project) => <li key={project}><a href={`https://github.com/${project}`} target="_blank" rel="noopener noreferrer"><span>{project}</span><b>↗</b></a></li>)}</ul><button type="button" className="numoj-text-button" onClick={() => setProjects(randomProjects())}><i className="fas fa-sync-alt" aria-hidden="true" /><span>换一换</span></button></section>
         <section className="numoj-panel numoj-resource-card"><header><h2><span className="numoj-card-mark" aria-hidden="true"><i className="fas fa-compass" /></span>Resources</h2></header><ul><li><a href="https://github.com/EbolaEmperor/NumericalOJ" target="_blank" rel="noopener noreferrer"><span>NumericalOJ · GitHub<small>github.com/EbolaEmperor/NumericalOJ</small></span><b>↗</b></a></li><li><a href="/api/downloads/numoj-cli.zip" download><span>{result.data?.numoj_cli_resource?.label || (session?.user?.is_admin ? 'numoj-admin CLI' : 'numoj-user CLI')}<small>{result.data?.numoj_cli_resource?.description || (session?.user?.is_admin ? 'Download for agents to manage NumOJ' : 'Download for agents to use NumOJ.')}</small></span><b>↓</b></a></li></ul></section>
       </aside>
     </div>

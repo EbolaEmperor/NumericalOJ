@@ -120,7 +120,7 @@ export default function RankingAppealReviewPage() {
   })
 
   if (result.isPending) return <LoadingState label="正在加载申诉" />
-  if (result.isError) return <ErrorState message={errorMessage(result.error)} />
+  if (result.isError) return <ErrorState message={errorMessage(result.error)} retry={() => void result.refetch()} />
   const data = result.data
   const appeal = data.appeal
   return <section className="appeal-review-page">

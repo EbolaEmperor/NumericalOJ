@@ -116,6 +116,7 @@ export default function VibeHubPage() {
       setTitle(String(response.project.title || ''))
       setOriginalTitle(String(response.project.title || ''))
       setEditorStatus('')
+      window.requestAnimationFrame(() => titleRef.current?.focus())
     } catch (error) {
       if (request.signal.aborted || editorRequestRef.current !== request) return
       setEditorError(true); setEditorStatus(errorMessage(error))
@@ -139,7 +140,7 @@ export default function VibeHubPage() {
     return matchesQuery && matchesFilter
   }), [filter, query, result.data?.projects])
   if (result.isPending) return <LoadingState label="正在读取 VibeHub" />
-  if (result.isError) return <ErrorState message={result.error.message} />
+  if (result.isError) return <ErrorState message={result.error.message} retry={() => void result.refetch()} />
   const deletePhrase = `我确认要删除 ${originalTitle} 这个作品`
   return <div className="vibe-gallery" data-vibehub-app data-vibe-view="gallery">
     <section className="vibe-catalog" aria-label="VibeHub 作品">

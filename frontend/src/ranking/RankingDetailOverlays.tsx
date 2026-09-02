@@ -68,14 +68,14 @@ function MatchHtmlDetail({matchId, content, requestedHeight}: {matchId: number; 
   return <div className="match-detail-html"><iframe key={frame.documentKey} ref={frame.frameRef} title="评分脚本生成的互动对战详情" sandbox="allow-scripts" referrerPolicy="no-referrer" aria-busy={!frame.ready} style={frame.frameStyle} /></div>
 }
 
-export function MatchDetailModal({open, detail, pending, error, onClose}: {open: boolean; detail?: RankingMatchDetail; pending: boolean; error?: Error | null; onClose: () => void}) {
+export function MatchDetailModal({open, detail, pending, error, onClose, retry}: {open: boolean; detail?: RankingMatchDetail; pending: boolean; error?: Error | null; onClose: () => void; retry: () => void}) {
   const output = detail ? detail.detail_output && typeof detail.detail_output === 'object' ? detail.detail_output : legacyMatchOutput(detail) : null
   const isHtml = output?.format === 'html'
   const winner = numberValue(detail?.winner, -1)
   const winnerLabel = winner === 1 ? `${detail?.username_a || ''} 胜` : winner === 2 ? `${detail?.username_b || ''} 胜` : winner === 0 ? '平局' : '失败'
   return <ReactModal open={open} onClose={onClose} id="matchDetailModal" labelledBy="matchDetailModalLabel" className="ranking-v2-detail" dialogClassName="modal-xl modal-dialog-scrollable">
     <div className="modal-content match-detail-modal"><div className="modal-header"><h5 className="modal-title" id="matchDetailModalLabel"><i className="fas fa-magnifying-glass me-2" />对战详情</h5><button type="button" className="btn-close" aria-label="Close" onClick={onClose} /></div><div className="modal-body">
-      {pending ? <div className="text-center text-muted py-4"><MathCurveLoader size="md" label="加载中…" /></div> : error ? <div className="match-detail-error" role="alert">{errorMessage(error)}</div> : detail && output ? <div>
+      {pending ? <div className="text-center text-muted py-4"><MathCurveLoader size="md" label="加载中…" /></div> : error ? <div className="match-detail-error" role="alert"><span>{errorMessage(error)}</span><button type="button" className="btn btn-sm btn-outline-danger ms-2" onClick={retry}>重新加载</button></div> : detail && output ? <div>
         <div className="match-detail-toolbar" hidden={isHtml}><div className="match-detail-meta">#{detail.id} · {detail.created_at} · {winnerLabel}</div><div className="match-detail-tools"><span className={`match-detail-format${isHtml ? ' is-html' : ''}`}><i className={`fas ${isHtml ? 'fa-code' : 'fa-align-left'}`} /><span>{isHtml ? '互动 HTML' : '文本'}</span></span></div></div>
         {!isHtml ? <><h6 className="match-detail-heading">评测脚本给出的胜负理由</h6><pre className="match-detail-text">{output.content || ''}</pre></> : <MatchHtmlDetail matchId={detail.id} content={output.content || ''} requestedHeight={output.height} />}
       </div> : null}

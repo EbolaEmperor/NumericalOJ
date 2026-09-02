@@ -338,6 +338,7 @@
 
 .agent-access-loading,
 .agent-access-empty { padding: 22px 12px; color: #928b80; font-size: 10px; text-align: center; }
+.agent-access-empty > span { display: block; margin-bottom: 9px; }
 
 .agent-personal-endpoint-list { display: grid; gap: 7px; margin-bottom: 9px; }
 

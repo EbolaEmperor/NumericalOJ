@@ -176,13 +176,13 @@ function useProblemDetailLayout(pageRef: RefObject<HTMLDivElement | null>, probl
   }, [isLean4, pageRef, problemId])
 }
 
-function RejudgeProgressModal({open, onClose, progress}: {open: boolean; onClose: () => void; progress: {percent: number; done: number; total: number}}) {
-  return <ReactModal open={open} onClose={onClose} id="rejudgeProgressModal" labelledBy="rejudgeProgressLabel"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="rejudgeProgressLabel">重测进度</h5><button type="button" className="btn-close" onClick={onClose} aria-label="关闭" /></div><div className="modal-body"><div className="progress mb-3"><div className="progress-bar" role="progressbar" style={{width: `${progress.percent}%`}} aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}>{progress.percent}%</div></div><p className="small text-muted">{progress.percent < 100 ? <MathCurveLoader size="sm" label={`已完成 ${progress.done} / ${progress.total}`} /> : `已完成 ${progress.done} / ${progress.total}`}</p></div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={onClose}>关闭</button></div></div></ReactModal>
+function RejudgeProgressModal({open, onClose, progress, error, retry}: {open: boolean; onClose: () => void; progress: {percent: number; done: number; total: number}; error: string; retry: () => void}) {
+  return <ReactModal open={open} onClose={onClose} id="rejudgeProgressModal" labelledBy="rejudgeProgressLabel"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="rejudgeProgressLabel">重测进度</h5><button type="button" className="btn-close" onClick={onClose} aria-label="关闭" /></div><div className="modal-body"><div className="progress mb-3"><div className="progress-bar" role="progressbar" style={{width: `${progress.percent}%`}} aria-valuenow={progress.percent} aria-valuemin={0} aria-valuemax={100}>{progress.percent}%</div></div>{error ? <div className="alert alert-danger mb-0" role="alert">{error}<button type="button" className="btn btn-sm btn-outline-danger ms-2" onClick={retry}>重试读取</button></div> : <p className="small text-muted">{progress.percent < 100 ? <MathCurveLoader size="sm" label={`已完成 ${progress.done} / ${progress.total}`} /> : `已完成 ${progress.done} / ${progress.total}`}</p>}</div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={onClose}>关闭</button></div></div></ReactModal>
 }
 
-function ScoresModal({open, onClose, data, pending, error}: {open: boolean; onClose: () => void; data?: ScoresResponse; pending: boolean; error?: unknown}) {
+function ScoresModal({open, onClose, data, pending, error, retry}: {open: boolean; onClose: () => void; data?: ScoresResponse; pending: boolean; error?: unknown; retry: () => void}) {
   const average = data?.scores.length ? (data.scores.reduce((sum, row) => sum + Number(row.score || 0), 0) / data.scores.length).toFixed(2) : '0.00'
-  return <ReactModal open={open} onClose={onClose} id="scoresModal" labelledBy="scoresModalLabel" dialogClassName="modal-lg"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="scoresModalLabel"><i className="fas fa-chart-bar me-2" /> 用户得分统计</h5><button type="button" className="btn-close" onClick={onClose} aria-label="关闭" /></div><div className="modal-body">{pending ? <div className="text-center"><MathCurveLoader size="md" label="正在加载用户得分…" /></div> : error ? <div className="alert alert-danger"><i className="fas fa-exclamation-triangle me-2" /><span>{errorMessage(error)}</span></div> : data ? <><div className="mb-3"><h6>{data.problem_id}. {data.problem_title}</h6><p className="text-muted mb-1">满分: <span>{data.max_score}</span> 分</p><p className="text-muted mb-0">平均分: <span>{average}</span> 分</p></div><div className="table-responsive"><table className="table table-striped table-hover"><thead className="table-dark"><tr><th>用户名</th><th>班级</th><th>得分</th><th>状态</th></tr></thead><tbody>{data.scores.map((row) => {const score = Number(row.score || 0); const status = score === Number(data.max_score) ? ['满分', 'text-success'] : score > 0 ? ['部分正确', 'text-warning'] : ['未通过', 'text-danger']; return <tr key={String(row.user_id)}><td>{String(row.username || '')}</td><td>{String(row.classes_display || '')}</td><td>{String(row.score ?? '')}</td><td className={status[1]}>{status[0]}</td></tr>})}</tbody></table></div></> : null}</div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={onClose}>关闭</button></div></div></ReactModal>
+  return <ReactModal open={open} onClose={onClose} id="scoresModal" labelledBy="scoresModalLabel" dialogClassName="modal-lg"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="scoresModalLabel"><i className="fas fa-chart-bar me-2" /> 用户得分统计</h5><button type="button" className="btn-close" onClick={onClose} aria-label="关闭" /></div><div className="modal-body">{pending ? <div className="text-center"><MathCurveLoader size="md" label="正在加载用户得分…" /></div> : error ? <div className="alert alert-danger" role="alert"><i className="fas fa-exclamation-triangle me-2" /><span>{errorMessage(error)}</span><button type="button" className="btn btn-sm btn-outline-danger ms-2" onClick={retry}>重新加载</button></div> : data ? <><div className="mb-3"><h6>{data.problem_id}. {data.problem_title}</h6><p className="text-muted mb-1">满分: <span>{data.max_score}</span> 分</p><p className="text-muted mb-0">平均分: <span>{average}</span> 分</p></div><div className="table-responsive"><table className="table table-striped table-hover"><thead className="table-dark"><tr><th>用户名</th><th>班级</th><th>得分</th><th>状态</th></tr></thead><tbody>{data.scores.map((row) => {const score = Number(row.score || 0); const status = score === Number(data.max_score) ? ['满分', 'text-success'] : score > 0 ? ['部分正确', 'text-warning'] : ['未通过', 'text-danger']; return <tr key={String(row.user_id)}><td>{String(row.username || '')}</td><td>{String(row.classes_display || '')}</td><td>{String(row.score ?? '')}</td><td className={status[1]}>{status[0]}</td></tr>})}</tbody></table></div></> : null}</div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={onClose}>关闭</button></div></div></ReactModal>
 }
 
 function AgentLaunchChoice({label, value, options, disabled, onChange}: {label: string; value: string; options: Array<{value: string; label: string; icon: string; meta?: string}>; disabled?: boolean; onChange: (value: string) => void}) {
@@ -234,6 +234,8 @@ function AgentLaunchModal({problemId, kind, maxScore, open, onClose, navigate}: 
   const selectHarness = (value: string) => {setHarness(value); setEndpointId(String((endpointsByHarness[value] || [])[0]?.id || ''))}
   const ready = Boolean(harness && endpointId && (kind === 'solve' || (solution && Number.isInteger(testPointCount) && testPointCount > 0)))
   const title = kind === 'solve' ? '解题 Agent' : '造数据 Agent'
+  const optionsFailure: unknown = options.error
+  if (optionsFailure) return <ReactModal open={open} onClose={onClose} id={kind === 'solve' ? 'agentSolveModal' : 'agentGenerateDataModal'} labelledBy={kind === 'solve' ? 'agentSolveModalLabel' : 'agentGenerateDataModalLabel'} className="agent-launch-modal" dialogClassName="modal-dialog-centered"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id={kind === 'solve' ? 'agentSolveModalLabel' : 'agentGenerateDataModalLabel'}>{title}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="agent-launch-feedback is-error" role="alert">{errorMessage(optionsFailure)}</div></div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={onClose}>取消</button><button type="button" className="btn btn-primary" disabled={options.isFetching} onClick={() => void options.refetch()}>{options.isFetching ? '重试中…' : '重新加载'}</button></div></div></ReactModal>
   return <ReactModal open={open} onClose={onClose} id={kind === 'solve' ? 'agentSolveModal' : 'agentGenerateDataModal'} labelledBy={kind === 'solve' ? 'agentSolveModalLabel' : 'agentGenerateDataModalLabel'} className="agent-launch-modal" dialogClassName="modal-dialog-centered"><div className="modal-content"><div className="modal-header"><div className="agent-launch-heading"><span className="agent-launch-heading-icon"><i className={`fas ${kind === 'solve' ? 'fa-terminal' : 'fa-database'}`} /></span><div><p className="agent-launch-eyebrow">{kind === 'solve' ? 'PROBLEM AGENT' : 'TESTDATA AGENT'}</p><h5 className="modal-title" id={kind === 'solve' ? 'agentSolveModalLabel' : 'agentGenerateDataModalLabel'}>{title}</h5></div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="agent-launch-selector-grid"><AgentLaunchChoice label="Harness" value={harness} options={harnessOptions} disabled={options.isPending || launch.isPending || !harnessOptions.length} onChange={selectHarness} /><AgentLaunchChoice label="LLM 节点" value={endpointId} options={endpointOptions} disabled={options.isPending || launch.isPending || !endpointOptions.length} onChange={setEndpointId} /></div>{options.isPending ? <div className="agent-launch-feedback is-loading" role="status">正在读取可用的 Harness 和 LLM 节点…</div> : options.isError ? <div className="agent-launch-feedback is-error" role="status">{errorMessage(options.error)}</div> : !harnessOptions.length ? <div className="agent-launch-feedback is-error" role="status">当前没有可用的 Harness。</div> : harness && !endpointOptions.length ? <div className="agent-launch-feedback is-error" role="status">该 Harness 暂无兼容的 LLM 节点，请选择其他 Harness。</div> : launch.isError ? <div className="agent-launch-feedback is-error" role="status">{errorMessage(launch.error)}</div> : null}{kind === 'testdata' ? <><div className="agent-launch-divider" /><div className="agent-launch-data-grid"><div className="agent-launch-field agent-launch-count-field"><label className="agent-launch-field-label" htmlFor="agentTestPointCount">测试点数量</label><input type="number" min={1} step={1} className="form-control" id="agentTestPointCount" value={testPointCount} onChange={(event) => setTestPointCount(Number(event.target.value))} /></div><div className="agent-launch-field"><label className="agent-launch-field-label" htmlFor="agentDataRequirement">测试点要求</label><textarea className="form-control" id="agentDataRequirement" rows={3} value={requirement} onChange={(event) => setRequirement(event.target.value)} /></div><div className="agent-launch-field agent-launch-solution-field"><span className="agent-launch-field-label">正解</span><div className={`agent-launch-file${solution ? ' has-file' : ''}`}><input type="file" className="visually-hidden" id="agentStandardSolution" disabled={launch.isPending} onChange={(event) => setSolution(event.target.files?.[0] || null)} /><label className="agent-launch-file-trigger" htmlFor="agentStandardSolution"><span className="agent-launch-file-icon"><i className="fas fa-file-code" /></span><span className="agent-launch-file-copy"><span className="agent-launch-file-title">{solution ? '已选择正解' : '选择正解文件'}</span><span className="agent-launch-file-name">{solution?.name || '尚未选择文件'}</span></span><span className="agent-launch-file-action">{solution ? '重新选择' : '选择文件'}</span></label></div></div></div></> : null}</div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={onClose}>取消</button><button type="button" className="btn btn-primary" disabled={!ready || launch.isPending} onClick={() => launch.mutate()}>{launch.isPending ? <span className="spinner-border spinner-border-sm me-2" aria-hidden="true" /> : <i className="fas fa-play me-2" />}{launch.isPending ? '启动中…' : kind === 'solve' ? '启动解题' : '启动造数据'}</button></div></div></ReactModal>
 }
 
@@ -248,6 +250,7 @@ export default function ProblemDetailPage() {
   const [writtenDragDepth, setWrittenDragDepth] = useState(0)
   const [rejudgePolling, setRejudgePolling] = useState(false)
   const [rejudgeProgress, setRejudgeProgress] = useState({percent: 0, done: 0, total: 0})
+  const [rejudgeProgressError, setRejudgeProgressError] = useState('')
   const [adminModal, setAdminModal] = useState<'upload' | 'scores' | 'rejudge' | null>(null)
   const [deadlineWarning, setDeadlineWarning] = useState<JsonRecord | null>(null)
   const [deadlineWarningError, setDeadlineWarningError] = useState('')
@@ -343,6 +346,7 @@ export default function ProblemDetailPage() {
     mutationFn: () => apiFetch<ApiEnvelope>(`/api/admin/problems/${problemId}/rejudge`, {method: 'POST'}),
     onSuccess: () => {
       setRejudgeProgress({percent: 0, done: 0, total: 0})
+      setRejudgeProgressError('')
       setRejudgePolling(true)
       setAdminModal('rejudge')
     },
@@ -364,10 +368,12 @@ export default function ProblemDetailPage() {
     const check = async () => {
       try {
         const payload = await apiFetch<RejudgeStatusResponse>(`/api/admin/problems/${problemId}/rejudge-status`)
+        setRejudgeProgressError('')
         const percent = Number(payload.progress || 0)
         setRejudgeProgress({percent, done: Number(payload.done || 0), total: Number(payload.total || 0)})
         if (percent >= 100) setRejudgePolling(false)
-      } catch {
+      } catch (error) {
+        setRejudgeProgressError(`无法读取重测进度：${errorMessage(error)}`)
         setRejudgePolling(false)
       }
     }
@@ -375,7 +381,7 @@ export default function ProblemDetailPage() {
     return () => window.clearInterval(timer)
   }, [problemId, rejudgePolling])
   if (detail.isPending) return <LoadingState label="正在读取题目与提交上下文" />
-  if (detail.isError) return <ErrorState message={detail.error.message} />
+  if (detail.isError) return <ErrorState message={detail.error.message} retry={() => void detail.refetch()} />
   const data = detail.data!
   const problem = data.problem
   const programming = Number(problem.type || 1) === 1
@@ -454,8 +460,8 @@ export default function ProblemDetailPage() {
           </div>
         </form>
       </ReactModal>
-      <RejudgeProgressModal open={adminModal === 'rejudge'} onClose={() => setAdminModal(null)} progress={rejudgeProgress} />
-      <ScoresModal open={adminModal === 'scores'} onClose={() => setAdminModal(null)} data={scores.data} pending={scores.isIdle || scores.isPending} error={scores.error} />
+      <RejudgeProgressModal open={adminModal === 'rejudge'} onClose={() => setAdminModal(null)} progress={rejudgeProgress} error={rejudgeProgressError} retry={() => {setRejudgeProgressError(''); setRejudgePolling(true)}} />
+      <ScoresModal open={adminModal === 'scores'} onClose={() => setAdminModal(null)} data={scores.data} pending={scores.isIdle || scores.isPending} error={scores.error} retry={() => scores.mutate()} />
     </> : null}
   </div>
 }

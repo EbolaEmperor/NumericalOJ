@@ -310,6 +310,15 @@ export default function AgentSessionPage() {
   const accessBlockedMessage = !accessBlocked ? '' : !publicEnabled ? 'Agent 暂停向普通用户开放，当前会话仅可查看。' : !quotaHasAccount ? '你还没有平台额度；请先申请额度再继续此会话。' : Number(quota.remaining_amount) <= -5 ? '额度已达到 -5 元，系统正在停止任务；补充额度后才能继续。' : '额度低于 0 元，请申请额度后继续。此会话使用全站端点，不能切换为自有端点。'
   const blockedMessage = accessBlockedMessage || (legacy ? '旧任务没有可恢复的 workspace，无法继续会话' : !canResume ? '只有会话发起者可以继续发送消息' : isBlockedStatus(status) ? '身份配置清理失败，请管理员处理后再继续' : result.data?.can_retry_now ? '本轮未建立可恢复的原生会话，可以重试上一条消息' : '本轮未建立可恢复的原生会话，请新建 Agent 会话')
   const reportFeedback = useCallback((copy: string, isError = true) => {setFeedback(copy); setFeedbackError(isError)}, [])
+  const stateSyncWarning = '实时状态连接暂时中断，正在自动重试。'
+  useEffect(() => {
+    if (stateResult.isError && !messageStreamConnected && !blocked) {
+      setFeedback((current) => current || stateSyncWarning)
+      setFeedbackError(true)
+      return
+    }
+    setFeedback((current) => current === stateSyncWarning ? '' : current)
+  }, [blocked, messageStreamConnected, stateResult.isError])
   const clearComposer = () => {setMessage(''); setAttachments([]); attemptRef.current = {fingerprint: '', id: '', mode: '', expectedTaskId: ''}; if (fileInputRef.current) fileInputRef.current.value = ''}
   const scrollToLatest = () => requestAnimationFrame(() => conversationScrollRef.current?.scrollTo({top: conversationScrollRef.current.scrollHeight, behavior: 'smooth'}))
 
@@ -396,7 +405,7 @@ export default function AgentSessionPage() {
   })
 
   if (result.isPending) return <LoadingState label="正在读取 Agent 会话" />
-  if (result.isError) return <ErrorState message={result.error.message} />
+  if (result.isError) return <ErrorState message={result.error.message} retry={() => void result.refetch()} />
   const turns = result.data.turns || []
   const reasoningEffort = statusKey(session.reasoning_effort || 'default')
   const workspacePayload = workspace.data?.tree || workspace.data?.entries || workspace.data?.files || []
@@ -415,6 +424,6 @@ export default function AgentSessionPage() {
     {selectedPath ? <AgentFilePreview sessionId={sessionId} path={selectedPath} close={() => setSelectedPath('')} /> : null}
     <div className={`agent-splitter agent-splitter--workspace${draggingSplitter === 'workspace' ? ' is-dragging' : ''}`} role="separator" tabIndex={0} aria-label="调整 Workspace 宽度" aria-orientation="vertical" aria-valuemin={12} aria-valuemax={45} aria-valuenow={workspacePercent} {...splitterHandlers('workspace')} />
     <button className="agent-workspace-backdrop" type="button" aria-label="关闭 Workspace" hidden={!workspaceOpen} onClick={() => setWorkspaceOpen(false)} />
-    <aside ref={workspacePaneRef} className="agent-workspace-pane" aria-label="Workspace 文件"><header className="agent-workspace-header"><div><span>WORKSPACE</span><strong>文件</strong></div><div><span className={`agent-workspace-sync${workspace.isFetching ? ' is-syncing' : workspace.isError ? ' is-error' : ''}`} title={workspace.isFetching ? '正在同步 Workspace' : workspace.isError ? '无法读取 Workspace' : 'Workspace 已同步'}><i className={`fas ${workspace.isFetching ? 'fa-sync-alt' : workspace.isError ? 'fa-times-circle' : 'fa-check'}`} /></span><button type="button" aria-label="关闭 Workspace" onClick={() => setWorkspaceOpen(false)}><i className="fas fa-times" /></button></div></header><div className="agent-workspace-tree" aria-label="Workspace 目录结构">{workspace.isPending ? <div className="agent-workspace-loading"><MathCurveLoader size="xs" label="正在读取 Workspace" /></div> : workspace.isError && !workspace.data ? <div className="agent-workspace-empty">无法读取 Workspace</div> : <AgentWorkspaceTree payload={workspacePayload} selectedPath={selectedPath} openFile={openFile} />}</div></aside>
+    <aside ref={workspacePaneRef} className="agent-workspace-pane" aria-label="Workspace 文件"><header className="agent-workspace-header"><div><span>WORKSPACE</span><strong>文件</strong></div><div><span className={`agent-workspace-sync${workspace.isFetching ? ' is-syncing' : workspace.isError ? ' is-error' : ''}`} title={workspace.isFetching ? '正在同步 Workspace' : workspace.isError ? '无法读取 Workspace' : 'Workspace 已同步'}><i className={`fas ${workspace.isFetching ? 'fa-sync-alt' : workspace.isError ? 'fa-times-circle' : 'fa-check'}`} /></span><button type="button" aria-label="关闭 Workspace" onClick={() => setWorkspaceOpen(false)}><i className="fas fa-times" /></button></div></header><div className="agent-workspace-tree" aria-label="Workspace 目录结构">{workspace.isPending ? <div className="agent-workspace-loading"><MathCurveLoader size="xs" label="正在读取 Workspace" /></div> : workspace.isError && !workspace.data ? <div className="agent-workspace-empty" role="alert"><span>无法读取 Workspace</span><button type="button" onClick={() => void workspace.refetch()} disabled={workspace.isFetching}>{workspace.isFetching ? '重试中…' : '重试'}</button></div> : <AgentWorkspaceTree payload={workspacePayload} selectedPath={selectedPath} openFile={openFile} />}</div></aside>
   </main>{renameOpen ? <RenameModal sessionId={sessionId} initialTitle={String(session.title || 'Agent 会话')} close={() => setRenameOpen(false)} renamed={renameTitle} /> : null}</>
 }

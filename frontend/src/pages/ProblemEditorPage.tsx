@@ -90,7 +90,7 @@ export default function ProblemEditorPage() {
 
   if (!session?.user?.is_admin) return <ErrorState message="该页面仅管理员可访问" />
   if (query.isPending || !seed) return <LoadingState label="正在读取题目配置" />
-  if (query.isError) return <ErrorState message={query.error.message} />
+  if (query.isError) return <ErrorState message={query.error.message} retry={() => void query.refetch()} />
   const typeOptions = query.data.options.problem_types.map((item) => ({value: String(item.value), label: item.label}))
   const programmingModeOptions = query.data.options.programming_grading_modes.map((item) => ({value: String(item.value), label: item.label}))
   const writtenModeOptions = [{value: '1', label: 'OCR + 文本批改'}, {value: '2', label: '直接批改图片'}, {value: '3', label: 'tex 文本批改'}, {value: '4', label: '纯人工批改'}]

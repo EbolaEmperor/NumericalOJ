@@ -1644,6 +1644,23 @@
 
 .agent-file-error { color: #4d4943; }
 
+.agent-file-error > button,
+.agent-workspace-empty > button {
+  min-height: 28px;
+  padding: 4px 11px;
+  border: 1px solid var(--agent-line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--agent-ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-file-error > button:hover,
+.agent-workspace-empty > button:hover { background: #eeeae2; }
+
+.agent-workspace-empty > button:disabled { cursor: wait; opacity: .62; }
+
 .agent-file-code,
 .agent-file-code-fallback,
 .agent-file-text,

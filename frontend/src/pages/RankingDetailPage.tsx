@@ -13,6 +13,7 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
+import {copyText} from '../lib/clipboard'
 import {EloTrajectoryResult, type EloTrajectorySeries} from '../ranking/EloTrajectoryChart'
 import {JudgeDetailModal, MatchDetailModal, MediaPreviewModal, ReverseJudgeDetailModal, type RankingMatchDetail, type RankingMediaTarget, type RankingSubmissionOverlayTarget} from '../ranking/RankingDetailOverlays'
 import {useRuleTopology} from '../ranking/ruleTopology'
@@ -245,6 +246,7 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
   const [baseModel, setBaseModel] = useState('')
   const [detailTarget, setDetailTarget] = useState<RankingSubmissionOverlayTarget | null>(null)
   const [gitResult, setGitResult] = useState<(ApiEnvelope & {exists?: boolean; info?: JsonRecord; url?: string}) | null>(null)
+  const [gitCopyStatus, setGitCopyStatus] = useState<{message: string; error?: boolean} | null>(null)
   const [submissionNotice, setSubmissionNotice] = useState<{tone: 'success' | 'warning'; text: string} | null>(null)
   const reverseModeRef = useDismissibleDropdown<HTMLDivElement>(reverseModeOpen, () => setReverseModeOpen(false))
   const endpointRef = useDismissibleDropdown<HTMLDivElement>(endpointOpen, () => setEndpointOpen(false))
@@ -319,7 +321,8 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
     </div> : null}
     {data.submit_block_reason ? <p className="ranking-submit-block-reason"><i className="fas fa-exclamation-triangle me-2" />{data.submit_block_reason}</p> : gitMode ? <div className="gitsub" id="reverseGitPanel">
       <div className="gitsub-head"><h3>Git 提交</h3><span>从你的仓库拉取最新内容并评测</span></div>
-      <div className="gitsub-repo"><span className="k">仓库</span><code className="u" id="gitsubUrl">{data.git_repo_url || ''}</code>{data.git_repo_url ? <button type="button" className="gitsub-copy" title="复制地址" aria-label="复制仓库地址" onClick={() => void navigator.clipboard?.writeText(data.git_repo_url || '')}><i className="fas fa-copy" /></button> : null}</div>
+      <div className="gitsub-repo"><span className="k">仓库</span><code className="u" id="gitsubUrl">{data.git_repo_url || ''}</code>{data.git_repo_url ? <button type="button" className="gitsub-copy" title={gitCopyStatus?.message || '复制地址'} aria-label="复制仓库地址" onClick={() => void copyText(data.git_repo_url || '').then(() => setGitCopyStatus({message: '仓库地址已复制'})).catch(() => setGitCopyStatus({message: '复制失败，请手动选择地址', error: true}))}><i className={`fas ${gitCopyStatus && !gitCopyStatus.error ? 'fa-check' : 'fa-copy'}`} /></button> : null}</div>
+      {gitCopyStatus ? <div className={`gitsub-confirm-hint${gitCopyStatus.error ? ' no' : ' ok'}`} role={gitCopyStatus.error ? 'alert' : 'status'}>{gitCopyStatus.message}</div> : null}
       {!data.git_repo_url ? <div className="gitsub-note">管理员尚未配置 Git 仓库标准命名，暂时无法提交。</div> : <><div className="gitsub-actions"><button type="button" className="gitsub-btn gitsub-btn-ghost" disabled={checkGit.isPending} onClick={() => checkGit.mutate()}><MathCurveLoader iconOnly size="xs" hidden={!checkGit.isPending} ariaLabel="检查中" /><span>{checkGit.isPending ? '检查中' : '检查仓库'}</span></button></div>{checkGit.isError ? <div className="gitsub-result"><div className="gitsub-status no"><span className="dot" />{errorMessage(checkGit.error)}</div></div> : gitResult ? <div className="gitsub-result">{gitResult.exists && gitInfo ? <><div className="gitsub-status ok"><span className="dot" />仓库已找到 · 最新提交</div><div className="gitsub-commit"><span className="ck">提交</span><span className="cv subj">{String(gitInfo.subject || '(无标题)')}</span><span className="ck">哈希</span><span className="cv mono">{String(gitInfo.short || '')}</span><span className="ck">作者</span><span className="cv">{String(gitInfo.author || '')}</span><span className="ck">时间</span><span className="cv">{String(gitInfo.date_iso || '')}</span>{String(gitInfo.body || '').trim() ? <><span className="ck">说明</span><span className="cv"><span className="body">{String(gitInfo.body)}</span></span></> : null}</div></> : <><div className={`gitsub-status ${gitResult.exists ? 'ok' : 'no'}`}><span className="dot" />{gitResult.exists ? '仓库已找到' : '未找到仓库'}</div><div className="gitsub-note">{gitResult.message || (gitResult.exists ? '仓库存在，但还没有任何提交。' : '无法访问该仓库，请确认已创建并具备读取权限。')}</div></>}</div> : null}{gitReady ? <div className="gitsub-confirm"><button type="button" className="gitsub-btn gitsub-btn-solid" disabled={submitGit.isPending} onClick={() => submitGit.mutate()}><MathCurveLoader iconOnly size="xs" hidden={!submitGit.isPending} ariaLabel="提交中" /><span>{submitGit.isPending ? '提交中' : '确认提交'}</span></button><span className={`gitsub-confirm-hint${submitGit.isError ? ' no' : ''}`}>{submitGit.isError ? errorMessage(submitGit.error) : ''}</span></div> : null}</>}
     </div> : <form id="rankingSubmitForm" className="submit-form mb-4" onSubmit={submitForm}>
       <div className="row g-3">
@@ -654,7 +657,7 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
                   {trajectoryCandidates.isFetching
                     ? <div className="elo-observer-dropdown-state">正在查找在役提交…</div>
                     : trajectoryCandidates.isError
-                      ? <div className="elo-observer-dropdown-state">{errorMessage(trajectoryCandidates.error) || '搜索失败'}</div>
+                      ? <div className="elo-observer-dropdown-state"><span>{errorMessage(trajectoryCandidates.error) || '搜索失败'}</span><button type="button" className="elo-trajectory-secondary" onClick={() => void trajectoryCandidates.refetch()}>重试</button></div>
                       : (trajectoryCandidates.data?.submissions || []).length
                         ? (trajectoryCandidates.data?.submissions || []).map((item) => {
                           const id = numberValue(item.id)
@@ -690,7 +693,7 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
     </div>
     <div className="modal-backdrop fade show" aria-hidden="true" />
   </div>, document.body) : null}
-  <MatchDetailModal open={detailId != null} detail={detail.data} pending={detail.isPending} error={detail.isError ? detail.error : null} onClose={() => setDetailId(null)} /></section>
+  <MatchDetailModal open={detailId != null} detail={detail.data} pending={detail.isPending} error={detail.isError ? detail.error : null} onClose={() => setDetailId(null)} retry={() => void detail.refetch()} /></section>
 }
 
 function AppealsPanel({data}: {data: Response}) {
@@ -1246,7 +1249,7 @@ export default function RankingDetailPage() {
   }, [isAdmin, isAgentJudge, isAiJudge, isElo, liveNavigation?.permissions, navCounts.all_submissions, navCounts.appeals, navCounts.leaderboard, navCounts.matches, submitCount])
 
   if (result.isPending) return <LoadingState label="正在进入赛场" />
-  if (result.isError) return <ErrorState message={result.error.message} />
+  if (result.isError) return <ErrorState message={result.error.message} retry={() => void result.refetch()} />
   const competition = data!.competition
   const files = data!.files || []
   const navigationFailureStatus = navigation.error instanceof ApiError && [401, 403, 404].includes(navigation.error.status) ? navigation.error.status : 0

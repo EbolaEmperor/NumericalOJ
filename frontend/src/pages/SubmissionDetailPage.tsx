@@ -185,6 +185,7 @@ function WrittenPdf({submission}: {submission: DetailResponse['submission']}) {
   const active = ['Pending', 'Waiting', 'Running', 'Generating'].includes(String(submission.status || ''))
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   const [version, setVersion] = useState(0)
+  const [retryVersion, setRetryVersion] = useState(0)
   const activeRef = useRef(active)
   const readyRef = useRef(false)
   const url = `/api/submissions/${submission.id}/file`
@@ -223,8 +224,8 @@ function WrittenPdf({submission}: {submission: DetailResponse['submission']}) {
     window.addEventListener('focus', onFocus)
     void check()
     return () => {cancelled = true; if (timer) window.clearTimeout(timer); window.removeEventListener('focus', onFocus)}
-  }, [url])
-  return <div className="submission-pdf-surface" id="pdfViewer">{state === 'ready' ? <iframe title="submission-pdf" className="w-100 h-100 border-0" referrerPolicy="no-referrer" src={`${url}?v=${version}`} onError={() => {readyRef.current = false; setState('error')}} /> : <div className={`submission-pdf-hint ${state === 'error' ? 'text-danger' : 'text-muted'}`}>{state === 'error' ? '暂无可渲染的 PDF（可能是编译失败）。' : <MathCurveLoader size="lg" label={active ? 'PDF 生成中，请稍候...' : '正在加载 PDF…'} />}</div>}</div>
+  }, [retryVersion, url])
+  return <div className="submission-pdf-surface" id="pdfViewer">{state === 'ready' ? <iframe title="submission-pdf" className="w-100 h-100 border-0" referrerPolicy="no-referrer" src={`${url}?v=${version}`} onError={() => {readyRef.current = false; setState('error')}} /> : <div className={`submission-pdf-hint ${state === 'error' ? 'text-danger' : 'text-muted'}`}>{state === 'error' ? <><span>暂无可渲染的 PDF（可能是编译失败）。</span><button className="submission-button submission-button--ghost" type="button" onClick={() => setRetryVersion((current) => current + 1)}>重新检查</button></> : <MathCurveLoader size="lg" label={active ? 'PDF 生成中，请稍候...' : '正在加载 PDF…'} />}</div>}</div>
 }
 
 function WrittenComment({text}: {text: string}) {
@@ -413,7 +414,7 @@ export default function SubmissionDetailPage() {
   })
   const rejudge = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(`/api/submissions/${submissionId}/rejudge`, {method: 'POST'}), onSuccess: () => void result.refetch()})
   if (result.isPending) return <LoadingState label="正在读取提交快照" />
-  if (result.isError) return <ErrorState message={result.error.message} />
+  if (result.isError) return <ErrorState message={result.error.message} retry={() => void result.refetch()} />
   const data = result.data!
   const submission = data.submission
   const programming = Number(submission.problem_type || data.problem?.type || 1) === 1
