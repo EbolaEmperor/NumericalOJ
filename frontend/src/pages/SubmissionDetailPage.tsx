@@ -1,5 +1,5 @@
-import {useMutation, useQuery} from '@tanstack/react-query'
-import {useEffect, useMemo, useRef, useState} from 'react'
+import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import {useLocation, useParams} from 'react-router-dom'
 
 import {apiFetch} from '../api/client'
@@ -12,10 +12,33 @@ import {ReadonlyCodeViewer} from '../components/ReadonlyCodeViewer'
 import {ReactModal} from '../components/ReactModal'
 import {usePersistentVerticalSplitter} from '../components/usePersistentVerticalSplitter'
 import {loadSubmissionOrigin, rememberSubmissionOrigin, submissionOriginFromState} from '../lib/submissionNavigation'
+import {submissionStatusIsActive, type SubmissionStatusSnapshot, useSubmissionStatusStream} from './submission/submissionStatusStream'
 
 interface LeanFile extends JsonRecord {path: string; mode: string; content: string}
 interface LeanWorkspace extends JsonRecord {revision?: string; revision_number?: number; default_file?: string; files?: LeanFile[]}
-interface DetailResponse extends ApiEnvelope {user?: {is_admin?: number}; submission: {id: number; problem_id: number; problem_title?: string; problem_type?: number; username?: string; status?: string; score?: number; code?: string; prompt_text?: string; generated_from_prompt?: boolean; prompt_generation_error?: string; created_at?: string}; problem?: ProblemSummary & {written_grading_mode?: number}; plang?: string; test_points: JsonRecord[]; lean_workspace?: LeanWorkspace | null; cached_ai_code_marks?: JsonRecord; submission_latex_text?: string; submission_latex_error?: string; submission_latex_html?: string; written_submission?: {show_latex_transcription?: boolean}}
+interface DetailResponse extends ApiEnvelope {user?: {is_admin?: number}; submission: {id: number; problem_id: number; problem_title?: string; problem_type?: number; username?: string; status?: string; score?: number | null; code?: string; prompt_text?: string; generated_from_prompt?: boolean; prompt_generation_error?: string; created_at?: string}; problem?: ProblemSummary & {written_grading_mode?: number}; plang?: string; test_points: JsonRecord[]; lean_workspace?: LeanWorkspace | null; cached_ai_code_marks?: JsonRecord; submission_latex_text?: string; submission_latex_error?: string; submission_latex_html?: string; written_submission?: {show_latex_transcription?: boolean}}
+
+const submissionDetailQueryKey = (submissionId: string | undefined) => ['submission', submissionId] as const
+
+function mergeSubmissionDetailSnapshot(current: DetailResponse | undefined, snapshot: SubmissionStatusSnapshot) {
+  if (!current) return current
+  const submission = {...current.submission}
+  if (snapshot.status !== undefined) submission.status = String(snapshot.status)
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'score')) submission.score = snapshot.score ?? null
+  if (snapshot.generated_from_prompt !== undefined) submission.generated_from_prompt = Boolean(snapshot.generated_from_prompt)
+  if (snapshot.prompt_generation_error !== undefined || snapshot.promptly_review_reply !== undefined) {
+    submission.prompt_generation_error = String(snapshot.promptly_review_reply || snapshot.prompt_generation_error || '')
+  }
+  if (snapshot.written_comment !== undefined) submission.code = String(snapshot.written_comment || '')
+  return {
+    ...current,
+    submission,
+    test_points: Array.isArray(snapshot.test_points) ? snapshot.test_points : current.test_points,
+    submission_latex_text: snapshot.written_latex_text === undefined ? current.submission_latex_text : String(snapshot.written_latex_text || ''),
+    submission_latex_html: snapshot.written_latex_html === undefined ? current.submission_latex_html : String(snapshot.written_latex_html || ''),
+    submission_latex_error: snapshot.written_latex_error === undefined ? current.submission_latex_error : String(snapshot.written_latex_error || ''),
+  }
+}
 function statusClass(value: unknown) {return String(value || 'Unknown').toLowerCase().replaceAll(' ', '-')}
 function pointClass(value: unknown) {const status = String(value || 'Unknown'); return status === 'Accepted' ? 'is-accepted' : ['Pending', 'Waiting', 'Running', 'Generating'].includes(status) ? 'is-active' : status === 'Wrong Answer' ? 'is-wrong-answer' : status === 'Runtime Error' ? 'is-runtime-error' : status === 'Time Limit Exceeded' ? 'is-time-limit' : ['Unaccepted', 'Compile Error', 'Memory Limit Exceeded', 'Output Limit Exceeded', 'Forbidden', 'No Output', 'Nonzero Exit Status', 'Error'].includes(status) ? 'is-other-failure' : 'is-neutral'}
 
@@ -133,6 +156,7 @@ function AiTutor({submissionId, cached}: {submissionId: number; cached?: JsonRec
 export default function SubmissionDetailPage() {
   const {submissionId} = useParams()
   const location = useLocation()
+  const queryClient = useQueryClient()
   const [selectedPoint, setSelectedPoint] = useState(0)
   const [imagePreview, setImagePreview] = useState<{url: string; alt: string} | null>(null)
   const pageRef = useRef<HTMLDivElement>(null)
@@ -140,7 +164,21 @@ export default function SubmissionDetailPage() {
   const routedOrigin = submissionOriginFromState(location.state)
   const rememberedOrigin = useMemo(() => loadSubmissionOrigin(submissionId), [submissionId])
   useEffect(() => {if (routedOrigin) rememberSubmissionOrigin(submissionId, routedOrigin)}, [routedOrigin, submissionId])
-  const result = useQuery({queryKey: ['submission', submissionId], queryFn: () => apiFetch<DetailResponse>(`/api/submissions/${submissionId}`), refetchInterval: (query) => {const status = (query.state.data as DetailResponse | undefined)?.submission.status; return status && ['Pending', 'Running', 'Generating'].includes(status) ? 2_000 : false}})
+  const queryKey = submissionDetailQueryKey(submissionId)
+  const result = useQuery({queryKey, queryFn: () => apiFetch<DetailResponse>(`/api/submissions/${submissionId}`)})
+  const applyLiveSnapshot = useCallback((snapshot: SubmissionStatusSnapshot) => {
+    queryClient.setQueryData<DetailResponse>(queryKey, (current) => mergeSubmissionDetailSnapshot(current, snapshot))
+  }, [queryClient, submissionId])
+  const liveProgramming = Number(result.data?.submission.problem_type || result.data?.problem?.type || 1) === 1
+  const liveLean = liveProgramming && ['lean', 'lean4'].includes(String(result.data?.plang || '').toLowerCase())
+  const stream = useSubmissionStatusStream({
+    submissionId: Number(submissionId) || undefined,
+    enabled: result.isSuccess && submissionStatusIsActive(result.data.submission.status),
+    fallbackPolling: liveProgramming,
+    startDelayMs: liveProgramming ? 300 : 0,
+    initialMessage: liveLean ? '正在启动 Lean 4 验证...' : '正在编译和初始化...',
+    onSnapshot: applyLiveSnapshot,
+  })
   usePersistentVerticalSplitter({
     containerRef: pageRef,
     splitterRef,
@@ -170,7 +208,7 @@ export default function SubmissionDetailPage() {
     <section className="submission-detail-primary" id="submissionDetailPrimary" aria-label={lean ? 'Lean 4 提交文件' : programming ? '提交代码' : '书面作业 PDF'}>{programming ? lean && data.lean_workspace ? <LeanSubmissionSurface workspace={data.lean_workspace} /> : <div className="submission-code-surface submission-code-viewer"><ReadonlyCodeViewer language={data.plang || 'matlab'} value={submission.code || ''} ariaLabel="提交代码，只读" /></div> : <WrittenPdf submission={submission} />}</section>
     <aside className="submission-detail-summary-card" id="submissionDetailSummary" aria-label="提交摘要"><div className="submission-detail-topline"><Link className="submission-detail-back" to={returnTo}><i className="fas fa-arrow-left" /> {returnLabel}</Link><span className="submission-detail-id">#{submission.id}</span></div><h1 className="visually-hidden">提交 #{submission.id}</h1><div className="submission-detail-result"><span className={`submission-verdict submission-verdict--${statusClass(submission.status)}`}><span className="submission-verdict__dot" /><span>{submission.status || 'Unknown'}</span></span><div className="submission-detail-score"><strong className={accepted ? 'is-accepted' : submission.score ? 'is-partial' : 'is-failed'}>{submission.score ?? '—'}</strong><span>/ <span>{maxScore}</span></span></div></div><dl className="submission-detail-meta"><dt>题目</dt><dd className="submission-detail-problem-meta"><Link to={`/problems/${submission.problem_id}`}>{data.problem?.title || submission.problem_title || '未命名题目'}</Link><span>P{String(submission.problem_id).padStart(4, '0')}</span></dd><dt>提交者</dt><dd>{submission.username}</dd><dt>提交时间</dt><dd>{submission.created_at || '—'}</dd></dl>{submission.generated_from_prompt ? <details className="submission-detail-disclosure submission-prompt-card" open><summary><span>ORIGINAL PROMPT</span><i className="fas fa-chevron-down" /></summary><pre>{submission.prompt_text || ''}</pre>{submission.prompt_generation_error ? <div className="submission-inline-error">{submission.prompt_generation_error}</div> : null}</details> : null}{Number(data.user?.is_admin) === 1 ? <><button type="button" className="submission-button submission-button--accent submission-detail-rejudge" disabled={rejudge.isPending} onClick={() => {if (window.confirm('确认重测这条提交吗？')) rejudge.mutate()}}><i className="fas fa-rotate-right" />{rejudge.isPending ? '正在提交重测…' : '重测此提交'}</button><div className={`submission-action-feedback${rejudge.isSuccess ? ' is-success' : rejudge.isError ? ' is-error' : ''}`} role="status">{rejudge.isSuccess ? '已加入重测队列' : rejudge.isError ? `重测失败：${rejudge.error.message}` : ''}</div></> : null}</aside>
     <div ref={splitterRef} className="submission-detail-splitter" role="separator" tabIndex={0} aria-label="调整提交信息与提交内容宽度" aria-orientation="vertical" aria-controls="submissionDetailSummary submissionDetailResults submissionDetailPrimary" aria-valuemin={26} aria-valuemax={66} aria-valuenow={50} />
-    <aside className="submission-detail-results" id="submissionDetailResults" aria-label={lean ? '证明验证详情' : programming ? '测试点详情' : '批改详情'}>{programming ? <><section className="submission-detail-section"><header className="submission-detail-section-heading"><div><span>{lean ? 'PROOF CHECK' : 'TEST POINTS'}</span></div></header><div className="test-point-grid">{data.test_points.map((point, index) => <button className={`test-point-card ${pointClass(point.status)}${index === activePointIndex ? ' selected' : ''}`} type="button" title={lean ? `证明验证 · ${String(point.status || 'Unknown')}` : `测试点 #${index + 1} · ${String(point.status || 'Unknown')}`} aria-label={lean ? `证明验证，${String(point.status || 'Unknown')}` : `测试点 ${index + 1}，${String(point.status || 'Unknown')}`} aria-pressed={index === activePointIndex} onClick={() => setSelectedPoint(index)} key={index}><span className="tp-index">{lean ? '⊢' : String(index + 1).padStart(2, '0')}</span>{pointClass(point.status) === 'is-active' ? <MathCurveLoader iconOnly size="xs" /> : null}</button>)}</div>{activePoint ? <TestPointDetail point={activePoint} index={activePointIndex} submissionId={submission.id} lean={lean} onOpenImage={setImagePreview} /> : <div className="submission-test-detail-hint">{lean ? '证明验证中，结果稍后显示。' : '判题中，暂时没有可展示的测试点结果。'}</div>}</section>{submission.status === 'Unaccepted' ? <AiTutor submissionId={submission.id} cached={data.cached_ai_code_marks} /> : null}</> : <WrittenResults data={data} refresh={() => void result.refetch()} />}</aside>
+    <aside className="submission-detail-results" id="submissionDetailResults" aria-label={lean ? '证明验证详情' : programming ? '测试点详情' : '批改详情'}>{programming ? <><section className="submission-detail-section"><header className="submission-detail-section-heading"><div><span>{lean ? 'PROOF CHECK' : 'TEST POINTS'}</span></div></header>{submissionStatusIsActive(submission.status) ? <div className="submission-judging-state" role="status"><MathCurveLoader size="md" label={stream.message} /></div> : null}<div className="test-point-grid">{data.test_points.map((point, index) => <button className={`test-point-card ${pointClass(point.status)}${index === activePointIndex ? ' selected' : ''}`} type="button" title={lean ? `证明验证 · ${String(point.status || 'Unknown')}` : `测试点 #${index + 1} · ${String(point.status || 'Unknown')}`} aria-label={lean ? `证明验证，${String(point.status || 'Unknown')}` : `测试点 ${index + 1}，${String(point.status || 'Unknown')}`} aria-pressed={index === activePointIndex} onClick={() => setSelectedPoint(index)} key={index}><span className="tp-index">{lean ? '⊢' : String(index + 1).padStart(2, '0')}</span>{pointClass(point.status) === 'is-active' ? <MathCurveLoader iconOnly size="xs" /> : null}</button>)}</div>{activePoint ? <TestPointDetail point={activePoint} index={activePointIndex} submissionId={submission.id} lean={lean} onOpenImage={setImagePreview} /> : <div className="submission-test-detail-hint">{lean ? '证明验证中，结果稍后显示。' : '判题中，暂时没有可展示的测试点结果。'}</div>}</section>{submission.status === 'Unaccepted' ? <AiTutor submissionId={submission.id} cached={data.cached_ai_code_marks} /> : null}</> : <WrittenResults data={data} refresh={() => void result.refetch()} />}</aside>
     <ReactModal open={Boolean(imagePreview)} onClose={() => setImagePreview(null)} id="imageModal" labelledBy="imageModalLabel" dialogClassName="modal-xl"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="imageModalLabel"><i className="fas fa-image me-2" /> 输出图片</h5><button type="button" className="btn-close" aria-label="Close" onClick={() => setImagePreview(null)} /></div><div className="modal-body text-center">{imagePreview ? <img id="modalImage" src={imagePreview.url} alt={imagePreview.alt} className="submission-modal-image" /> : null}</div><div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={() => setImagePreview(null)}><i className="fas fa-times me-2" />关闭</button>{imagePreview ? <a id="downloadImageBtn" href={imagePreview.url} download className="btn btn-primary"><i className="fas fa-download me-2" />下载图片</a> : null}</div></div></ReactModal>
   </div>
 }

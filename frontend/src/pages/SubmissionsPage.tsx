@@ -1,5 +1,5 @@
-import {useMutation, useQuery} from '@tanstack/react-query'
-import {useEffect, useRef, useState, type FormEvent} from 'react'
+import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
+import {useCallback, useEffect, useRef, useState, type FormEvent} from 'react'
 import {useLocation, useSearchParams} from 'react-router-dom'
 
 import {apiFetch, queryString} from '../api/client'
@@ -10,10 +10,11 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ReactModal} from '../components/ReactModal'
 import {submissionNavigationState} from '../lib/submissionNavigation'
 import {useSession} from '../session'
+import {submissionStatusIsActive, type SubmissionStatusSnapshot, useSubmissionStatusStream} from './submission/submissionStatusStream'
 
 interface ProblemOption extends JsonRecord {problem_id: number; filter_label: string}
 interface Response extends ApiEnvelope {submissions: SubmissionSummary[]; page: number; total_pages: number; page_numbers?: number[]; scope: string; problem_options?: ProblemOption[]; current_problem_label?: string}
-interface PanelResponse extends ApiEnvelope {submission: JsonRecord; problem: JsonRecord; test_points: JsonRecord[]; detail_url: string; rejudge_url?: string}
+interface PanelResponse extends ApiEnvelope {submission: JsonRecord; problem: JsonRecord; test_points: JsonRecord[]; detail_url: string; status_stream_url?: string; rejudge_url?: string}
 interface RejudgeRangeResponse extends ApiEnvelope {preview?: boolean; too_many?: boolean; max_total?: number; total?: number; min_created_at?: string; max_created_at?: string; progress?: number; done?: number}
 
 const statusOptions = [
@@ -49,9 +50,32 @@ function TestSpark({points}: {points: unknown}) {
   })}{points.length > 18 ? <span className="submission-test-spark__more">+{points.length - 18}</span> : null}</span>
 }
 
-function Panel({id, isAdmin, origin}: {id?: number; isAdmin: boolean; origin: string}) {
-  const result = useQuery({queryKey: ['submission-panel', id], queryFn: () => apiFetch<PanelResponse>(`/api/submissions/${id}?view=panel`), enabled: Boolean(id)})
-  const rejudge = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(`/api/submissions/${id}/rejudge`, {method: 'POST'}), onSuccess: () => void result.refetch()})
+function Panel({id, isAdmin, origin, onLiveSnapshot}: {id?: number; isAdmin: boolean; origin: string; onLiveSnapshot: (submissionId: number, snapshot: SubmissionStatusSnapshot) => void}) {
+  const queryClient = useQueryClient()
+  const queryKey = ['submission-panel', id] as const
+  const result = useQuery({queryKey, queryFn: () => apiFetch<PanelResponse>(`/api/submissions/${id}?view=panel`), enabled: Boolean(id)})
+  const applyLiveSnapshot = useCallback((snapshot: SubmissionStatusSnapshot) => {
+    queryClient.setQueryData<PanelResponse>(queryKey, (current) => current ? {
+      ...current,
+      submission: {
+        ...current.submission,
+        ...(snapshot.status === undefined ? {} : {status: snapshot.status}),
+        ...(Object.prototype.hasOwnProperty.call(snapshot, 'score') ? {score: snapshot.score} : {}),
+      },
+      test_points: Array.isArray(snapshot.test_points) ? snapshot.test_points : current.test_points,
+    } : current)
+    if (id) onLiveSnapshot(id, snapshot)
+  }, [id, onLiveSnapshot, queryClient])
+  useSubmissionStatusStream({
+    submissionId: id,
+    enabled: result.isSuccess && submissionStatusIsActive(result.data.submission.status),
+    streamUrl: result.data?.status_stream_url,
+    onSnapshot: applyLiveSnapshot,
+  })
+  const rejudge = useMutation({
+    mutationFn: () => apiFetch<ApiEnvelope>(`/api/submissions/${id}/rejudge`, {method: 'POST'}),
+    onSuccess: () => applyLiveSnapshot({status: 'Pending', score: 0, is_judging: true, test_points: []}),
+  })
   if (!id) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-empty"><span className="submission-detail-empty__mark" aria-hidden="true"><i className="fas fa-arrow-pointer" /></span><strong>选择一条提交</strong><span>点击左侧记录后，在这里查看判题摘要。</span></div></aside>
   if (result.isPending) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-loading"><MathCurveLoader size="md" label="正在加载提交详情…" /></div></aside>
   if (result.isError) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-error"><span className="submission-detail-error__mark" aria-hidden="true"><i className="fas fa-triangle-exclamation" /></span><strong>详情加载失败</strong><span>{result.error.message}</span><button type="button" className="submission-button submission-button--ghost" onClick={() => void result.refetch()}><i className="fas fa-rotate-right" /> 重试</button></div></aside>
@@ -111,6 +135,7 @@ function TimeRangeRejudge() {
 
 export default function SubmissionsPage() {
   const {session} = useSession()
+  const queryClient = useQueryClient()
   const [params] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
@@ -121,7 +146,19 @@ export default function SubmissionsPage() {
   const [draft, setDraft] = useState(q)
   const [problemDraft, setProblemDraft] = useState('')
   const problemInput = useRef<HTMLInputElement>(null)
-  const result = useQuery({queryKey: ['submissions', page, q, status, problemId], queryFn: () => apiFetch<Response>(`/api/submissions${queryString({page, q, status, problem_id: problemId, per_page: 30})}`)})
+  const listQueryKey = ['submissions', page, q, status, problemId] as const
+  const result = useQuery({queryKey: listQueryKey, queryFn: () => apiFetch<Response>(`/api/submissions${queryString({page, q, status, problem_id: problemId, per_page: 30})}`)})
+  const applyListLiveSnapshot = useCallback((submissionId: number, snapshot: SubmissionStatusSnapshot) => {
+    queryClient.setQueryData<Response>(listQueryKey, (current) => current ? {
+      ...current,
+      submissions: current.submissions.map((row) => row.id === submissionId ? {
+        ...row,
+        ...(snapshot.status === undefined ? {} : {status: snapshot.status}),
+        ...(Object.prototype.hasOwnProperty.call(snapshot, 'score') ? {score: typeof snapshot.score === 'number' ? snapshot.score : undefined} : {}),
+        ...(Array.isArray(snapshot.test_points) ? {test_points: snapshot.test_points} : {}),
+      } : row),
+    } : current)
+  }, [page, problemId, q, queryClient, status])
   useEffect(() => {setProblemDraft(result.data?.current_problem_label || '')}, [problemId, result.data?.current_problem_label])
   const search = (event: FormEvent) => {
     event.preventDefault()
@@ -158,7 +195,7 @@ export default function SubmissionsPage() {
         {rows.map((row) => {const created = String(row.created_at || ''); const parts = created.split(/[ T]/); return <tr className="submission-data-row" title={`打开提交 #${row.id}`} onClick={(event) => {if (!(event.target instanceof Element) || !event.target.closest('a, button')) openSubmission(row.id)}} key={row.id}><td className="submission-col-id"><Link className="submission-id-link" to={`/submissions/${row.id}`} state={submissionNavigationState(origin)}>#{row.id}</Link></td><td className="submission-col-status"><Verdict status={row.status} /></td><td className="submission-col-score"><span className={`submission-score${row.status === 'Accepted' ? ' is-accepted' : !row.score ? ' is-zero' : ''}`}>{row.score ?? '—'}</span>{row.display_max_score ? <> <span className="submission-score-max">/{String(row.display_max_score)}</span></> : null}</td><td className="submission-col-problem"><span className="submission-problem-title">{row.display_problem_title || row.problem_title || '未命名题目'}</span><span className="submission-problem-id">P{String(row.problem_id).padStart(4, '0')}</span></td><td className="submission-col-tests"><TestSpark points={row.test_points} /></td><td className="submission-col-language"><span className="submission-language">{String(row.display_language || '—')}</span></td>{session?.user?.is_admin ? <td className="submission-col-user">{row.username}</td> : null}<td className="submission-col-time"><time dateTime={created}><span>{parts[0] || '—'}</span><span>{parts[1]?.slice(0, 8) || ''}</span></time></td><td className="submission-col-action"><Link className="submission-detail-link" to={`/submissions/${row.id}`} state={submissionNavigationState(origin)} title="完整详情"><i className="fas fa-arrow-up-right-from-square" /></Link></td></tr>})}
         {!rows.length ? <tr><td colSpan={session?.user?.is_admin ? 9 : 8}><div className="submission-empty-state"><span className="submission-empty-state__icon"><i className="fas fa-inbox" /></span><strong>没有找到提交记录</strong><span>调整搜索或筛选条件后再试。</span></div></td></tr> : null}
       </tbody></table></div></div>
-      <Panel id={selectedId} isAdmin={Boolean(session?.user?.is_admin)} origin={origin} />
+      <Panel id={selectedId} isAdmin={Boolean(session?.user?.is_admin)} origin={origin} onLiveSnapshot={applyListLiveSnapshot} />
     </section>
   </div>
 }
