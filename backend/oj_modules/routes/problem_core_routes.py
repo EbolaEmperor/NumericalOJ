@@ -3722,6 +3722,9 @@ def agent_task_message_stream(session_id):
 
 
 @problem_core_bp.post(
+    '/api/agent/sessions/<session_id>/messages/<message_id>/update'
+)
+@problem_core_bp.post(
     '/agent/tasks/<session_id>/messages/<message_id>/update'
 )
 def agent_task_message_update(session_id, message_id):
@@ -3814,6 +3817,9 @@ def agent_task_message_update(session_id, message_id):
 
 
 @problem_core_bp.post(
+    '/api/agent/sessions/<session_id>/messages/<message_id>/delete'
+)
+@problem_core_bp.post(
     '/agent/tasks/<session_id>/messages/<message_id>/delete'
 )
 def agent_task_message_delete(session_id, message_id):
@@ -3858,6 +3864,9 @@ def agent_task_message_delete(session_id, message_id):
     return jsonify(success=True, session_state=state)
 
 
+@problem_core_bp.post(
+    '/api/agent/sessions/<session_id>/messages/<message_id>/send-now'
+)
 @problem_core_bp.post(
     '/agent/tasks/<session_id>/messages/<message_id>/send-now'
 )
@@ -3912,6 +3921,7 @@ def agent_task_message_send_now(session_id, message_id):
     )
 
 
+@problem_core_bp.post('/api/agent/sessions/<session_id>/queue/reorder')
 @problem_core_bp.post('/agent/tasks/<session_id>/queue/reorder')
 def agent_task_queue_reorder(session_id):
     user = current_user()
@@ -3942,6 +3952,7 @@ def agent_task_queue_reorder(session_id):
     return jsonify(success=True, session_state=state)
 
 
+@problem_core_bp.post('/api/agent/sessions/<session_id>/queue/resume')
 @problem_core_bp.post('/agent/tasks/<session_id>/queue/resume')
 def agent_task_queue_resume(session_id):
     user = current_user()

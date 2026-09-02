@@ -37,6 +37,13 @@ def test_agent_routes_expose_api_canonical_urls():
     assert rules["problem_core.agent_run_cancel"] == "/agent/runs/<task_id>/cancel"
     assert rules["problem_core.agent_run_stream"] == "/api/agent/runs/<task_id>/events"
 
+    paths = {rule.rule for rule in app.url_map.iter_rules()}
+    assert "/api/agent/sessions/<session_id>/messages/<message_id>/update" in paths
+    assert "/api/agent/sessions/<session_id>/messages/<message_id>/delete" in paths
+    assert "/api/agent/sessions/<session_id>/messages/<message_id>/send-now" in paths
+    assert "/api/agent/sessions/<session_id>/queue/reorder" in paths
+    assert "/api/agent/sessions/<session_id>/queue/resume" in paths
+
 
 def test_ordinary_user_list_is_always_scoped_to_self(monkeypatch):
     monkeypatch.setattr(routes, "current_user", lambda: dict(STUDENT))

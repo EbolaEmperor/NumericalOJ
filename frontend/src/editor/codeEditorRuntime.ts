@@ -8,15 +8,109 @@ const LANGUAGE_SPECS: Record<string, LanguageSpec> = {
   python: {language: 'python', monacoLanguage: 'python', label: 'Python'},
   matlab: {language: 'matlab', monacoLanguage: 'matlab', label: 'MATLAB / Octave'},
   lean4: {language: 'lean4', monacoLanguage: 'lean4', label: 'Lean 4'},
+  javascript: {language: 'javascript', monacoLanguage: 'javascript', label: 'JavaScript'},
+  jsx: {language: 'jsx', monacoLanguage: 'jsx', label: 'JavaScript JSX'},
+  typescript: {language: 'typescript', monacoLanguage: 'typescript', label: 'TypeScript'},
+  tsx: {language: 'tsx', monacoLanguage: 'tsx', label: 'TypeScript TSX'},
+  java: {language: 'java', monacoLanguage: 'java', label: 'Java'},
+  csharp: {language: 'csharp', monacoLanguage: 'csharp', label: 'C#'},
+  go: {language: 'go', monacoLanguage: 'go', label: 'Go'},
+  rust: {language: 'rust', monacoLanguage: 'rust', label: 'Rust'},
+  php: {language: 'php', monacoLanguage: 'php', label: 'PHP'},
+  ruby: {language: 'ruby', monacoLanguage: 'ruby', label: 'Ruby'},
+  shell: {language: 'shell', monacoLanguage: 'shell', label: 'Shell'},
+  powershell: {language: 'powershell', monacoLanguage: 'powershell', label: 'PowerShell'},
+  bat: {language: 'bat', monacoLanguage: 'bat', label: 'Batch'},
+  sql: {language: 'sql', monacoLanguage: 'sql', label: 'SQL'},
+  html: {language: 'html', monacoLanguage: 'html', label: 'HTML'},
+  css: {language: 'css', monacoLanguage: 'css', label: 'CSS'},
+  scss: {language: 'scss', monacoLanguage: 'scss', label: 'SCSS'},
+  less: {language: 'less', monacoLanguage: 'less', label: 'Less'},
+  json: {language: 'json', monacoLanguage: 'json', label: 'JSON'},
+  yaml: {language: 'yaml', monacoLanguage: 'yaml', label: 'YAML'},
+  xml: {language: 'xml', monacoLanguage: 'xml', label: 'XML'},
+  dockerfile: {language: 'dockerfile', monacoLanguage: 'dockerfile', label: 'Dockerfile'},
+  latex: {language: 'latex', monacoLanguage: 'latex', label: 'LaTeX'},
+  lua: {language: 'lua', monacoLanguage: 'lua', label: 'Lua'},
+  kotlin: {language: 'kotlin', monacoLanguage: 'kotlin', label: 'Kotlin'},
+  swift: {language: 'swift', monacoLanguage: 'swift', label: 'Swift'},
+  r: {language: 'r', monacoLanguage: 'r', label: 'R'},
+  julia: {language: 'julia', monacoLanguage: 'julia', label: 'Julia'},
+  dart: {language: 'dart', monacoLanguage: 'dart', label: 'Dart'},
+  scala: {language: 'scala', monacoLanguage: 'scala', label: 'Scala'},
+  perl: {language: 'perl', monacoLanguage: 'perl', label: 'Perl'},
+  solidity: {language: 'solidity', monacoLanguage: 'solidity', label: 'Solidity'},
+  protobuf: {language: 'protobuf', monacoLanguage: 'protobuf', label: 'Protocol Buffers'},
+  graphql: {language: 'graphql', monacoLanguage: 'graphql', label: 'GraphQL'},
+  ini: {language: 'ini', monacoLanguage: 'ini', label: 'INI'},
+  cmake: {language: 'cmake', monacoLanguage: 'cmake', label: 'CMake'},
+  makefile: {language: 'makefile', monacoLanguage: 'makefile', label: 'Makefile'},
+  asm: {language: 'asm', monacoLanguage: 'asm', label: 'Assembly'},
+  fsharp: {language: 'fsharp', monacoLanguage: 'fsharp', label: 'F#'},
+  vb: {language: 'vb', monacoLanguage: 'vb', label: 'Visual Basic'},
+  clojure: {language: 'clojure', monacoLanguage: 'clojure', label: 'Clojure'},
+  coffeescript: {language: 'coffeescript', monacoLanguage: 'coffeescript', label: 'CoffeeScript'},
+  elixir: {language: 'elixir', monacoLanguage: 'elixir', label: 'Elixir'},
+  erlang: {language: 'erlang', monacoLanguage: 'erlang', label: 'Erlang'},
+  groovy: {language: 'groovy', monacoLanguage: 'groovy', label: 'Groovy'},
+  haskell: {language: 'haskell', monacoLanguage: 'haskell', label: 'Haskell'},
+  'objective-c': {language: 'objective-c', monacoLanguage: 'objective-c', label: 'Objective-C'},
+  pascal: {language: 'pascal', monacoLanguage: 'pascal', label: 'Pascal'},
+  scheme: {language: 'scheme', monacoLanguage: 'scheme', label: 'Scheme'},
+  systemverilog: {language: 'systemverilog', monacoLanguage: 'systemverilog', label: 'SystemVerilog'},
+  tcl: {language: 'tcl', monacoLanguage: 'tcl', label: 'Tcl'},
+  toml: {language: 'toml', monacoLanguage: 'toml', label: 'TOML'},
+  verilog: {language: 'verilog', monacoLanguage: 'verilog', label: 'Verilog'},
   plaintext: {language: null, monacoLanguage: 'plaintext', label: 'Plain Text'},
 }
 
-const aliases: Record<string, string> = {py: 'python', octave: 'matlab', lean: 'lean4'}
+const aliases: Record<string, string> = {
+  py: 'python', octave: 'matlab', lean: 'lean4', js: 'javascript', ts: 'typescript',
+  cs: 'csharp', 'c#': 'csharp', sh: 'shell', bash: 'shell', zsh: 'shell', tex: 'latex',
+  objective_c: 'objective-c', objc: 'objective-c', 'system-verilog': 'systemverilog', sv: 'systemverilog',
+}
+const filenameLanguages: Record<string, string> = {
+  dockerfile: 'dockerfile', 'dockerfile.dev': 'dockerfile', gemfile: 'ruby', makefile: 'makefile',
+  gnumakefile: 'makefile', rakefile: 'ruby', cmakelists: 'cmake', 'cmakelists.txt': 'cmake',
+}
+const extensionLanguages: Record<string, string> = {
+  c: 'c', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', h: 'cpp', hh: 'cpp', hpp: 'cpp', hxx: 'cpp',
+  py: 'python', pyw: 'python', pyi: 'python', m: 'matlab', lean: 'lean4',
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'jsx', ts: 'typescript', mts: 'typescript', cts: 'typescript', tsx: 'tsx',
+  java: 'java', cs: 'csharp', go: 'go', rs: 'rust', php: 'php', rb: 'ruby',
+  sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell', ps1: 'powershell', bat: 'bat', cmd: 'bat', sql: 'sql',
+  html: 'html', htm: 'html', xhtml: 'html', vue: 'html', css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+  json: 'json', jsonc: 'json', jsonl: 'json', ipynb: 'json', yaml: 'yaml', yml: 'yaml',
+  xml: 'xml', xsd: 'xml', xsl: 'xml', svg: 'xml', tex: 'latex', sty: 'latex', cls: 'latex', bib: 'latex',
+  lua: 'lua', kt: 'kotlin', kts: 'kotlin', swift: 'swift', r: 'r', jl: 'julia', dart: 'dart',
+  scala: 'scala', sc: 'scala', pl: 'perl', pm: 'perl', sol: 'solidity', proto: 'protobuf',
+  graphql: 'graphql', gql: 'graphql', ini: 'ini', cfg: 'ini', conf: 'ini', toml: 'toml', cmake: 'cmake', dockerfile: 'dockerfile',
+  asm: 'asm', s: 'asm', fs: 'fsharp', fsx: 'fsharp', vb: 'vb', clj: 'clojure', cljs: 'clojure',
+  coffee: 'coffeescript', ex: 'elixir', exs: 'elixir', erl: 'erlang', hrl: 'erlang', groovy: 'groovy',
+  hs: 'haskell', lhs: 'haskell', mm: 'objective-c', pas: 'pascal', scm: 'scheme', sv: 'systemverilog',
+  svh: 'systemverilog', tcl: 'tcl', v: 'verilog', vh: 'verilog',
+}
 const textMateStates = new WeakMap<MonacoApi, {promise: Promise<boolean>; status: 'pending' | 'ready' | 'failed'; themeScheduled: boolean}>()
 
 export function languageSpec(value: string) {
   const normalized = aliases[String(value || '').toLowerCase()] || String(value || '').toLowerCase()
-  return {...(LANGUAGE_SPECS[normalized] || {language: normalized || null, monacoLanguage: normalized || 'plaintext', label: normalized || 'Plain Text'})}
+  return {...(LANGUAGE_SPECS[normalized] || LANGUAGE_SPECS.plaintext)}
+}
+
+export function languageSpecForFilename(filename: string) {
+  const basename = String(filename || '').split(/[\\/]/).pop()?.toLowerCase() || ''
+  const pieces = basename.split('.')
+  const extension = pieces.length > 1 ? pieces.pop() || '' : ''
+  const language = filenameLanguages[basename]
+    || filenameLanguages[basename.replace(/\.[^.]+$/, '')]
+    || extensionLanguages[extension]
+    || 'plaintext'
+  const spec = languageSpec(language)
+  if (extension === 'c') spec.label = 'C Source'
+  if (extension === 'h') spec.label = 'C++ Header'
+  if (['cc', 'cpp', 'cxx'].includes(extension)) spec.label = 'C++ Source'
+  if (['hh', 'hpp', 'hxx'].includes(extension)) spec.label = 'C++ Header'
+  return spec
 }
 
 function registerMatlab(monaco: MonacoApi) {

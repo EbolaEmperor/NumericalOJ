@@ -3,7 +3,7 @@ import {useEffect, useRef, useState} from 'react'
 import {attachLeanUnicodeInput, languageSpec, monacoOptions, prepareMonaco} from '../editor/codeEditorRuntime'
 import {loadMonaco} from '../editor/monacoLoader'
 import {registerSemanticTokens} from '../editor/semanticTokens'
-import type {Disposable, MonacoEditorInstance, MonacoEditorReadyContext} from '../editor/types'
+import type {Disposable, MonacoEditorInstance, MonacoEditorReadyContext, MonacoModel} from '../editor/types'
 import {MathCurveLoader} from './MathCurveLoader'
 
 export type {MonacoApi, MonacoEditorInstance, MonacoEditorReadyContext} from '../editor/types'
@@ -23,6 +23,11 @@ export function MonacoEditor({
   fallbackClassName = 'numoj-code-textarea-fallback',
   shellBaseClassName = 'problem-editor-shell',
   onReady,
+  bundle = 'minimal',
+  semanticContext,
+  semanticDocumentId,
+  modelUri,
+  wordWrap,
 }: {
   language: string
   problemId: number
@@ -38,6 +43,11 @@ export function MonacoEditor({
   fallbackClassName?: string
   shellBaseClassName?: string
   onReady?: (context: MonacoEditorReadyContext) => void | (() => void) | Promise<void | (() => void)>
+  bundle?: 'minimal' | 'full'
+  semanticContext?: string
+  semanticDocumentId?: string
+  modelUri?: string
+  wordWrap?: 'on' | 'off'
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -59,21 +69,22 @@ export function MonacoEditor({
     let semanticController: AbortController | null = null
     let resizeObserver: ResizeObserver | null = null
     let readyCleanup: (() => void) | null = null
+    let ownedModel: MonacoModel | null = null
 
     const initialize = async () => {
       setFallback(false)
       setReady(false)
       try {
-        const monaco = await loadMonaco()
+        const monaco = await loadMonaco(bundle)
         const host = hostRef.current
         if (disposed || !host) return
 
         const normalizedLanguage = String(language || 'matlab').toLowerCase()
         const spec = languageSpec(normalizedLanguage)
         const theme = prepareMonaco(monaco)
+        if (modelUri) ownedModel = monaco.editor.createModel(valueRef.current, spec.monacoLanguage, monaco.Uri.parse(modelUri))
         const editor = monaco.editor.create(host, monacoOptions({
-          value: valueRef.current,
-          language: spec.monacoLanguage,
+          ...(ownedModel ? {model: ownedModel} : {value: valueRef.current, language: spec.monacoLanguage}),
           theme,
           ariaLabel,
           readOnly,
@@ -81,13 +92,21 @@ export function MonacoEditor({
           fontSize,
           lineHeight,
           tabSize: ['lean', 'lean4'].includes(normalizedLanguage) ? 2 : 4,
+          ...(wordWrap ? {wordWrap} : {}),
         }))
         editorRef.current = editor
         if (['lean', 'lean4'].includes(normalizedLanguage)) unicodeSubscription = attachLeanUnicodeInput(monaco, editor)
         else {
           // 语义服务在编辑器显示之后注册；TextMate/Monarch 的当前配色不会被网络请求阻塞。
           semanticController = new AbortController()
-          void registerSemanticTokens(monaco, {language: normalizedLanguage, monacoLanguage: spec.monacoLanguage, problemId, signal: semanticController.signal})
+          void registerSemanticTokens(monaco, {
+            language: normalizedLanguage,
+            monacoLanguage: spec.monacoLanguage,
+            problemId,
+            context: semanticContext,
+            documentId: semanticDocumentId,
+            signal: semanticController.signal,
+          })
             .then((registration) => {
               if (!registration) return
               if (disposed) registration.dispose()
@@ -139,8 +158,10 @@ export function MonacoEditor({
       semanticRegistration?.dispose()
       editorRef.current?.dispose()
       editorRef.current = null
+      ownedModel?.dispose()
+      ownedModel = null
     }
-  }, [ariaLabel, fontSize, language, lineHeight, problemId, readOnly])
+  }, [ariaLabel, bundle, fontSize, language, lineHeight, modelUri, problemId, readOnly, semanticContext, semanticDocumentId, wordWrap])
 
   useEffect(() => {
     const editor = editorRef.current

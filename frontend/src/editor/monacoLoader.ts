@@ -1,6 +1,6 @@
 import type {MonacoApi} from './types'
 
-let monacoPromise: Promise<MonacoApi> | null = null
+const monacoPromises: Partial<Record<'minimal' | 'full', Promise<MonacoApi>>> = {}
 
 function ensureStylesheet(href: string) {
   if (document.querySelector(`link[href="${href}"]`)) return
@@ -11,10 +11,13 @@ function ensureStylesheet(href: string) {
   document.head.appendChild(link)
 }
 
-export function loadMonaco() {
-  if (monacoPromise) return monacoPromise
+export function loadMonaco(bundle: 'minimal' | 'full' = 'minimal') {
+  if (monacoPromises[bundle]) return monacoPromises[bundle]
   ensureStylesheet('/static/styles/code-editor.css')
-  ensureStylesheet('/static/vendor/monaco/editor-minimal.css')
+  const stylesheet = bundle === 'full'
+    ? '/static/vendor/monaco/editor.css'
+    : '/static/vendor/monaco/editor-minimal.css'
+  ensureStylesheet(stylesheet)
   // 直接创建同源模块 Worker。Monaco 的 getWorkerUrl 兼容路径会先生成
   // blob 模块、再从其中 import 带 #label 的 URL；Safari 会把这条链路误报为
   // 404，并让编辑器退回主线程。由模块加载器持有工厂可同时避免 blob 生命周期
@@ -28,8 +31,9 @@ export function loadMonaco() {
     }),
   }
   const source = '/static/vendor/monaco/editor-minimal.js'
-  monacoPromise = import(/* @vite-ignore */ source)
+  const selectedSource = bundle === 'full' ? '/static/vendor/monaco/editor.js' : source
+  monacoPromises[bundle] = import(/* @vite-ignore */ selectedSource)
     .then((module) => module as unknown as MonacoApi)
-    .catch((error) => {monacoPromise = null; throw error})
-  return monacoPromise
+    .catch((error) => {delete monacoPromises[bundle]; throw error})
+  return monacoPromises[bundle]
 }
