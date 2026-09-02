@@ -1,7 +1,8 @@
 import {useQuery, useQueryClient} from '@tanstack/react-query'
-import {createContext, useContext, type PropsWithChildren} from 'react'
+import {createContext, useContext, useEffect, useRef, type PropsWithChildren} from 'react'
+import {useLocation} from 'react-router-dom'
 
-import {apiFetch} from './api/client'
+import {apiFetch, queryString} from './api/client'
 import type {SessionPayload} from './api/types'
 
 interface SessionContextValue {
@@ -13,10 +14,10 @@ interface SessionContextValue {
 const SessionContext = createContext<SessionContextValue | null>(null)
 const NAVIGATION_CACHE_TTL_MS = 10_000
 
-function withSessionNavigationCache(payload: SessionPayload) {
+function withSessionNavigationCache(payload: SessionPayload, selectedClass: string) {
   if (!payload.user) return payload
-  const selectedClass = new URLSearchParams(window.location.search).get('class_en') || ''
-  const key = ['numoj.layoutNavigation.v1', payload.user.id, '/api/layout-navigation', selectedClass].join(':')
+  const resolvedClass = payload.navigation.selected_class_en || selectedClass
+  const key = ['numoj.layoutNavigation.v1', payload.user.id, '/api/layout-navigation', resolvedClass].join(':')
   try {
     const cached = JSON.parse(window.sessionStorage.getItem(key) || 'null') as {savedAt?: number; data?: {counts?: Record<string, number>; agent_active?: boolean}} | null
     if (cached?.savedAt && cached.data && Date.now() - cached.savedAt < NAVIGATION_CACHE_TTL_MS) {
@@ -29,12 +30,26 @@ function withSessionNavigationCache(payload: SessionPayload) {
 
 export function SessionProvider({children}: PropsWithChildren) {
   const queryClient = useQueryClient()
+  const location = useLocation()
+  const selectedClass = location.pathname === '/problems'
+    ? new URLSearchParams(location.search).get('class_en') || ''
+    : ''
+  const previousSelectedClass = useRef(selectedClass)
   const query = useQuery({
     queryKey: ['session'],
-    queryFn: async () => withSessionNavigationCache(await apiFetch<SessionPayload>('/api/v1/session')),
+    queryFn: async () => withSessionNavigationCache(
+      await apiFetch<SessionPayload>(`/api/v1/session${queryString({class_en: selectedClass || undefined})}`),
+      selectedClass,
+    ),
     staleTime: 10_000,
     retry: 1,
   })
+  const refetchSession = query.refetch
+  useEffect(() => {
+    if (previousSelectedClass.current === selectedClass) return
+    previousSelectedClass.current = selectedClass
+    void refetchSession()
+  }, [refetchSession, selectedClass])
 
   return (
     <SessionContext.Provider

@@ -21,7 +21,7 @@ from backend.oj_modules.problems.context import (
 
 
 problem_api_bp = Blueprint("problem_api", __name__, url_prefix="/api")
-_PROBLEM_LIST_CLASS_COOKIE = "numoj_problem_list_class"
+PROBLEM_LIST_CLASS_COOKIE = "numoj_problem_list_class"
 
 
 def _homework_problem_item(hw, class_en=None, class_cn=None):
@@ -105,7 +105,10 @@ def problems():
     limit = clamp_limit(request.args.get("limit"), default=None)
     is_library = str(request.args.get("view") or "").strip() == "library"
     requested_class_en = str(request.args.get("class_en") or "").strip()
-    remembered_class_en = str(request.cookies.get(_PROBLEM_LIST_CLASS_COOKIE) or "").strip()
+    remembered_class_en = str(request.cookies.get(PROBLEM_LIST_CLASS_COOKIE) or "").strip()
+    remember_selection = str(request.args.get("remember") or "1").strip().lower() not in {
+        "0", "false", "no",
+    }
     selected_class_en = requested_class_en or remembered_class_en or None
     context = (
         build_problem_library_context(user, include_statistics=True)
@@ -140,12 +143,12 @@ def problems():
         problems=apply_limit(items, limit),
         count=len(items),
     )
-    if is_library:
+    if is_library or not remember_selection:
         return response
     selected_class_en = str(context.get("selected_class_en") or "").strip()
     if selected_class_en:
         response.set_cookie(
-            _PROBLEM_LIST_CLASS_COOKIE,
+            PROBLEM_LIST_CLASS_COOKIE,
             selected_class_en,
             max_age=60 * 60 * 24 * 365,
             httponly=True,
@@ -155,8 +158,8 @@ def problems():
             path="/",
         )
     elif remembered_class_en:
-        response.delete_cookie(_PROBLEM_LIST_CLASS_COOKIE, path="/")
-        response.delete_cookie(_PROBLEM_LIST_CLASS_COOKIE, path="/problems")
+        response.delete_cookie(PROBLEM_LIST_CLASS_COOKIE, path="/")
+        response.delete_cookie(PROBLEM_LIST_CLASS_COOKIE, path="/problems")
     return response
 
 

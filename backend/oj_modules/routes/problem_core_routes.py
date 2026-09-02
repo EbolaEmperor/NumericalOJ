@@ -2879,7 +2879,11 @@ def agent_tasks():
         **launch_options,
     }
     if _request_wants_json():
-        return jsonify(success=True, **page_payload)
+        response = jsonify(success=True, **page_payload)
+        # 启动偏好按用户保存在数据库中；禁止浏览器或中间缓存复用其他账号、
+        # 旧标签页的模型节点选择，保持旧版动态页面每次读取最新偏好的语义。
+        response.headers['Cache-Control'] = 'private, no-store'
+        return response
     return redirect('/agents')
 
 

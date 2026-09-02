@@ -9,6 +9,7 @@ from __future__ import annotations
 from flask import Blueprint, request
 
 from backend.oj_modules.api.helpers import json_success, public_user
+from backend.oj_modules.api.problem_api import PROBLEM_LIST_CLASS_COOKIE
 from backend.oj_modules.classroom.dashboard import get_layout_navigation_context
 from backend.oj_modules.db_services import is_class_adjust_enabled
 from backend.oj_modules.security.auth import current_user
@@ -44,7 +45,11 @@ def session_bootstrap():
     """返回 SPA 首屏所需的最小会话快照；未登录也是成功响应。"""
 
     user = current_user()
-    selected_class = str(request.args.get("class_en") or "").strip() or None
+    selected_class = (
+        str(request.args.get("class_en") or "").strip()
+        or str(request.cookies.get(PROBLEM_LIST_CLASS_COOKIE) or "").strip()
+        or None
+    )
     navigation = (
         get_layout_navigation_context(user, selected_class_en=selected_class)
         if user
@@ -63,14 +68,17 @@ def session_bootstrap():
             mail_service_configured = bool(get_mail_settings(wait_timeout_seconds=0.0))
         except Exception:
             mail_service_configured = False
+    navigation_payload = {
+        "items": _navigation_items(user) if user else [],
+        "counts": navigation.get("counts") or {},
+        "agent_active": bool(navigation.get("agent_active")),
+    }
+    if navigation.get("selected_class_en"):
+        navigation_payload["selected_class_en"] = navigation["selected_class_en"]
     return json_success(
         api_version="v1",
         user=public_user(user),
-        navigation={
-            "items": _navigation_items(user) if user else [],
-            "counts": navigation.get("counts") or {},
-            "agent_active": bool(navigation.get("agent_active")),
-        },
+        navigation=navigation_payload,
         capabilities={
             "spa": True,
             "legacy_ui_available": False,

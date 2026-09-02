@@ -57,7 +57,9 @@ def test_ordinary_user_list_is_always_scoped_to_self(monkeypatch):
 
     app = _app()
     with app.test_request_context("/api/agent/sessions?scope=all"):
-        assert routes.agent_tasks().get_json()["success"] is True
+        response = routes.agent_tasks()
+        assert response.get_json()["success"] is True
+        assert response.headers["Cache-Control"] == "private, no-store"
 
     assert calls == [{"page": 1, "per_page": 20, "requested_by": "student"}]
 

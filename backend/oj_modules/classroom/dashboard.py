@@ -526,4 +526,5 @@ def get_layout_navigation_context(user, *, selected_class_en=None):
             conn.close()
         return {"counts": counts, "agent_active": agent_active}
 
-    return _cached(cache_key, load)
+    payload = _cached(cache_key, load)
+    return {**payload, "selected_class_en": class_en}

@@ -29,6 +29,7 @@ export interface SessionPayload extends ApiEnvelope {
     items: NavigationItem[]
     counts: Record<string, number>
     agent_active: boolean
+    selected_class_en?: string
   }
   capabilities: {
     spa: boolean

@@ -294,6 +294,33 @@ def test_problem_list_api_uses_cookie_fallback_and_clears_invalid_value(monkeypa
     )
 
 
+def test_problem_list_prefetch_does_not_replace_remembered_class(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    user = {"id": 8, "username": "student", "is_admin": 0}
+    monkeypatch.setattr(problem_api, "current_user", lambda: user)
+    selected = []
+
+    def build_context(_user, **kwargs):
+        selected.append(kwargs["selected_class_en"])
+        return _problem_list_api_context(kwargs["selected_class_en"])
+
+    monkeypatch.setattr(problem_api, "build_problem_list_context", build_context)
+    client = app.test_client()
+    client.set_cookie("numoj_problem_list_class", "C1")
+
+    prefetched = client.get("/api/problems?class_en=C2&remember=0")
+    remembered = client.get("/api/problems")
+
+    assert prefetched.status_code == 200
+    assert not any(
+        "numoj_problem_list_class=" in header
+        for header in prefetched.headers.getlist("Set-Cookie")
+    )
+    assert remembered.status_code == 200
+    assert selected == ["C2", "C1"]
+
+
 def test_problem_library_attaches_global_metrics_without_deadline(monkeypatch):
     _stub_base_context(monkeypatch)
     problems = [{"id": 1, "title": "A"}, {"id": 2, "title": "B"}]

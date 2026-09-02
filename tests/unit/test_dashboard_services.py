@@ -406,6 +406,7 @@ def test_get_layout_navigation_context_returns_real_admin_counts(monkeypatch):
     assert result == {
         "counts": {"homeworks": 6, "submissions": 312, "problems": 42, "users": 19},
         "agent_active": True,
+        "selected_class_en": "C1",
     }
     assert same_result == result
     assert connection.closed is True

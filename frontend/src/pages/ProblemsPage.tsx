@@ -67,8 +67,10 @@ export default function ProblemsPage() {
   const prefetchClass = (classEn: string) => {
     void queryClient.prefetchQuery({
       queryKey: ['problems', 'homework', classEn],
-      queryFn: () => apiFetch<Response>(`/api/problems${queryString({class_en: classEn})}`),
-      staleTime: 60_000,
+      // 预取只能暖缓存；保持为立即过期，用户真正进入班级时必须再请求一次，
+      // 由后端更新旧版的一年期记忆 Cookie。
+      queryFn: () => apiFetch<Response>(`/api/problems${queryString({class_en: classEn, remember: 0})}`),
+      staleTime: 0,
     })
   }
   const deleteProblem = useMutation({
@@ -85,7 +87,7 @@ export default function ProblemsPage() {
     queryKey: ['class-activity', result.data?.selected_class_en],
     queryFn: async () => {
       const classCode = String(result.data?.selected_class_en || '')
-      const cacheKey = `numoj.problemActivity.v1:${String(session?.user?.id || session?.user?.username || 'anonymous')}:${classCode}`
+      const cacheKey = `numoj.classActivity.v1:${String(session?.user?.id || session?.user?.username || 'anonymous')}:${classCode}`
       try {
         const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || 'null') as {savedAt?: number; payload?: ActivityResponse} | null
         if (cached?.payload?.success && cached.savedAt && Date.now() - cached.savedAt < 30_000) return cached.payload

@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 from flask import Flask
 
 from backend.oj_modules.api import spa_api
@@ -70,3 +72,28 @@ def test_session_bootstrap_exposes_spa_paths_and_admin_capability(monkeypatch):
     assert payload["capabilities"]["spa"] is True
     assert payload["capabilities"]["class_adjust_enabled"] is True
     assert payload["capabilities"]["mail_service_configured"] is True
+
+
+def test_session_navigation_uses_class_cookie_with_url_priority(monkeypatch):
+    user = {"id": 7, "username": "root", "email": "root@example.test", "is_admin": 1}
+    monkeypatch.setattr(spa_api, "current_user", lambda: user)
+    navigation = MagicMock(side_effect=lambda _user, *, selected_class_en: {
+        "counts": {},
+        "agent_active": False,
+        "selected_class_en": selected_class_en,
+    })
+    monkeypatch.setattr(spa_api, "get_layout_navigation_context", navigation)
+    monkeypatch.setattr(spa_api, "is_class_adjust_enabled", lambda **_kwargs: False)
+    monkeypatch.setattr(spa_api, "get_mail_settings", lambda **_kwargs: None)
+    client = _app().test_client()
+    client.set_cookie("numoj_problem_list_class", "C1")
+
+    remembered = client.get("/api/v1/session")
+    explicit = client.get("/api/v1/session?class_en=C2")
+
+    assert remembered.status_code == 200
+    assert explicit.status_code == 200
+    assert remembered.get_json()["navigation"]["selected_class_en"] == "C1"
+    assert explicit.get_json()["navigation"]["selected_class_en"] == "C2"
+    assert navigation.call_args_list[0].kwargs == {"selected_class_en": "C1"}
+    assert navigation.call_args_list[1].kwargs == {"selected_class_en": "C2"}
