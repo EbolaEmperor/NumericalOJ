@@ -1,5 +1,5 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type DragEvent, type FormEvent, type ReactNode, type SetStateAction} from 'react'
+import {Fragment, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type DragEvent, type FormEvent, type ReactNode, type SetStateAction} from 'react'
 import {createPortal} from 'react-dom'
 import {useParams, useSearchParams} from 'react-router-dom'
 
@@ -47,7 +47,11 @@ type Submission = JsonRecord & {
 
 type NavigationState = {
   revision?: string
+  is_active?: boolean
+  scoring_mode?: string
+  permissions?: Record<string, boolean>
   counts?: {
+    submit?: {remaining?: number; limit?: number} | null
     leaderboard?: number
     matches?: number
     all_submissions?: number
@@ -205,13 +209,15 @@ function SubmissionCard({row, competition, scoring, isElo, onDetail, onDelete}: 
 
 function FileDrop({kind, title, extension, icon, file, onFile}: {kind: string; title: string; extension: string; icon: string; file: File | null; onFile: (file: File | null) => void}) {
   const [dragging, setDragging] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {if (!file && inputRef.current) inputRef.current.value = ''}, [file])
   const drop = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault()
     setDragging(false)
     onFile(event.dataTransfer.files?.[0] || null)
   }
   return <label className={`file-drop${file ? ' has-file' : ''}${dragging ? ' dragover' : ''}`} data-kind={kind} onDragEnter={(event) => {event.preventDefault(); setDragging(true)}} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={drop}>
-    <input type="file" name={`${kind}_file`} accept={extension} required hidden onChange={(event) => onFile(event.target.files?.[0] || null)} />
+    <input ref={inputRef} type="file" name={`${kind}_file`} accept={extension} required hidden onChange={(event) => onFile(event.target.files?.[0] || null)} />
     <div className="file-drop-inner">
       <i className={`fas ${icon} file-drop-icon file-drop-icon-${kind}`} />
       <div className="file-drop-title">{title}</div>
@@ -239,6 +245,7 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
   const [baseModel, setBaseModel] = useState('')
   const [detailTarget, setDetailTarget] = useState<RankingSubmissionOverlayTarget | null>(null)
   const [gitResult, setGitResult] = useState<(ApiEnvelope & {exists?: boolean; info?: JsonRecord; url?: string}) | null>(null)
+  const [submissionNotice, setSubmissionNotice] = useState<{tone: 'success' | 'warning'; text: string} | null>(null)
   const reverseModeRef = useDismissibleDropdown<HTMLDivElement>(reverseModeOpen, () => setReverseModeOpen(false))
   const endpointRef = useDismissibleDropdown<HTMLDivElement>(endpointOpen, () => setEndpointOpen(false))
   const selectedEndpoint = endpoints.find((item) => String(item.id) === endpointId)
@@ -246,6 +253,12 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
   const endpointModel = String(selectedEndpoint?.model || (selectedEndpoint?.id ? `节点 #${selectedEndpoint.id}` : ''))
   const endpointLabel = selectedEndpoint ? `${endpointHarness} + ${endpointModel}` : '无可用节点'
   const gitMode = (isAgentJudge && submissionMethod === 'git') || (isReverseJudge && reverseMode === 'git')
+  const endpointIds = endpoints.map((item) => String(item.id)).join(',')
+
+  useEffect(() => {
+    if (!endpoints.some((item) => String(item.id) === endpointId)) setEndpointId(String(endpoints[0]?.id || ''))
+  }, [endpointId, endpointIds, endpoints])
+  useUnsavedChangesWarning(Boolean(answerFile || codeFile || baseModel.trim()))
 
   const submit = useMutation({
     mutationFn: () => {
@@ -254,12 +267,23 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
       if (codeFile) body.append('code_file', codeFile)
       if (!isReverseJudge) body.append('base_model', baseModel.trim())
       if (isReverseJudge && endpointId) body.append('agent_endpoint_id', endpointId)
-      return apiFetch<ApiEnvelope & {submission_id?: number}>(`/api/ranking/competitions/${competitionId}/submissions`, {method: 'POST', body})
+      return apiFetch<ApiEnvelope & {submission_id?: number; warnings?: Array<{category?: string; message?: string}>}>(`/api/ranking/competitions/${competitionId}/submissions`, {method: 'POST', body})
     },
-    onSuccess: async () => {
+    onMutate: () => setSubmissionNotice(null),
+    onSuccess: async (payload) => {
       setAnswerFile(null)
       setCodeFile(null)
       setBaseModel('')
+      const warnings = (payload.warnings || []).map((item) => String(item.message || '')).filter(Boolean)
+      setSubmissionNotice({tone: warnings.length ? 'warning' : 'success', text: warnings.length ? `${payload.message || '提交成功'}；${warnings.join('；')}` : String(payload.message || '提交成功，已等待评测。')})
+      await queryClient.invalidateQueries({queryKey: ['ranking', competitionId]})
+    },
+    onError: async (error) => {
+      if (!(error instanceof ApiError) || !error.payload?.pending_confirmation) return
+      setAnswerFile(null)
+      setCodeFile(null)
+      setBaseModel('')
+      setSubmissionNotice({tone: 'warning', text: error.message})
       await queryClient.invalidateQueries({queryKey: ['ranking', competitionId]})
     },
   })
@@ -270,7 +294,8 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
   })
   const submitGit = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${competitionId}/repository/submissions`, {method: 'POST', body: JSON.stringify(isReverseJudge ? {agent_endpoint_id: Number(endpointId)} : {})}),
-    onSuccess: async () => {setGitResult(null); await queryClient.invalidateQueries({queryKey: ['ranking', competitionId]})},
+    onMutate: () => setSubmissionNotice(null),
+    onSuccess: async (payload) => {setGitResult(null); setSubmissionNotice({tone: 'success', text: String(payload.message || '提交任务已创建，请稍后查看历史提交。')}); await queryClient.invalidateQueries({queryKey: ['ranking', competitionId]})},
   })
   const needAnswer = !isElo && !isAgentJudge && !isReverseJudge
   const ready = Boolean(codeFile && (!needAnswer || answerFile) && (isReverseJudge ? endpointId : baseModel.trim()))
@@ -303,8 +328,9 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
       </div>
       {!isReverseJudge ? <div className="mt-4"><label htmlFor="rankingBaseModelInput" className="form-label fw-semibold">基座模型 <span className="text-danger">*</span></label><input type="text" className="form-control" id="rankingBaseModelInput" name="base_model" required maxLength={500} placeholder="例如：deepseek-v4-pro, qwen3.6-plus" value={baseModel} onChange={(event) => setBaseModel(event.target.value)} /></div> : null}
       <div className="submit-actions mt-4"><button type="submit" className="btn btn-primary submit-cta" id="rankingSubmitBtn" disabled={!ready || submit.isPending}><i className="fas fa-paper-plane me-2" />{submit.isPending ? '提交中…' : '提交评测'}</button><span className="submit-hint ms-3 text-muted small" id="rankingSubmitHint">{ready ? '就绪' : isReverseJudge ? !endpointId ? '请选择 AI 节点' : '请选择文件' : !codeFile || (needAnswer && !answerFile) ? '请选择文件' : '请填写基座模型'}</span></div>
-      {submit.isError ? <p className="ranking-submit-block-reason mt-3"><i className="fas fa-exclamation-triangle me-2" />{errorMessage(submit.error)}</p> : null}
+      {submit.isError && (!(submit.error instanceof ApiError) || !submit.error.payload?.pending_confirmation) ? <p className="ranking-submit-block-reason mt-3"><i className="fas fa-exclamation-triangle me-2" />{errorMessage(submit.error)}</p> : null}
     </form>}
+    {submissionNotice ? <div className={`alert alert-${submissionNotice.tone === 'success' ? 'success' : 'warning'} mt-3`} role="status"><i className={`fas ${submissionNotice.tone === 'success' ? 'fa-circle-check' : 'fa-triangle-exclamation'} me-2`} />{submissionNotice.text}</div> : null}
     <div data-ranking-submission-history>
       <div className="my-history-header"><strong>我的历史提交</strong>{submissions.length ? <div className="history-stats"><span className="history-stat"><span className="history-stat-val">{submissions.length}</span><span className="history-stat-label">次</span></span><span className="history-stat"><span className="history-stat-val">{best == null ? '—' : best.toFixed(isElo ? 0 : 2)}</span><span className="history-stat-label">{isElo ? '最高 ELO' : '最高分'}</span></span></div> : null}</div>
       {submissions.length ? <div className="aj-subs">{submissions.map((row) => <SubmissionCard row={row} competition={data.competition} scoring={scoring} isElo={isElo} onDetail={(item) => setDetailTarget({id: item.id, createdAt: item.created_at, status: item.status, username: item.username, answerDownloadUrl: item.ai_answer_download_url})} key={row.id} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>提交作品后，这里会显示每次评测结果。</span></div>}
@@ -365,6 +391,12 @@ type BulkJobResponse = ApiEnvelope & {
   failed?: number
   progress?: number
   done?: boolean
+  status?: string
+  last_error?: string
+}
+
+function bulkJobTerminal(job?: BulkJobResponse) {
+  return Boolean(job?.done || ['failed', 'error', 'canceled', 'cancelled'].includes(String(job?.status || '').toLowerCase()))
 }
 
 function AllSubmissionsPanel({data}: {data: Response}) {
@@ -427,13 +459,15 @@ function AllSubmissionsPanel({data}: {data: Response}) {
     queryKey: ['ranking-bulk-rejudge', data.competition.id, jobId],
     queryFn: () => apiFetch<BulkJobResponse>(`/api/ranking/competitions/${data.competition.id}/rejudge/jobs/${encodeURIComponent(jobId)}`),
     enabled: Boolean(jobId),
-    refetchInterval: (query) => query.state.data?.done ? false : 1000,
+    refetchInterval: (query) => bulkJobTerminal(query.state.data) ? false : 1000,
   })
+  const jobTerminal = bulkJobTerminal(job.data)
+  const jobFailed = Boolean(job.data && !job.data.done && jobTerminal)
   useEffect(() => {
-    if (!job.data?.done) return
-    setSelected([])
+    if (!jobTerminal) return
+    if (job.data?.done) setSelected([])
     void queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})
-  }, [data.competition.id, job.data?.done, queryClient])
+  }, [data.competition.id, job.data?.done, jobTerminal, queryClient])
 
   const toggleStatus = (value: string, checked: boolean) => {
     setStatuses((current) => checked ? [...current, value] : current.filter((item) => item !== value))
@@ -443,11 +477,13 @@ function AllSubmissionsPanel({data}: {data: Response}) {
     ? errorMessage(filter.error)
     : tooMany
       ? `命中 ${numberValue(filter.data?.total)} 条，超过显示上限 ${numberValue(filter.data?.max_results)} 条，请缩小筛选范围。`
+      : selected.length > maxSelected
+        ? `已选择 ${selected.length} 条，超过单次上限 ${maxSelected} 条。`
       : filteredRows.length
         ? `筛选出 ${filteredRows.length} 条，已选择 ${selected.length} 条。`
         : filter.isSuccess ? '暂无筛选结果。' : ''
   const progress = numberValue(job.data?.progress)
-  const running = Boolean(jobId && !job.data?.done)
+  const running = Boolean(jobId && !jobTerminal)
   const remove = useMutation({
     mutationFn: (submissionId: number) => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${data.competition.id}/submissions/${submissionId}`, {method: 'DELETE'}),
     onSuccess: () => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]}),
@@ -482,7 +518,7 @@ function AllSubmissionsPanel({data}: {data: Response}) {
             const score = submissionScore(row, isElo)
             return <div className="rk-bulk-row" key={row.id}><label className="rk-bulk-check"><input type="checkbox" checked={selected.includes(row.id)} disabled={tooMany || running} onChange={(event) => setSelected((current) => event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))} /><span>#{row.id}</span></label><div className="rk-bulk-cell rk-user">{row.username}</div><div className={`rk-bulk-pill ${statusClasses[status] === 's-ok' ? 'ok' : statusClasses[status] === 's-info' ? 'info' : statusClasses[status] === 's-err' ? 'err' : 'muted'}`}>{statusLabels[status] || status || '—'}</div><div className="rk-bulk-cell rk-score">{score == null ? '—' : numberValue(score).toFixed(isElo ? 0 : 2)}</div><div className="rk-bulk-cell rk-model">{row.base_model ? <><ModelLogo model={row.base_model} /> <span>{row.base_model}</span></> : '—'}</div><div className="rk-bulk-cell rk-time">{row.created_at}</div></div>
           }) : <div className="rk-bulk-empty">暂无筛选结果</div>}</div>
-          {jobId ? <div className="rk-bulk-progress"><div className="rk-bulk-progress-track"><div className={`rk-bulk-progress-bar${job.data?.done ? ' is-done' : ''}`} style={{width: `${progress}%`}}>{progress}%</div></div><div className="rk-bulk-progress-text">重测入队进度 {numberValue(job.data?.processed)} / {numberValue(job.data?.total, selected.length)}，已入队 {numberValue(job.data?.requeued ?? job.data?.created)}，失败 {numberValue(job.data?.failed)}{job.data?.done ? '。重测已入队，原提交将按队列并发限制重新评测。' : ''}</div></div> : null}
+          {jobId ? <div className="rk-bulk-progress"><div className="rk-bulk-progress-track"><div className={`rk-bulk-progress-bar${job.data?.done ? ' is-done' : ''}${jobFailed ? ' bg-danger' : ''}`} style={{width: `${progress}%`}}>{progress}%</div></div><div className="rk-bulk-progress-text">重测入队进度 {numberValue(job.data?.processed)} / {numberValue(job.data?.total, selected.length)}，已入队 {numberValue(job.data?.requeued ?? job.data?.created)}，失败 {numberValue(job.data?.failed)}{job.data?.done ? '。重测已入队，原提交将按队列并发限制重新评测。' : jobFailed ? `。任务失败：${String(job.data?.last_error || '后台未能继续处理，请检查任务日志后重试。')}` : ''}</div></div> : null}
           {start.isError || job.isError ? <div className="alert alert-danger mt-3 mb-0" role="alert">{errorMessage(start.error || job.error)}</div> : null}
         </div>
         <div className="modal-footer"><button type="button" className="rk-bulk-secondary" onClick={() => setBulkOpen(false)}>关闭</button><button type="button" className="rk-bulk-primary" disabled={!selected.length || selected.length > maxSelected || tooMany || running || start.isPending} onClick={() => start.mutate()}><i className="fas fa-play" /><span>确认重测</span></button></div>
@@ -490,6 +526,7 @@ function AllSubmissionsPanel({data}: {data: Response}) {
     </ReactModal>
 
     {rows.length ? <div className="aj-subs" data-ranking-submission-list>{rows.map((row) => <SubmissionCard row={row} competition={data.competition} scoring={scoring} isElo={isElo} onDetail={(item) => setDetailTarget({id: item.id, createdAt: item.created_at, status: item.status, username: item.username, answerDownloadUrl: item.ai_answer_download_url})} key={row.id} onDelete={(item) => {if (window.confirm(`确认删除提交 #${item.id}？`)) remove.mutate(item.id)}} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>尚未有选手提交作品。</span></div>}
+    {remove.isError ? <div className="alert alert-danger mt-3" role="alert">{errorMessage(remove.error)}</div> : null}
     {total > 0 ? <div className="submissions-pagination mt-3"><Pagination data={data} tab="all_submissions" /></div> : null}
     {scoring === 'agent_judge' ? <JudgeDetailModal competitionId={data.competition.id} target={detailTarget} canAppeal={false} onClose={() => setDetailTarget(null)} onTerminal={() => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})} /> : null}
     {scoring === 'reverse_judge' ? <ReverseJudgeDetailModal competitionId={data.competition.id} target={detailTarget} onClose={() => setDetailTarget(null)} onTerminal={() => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})} /> : null}
@@ -601,6 +638,7 @@ function MatchesPanel({data, username, isAdmin}: {data: Response; username?: str
       </article>
     })}</div> : <div className="ranking-v2-empty matches-empty"><i className="fas fa-chess-board" /><strong>{data.matches_mine ? '你还没有踏上擂台' : '擂台尚无对决'}</strong><span>{numberValue(data.competition.elo_running) === 1 ? `等待匹配引擎调度首场对战，每 ${numberValue(data.competition.elo_match_interval_seconds, 60)} 秒一轮。` : '动态评分尚未启动，匹配引擎不会调度对战。'}</span></div>}<Pagination data={data} tab="matches" /></div>
   </div>
+  {remove.isError || rebuild.isError ? <div className="alert alert-danger mt-3" role="alert">{errorMessage(remove.error || rebuild.error)}</div> : null}
   {trajectoryOpen ? createPortal(<div className="ranking-v2-detail elo-trajectory-portal">
     <div className={`modal fade show d-block elo-trajectory-modal${trajectoryExpanded ? ' is-expanded' : ''}`} id="eloTrajectoryModal" tabIndex={-1} role="dialog" aria-modal="true" aria-label="观察得分变化" onPointerDown={(event) => {if (event.target === event.currentTarget) closeTrajectory()}}>
       <div className="modal-dialog">
@@ -1031,6 +1069,7 @@ function EditPanel({data}: {data: Response}) {
 }
 
 function BatchPanel({data}: {data: Response}) {
+  const queryClient = useQueryClient()
   const [selectedClasses, setSelectedClasses] = useState<string[]>([])
   const [template, setTemplate] = useState(String(data.batch_default_template || ''))
   const [classOpen, setClassOpen] = useState(false)
@@ -1040,25 +1079,126 @@ function BatchPanel({data}: {data: Response}) {
   const [endpointId, setEndpointId] = useState(() => String(enabledEndpoints[0]?.id || ''))
   const [jobId, setJobId] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<string[]>([])
+  const [page, setPage] = useState(1)
+  const [localError, setLocalError] = useState('')
   const classPickerRef = useDismissibleDropdown<HTMLDivElement>(classOpen, () => setClassOpen(false))
   const endpointPickerRef = useDismissibleDropdown<HTMLDivElement>(endpointOpen, () => setEndpointOpen(false))
   const isReverse = String(data.competition.scoring_mode || '') === 'reverse_judge'
   const classes = (data.batch_classes || []).filter((item) => `${String(item.class_cn || '')} ${String(item.class_en || '')}`.toLowerCase().includes(classSearch.trim().toLowerCase()))
   const selectedEndpoint = enabledEndpoints.find((item) => String(item.id) === endpointId)
+
   useEffect(() => {setTemplate(String(data.batch_default_template || ''))}, [data.batch_default_template])
   useEffect(() => {
     if (isReverse && !enabledEndpoints.some((item) => String(item.id) === endpointId)) setEndpointId(String(enabledEndpoints[0]?.id || ''))
   }, [data.aj_endpoints, enabledEndpoints, endpointId, isReverse])
+
   const endpointLabel = (item: JsonRecord) => {
     const harness = String(item.harness || 'claude_code')
     const harnessLabel = harness === 'claude_code' ? 'Claude Code' : harness === 'codex' ? 'Codex' : harness === 'opencode' ? 'OpenCode' : harness === 'pi' ? 'Pi' : harness
     return `${harnessLabel} (${String(item.model || `节点 #${item.id}`)})`
   }
-  const probe = useMutation({mutationFn: () => apiFetch<ApiEnvelope & {job_id: string}>(`/api/ranking/competitions/${data.competition.id}/batch/probes`, {method: 'POST', body: JSON.stringify({classes: selectedClasses, template, agent_endpoint_id: endpointId || undefined})}), onSuccess: (payload) => {setJobId(payload.job_id); setSelectedUsers([])}})
-  const status = useQuery({queryKey: ['ranking-batch-probe', data.competition.id, jobId], queryFn: () => apiFetch<ApiEnvelope & {state?: string; found?: JsonRecord[]; total?: number; checked?: number}>(`/api/ranking/competitions/${data.competition.id}/batch/probes/status?job=${encodeURIComponent(jobId)}`), enabled: Boolean(jobId), refetchInterval: (query) => query.state.data?.state === 'done' || query.state.data?.state === 'failed' ? false : 900})
+  const probe = useMutation({
+    mutationFn: () => apiFetch<ApiEnvelope & {job_id: string}>(`/api/ranking/competitions/${data.competition.id}/batch/probes`, {method: 'POST', body: JSON.stringify({classes: selectedClasses, template, agent_endpoint_id: endpointId || undefined})}),
+    onSuccess: (payload) => {
+      setJobId(payload.job_id)
+      setSelectedUsers([])
+      setPage(1)
+    },
+  })
+  const status = useQuery({
+    queryKey: ['ranking-batch-probe', data.competition.id, jobId],
+    queryFn: () => apiFetch<ApiEnvelope & {state?: string; found?: JsonRecord[]; total?: number; checked?: number; skipped?: number; truncated?: boolean; message?: string}>(`/api/ranking/competitions/${data.competition.id}/batch/probes/status?job=${encodeURIComponent(jobId)}`),
+    enabled: Boolean(jobId),
+    retry: false,
+    refetchInterval: (query) => query.state.status === 'error' || ['done', 'failed'].includes(String(query.state.data?.state || '')) ? false : 900,
+  })
   const found = status.data?.found || []
-  const create = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${data.competition.id}/batch/submissions`, {method: 'POST', body: JSON.stringify({template, usernames: selectedUsers, agent_endpoint_id: endpointId || undefined})})})
-  return <section className="ranking-v2-tab ranking-v2-batch" data-ranking-tab-panel="batch_eval"><div className="bm-wrap is-hero"><div className="bm-stage"><div className="bm-control-shell"><div className="bm-control-row">{(data.batch_classes || []).length ? <div ref={classPickerRef} className={`bm-dd${classOpen ? ' open' : ''}`}><button type="button" className="bm-picker-trigger bm-dd-trigger" aria-haspopup="listbox" aria-expanded={classOpen} onClick={() => setClassOpen((open) => !open)}><span className="bm-picker-icon bm-class-logo is-placeholder" /><span className="bm-picker-current"><strong>{selectedClasses.length ? `已选 ${selectedClasses.length} 个班级` : '选择班级'}</strong><small>{selectedClasses.length ? selectedClasses.join(' · ') : 'MULTIPLE SELECT'}</small></span><i className="fas fa-chevron-down bm-picker-caret" /></button><div className="bm-dd-panel" role="listbox" aria-label="选择班级" aria-multiselectable="true" hidden={!classOpen}><div className="bm-dd-search"><i className="fas fa-magnifying-glass" /><input type="search" placeholder="搜索班级" autoComplete="off" spellCheck={false} value={classSearch} onChange={(event) => setClassSearch(event.target.value)} /></div><div className="bm-dd-list">{classes.map((item) => {const code = String(item.class_en || ''); return <label className="bm-opt" key={code}><input type="checkbox" className="bm-cls-cb bm-check" checked={selectedClasses.includes(code)} onChange={(event) => setSelectedClasses((current) => event.target.checked ? [...current, code] : current.filter((value) => value !== code))} /><BatchClassLogo item={item} /><span className="bm-opt-copy"><strong>{String(item.class_cn || code)}</strong><small>{code}</small></span><span className="bm-opt-state"><i className="fas fa-check" /></span></label>})}{classes.length ? null : <div className="bm-empty bm-class-empty">无匹配班级</div>}</div><div className="bm-dd-foot"><button type="button" onClick={() => setSelectedClasses((data.batch_classes || []).map((item) => String(item.class_en || '')))}>全选</button><button type="button" onClick={() => setSelectedClasses([])}>清空</button><button type="button" className="bm-dd-done" onClick={() => setClassOpen(false)}>完成</button></div></div></div> : <div className="bm-picker-trigger is-disabled" aria-disabled="true"><span className="bm-picker-icon"><i className="fas fa-users" /></span><span className="bm-picker-current"><strong>暂无班级</strong><small>NO AVAILABLE CLASS</small></span></div>}</div><div className="bm-control-row">{isReverse ? <div className="bm-node"><div ref={endpointPickerRef} className={`rk-choice${endpointOpen ? ' open' : ''}`}><button type="button" className="rk-choice-trigger" aria-haspopup="listbox" aria-expanded={endpointOpen} onClick={() => setEndpointOpen((open) => !open)}><span className="rk-choice-trigger-main">{selectedEndpoint ? <><i className={harnessIconClass(selectedEndpoint.harness)} aria-hidden="true" /><i className={modelIconClass(selectedEndpoint.model)} aria-hidden="true" /></> : <i className="fas fa-robot" aria-hidden="true" />}<span>{selectedEndpoint ? endpointLabel(selectedEndpoint) : '无可用节点'}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button><div className="rk-choice-menu" role="listbox" aria-label="AI 节点" hidden={!endpointOpen}>{enabledEndpoints.map((item) => <button type="button" className={`rk-choice-option${String(item.id) === endpointId ? ' active' : ''}`} role="option" aria-selected={String(item.id) === endpointId} onClick={() => {setEndpointId(String(item.id)); setEndpointOpen(false)}} key={String(item.id)}><span className="rk-choice-option-main"><i className={harnessIconClass(item.harness)} aria-hidden="true" /><i className={modelIconClass(item.model)} aria-hidden="true" /><span className="rk-choice-option-name">{endpointLabel(item)}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div></div></div> : <div className="bm-picker-trigger bm-fixed-node" aria-label="赛事 AI 评测节点"><span className="bm-picker-icon"><i className="fas fa-robot" /></span><span className="bm-picker-current"><strong>赛事默认 AI 节点</strong><small>COMPETITION DEFAULT</small></span><i className="fas fa-circle-check bm-node-ready" /></div>}</div><div className="bm-control-row"><label className="bm-template-shell"><span className="bm-picker-icon"><i className="fas fa-code-branch" /></span><span className="bm-template-group"><input value={template} placeholder="gitea@host:<username>/FinalProject.git" onChange={(event) => setTemplate(event.target.value)} maxLength={500} spellCheck={false} autoComplete="off" autoCapitalize="off" /><small><code>&lt;username&gt;</code> 将替换为成员用户名</small></span></label></div><div className="bm-query-row"><button type="button" className="bm-go" disabled={probe.isPending} onClick={() => probe.mutate()}><i className="fas fa-magnifying-glass" /><span>{probe.isPending ? '查询中…' : '查询'}</span></button></div></div>{probe.isError ? <div className="bm-status text-danger">{errorMessage(probe.error)}</div> : null}{status.data ? <div className="bm-status">{status.data.state === 'done' ? '查询完成' : `正在查询 ${numberValue(status.data.checked)} / ${numberValue(status.data.total)}`}</div> : null}</div>{found.length ? <div className="bm-results"><div className="bm-results-bar"><div className="bm-count">找到 <b>{found.length}</b> 个仓库</div><div className="bm-actions"><button type="button" className="bm-selall" onClick={() => setSelectedUsers(selectedUsers.length === found.length ? [] : found.map((item) => String(item.username)))}>{selectedUsers.length === found.length ? '清空' : '全选'}</button><span className="bm-selcount">已选 {selectedUsers.length}</span><button type="button" className="bm-create" disabled={!selectedUsers.length || create.isPending} onClick={() => create.mutate()}>批量创建提交</button></div></div><div className="bm-grid">{found.map((item) => {const user = String(item.username || ''); return <label className="bm-opt" key={user}><input type="checkbox" className="bm-check" checked={selectedUsers.includes(user)} onChange={(event) => setSelectedUsers((current) => event.target.checked ? [...current, user] : current.filter((value) => value !== user))} /><Identicon seed={user} className="bm-class-logo" /><span className="bm-opt-copy"><strong>{user}</strong><small>{String(item.url || '')}</small></span></label>})}</div>{create.isSuccess ? <div className="bm-createmsg text-success">批量任务已创建</div> : null}{create.isError ? <div className="bm-createmsg text-danger">{errorMessage(create.error)}</div> : null}</div> : status.data?.state === 'done' ? <div className="ranking-v2-empty bm-empty"><i className="fas fa-code-branch" /><strong>没有找到仓库</strong><span>请检查班级范围、仓库模板或仓库读取权限。</span></div> : null}</div></section>
+  const create = useMutation({
+    mutationFn: () => apiFetch<ApiEnvelope & {queued?: number; invalid?: string[]}>(`/api/ranking/competitions/${data.competition.id}/batch/submissions`, {method: 'POST', body: JSON.stringify({template, usernames: selectedUsers, agent_endpoint_id: endpointId || undefined})}),
+    onSuccess: async () => {
+      setSelectedUsers([])
+      await queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})
+    },
+  })
+  const pageSize = 20
+  const pageCount = Math.max(1, Math.ceil(found.length / pageSize))
+  const visibleFound = found.slice((page - 1) * pageSize, page * pageSize)
+  const paginationPages = Array.from({length: pageCount}, (_unused, index) => index + 1).filter((item) => item === 1 || item === pageCount || Math.abs(item - page) <= 2)
+  const probeProgress = numberValue(status.data?.total) ? Math.min(100, Math.round(numberValue(status.data?.checked) * 100 / numberValue(status.data?.total))) : 0
+  const probeRepositories = () => {
+    setLocalError('')
+    if (!selectedClasses.length) {setLocalError('请至少选择一个班级'); return}
+    if (!template.includes('<username>')) {setLocalError('仓库命名必须包含 <username> 占位符'); return}
+    if (isReverse && !endpointId) {setLocalError('请选择 AI 作答节点'); return}
+    setJobId('')
+    setSelectedUsers([])
+    setPage(1)
+    create.reset()
+    probe.mutate()
+  }
+  const createSubmissions = () => {
+    setLocalError('')
+    if (!selectedUsers.length) {setLocalError('请至少勾选一个仓库'); return}
+    if (!window.confirm(`确认将选中的 ${selectedUsers.length} 个仓库加入批量评测队列？`)) return
+    create.mutate()
+  }
+  const toggleUser = (username: string) => setSelectedUsers((current) => current.includes(username) ? current.filter((value) => value !== username) : [...current, username])
+  const createMessage = create.data
+    ? `已创建批量任务：${numberValue(create.data.queued)} 个仓库已入队${(create.data.invalid || []).length ? `，${create.data.invalid?.length} 个用户名无效并已排除` : ''}。`
+    : ''
+
+  return <section className="ranking-v2-tab ranking-v2-batch" data-ranking-tab-panel="batch_eval">
+    <div className="bm-wrap is-hero">
+      <div className="bm-stage">
+        <div className="bm-control-shell">
+          <div className="bm-control-row">
+            {(data.batch_classes || []).length ? <div ref={classPickerRef} className={`bm-dd${classOpen ? ' open' : ''}`}>
+              <button type="button" className="bm-picker-trigger bm-dd-trigger" aria-haspopup="listbox" aria-expanded={classOpen} onClick={() => setClassOpen((open) => !open)}>
+                <span className="bm-picker-icon bm-class-logo is-placeholder" />
+                <span className="bm-picker-current"><strong>{selectedClasses.length ? `已选 ${selectedClasses.length} 个班级` : '选择班级'}</strong><small>{selectedClasses.length ? selectedClasses.join(' · ') : 'MULTIPLE SELECT'}</small></span>
+                <i className="fas fa-chevron-down bm-picker-caret" />
+              </button>
+              <div className="bm-dd-panel" role="listbox" aria-label="选择班级" aria-multiselectable="true" hidden={!classOpen}>
+                <div className="bm-dd-search"><i className="fas fa-magnifying-glass" /><input type="search" placeholder="搜索班级" autoComplete="off" spellCheck={false} value={classSearch} onChange={(event) => setClassSearch(event.target.value)} /></div>
+                <div className="bm-dd-list">
+                  {classes.map((item) => {
+                    const code = String(item.class_en || '')
+                    return <label className="bm-opt" key={code}><input type="checkbox" className="bm-cls-cb bm-check" checked={selectedClasses.includes(code)} onChange={(event) => setSelectedClasses((current) => event.target.checked ? [...current, code] : current.filter((value) => value !== code))} /><BatchClassLogo item={item} /><span className="bm-opt-copy"><strong>{String(item.class_cn || code)}</strong><small>{code}</small></span><span className="bm-opt-state"><i className="fas fa-check" /></span></label>
+                  })}
+                  {classes.length ? null : <div className="bm-empty bm-class-empty">无匹配班级</div>}
+                </div>
+                <div className="bm-dd-foot"><button type="button" onClick={() => setSelectedClasses((data.batch_classes || []).map((item) => String(item.class_en || '')))}>全选</button><button type="button" onClick={() => setSelectedClasses([])}>清空</button><button type="button" className="bm-dd-done" onClick={() => setClassOpen(false)}>完成</button></div>
+              </div>
+            </div> : <div className="bm-picker-trigger is-disabled" aria-disabled="true"><span className="bm-picker-icon"><i className="fas fa-users" /></span><span className="bm-picker-current"><strong>暂无班级</strong><small>NO AVAILABLE CLASS</small></span></div>}
+          </div>
+          <div className="bm-control-row">
+            {isReverse ? <div className="bm-node"><div ref={endpointPickerRef} className={`rk-choice${endpointOpen ? ' open' : ''}`}>
+              <button type="button" className="rk-choice-trigger" aria-haspopup="listbox" aria-expanded={endpointOpen} onClick={() => setEndpointOpen((open) => !open)}><span className="rk-choice-trigger-main">{selectedEndpoint ? <><i className={harnessIconClass(selectedEndpoint.harness)} aria-hidden="true" /><i className={modelIconClass(selectedEndpoint.model)} aria-hidden="true" /></> : <i className="fas fa-robot" aria-hidden="true" />}<span>{selectedEndpoint ? endpointLabel(selectedEndpoint) : '无可用节点'}</span></span><i className="fas fa-chevron-down rk-choice-caret" /></button>
+              <div className="rk-choice-menu" role="listbox" aria-label="AI 节点" hidden={!endpointOpen}>{enabledEndpoints.map((item) => <button type="button" className={`rk-choice-option${String(item.id) === endpointId ? ' active' : ''}`} role="option" aria-selected={String(item.id) === endpointId} onClick={() => {setEndpointId(String(item.id)); setEndpointOpen(false)}} key={String(item.id)}><span className="rk-choice-option-main"><i className={harnessIconClass(item.harness)} aria-hidden="true" /><i className={modelIconClass(item.model)} aria-hidden="true" /><span className="rk-choice-option-name">{endpointLabel(item)}</span></span><i className="fas fa-check rk-choice-option-check" /></button>)}</div>
+            </div></div> : <div className="bm-picker-trigger bm-fixed-node" aria-label="赛事 AI 评测节点"><span className="bm-picker-icon"><i className="fas fa-robot" /></span><span className="bm-picker-current"><strong>赛事默认 AI 节点</strong><small>COMPETITION DEFAULT</small></span><i className="fas fa-circle-check bm-node-ready" /></div>}
+          </div>
+          <div className="bm-control-row"><label className="bm-template-shell"><span className="bm-picker-icon"><i className="fas fa-code-branch" /></span><span className="bm-template-group"><input value={template} placeholder="gitea@host:<username>/FinalProject.git" onChange={(event) => setTemplate(event.target.value)} maxLength={500} spellCheck={false} autoComplete="off" autoCapitalize="off" /><small><code>&lt;username&gt;</code> 将替换为成员用户名</small></span></label></div>
+          <div className="bm-query-row"><button type="button" className="bm-go" disabled={probe.isPending || Boolean(jobId && !status.isError && !['done', 'failed'].includes(String(status.data?.state || '')))} onClick={probeRepositories}><i className="fas fa-magnifying-glass" /><span>{probe.isPending ? '查询中…' : '查询'}</span></button></div>
+        </div>
+        {jobId && !['done', 'failed'].includes(String(status.data?.state || '')) ? <div className="bm-progress"><div className={`bm-fill${status.data?.state === 'queued' ? ' is-indeterminate' : ''}`} style={{width: `${probeProgress}%`}} /></div> : null}
+        {localError || probe.isError || status.isError ? <div className="bm-status text-danger" role="alert">{localError || errorMessage(probe.error || status.error)}</div> : null}
+        {status.data ? <div className={`bm-status${status.data.state === 'failed' ? ' text-danger' : ''}`}>
+          {status.data.state === 'queued' ? '等待后台开始探测仓库…' : status.data.state === 'done' ? `查询完成：检查 ${numberValue(status.data.checked)} 个用户，找到 ${found.length} 个仓库${numberValue(status.data.skipped) ? `，跳过 ${numberValue(status.data.skipped)} 个` : ''}${status.data.truncated ? '（结果已截断）' : ''}` : status.data.state === 'failed' ? `查询失败：${String(status.data.message || '后台任务未能完成')}` : `正在查询 ${numberValue(status.data.checked)} / ${numberValue(status.data.total)}（${probeProgress}%）`}
+        </div> : null}
+      </div>
+      {found.length ? <div className="bm-results">
+        <div className="bm-results-bar"><div className="bm-count">找到 <b>{found.length}</b> 个仓库</div><div className="bm-actions"><button type="button" className="bm-selall" onClick={() => setSelectedUsers(selectedUsers.length === found.length ? [] : found.map((item) => String(item.username)))}>{selectedUsers.length === found.length ? '清空' : '全选'}</button><span className="bm-selcount">已选 {selectedUsers.length}</span><button type="button" className="bm-create" disabled={!selectedUsers.length || create.isPending} onClick={createSubmissions}>批量创建提交</button></div></div>
+        <div className="bm-grid">{visibleFound.map((item) => {
+          const user = String(item.username || '')
+          const selected = selectedUsers.includes(user)
+          return <article className={`bm-card${selected ? ' is-sel' : ''}`} data-u={user} tabIndex={0} role="checkbox" aria-checked={selected} key={user} onClick={() => toggleUser(user)} onKeyDown={(event) => {if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); toggleUser(user)}}}><span className="bm-card-check" aria-hidden="true" /><span className="bm-card-person"><Identicon seed={user} className="bm-card-avatar" /><span className="bm-card-identity"><strong className="bm-card-user">{user}</strong><span className="bm-card-cls">{String(item.classes_display || '')}</span></span></span><span className="bm-card-url">{String(item.url || '')}</span></article>
+        })}</div>
+        <div className="bm-pager-bar"><span className="bm-pageinfo">{found.length ? `第 ${page} / ${pageCount} 页` : ''}</span>{pageCount > 1 ? <div className="bm-pager"><button type="button" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>‹</button>{paginationPages.map((item, index) => <Fragment key={`${item}-${index}`}>{index > 0 && item - paginationPages[index - 1] > 1 ? <button type="button" disabled>…</button> : null}<button type="button" className={item === page ? 'active' : ''} onClick={() => setPage(item)}>{item}</button></Fragment>)}<button type="button" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)}>›</button></div> : null}</div>
+        {createMessage ? <div className="bm-createmsg text-success">{createMessage} <Link to={`/rankings/${data.competition.id}?tab=all_submissions`}>查看所有提交</Link></div> : null}
+        {create.isError ? <div className="bm-createmsg text-danger">{errorMessage(create.error)}</div> : null}
+      </div> : status.data?.state === 'done' ? <div className="ranking-v2-empty bm-empty"><i className="fas fa-code-branch" /><strong>没有找到仓库</strong><span>请检查班级范围、仓库模板或仓库读取权限。</span></div> : null}
+    </div>
+  </section>
 }
 
 export default function RankingDetailPage() {
@@ -1082,31 +1222,36 @@ export default function RankingDetailPage() {
   const data = result.data
   const liveNavigation = navigation.data?.navigation ? {...navigation.data.navigation, revision: navigation.data.revision} : data?.navigation
   const navCounts = liveNavigation?.counts || {}
-  const scoring = String(data?.competition.scoring_mode || 'absolute').toLowerCase()
+  const liveQuota = navCounts.submit || liveNavigation?.quota
+  const submitCount = liveQuota ? `${numberValue(liveQuota.remaining)}/${numberValue(liveQuota.limit)}` : undefined
+  const scoring = String(liveNavigation?.scoring_mode || data?.competition.scoring_mode || 'absolute').toLowerCase()
   const isElo = scoring === 'elo'
   const isAgentJudge = scoring === 'agent_judge'
   const isAiJudge = isAgentJudge || scoring === 'reverse_judge'
-  const isAdmin = Boolean(data?.is_admin || session?.user?.is_admin)
+  const isAdmin = liveNavigation?.permissions ? Boolean(liveNavigation.permissions.edit) : Boolean(data?.is_admin || session?.user?.is_admin)
   const tabs = useMemo(() => {
     const values = [
       {value: 'description', icon: 'fa-file-alt', label: '比赛描述'},
-      {value: 'submit', icon: 'fa-paper-plane', label: '提交作品'},
+      {value: 'submit', icon: 'fa-paper-plane', label: '提交作品', count: submitCount},
       {value: 'leaderboard', icon: 'fa-list-ol', label: '排行榜', count: navCounts.leaderboard},
       ...(isElo ? [{value: 'matches', icon: 'fa-chess', label: '对战数据', count: navCounts.matches}] : []),
-    ]
+    ].filter((item) => liveNavigation?.permissions?.[item.value] !== false)
     const admin = isAdmin ? [
       {value: 'all_submissions', icon: 'fa-clipboard-list', label: '所有提交', count: navCounts.all_submissions},
       ...(isAgentJudge ? [{value: 'appeals', icon: 'fa-gavel', label: '申诉处理', count: navCounts.appeals}] : []),
       ...(isAiJudge ? [{value: 'batch_eval', icon: 'fa-layer-group', label: '批量评测'}] : []),
       {value: 'edit', icon: 'fa-pencil-alt', label: '编辑比赛'},
-    ] : []
+    ].filter((item) => liveNavigation?.permissions?.[item.value] !== false) : []
     return {public: values, admin}
-  }, [isAdmin, isAgentJudge, isAiJudge, isElo, navCounts.all_submissions, navCounts.appeals, navCounts.leaderboard, navCounts.matches])
+  }, [isAdmin, isAgentJudge, isAiJudge, isElo, liveNavigation?.permissions, navCounts.all_submissions, navCounts.appeals, navCounts.leaderboard, navCounts.matches, submitCount])
 
   if (result.isPending) return <LoadingState label="正在进入赛场" />
   if (result.isError) return <ErrorState message={result.error.message} />
   const competition = data!.competition
   const files = data!.files || []
+  const navigationFailureStatus = navigation.error instanceof ApiError && [401, 403, 404].includes(navigation.error.status) ? navigation.error.status : 0
+  const navigationFailureMessage = navigationFailureStatus === 401 ? '登录状态已失效，请重新登录后继续。' : navigationFailureStatus === 404 ? '比赛已被删除或不再存在。' : navigationFailureStatus === 403 ? '比赛已下线或你已失去访问权限。' : ''
+  const liveActive = navigationFailureStatus ? false : liveNavigation?.is_active ?? numberValue(competition.is_active) === 1
   const panel = (() => {
     if (tab === 'description') return <section className="ranking-v2-tab ranking-v2-description">{data!.rendered_description || competition.description ? <MarkdownContent html={data!.rendered_description || String(competition.description)} className="numoj-markdown numoj-problem-code-rendering ranking-description" /> : <div className="ranking-v2-empty ranking-v2-empty--document"><i className="fas fa-file-lines" /><strong>暂无比赛描述</strong><span>赛事管理员尚未发布说明文档。</span></div>}</section>
     if (tab === 'submit') return <SubmitPanel data={data!} competitionId={competitionId} />
@@ -1120,7 +1265,7 @@ export default function RankingDetailPage() {
   })()
 
   return <section className="ranking-detail-v2 ranking-v2-detail" data-ranking-detail data-ranking-initial-tab={tab} data-ranking-scoring-mode={scoring}>
-    <header className="ranking-competition-header"><div className="ranking-competition-heading"><div className="ranking-competition-eyebrow"><Link to="/rankings" className="ranking-back-link"><i className="fas fa-arrow-left" /><span>打榜赛列表</span></Link><span>/</span><span>COMPETITION · {numberValue(competition.is_active) === 1 ? 'LIVE' : 'OFFLINE'}</span></div><div className="ranking-competition-title-line"><span className="ranking-competition-id">#{String(competition.id).padStart(3, '0')}</span><h1>{competition.title}</h1></div></div><div className="ranking-header-facts" aria-label="比赛信息"><div className="ranking-header-fact"><span>MODE</span><strong>{modeLabel(scoring)}</strong></div><div className="ranking-header-fact"><span>CREATED</span><strong>{String(competition.created_at || '')}</strong></div><span className={`ranking-status-chip${numberValue(competition.is_active) === 1 ? '' : ' is-offline'}`}><i /><span>{numberValue(competition.is_active) === 1 ? 'LIVE' : 'OFFLINE'}</span></span></div><button type="button" className="ranking-mobile-rail-open" aria-controls="rankingFunctionRail" aria-expanded={railOpen} onClick={() => setRailOpen(true)}><i className="fas fa-sliders-h" /><span>比赛功能</span></button></header>
-    <div className="ranking-workspace"><aside className={`ranking-function-rail${railOpen ? ' is-open' : ''}`} id="rankingFunctionRail" aria-label="比赛功能"><button type="button" className="ranking-rail-close" aria-label="关闭比赛功能" onClick={() => setRailOpen(false)}><i className="fas fa-times" /></button><nav className="ranking-rail-nav" aria-label="比赛页面"><p className="ranking-rail-group-label">COMPETITION</p>{tabs.public.map((item) => <Link to={`/rankings/${competitionId}${queryString({tab: item.value})}`} className={`ranking-rail-button${tab === item.value ? ' active' : ''}`} aria-current={tab === item.value ? 'page' : undefined} key={item.value}><i className={`fas ${item.icon}`} /><span>{item.label}</span>{item.count != null ? <span className="ranking-rail-count">{item.count}</span> : null}</Link>)}{tabs.admin.length ? <><p className="ranking-rail-group-label is-admin">ADMIN OPERATIONS</p>{tabs.admin.map((item) => <Link to={`/rankings/${competitionId}${queryString({tab: item.value})}`} className={`ranking-rail-button is-admin${tab === item.value ? ' active' : ''}`} aria-current={tab === item.value ? 'page' : undefined} key={item.value}><i className={`fas ${item.icon}`} /><span>{item.label}</span>{item.count != null ? <span className="ranking-rail-count">{item.count}</span> : null}</Link>)}</> : null}</nav><section className="ranking-rail-attachments" aria-labelledby="rankingAttachmentsTitle"><p className="ranking-attachment-label" id="rankingAttachmentsTitle">ATTACHMENTS · <span>{files.length}</span></p><AttachmentList files={files} /></section></aside><div className="ranking-rail-backdrop" hidden={!railOpen} onClick={() => setRailOpen(false)} /><div className="ranking-content-scroll"><div className="ranking-fragment-progress" aria-hidden="true" /><main className="ranking-panel-stage"><div className="ranking-panel-host"><div data-ranking-panel data-ranking-tab={tab}>{panel}</div></div></main></div></div>
+    <header className="ranking-competition-header"><div className="ranking-competition-heading"><div className="ranking-competition-eyebrow"><Link to="/rankings" className="ranking-back-link"><i className="fas fa-arrow-left" /><span>打榜赛列表</span></Link><span>/</span><span>COMPETITION · {liveActive ? 'LIVE' : 'OFFLINE'}</span></div><div className="ranking-competition-title-line"><span className="ranking-competition-id">#{String(competition.id).padStart(3, '0')}</span><h1>{competition.title}</h1></div></div><div className="ranking-header-facts" aria-label="比赛信息"><div className="ranking-header-fact"><span>MODE</span><strong>{modeLabel(scoring)}</strong></div><div className="ranking-header-fact"><span>CREATED</span><strong>{String(competition.created_at || '')}</strong></div><span className={`ranking-status-chip${liveActive ? '' : ' is-offline'}`}><i /><span>{liveActive ? 'LIVE' : 'OFFLINE'}</span></span></div><button type="button" className="ranking-mobile-rail-open" aria-controls="rankingFunctionRail" aria-expanded={railOpen} onClick={() => setRailOpen(true)}><i className="fas fa-sliders-h" /><span>比赛功能</span></button></header>
+    <div className="ranking-workspace"><aside className={`ranking-function-rail${railOpen ? ' is-open' : ''}`} id="rankingFunctionRail" aria-label="比赛功能"><button type="button" className="ranking-rail-close" aria-label="关闭比赛功能" onClick={() => setRailOpen(false)}><i className="fas fa-times" /></button><nav className="ranking-rail-nav" aria-label="比赛页面"><p className="ranking-rail-group-label">COMPETITION</p>{tabs.public.map((item) => <Link to={`/rankings/${competitionId}${queryString({tab: item.value})}`} className={`ranking-rail-button${tab === item.value ? ' active' : ''}`} aria-current={tab === item.value ? 'page' : undefined} key={item.value}><i className={`fas ${item.icon}`} /><span>{item.label}</span>{item.count != null ? <span className="ranking-rail-count">{item.count}</span> : null}</Link>)}{tabs.admin.length ? <><p className="ranking-rail-group-label is-admin">ADMIN OPERATIONS</p>{tabs.admin.map((item) => <Link to={`/rankings/${competitionId}${queryString({tab: item.value})}`} className={`ranking-rail-button is-admin${tab === item.value ? ' active' : ''}`} aria-current={tab === item.value ? 'page' : undefined} key={item.value}><i className={`fas ${item.icon}`} /><span>{item.label}</span>{item.count != null ? <span className="ranking-rail-count">{item.count}</span> : null}</Link>)}</> : null}</nav><section className="ranking-rail-attachments" aria-labelledby="rankingAttachmentsTitle"><p className="ranking-attachment-label" id="rankingAttachmentsTitle">ATTACHMENTS · <span>{files.length}</span></p><AttachmentList files={files} /></section></aside><div className="ranking-rail-backdrop" hidden={!railOpen} onClick={() => setRailOpen(false)} /><div className="ranking-content-scroll"><div className="ranking-fragment-progress" aria-hidden="true" /><main className="ranking-panel-stage">{navigationFailureMessage ? <div className="ranking-navigation-alert" data-ranking-navigation-error role="alert"><span>{navigationFailureMessage}</span><Link to="/rankings">返回打榜赛列表</Link></div> : null}<div className="ranking-panel-host"><div data-ranking-panel data-ranking-tab={tab}>{panel}</div></div></main></div></div>
   </section>
 }

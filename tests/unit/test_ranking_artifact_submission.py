@@ -512,6 +512,33 @@ def test_commit_unknown_route_returns_pending_confirmation_and_does_not_enqueue(
     }
 
 
+def test_json_submit_success_exposes_post_commit_dispatch_warning():
+    app = Flask(__name__)
+    app.secret_key = 'test-only'
+
+    with app.test_request_context(
+            '/api/ranking/competitions/9/submissions',
+            method='POST',
+            headers={'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+    ):
+        ranking_routes.flash(
+            '已接收提交，但评测任务入队失败：broker unavailable',
+            'warning',
+        )
+        response, status = ranking_routes._submit_success_response(9, 71)
+
+    assert status == 201
+    assert response.get_json() == {
+        'success': True,
+        'message': '提交成功',
+        'submission_id': 71,
+        'warnings': [{
+            'category': 'warning',
+            'message': '已接收提交，但评测任务入队失败：broker unavailable',
+        }],
+    }
+
+
 def test_elo_activation_and_retirement_commit_in_one_transaction(monkeypatch):
     cursor = _FakeCursor(rowcount=1, fetch_values=[{'id': 7}])
     cursor.fetchall = lambda: [{'id': 81}, {'id': 80}, {'id': 79}]

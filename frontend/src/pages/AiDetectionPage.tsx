@@ -1,5 +1,5 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useState} from 'react'
+import {useEffect, useRef, useState} from 'react'
 import {useParams, useSearchParams} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
@@ -63,7 +63,7 @@ export default function AiDetectionPage() {
   const queryClient = useQueryClient()
   const detailMode = Boolean(detectionProblemId || detectionUsername)
   const dashboard = useQuery({queryKey: ['admin', 'ai-detection', 'dashboard'], queryFn: () => apiFetch<DashboardResponse>('/api/admin/ai-detection/dashboard'), enabled: Boolean(session?.user?.is_admin) && !detailMode})
-  const tasks = useQuery({queryKey: ['admin', 'ai-detection', 'tasks'], queryFn: () => apiFetch<TasksResponse>('/api/admin/ai-detection/tasks'), enabled: Boolean(session?.user?.is_admin) && !detailMode, refetchInterval: 5000})
+  const tasks = useQuery({queryKey: ['admin', 'ai-detection', 'tasks'], queryFn: () => apiFetch<TasksResponse>('/api/admin/ai-detection/tasks'), enabled: Boolean(session?.user?.is_admin) && !detailMode, refetchInterval: (query) => (query.state.data?.tasks || []).some((item) => ['pending', 'running'].includes(String(item.status || ''))) ? 3000 : false})
   const problemDetail = useQuery({queryKey: ['admin', 'ai-detection', 'problem', detectionProblemId, searchParams.get('risk')], queryFn: () => apiFetch<ProblemDetailResponse>(`/api/admin/ai-detection/problems/${detectionProblemId}${searchParams.get('risk') ? `?risk=${encodeURIComponent(searchParams.get('risk') || '')}` : ''}`), enabled: Boolean(session?.user?.is_admin && detectionProblemId)})
   const studentDetail = useQuery({queryKey: ['admin', 'ai-detection', 'student', detectionUsername], queryFn: () => apiFetch<StudentDetailResponse>(`/api/admin/ai-detection/students/${encodeURIComponent(detectionUsername || '')}`), enabled: Boolean(session?.user?.is_admin && detectionUsername)})
   const [filters, setFilters] = useState<Record<string, string>>({deduplicate: '1'})
@@ -71,23 +71,37 @@ export default function AiDetectionPage() {
   const [previewData, setPreviewData] = useState<PreviewResponse | null>(null)
   const set = (key: string, value: string) => setFilters((current) => ({...current, [key]: value}))
   const preview = useMutation({mutationFn: () => apiFetch<PreviewResponse>('/api/admin/ai-detection/preview', {method: 'POST', body: JSON.stringify(filters)}), onSuccess: setPreviewData})
-  const run = useMutation({mutationFn: () => apiFetch<ApiEnvelope>('/api/admin/ai-detection/runs', {method: 'POST', body: JSON.stringify(filters)}), onSuccess: () => queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']})})
+  const run = useMutation({
+    mutationFn: () => apiFetch<ApiEnvelope>('/api/admin/ai-detection/runs', {method: 'POST', body: JSON.stringify(filters)}),
+    onSuccess: (payload) => {window.alert(String(payload.message || '检测任务已提交')); void queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']})},
+    onError: (error) => window.alert(errorMessage(error)),
+  })
   const runTarget = useMutation({
     mutationFn: ({kind, value}: {kind: 'problem' | 'user'; value: string}) => apiFetch<ApiEnvelope>(kind === 'problem' ? `/api/admin/ai-detection/problems/${value}/runs` : `/api/admin/ai-detection/users/${encodeURIComponent(value)}/runs`, {method: 'POST', body: JSON.stringify({endpoint_id: filters.endpoint_id})}),
-    onSuccess: () => queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']}),
+    onSuccess: (payload) => {window.alert(String(payload.message || '检测任务已提交')); void queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']})},
+    onError: (error) => window.alert(errorMessage(error)),
   })
   const removeTask = useMutation({
     mutationFn: (taskId: string) => apiFetch<ApiEnvelope>(`/api/admin/ai-detection/tasks/${encodeURIComponent(taskId)}`, {method: 'DELETE'}),
-    onSuccess: () => queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']}),
+    onSuccess: (payload) => {window.alert(String(payload.message || '任务及其检测记录已删除')); void queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection']})},
+    onError: (error) => window.alert(errorMessage(error)),
   })
   const stopTask = useMutation({
     mutationFn: (taskId: string) => apiFetch<ApiEnvelope>(`/api/admin/ai-detection/tasks/${encodeURIComponent(taskId)}/stop`, {method: 'POST'}),
-    onSuccess: () => queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']}),
+    onSuccess: (payload) => {window.alert(String(payload.message || '任务已停止')); void queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'tasks']})},
+    onError: (error) => window.alert(errorMessage(error)),
   })
   const runDetail = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope>(detectionProblemId ? `/api/admin/ai-detection/problems/${detectionProblemId}/runs` : `/api/admin/ai-detection/users/${encodeURIComponent(detectionUsername || '')}/runs`, {method: 'POST', body: JSON.stringify({endpoint_id: detailEndpoint})}),
-    onSuccess: () => queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection']}),
+    onSuccess: (payload) => {window.alert(String(payload.message || '检测任务已提交')); void queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection']})},
+    onError: (error) => window.alert(errorMessage(error)),
   })
+  const hadActiveTasks = useRef(false)
+  const hasActiveTasks = Boolean(tasks.data?.tasks?.some((item) => ['pending', 'running'].includes(String(item.status || ''))))
+  useEffect(() => {
+    if (hasActiveTasks || hadActiveTasks.current) void queryClient.invalidateQueries({queryKey: ['admin', 'ai-detection', 'dashboard']})
+    hadActiveTasks.current = hasActiveTasks
+  }, [hasActiveTasks, queryClient, tasks.dataUpdatedAt])
   if (!session?.user?.is_admin) return <ErrorState message="该页面仅管理员可访问" />
   if (detailMode) {
     const detail = detectionProblemId ? problemDetail : studentDetail

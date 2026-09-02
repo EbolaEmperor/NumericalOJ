@@ -238,7 +238,7 @@ export default function AgentSessionPage() {
 
   const result = useQuery({queryKey, queryFn: ({signal}) => apiFetch<SessionResponse>(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, {signal}), refetchInterval: (query) => isRunningStatus(query.state.data?.current_state?.status) && !runStreamConnected ? 5_000 : false})
   const workspace = useQuery({queryKey: ['agent-session', sessionId, 'workspace'], queryFn: ({signal}) => apiFetch<WorkspaceResponse>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/workspace`, {signal}), enabled: result.isSuccess, refetchInterval: isRunningStatus(messageState.status || result.data?.current_state?.status) ? 3_000 : false})
-  const stateResult = useQuery({queryKey: ['agent-session', sessionId, 'message-state'], queryFn: ({signal}) => apiFetch<SessionStateResponse>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/state`, {signal}), enabled: result.isSuccess && !messageStreamConnected, refetchInterval: messageStreamConnected ? false : 3_000})
+  const stateResult = useQuery({queryKey: ['agent-session', sessionId, 'message-state'], queryFn: ({signal}) => apiFetch<SessionStateResponse>(`/api/agent/sessions/${encodeURIComponent(sessionId)}/state`, {signal}), enabled: result.isSuccess && !messageStreamConnected, refetchInterval: messageStreamConnected ? false : isRunningStatus(messageState.status) || queuedMessages(messageState).length ? 2_400 : 6_000})
 
   const applyMessageState = useCallback((state: JsonRecord) => {
     setMessageState(state)

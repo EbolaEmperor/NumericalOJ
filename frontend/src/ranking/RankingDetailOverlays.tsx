@@ -99,7 +99,7 @@ export function MediaPreviewModal({target, onClose}: {target: RankingMediaTarget
 
 type SseState = {snapshot: JsonRecord | null; streamError: string}
 
-function useRankingEventSnapshot(url: string | null, open: boolean, onTerminal?: () => void) {
+function useRankingEventSnapshot(url: string | null, open: boolean, onTerminal?: () => void, reconnect = false) {
   const [state, setState] = useState<SseState>({snapshot: null, streamError: ''})
   const onTerminalRef = useRef(onTerminal)
   useEffect(() => {onTerminalRef.current = onTerminal}, [onTerminal])
@@ -118,15 +118,30 @@ function useRankingEventSnapshot(url: string | null, open: boolean, onTerminal?:
     }
     source.addEventListener('progress', update as EventListener)
     source.addEventListener('done', ((event: MessageEvent) => {settled = true; update(event); source.close(); onTerminalRef.current?.()}) as EventListener)
-    source.addEventListener('timeout', (() => {settled = true; setState((current) => ({...current, streamError: '实时连接超时，请关闭弹窗后重试。'})); source.close(); onTerminalRef.current?.()}) as EventListener)
+    source.addEventListener('timeout', ((event: MessageEvent) => {
+      if (reconnect) {
+        update(event)
+        setState((current) => ({...current, streamError: '本轮实时连接已结束，正在自动续接评测进度…'}))
+        return
+      }
+      settled = true
+      setState((current) => ({...current, streamError: '实时连接超时，请关闭弹窗后重试。'}))
+      source.close()
+      onTerminalRef.current?.()
+    }) as EventListener)
     source.onerror = () => {
       if (settled) return
-      // EventSource 会使用服务端 retry 指令自动重连。长时间反向评测不能在
-      // 第一次网络抖动时主动关闭，否则用户再也看不到后续进度。
-      setState((current) => ({...current, streamError: '实时连接暂时中断，正在自动重连…'}))
+      if (reconnect && source.readyState !== EventSource.CLOSED) {
+        // 反向评测可能超过单次 SSE 租约；沿用旧版行为，让浏览器自动续接。
+        setState((current) => ({...current, streamError: '实时连接暂时中断，正在自动重连…'}))
+        return
+      }
+      settled = true
+      setState((current) => ({...current, streamError: '实时连接中断，请关闭弹窗后重试。'}))
+      source.close()
     }
     return () => {settled = true; source.close()}
-  }, [open, url])
+  }, [open, reconnect, url])
   return state
 }
 
@@ -295,7 +310,7 @@ function QualityGate({step}: {step: JsonRecord}) {
 export function ReverseJudgeDetailModal({competitionId, target, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const url = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/reverse-judge-events` : null
-  const {snapshot, streamError} = useRankingEventSnapshot(url, open, onTerminal)
+  const {snapshot, streamError} = useRankingEventSnapshot(url, open, onTerminal, true)
   const steps = useMemo(() => Array.isArray(snapshot?.steps) ? snapshot.steps as JsonRecord[] : [], [snapshot?.steps])
   const [activeStep, setActiveStep] = useState('solution_check')
   const [manual, setManual] = useState(false)
@@ -305,8 +320,9 @@ export function ReverseJudgeDetailModal({competitionId, target, onClose, onTermi
   const status = String(snapshot?.status || '')
   const statusLabels: Record<string, string> = {Accepted: '评测完成', Error: '评测异常', Judging: '评测中', Queued: '等待评测', Pending: '待评测'}
   const agentStep = steps.find((item) => String(item.step_key) === 'agent_answer')
+  const answerDownloadUrl = target?.answerDownloadUrl || (target ? `/api/ranking/submissions/${target.id}/reverse-agent-answer` : '')
   return <ReactModal open={open} onClose={onClose} id="reverseJudgeDetailModal" labelledBy="reverseJudgeDetailModalLabel" className="ranking-v2-detail" dialogClassName="modal-xl modal-dialog-scrollable">
-    <div className="modal-content rj-modal"><div className="modal-header"><div><h5 className="modal-title" id="reverseJudgeDetailModalLabel"><i className="fas fa-list-check me-2 text-warning" />反向评测详情</h5><div className="text-muted small">#{target?.id}{target?.createdAt ? ` · ${target.createdAt}` : ''}</div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="rj-summary"><span>{streamError || `${statusLabels[status] || status || '正在连接评测进度…'}${snapshot?.error_message ? ` · ${snapshot.error_message}` : ''}`}</span><span className="rj-summary-actions">{agentStep?.answer_available && target?.answerDownloadUrl ? <a className="rj-answer-download" href={target.answerDownloadUrl} download><i className="fas fa-download" />下载 AI 解答</a> : null}<span className="rj-total">学生得分 <strong>{snapshot?.total_score == null ? '—' : numberValue(snapshot.total_score)}</strong><small>/100</small></span></span></div>
+    <div className="modal-content rj-modal"><div className="modal-header"><div><h5 className="modal-title" id="reverseJudgeDetailModalLabel"><i className="fas fa-list-check me-2 text-warning" />反向评测详情</h5><div className="text-muted small">#{target?.id}{target?.createdAt ? ` · ${target.createdAt}` : ''}</div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="rj-summary"><span>{streamError || `${statusLabels[status] || status || '正在连接评测进度…'}${snapshot?.error_message ? ` · ${snapshot.error_message}` : ''}`}</span><span className="rj-summary-actions">{agentStep?.answer_available && answerDownloadUrl ? <a className="rj-answer-download" href={answerDownloadUrl} download><i className="fas fa-download" />下载 AI 解答</a> : null}<span className="rj-total">学生得分 <strong>{snapshot?.total_score == null ? '—' : numberValue(snapshot.total_score)}</strong><small>/100</small></span></span></div>
       <div className="rj-tabs mb-3" role="tablist" aria-label="反向评测步骤">{steps.filter(stepVisible).map((item) => {const key = String(item.step_key); const itemStatus = String(item.status || 'pending'); return <button type="button" className={`rj-tab${activeStep === key ? ' active' : ''}`} disabled={itemStatus === 'pending'} onClick={() => {setActiveStep(key); setManual(true)}} key={key}>{reverseStepLabels[key] || key} <span className={`rj-dot${itemStatus === 'running' ? ' running' : itemStatus === 'passed' ? ' ok' : ['failed', 'error'].includes(itemStatus) ? ' err' : itemStatus === 'skipped' ? ' skip' : ''}`} /></button>})}</div>
       {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : String(step.status) === 'running' && activeStep !== 'agent_answer' ? <div className="rj-step-running"><MathCurveLoader iconOnly size="lg" ariaLabel={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <ExecutionTrace trace={step} /> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
     </div></div>

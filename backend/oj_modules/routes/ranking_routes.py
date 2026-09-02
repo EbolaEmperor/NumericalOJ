@@ -19,7 +19,7 @@ from datetime import datetime
 
 from flask import (
     Blueprint, Response, abort, current_app, flash, jsonify, redirect,
-    request, send_file, stream_with_context, url_for,
+    get_flashed_messages, request, send_file, stream_with_context, url_for,
 )
 from werkzeug.utils import secure_filename
 
@@ -288,10 +288,15 @@ def _submit_error_response(competition_id, message, category='warning', status=4
 
 def _submit_success_response(competition_id, submission_id):
     if _wants_json_response():
+        warnings = [
+            {'category': str(category), 'message': str(message)}
+            for category, message in get_flashed_messages(with_categories=True)
+        ]
         return jsonify(
             success=True,
             message='提交成功',
             submission_id=int(submission_id),
+            warnings=warnings,
         ), 201
     return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='submit'))
 
@@ -1927,6 +1932,7 @@ def ranking_batch_probe_status(competition_id):
         found=job.get('found') or [],
         skipped=int(job.get('skipped') or 0),
         truncated=bool(job.get('truncated')),
+        message=job.get('message') or job.get('last_error') or '',
     )
 
 

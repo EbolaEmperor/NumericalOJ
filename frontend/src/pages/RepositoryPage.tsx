@@ -52,6 +52,21 @@ type UploadItem = RepositoryUploadDescriptor & {
   error: string
 }
 
+const ACTIVE_INDEX_STORAGE_KEY = 'repositoryIndexJobId'
+
+function storedIndexJobId() {
+  try {
+    const value = Number(window.localStorage.getItem(ACTIVE_INDEX_STORAGE_KEY) || 0)
+    return Number.isInteger(value) && value > 0 ? value : null
+  } catch {
+    return null
+  }
+}
+
+function indexJobRunning(job?: JsonRecord | null) {
+  return Boolean(job && ['queued', 'pending', 'running'].includes(String(job.status || '').toLowerCase()))
+}
+
 function Icon({name}: {name: string}) {return <svg className="repository-icon"><use href={`#repo-icon-${name}`} /></svg>}
 
 function markedName(name: string, query: string) {
@@ -217,14 +232,15 @@ export default function RepositoryPage() {
   const [deletePreview, setDeletePreview] = useState<DeletePreview | null>(null)
   const [saveConflict, setSaveConflict] = useState<SaveConflict | null>(null)
   const [conflictReloadConfirmed, setConflictReloadConfirmed] = useState(false)
-  const [indexJobId, setIndexJobId] = useState<number | null>(null)
+  const [indexJobId, setIndexJobId] = useState<number | null>(storedIndexJobId)
+  const handledIndexTerminal = useRef<number | null>(null)
   const [notice, setNotice] = useState<{title: string; message: string; error?: boolean} | null>(null)
 
   const context = useQuery({queryKey: ['repository', 'context'], queryFn: () => apiFetch<ApiEnvelope>('/api/repository/context')})
   const tree = useQuery({queryKey: ['repository', 'tree'], queryFn: () => apiFetch<TreeResponse>('/api/repository/tree')})
   const file = useQuery({queryKey: ['repository', 'file', selected], queryFn: () => apiFetch<FileResponse>(`/api/repository/file/${selected}`), enabled: selected != null})
-  const activeIndex = useQuery({queryKey: ['repository', 'index', 'active'], queryFn: () => apiFetch<IndexResponse>('/api/repository/index/status/active'), enabled: context.isSuccess, refetchInterval: 2500})
-  const indexStatus = useQuery({queryKey: ['repository', 'index', indexJobId], queryFn: () => apiFetch<IndexResponse>(`/api/repository/index/status/${indexJobId}`), enabled: indexJobId != null, refetchInterval: indexJobId != null ? 1500 : false})
+  const activeIndex = useQuery({queryKey: ['repository', 'index', 'active'], queryFn: () => apiFetch<IndexResponse>('/api/repository/index/status/active'), enabled: context.isSuccess})
+  const indexStatus = useQuery({queryKey: ['repository', 'index', indexJobId], queryFn: () => apiFetch<IndexResponse>(`/api/repository/index/status/${indexJobId}`), enabled: indexJobId != null, retry: false, refetchInterval: (query) => indexJobId != null && indexJobRunning(query.state.data?.job) ? 1500 : false})
 
   const entries = useMemo(() => decoratedEntries(tree.data?.entries || tree.data?.tree || []), [tree.data])
   const entryMap = useMemo(() => new Map(entries.map((item) => [Number(item.id || item.entry_id || 0), item])), [entries])
@@ -276,6 +292,33 @@ export default function RepositoryPage() {
   const ext = name.includes('.') ? name.split('.').pop()?.toUpperCase() : '—'
   const symbols = useMemo(() => outlineSymbols(content, name), [content, name])
   const currentIndexJob = indexStatus.data?.job || activeIndex.data?.job || null
+
+  useEffect(() => {
+    const activeId = Number(activeIndex.data?.job?.id || 0)
+    if (!indexJobId && activeId && indexJobRunning(activeIndex.data?.job)) setIndexJobId(activeId)
+  }, [activeIndex.data?.job, indexJobId])
+  useEffect(() => {
+    if (!indexJobId) return
+    try {window.localStorage.setItem(ACTIVE_INDEX_STORAGE_KEY, String(indexJobId))} catch { /* 当前标签页仍可继续轮询 */ }
+  }, [indexJobId])
+  useEffect(() => {
+    const job = indexStatus.data?.job
+    const jobId = Number(job?.id || indexJobId || 0)
+    if (!job || !jobId || indexJobRunning(job) || handledIndexTerminal.current === jobId) return
+    handledIndexTerminal.current = jobId
+    try {window.localStorage.removeItem(ACTIVE_INDEX_STORAGE_KEY)} catch { /* 忽略本地存储不可用 */ }
+    const status = String(job.status || '').toLowerCase()
+    if (status === 'success' || status === 'completed') setNotice({title: '结构化整理完成', message: `${Number(job.total_chunks || 0)} 个函数片段 · ${Number(job.total_classes || 0)} 个类`})
+    else if (status === 'failed') setNotice({title: '结构化整理失败', message: String(job.error_message || '请稍后重试。'), error: true})
+    else if (status === 'canceled') setNotice({title: '结构化整理已取消', message: String(job.error_message || '任务已停止。')})
+    void queryClient.invalidateQueries({queryKey: ['repository', 'index', 'active']}).finally(() => setIndexJobId(null))
+  }, [indexJobId, indexStatus.data?.job, queryClient])
+  useEffect(() => {
+    if (!indexJobId || !indexStatus.isError) return
+    try {window.localStorage.removeItem(ACTIVE_INDEX_STORAGE_KEY)} catch { /* 忽略本地存储不可用 */ }
+    setNotice({title: '无法读取整理进度', message: errorMessage(indexStatus.error), error: true})
+    setIndexJobId(null)
+  }, [indexJobId, indexStatus.error, indexStatus.isError])
 
   const refreshTree = async () => {await queryClient.invalidateQueries({queryKey: ['repository']})}
   const save = useMutation({
@@ -449,7 +492,7 @@ export default function RepositoryPage() {
   })
   const buildIndex = useMutation({
     mutationFn: () => apiFetch<IndexResponse>('/api/repository/index/build', {method: 'POST'}),
-    onSuccess: async (data) => {if (data.job_id) setIndexJobId(Number(data.job_id)); setNotice({title: '结构化整理已启动', message: data.message || '正在建立代码索引'}); await queryClient.invalidateQueries({queryKey: ['repository', 'index']})},
+    onSuccess: async (data) => {if (data.job_id) {handledIndexTerminal.current = null; setIndexJobId(Number(data.job_id))} setNotice({title: '结构化整理已启动', message: data.message || '正在建立代码索引'}); await queryClient.invalidateQueries({queryKey: ['repository', 'index']})},
   })
   const cancelIndex = useMutation({
     mutationFn: () => {const id = Number(currentIndexJob?.id || indexJobId); return apiFetch<ApiEnvelope>(`/api/repository/index/${id}/cancel`, {method: 'POST'})},

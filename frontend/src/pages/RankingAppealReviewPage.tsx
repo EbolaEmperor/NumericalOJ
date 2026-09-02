@@ -116,6 +116,7 @@ export default function RankingAppealReviewPage() {
   })
   const rejudge = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${competitionId}/submissions/${result.data?.appeal.submission_id}/rejudge`, {method: 'POST'}),
+    onSuccess: () => navigate(`/rankings/${competitionId}?tab=all_submissions`),
   })
 
   if (result.isPending) return <LoadingState label="正在加载申诉" />
