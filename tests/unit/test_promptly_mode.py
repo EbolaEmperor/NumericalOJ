@@ -223,6 +223,169 @@ def test_submission_status_snapshot_exposes_promptly_reply():
     assert snapshot["promptly_review_reply"] == "请补充单调队列如何维护窗口。"
 
 
+def test_running_snapshot_preserves_prompt_metadata_without_republishing_code(monkeypatch):
+    from backend.oj_modules import db_services
+
+    class FakeRedis:
+        def __init__(self):
+            self.saved = None
+            self.published = None
+
+        def get(self, _key):
+            return json.dumps({
+                "id": 12,
+                "generated_from_prompt": True,
+                "code": "print('generated')\n",
+                "prompt_generation_error": "",
+                "promptly_review_reply": "",
+            })
+
+        def setex(self, _key, _ttl, payload):
+            self.saved = json.loads(payload)
+
+        def publish(self, _channel, payload):
+            self.published = json.loads(payload)
+
+    redis = FakeRedis()
+    monkeypatch.setattr(db_services, "_ensure_submission_snapshot_redis", lambda: redis)
+
+    db_services._save_submission_status_snapshot({
+        "id": 12,
+        "status": "Running",
+        "score": 1,
+        "test_points": [{"status": "Accepted"}],
+    })
+
+    assert redis.saved["generated_from_prompt"] is True
+    assert "code" not in redis.saved
+    assert redis.published == redis.saved
+
+
+def test_submission_status_backfills_generated_prompt_code(monkeypatch):
+    from flask import Flask
+    from backend.oj_modules.routes import submission_routes
+
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY="test-secret")
+    app.register_blueprint(submission_routes.submission_bp)
+
+    monkeypatch.setattr(
+        submission_routes,
+        "current_user",
+        lambda: {"username": "alice", "is_admin": 0},
+    )
+    monkeypatch.setattr(
+        submission_routes,
+        "_get_authorized_submission_snapshot",
+        lambda submission_id, _user: {
+            "id": submission_id,
+            "username": "alice",
+            "problem_type": 1,
+            "status": "Running",
+            "score": None,
+            "generated_from_prompt": True,
+            "test_points": [],
+            "test_points_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        submission_routes,
+        "get_submission_by_id",
+        lambda submission_id: {
+            "id": submission_id,
+            "code": "print('generated')\n",
+        },
+    )
+
+    response = app.test_client().get("/api/submissions/12/status")
+
+    assert response.status_code == 200
+    assert response.get_json()["code"] == "print('generated')\n"
+
+
+def test_submission_status_stream_sends_generated_code_only_once(monkeypatch):
+    from flask import Flask
+    from backend.oj_modules.routes import submission_routes
+
+    class FakePubSub:
+        def __init__(self):
+            self.messages = iter([
+                {
+                    "type": "message",
+                    "data": json.dumps({
+                        "id": 12,
+                        "username": "alice",
+                        "problem_type": 1,
+                        "status": "Pending",
+                        "score": 0,
+                        "generated_from_prompt": True,
+                        "code": "print('generated')\n",
+                        "test_points": [],
+                        "test_points_count": 0,
+                    }),
+                },
+                {
+                    "type": "message",
+                    "data": json.dumps({
+                        "id": 12,
+                        "username": "alice",
+                        "problem_type": 1,
+                        "status": "Accepted",
+                        "score": 1,
+                        "generated_from_prompt": True,
+                        "test_points": [{"status": "Accepted"}],
+                        "test_points_count": 1,
+                    }),
+                },
+            ])
+
+        def get_message(self, timeout):
+            assert timeout == 15.0
+            return next(self.messages)
+
+        def close(self):
+            pass
+
+    app = Flask(__name__)
+    app.config.update(TESTING=True, SECRET_KEY="test-secret")
+    monkeypatch.setattr(
+        submission_routes,
+        "current_user",
+        lambda: {"username": "alice", "is_admin": 0},
+    )
+    monkeypatch.setattr(
+        submission_routes,
+        "_get_authorized_submission_snapshot",
+        lambda submission_id, _user: {
+            "id": submission_id,
+            "username": "alice",
+            "problem_type": 1,
+            "status": "Generating",
+            "score": 0,
+            "generated_from_prompt": True,
+            "test_points": [],
+            "test_points_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        submission_routes,
+        "get_submission_by_id",
+        lambda submission_id: {"id": submission_id, "code": ""},
+    )
+    monkeypatch.setattr(
+        submission_routes,
+        "subscribe_submission_status_events",
+        lambda _submission_id: FakePubSub(),
+    )
+
+    with app.test_request_context("/api/submissions/12/events"):
+        response = submission_routes.submission_status_stream(12)
+        body = b"".join(response.iter_encoded()).decode("utf-8")
+
+    assert body.count("print('generated')") == 1
+    assert "event: done" in body
+
+
 def test_submission_detail_payload_exposes_promptly_reply_alias():
     from backend.oj_modules.api.submission_api import _submission_detail_payload
 

@@ -2,11 +2,11 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useRef, useState, type FormEvent, type RefObject} from 'react'
 import {useLocation, useParams} from 'react-router-dom'
 
-import {apiFetch, errorMessage} from '../api/client'
+import {ApiError, apiFetch, errorMessage} from '../api/client'
 import type {ApiEnvelope, JsonRecord, ProblemSummary, SubmissionSummary} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {MathCurveLoader} from '../components/MathCurveLoader'
-import {MonacoEditor} from '../components/MonacoEditor'
+import {MonacoEditor, type MonacoEditorInstance} from '../components/MonacoEditor'
 import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {LeanWorkbench, type LeanWorkbenchController} from '../components/LeanWorkbench'
@@ -32,6 +32,7 @@ interface LastCodeResponse extends ApiEnvelope {code: string; submission_id: num
 interface ScoresResponse extends ApiEnvelope {problem_id: number; problem_title: string; max_score: number; scores: JsonRecord[]}
 interface RejudgeStatusResponse extends ApiEnvelope {progress: number; done: number; total: number}
 interface DeadlineWarningResponse extends ApiEnvelope {submit_warning?: JsonRecord}
+interface SubmissionResponse extends ApiEnvelope {submission_id?: number; warning?: JsonRecord | string; warnings?: Array<JsonRecord | string>}
 interface AgentLaunchOptions extends ApiEnvelope {harnesses?: JsonRecord[]; endpoints_by_harness?: Record<string, JsonRecord[]>; preference?: JsonRecord}
 interface AgentLaunchResponse extends ApiEnvelope {task_id?: string; view_url?: string}
 
@@ -254,9 +255,11 @@ export default function ProblemDetailPage() {
   const [agentModal, setAgentModal] = useState<'solve' | 'testdata' | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const leanControllerRef = useRef<LeanWorkbenchController | null>(null)
+  const editorRef = useRef<MonacoEditorInstance | null>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const loadedProblemRef = useRef<string | undefined>(undefined)
   const detail = useQuery({queryKey: ['problem', problemId], queryFn: () => apiFetch<DetailResponse>(`/api/problems/${problemId}`)})
+  useEffect(() => {if (detail.data?.problem.title) document.title = `${detail.data.problem.title} - Numerical OJ`}, [detail.data?.problem.title])
   useEffect(() => {
     if (detail.data && loadedProblemRef.current !== problemId) {
       loadedProblemRef.current = problemId
@@ -281,9 +284,40 @@ export default function ProblemDetailPage() {
         form.append(detail.data.submit.input_name, file)
       } else form.append(detail.data.submit.input_name, text)
       if (deadlineAck) form.append('deadline_warning_ack', '1')
-      return apiFetch<ApiEnvelope & {submission_id?: number}>(detail.data.submit.action, {method: 'POST', body: form})
+      return apiFetch<SubmissionResponse>(detail.data.submit.action, {method: 'POST', body: form})
     },
-    onSuccess: async (payload) => {await queryClient.invalidateQueries({queryKey: ['submissions']}); if (payload.submission_id) navigate(`/submissions/${payload.submission_id}`, {state: submissionNavigationState(`${location.pathname}${location.search}`)})},
+    onSuccess: async (payload) => {
+      const submissionId = Number(payload.submission_id || 0)
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['submissions']}),
+        queryClient.invalidateQueries({queryKey: ['problem', problemId]}),
+      ])
+      if (!submissionId) return
+      queryClient.removeQueries({queryKey: ['submission', String(submissionId)], exact: true})
+      const rawWarnings = Array.isArray(payload.warnings) && payload.warnings.length
+        ? payload.warnings
+        : payload.warning ? [payload.warning] : []
+      const notice = rawWarnings.map((warning) => typeof warning === 'string' ? warning : String(warning.message || '')).filter(Boolean).join('\n')
+      navigate(`/submissions/${submissionId}`, {
+        state: {
+          ...submissionNavigationState(`${location.pathname}${location.search}`),
+          ...(notice ? {submissionNotice: notice, submissionNoticeTone: 'warning'} : {}),
+        },
+      })
+    },
+    onError: async (error) => {
+      const submissionId = error instanceof ApiError ? Number(error.payload?.submission_id || 0) : 0
+      if (!submissionId) return
+      await queryClient.invalidateQueries({queryKey: ['submissions']})
+      queryClient.removeQueries({queryKey: ['submission', String(submissionId)], exact: true})
+      navigate(`/submissions/${submissionId}`, {
+        state: {
+          ...submissionNavigationState(`${location.pathname}${location.search}`),
+          submissionNotice: error.message,
+          submissionNoticeTone: 'error',
+        },
+      })
+    },
   })
   const lastCode = useMutation({
     mutationFn: () => apiFetch<LastCodeResponse>(`/api/problems/${problemId}/last-submission-code`),
@@ -292,7 +326,10 @@ export default function ProblemDetailPage() {
         leanControllerRef.current.setWritableFiles(payload.files)
         leanControllerRef.current.focus()
         leanControllerRef.current.checkNow()
-      } else setText(payload.code || '')
+      } else {
+        setText(payload.code || '')
+        window.requestAnimationFrame(() => editorRef.current?.focus())
+      }
     },
   })
   const uploadData = useMutation({
@@ -395,7 +432,7 @@ export default function ProblemDetailPage() {
         <form className={`mb-4 problem-submit-form ${isPrompt ? 'problem-prompt-submit-form' : programming ? 'problem-code-submit-form' : 'problem-written-submit-form'}`} onSubmit={submitForm}>
           {programming ? <>
             <div className="d-flex justify-content-between align-items-end mb-2 problem-editor-toolbar"><label className="form-label mb-0 code-label-wrap"><span className="code-title-line"><i className={`fas ${isPrompt ? 'fa-terminal' : isLean4 ? 'fa-square-root-alt' : 'fa-code'} me-2`} /> {isPrompt ? 'Prompt' : isLean4 ? 'Lean 4 工作区' : '代码'}</span><span className="code-meta-line">{problem.lang ? <span className="badge bg-secondary"><i className="fas fa-language me-2" />{lang}</span> : null}<span className="badge bg-secondary"><i className="fas fa-stopwatch me-2" />{problem.time_limit_ms || '—'} ms</span></span></label><div className="d-flex flex-column align-items-end">{!session?.user?.is_admin && data.remaining_submissions != null ? <small className={`${data.remaining_submissions <= 3 ? 'text-danger' : 'text-muted'} mb-1`}>剩余提交次数: <strong>{data.remaining_submissions}</strong>/{problem.submission_limit || 10}</small> : null}<div className={`problem-editor-actions${!session?.user?.is_admin ? ' student-code-actions' : ''}`}>{!isPrompt ? <button type="button" className="btn btn-outline-secondary" onClick={() => lastCode.mutate()} disabled={lastCode.isPending}><i className="fas fa-copy me-1" /><span className="d-none d-md-inline">复用上次代码</span><span className="d-inline d-md-none">复用</span></button> : null}<button type="submit" className="btn btn-outline-primary" disabled={!data.can_submit || submit.isPending || deadlineChecking}><i className="fas fa-paper-plane me-2" />{submit.isPending ? '提交中…' : deadlineChecking ? '检查中…' : data.can_submit ? isPrompt ? '提交 Prompt' : isLean4 ? '提交证明' : '提交' : '已达上限'}</button></div></div></div>
-            {isPrompt ? <textarea id="promptEditor" name="prompt" className="form-control" rows={18} required value={text} onChange={(event) => setText(event.target.value)} placeholder="请描述你的解题思路，包括算法或数据结构、关键步骤、状态更新和边界处理。后台会先审查 prompt，通过后再生成代码并评测。" /> : <div className={`card problem-editor-card${isLean4 ? ' lean-workbench-card' : ''}`}><div className="card-body p-0">{isLean4 ? <LeanWorkbench problemId={problem.id} workspace={data.lean_workspace} value={text} onChange={setText} onController={(controller) => {leanControllerRef.current = controller}} /> : <MonacoEditor language={String(problem.lang || 'matlab')} problemId={problem.id} value={text} onChange={setText} />}</div></div>}
+            {isPrompt ? <textarea id="promptEditor" name="prompt" className="form-control" rows={18} required value={text} onChange={(event) => setText(event.target.value)} placeholder="请描述你的解题思路，包括算法或数据结构、关键步骤、状态更新和边界处理。后台会先审查 prompt，通过后再生成代码并评测。" /> : <div className={`card problem-editor-card${isLean4 ? ' lean-workbench-card' : ''}`}><div className="card-body p-0">{isLean4 ? <LeanWorkbench problemId={problem.id} workspace={data.lean_workspace} value={text} onChange={setText} onController={(controller) => {leanControllerRef.current = controller}} /> : <MonacoEditor language={String(problem.lang || 'matlab')} problemId={problem.id} value={text} onChange={setText} onReady={({editor}) => {editorRef.current = editor; return () => {if (editorRef.current === editor) editorRef.current = null}}} />}</div></div>}
           </> : <>
             <div className="problem-written-toolbar"><div className="problem-written-actions">{session?.user?.is_admin ? <button type="button" className="btn btn-outline-danger problem-written-cleanup-button" onClick={() => invalidateWrittenSubmissions.mutate()} disabled={invalidateWrittenSubmissions.isPending}><i className="fas fa-trash me-2" /> 移除无效提交</button> : data.remaining_submissions != null ? <span className={`problem-written-quota${data.remaining_submissions <= 2 ? ' is-low' : ''}`}>剩余提交次数: <strong>{data.remaining_submissions}</strong>/{problem.submission_limit || 10}</span> : null}<button type="submit" className="btn btn-outline-primary problem-written-submit-button" disabled={submit.isPending || deadlineChecking || (!session?.user?.is_admin && !data.can_submit)}><i className="fas fa-upload me-2" /> {submit.isPending ? '上传中…' : deadlineChecking ? '检查中…' : session?.user?.is_admin || data.can_submit ? '上传作业' : '已达上限'}</button></div></div>
             <div className="card problem-written-upload-card"><div className="card-body"><div className="problem-written-file-picker" data-file-kind={writtenFileKind}><input ref={fileRef} className="visually-hidden problem-written-file-input" type="file" id="file" name="file" accept={writtenIsZip ? '.zip' : '.pdf'} required onChange={(event) => setWrittenFileName(event.currentTarget.files?.[0]?.name || '')} /><label className={`problem-written-dropzone${writtenFileName ? ' has-file' : ''}${writtenDragDepth ? ' is-dragover' : ''}`} htmlFor="file" title={writtenFileName} onDragEnter={(event) => {event.preventDefault(); setWrittenDragDepth((depth) => depth + 1)}} onDragOver={(event) => {event.preventDefault(); event.dataTransfer.dropEffect = 'copy'}} onDragLeave={(event) => {event.preventDefault(); setWrittenDragDepth((depth) => Math.max(0, depth - 1))}} onDrop={(event) => {event.preventDefault(); setWrittenDragDepth(0); acceptWrittenDrop(event.dataTransfer.files)}}><span className="problem-written-dropzone-icon" aria-hidden="true"><i className={`fas ${writtenIsZip ? 'fa-file-archive' : 'fa-file-pdf'}`} /></span><span className="problem-written-dropzone-copy"><strong>上传文件</strong><small aria-live="polite">{writtenFileName || writtenFileKind}</small></span></label></div><div className="form-text problem-written-format-note">{writtenIsZip ? '请上传 zip 文件，压缩包内必须包含 main.tex 及其依赖文件。' : '请上传 pdf 文件。'}</div></div></div>

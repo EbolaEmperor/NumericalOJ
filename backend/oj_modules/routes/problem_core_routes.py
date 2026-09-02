@@ -1300,8 +1300,11 @@ def _get_agent_run_state(
 
 
 def _submission_limit_redirect(problem_id, submission_limit):
-    flash(f'您对此题的提交次数已达到上限（{submission_limit}次）！', 'danger')
-    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+    return _submission_error_response(
+        problem_id,
+        f'您对此题的提交次数已达到上限（{submission_limit}次）！',
+        status=409,
+    )
 
 
 def _request_wants_json():
@@ -1312,17 +1315,50 @@ def _request_wants_json():
     )
 
 
-def _submission_success_response(submission_id, deadline_warning=None):
+def _submission_error_response(
+    problem_id,
+    message,
+    *,
+    status=400,
+    category='danger',
+    submission_id=None,
+):
+    if _request_wants_json():
+        payload = {'success': False, 'message': str(message)}
+        if submission_id is not None:
+            payload['submission_id'] = int(submission_id)
+        return jsonify(payload), status
+    flash(str(message), category)
+    if submission_id is not None:
+        return redirect(url_for(
+            'submission.submission_detail', submission_id=submission_id,
+        ))
+    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+
+
+def _submission_success_response(
+    submission_id,
+    deadline_warning=None,
+    warning_message=None,
+):
+    warnings = []
+    if deadline_warning:
+        warnings.append(deadline_warning)
+    if warning_message:
+        warnings.append({'message': str(warning_message)})
     if _request_wants_json():
         payload = {
             'success': True,
             'submission_id': int(submission_id),
         }
-        if deadline_warning:
-            payload['warning'] = deadline_warning
+        if warnings:
+            payload['warning'] = warnings[0]
+            payload['warnings'] = warnings
         return jsonify(payload), 201
     if deadline_warning:
         flash(deadline_warning['message'], 'warning')
+    if warning_message:
+        flash(str(warning_message), 'warning')
     return redirect(url_for(
         'submission.submission_detail', submission_id=submission_id,
     ))
@@ -2243,10 +2279,14 @@ def agent_run_stream(task_id):
 def submit_solution(problem_id):
     user = current_user()
     if not user:
+        if _request_wants_json():
+            return jsonify(success=False, message='请先登录'), 401
         return redirect(url_for('auth.login'))
 
     problem = get_problem(problem_id)
     if not problem:
+        if _request_wants_json():
+            return jsonify(success=False, message='题目不存在'), 404
         return "<h3>题目不存在</h3>"
 
     deadline_warning = None
@@ -2280,8 +2320,7 @@ def submit_solution(problem_id):
             if programming_mode == 3:
                 prompt_text = request.form.get('prompt', '')
                 if not prompt_text.strip():
-                    flash('Prompt 不能为空。', 'danger')
-                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                    return _submission_error_response(problem_id, 'Prompt 不能为空。')
 
                 try:
                     submission_id = create_submission(
@@ -2303,16 +2342,24 @@ def submit_solution(problem_id):
                     archive_submission_by_id(submission_id, raise_errors=True)
                 except Exception as e:
                     _record_archive_failure(submission_id, counted_submission_limit)
-                    flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
-                    return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                    return _submission_error_response(
+                        problem_id,
+                        f'提交归档失败，已停止入队：{str(e)}',
+                        status=500,
+                        submission_id=submission_id,
+                    )
 
+                task_warning = None
                 if _promptly_generate_submission_task is None:
-                    flash('提交成功，但 Promptly 生成任务未初始化。', 'warning')
+                    task_warning = '提交成功，但 Promptly 生成任务未初始化。'
                 else:
-                    _promptly_generate_submission_task.delay(submission_id)
+                    try:
+                        _promptly_generate_submission_task.delay(submission_id)
+                    except Exception as exc:
+                        task_warning = f'提交成功，但 Promptly 生成任务入队失败：{exc}'
 
                 return _submission_success_response(
-                    submission_id, deadline_warning,
+                    submission_id, deadline_warning, task_warning,
                 )
 
             is_lean4 = str(problem.get('lang') or '').strip().lower() in {'lean', 'lean4'}
@@ -2375,20 +2422,27 @@ def submit_solution(problem_id):
                     archive_submission_by_id(submission_id, raise_errors=True)
                 except Exception as exc:
                     _record_archive_failure(submission_id, counted_submission_limit)
-                    flash(f'提交归档失败，已停止入队：{str(exc)}', 'danger')
-                    return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                    return _submission_error_response(
+                        problem_id,
+                        f'提交归档失败，已停止入队：{str(exc)}',
+                        status=500,
+                        submission_id=submission_id,
+                    )
+                task_warning = None
                 if _evaluate_submission_task is None:
-                    flash('提交成功，但评测任务未初始化。', 'warning')
+                    task_warning = '提交成功，但评测任务未初始化。'
                 else:
-                    _evaluate_submission_task.delay(submission_id)
+                    try:
+                        _evaluate_submission_task.delay(submission_id)
+                    except Exception as exc:
+                        task_warning = f'提交成功，但评测任务入队失败：{exc}'
                 return _submission_success_response(
-                    submission_id, deadline_warning,
+                    submission_id, deadline_warning, task_warning,
                 )
 
             code = request.form.get('code', '')
             if not code.strip():
-                flash('代码不能为空。', 'danger')
-                return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                return _submission_error_response(problem_id, '代码不能为空。')
 
             try:
                 submission_id = create_submission(
@@ -2407,26 +2461,32 @@ def submit_solution(problem_id):
                 archive_submission_by_id(submission_id, raise_errors=True)
             except Exception as e:
                 _record_archive_failure(submission_id, counted_submission_limit)
-                flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
-                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                return _submission_error_response(
+                    problem_id,
+                    f'提交归档失败，已停止入队：{str(e)}',
+                    status=500,
+                    submission_id=submission_id,
+                )
 
+            task_warning = None
             if _evaluate_submission_task is None:
-                flash('提交成功，但评测任务未初始化。', 'warning')
+                task_warning = '提交成功，但评测任务未初始化。'
             else:
-                _evaluate_submission_task.delay(submission_id)
+                try:
+                    _evaluate_submission_task.delay(submission_id)
+                except Exception as exc:
+                    task_warning = f'提交成功，但评测任务入队失败：{exc}'
 
             return _submission_success_response(
-                submission_id, deadline_warning,
+                submission_id, deadline_warning, task_warning,
             )
 
         if problem['type'] == 2:
             if 'file' not in request.files:
-                flash('请上传文件。', 'danger')
-                return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                return _submission_error_response(problem_id, '请上传文件。')
             file = request.files['file']
             if file.filename == '':
-                flash('未选择文件。', 'danger')
-                return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                return _submission_error_response(problem_id, '未选择文件。')
             filename = secure_filename(f"file_{file.filename}")
 
             try:
@@ -2437,12 +2497,15 @@ def submit_solution(problem_id):
             lower_filename = filename.lower()
             if written_mode == 3:
                 if not lower_filename.endswith('.zip'):
-                    flash(f'错误：{filename} 不是 ZIP 文件（tex 文本批改模式仅支持 .zip）', 'danger')
-                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                    return _submission_error_response(
+                        problem_id,
+                        f'错误：{filename} 不是 ZIP 文件（tex 文本批改模式仅支持 .zip）',
+                    )
             else:
                 if not lower_filename.endswith('.pdf'):
-                    flash(f'错误：{filename} 不是 PDF 文件', 'danger')
-                    return redirect(url_for('problem_core.problem_detail', problem_id=problem_id))
+                    return _submission_error_response(
+                        problem_id, f'错误：{filename} 不是 PDF 文件',
+                    )
 
             # 纯人工批改：覆盖上一次提交
             if written_mode == 4:
@@ -2491,8 +2554,12 @@ def submit_solution(problem_id):
                                 extra={'submission_id': submission_id},
                             )
                             error_message = '新作业发布失败，已保留上一份有效作业'
-                        flash(error_message, 'danger')
-                        return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                        return _submission_error_response(
+                            problem_id,
+                            error_message,
+                            status=(400 if isinstance(exc, (WrittenSubmissionArtifactError, ValueError)) else 500),
+                            submission_id=submission_id,
+                        )
                     return _submission_success_response(
                         submission_id, deadline_warning,
                     )
@@ -2522,19 +2589,24 @@ def submit_solution(problem_id):
                 archive_submission_file_by_id(submission_id, file_path, filename, raise_errors=True)
             except Exception as e:
                 _record_archive_failure(submission_id, counted_submission_limit)
-                flash(f'提交归档失败，已停止入队：{str(e)}', 'danger')
-                return redirect(url_for('submission.submission_detail', submission_id=submission_id))
+                return _submission_error_response(
+                    problem_id,
+                    f'提交归档失败，已停止入队：{str(e)}',
+                    status=500,
+                    submission_id=submission_id,
+                )
 
+            task_warning = None
             if written_mode != 4:
                 try:
                     if _transcribe_written_homework_task is None:
                         raise RuntimeError("自动评分任务未初始化")
                     _transcribe_written_homework_task.delay(submission_id)
                 except Exception as e:
-                    flash(f'文件已提交，但自动评分任务入队失败：{str(e)}', 'warning')
+                    task_warning = f'文件已提交，但自动评分任务入队失败：{str(e)}'
 
             return _submission_success_response(
-                submission_id, deadline_warning,
+                submission_id, deadline_warning, task_warning,
             )
 
     return redirect(f'/problems/{problem_id}')

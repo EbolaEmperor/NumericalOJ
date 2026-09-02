@@ -267,7 +267,7 @@ def _build_submission_status_snapshot_from_row(row, last_updated=None):
         return None
     test_points = _parse_test_points(row.get("test_points"))
     prompt_generation_error = str(row.get("prompt_generation_error") or "").strip()
-    return {
+    snapshot = {
         "id": int(row["id"]),
         "username": row.get("username"),
         "problem_id": row.get("problem_id"),
@@ -281,6 +281,9 @@ def _build_submission_status_snapshot_from_row(row, last_updated=None):
         "test_points_count": len(test_points),
         "last_updated": last_updated or _format_snapshot_time(),
     }
+    if snapshot["generated_from_prompt"]:
+        snapshot["code"] = row.get("code") or ""
+    return snapshot
 
 
 def _save_submission_status_snapshot(snapshot):
@@ -291,6 +294,25 @@ def _save_submission_status_snapshot(snapshot):
         return
     key = _submission_snapshot_key(snapshot["id"])
     try:
+        # 运行中的测试点更新只携带易变字段。保留创建提交或数据库刷新时
+        # 已写入的 Promptly 元数据，避免一次 Running 快照让 React
+        # 误以为该提交不再来自 Prompt。生成代码由状态接口按需回源，
+        # 不在每个测试点事件中重复写入和广播。
+        try:
+            raw_previous = client.get(key)
+        except Exception:
+            raw_previous = None
+        if raw_previous:
+            previous = json.loads(raw_previous)
+            if isinstance(previous, dict):
+                snapshot = dict(snapshot)
+                for field in (
+                    "generated_from_prompt",
+                    "prompt_generation_error",
+                    "promptly_review_reply",
+                ):
+                    if field not in snapshot and field in previous:
+                        snapshot[field] = previous[field]
         payload = json.dumps(snapshot, ensure_ascii=False)
         client.setex(key, _submission_snapshot_ttl_seconds, payload)
         client.publish(_submission_snapshot_channel(snapshot["id"]), payload)
@@ -329,7 +351,7 @@ def refresh_submission_status_snapshot(submission_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, username, problem_id, problem_type, status, score, test_points,
+                SELECT id, username, problem_id, problem_type, status, score, code, test_points,
                        generated_from_prompt, prompt_generation_error
                 FROM submissions
                 WHERE id=%s

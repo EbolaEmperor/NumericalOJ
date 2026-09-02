@@ -534,6 +534,7 @@ html.is-submission-detail-resizing * {
   color: var(--submission-ink-3);
   font-size: 11px;
   text-align: center;
+  white-space: pre-line;
 }
 
 .submission-action-feedback.is-success {
@@ -542,6 +543,10 @@ html.is-submission-detail-resizing * {
 
 .submission-action-feedback.is-error {
   color: var(--submission-danger);
+}
+
+.submission-action-feedback.is-warning {
+  color: var(--submission-warning);
 }
 
 .submission-detail-section + .submission-detail-section,

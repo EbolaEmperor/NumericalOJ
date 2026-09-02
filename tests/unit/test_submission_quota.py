@@ -563,6 +563,21 @@ def test_submit_route_returns_expired_homework_warning_to_json_client(monkeypatc
                 "ddl": "2026-01-01 00:00",
             }],
         },
+        "warnings": [{
+            "code": "homework_deadline_passed",
+            "message": (
+                "本次提交不会计入以下已截止的班级作业："
+                "一班（截止 2026-01-01 00:00）。提交仍会正常评测，并计入题库练习成绩。"
+            ),
+            "homeworks": [{
+                "homework_id": 3,
+                "class_en": "C1",
+                "class_cn": "一班",
+                "ddl": "2026-01-01 00:00",
+            }],
+        }, {
+            "message": "提交成功，但评测任务未初始化。",
+        }],
     }
 
 
@@ -614,7 +629,12 @@ def test_submit_route_returns_submission_id_to_json_client(monkeypatch):
 
     response, status = response
     assert status == 201
-    assert response.get_json() == {"success": True, "submission_id": 41}
+    assert response.get_json() == {
+        "success": True,
+        "submission_id": 41,
+        "warning": {"message": "提交成功，但评测任务未初始化。"},
+        "warnings": [{"message": "提交成功，但评测任务未初始化。"}],
+    }
 
 
 def test_archive_failure_releases_counted_submission_quota(monkeypatch):
@@ -695,3 +715,51 @@ def test_post_submit_skips_advisory_precheck_and_passes_stable_user_id(monkeypat
     assert response.status_code == 302
     assert created[0]["user_id"] == 1
     assert created[0]["submission_limit"] == 1
+
+
+def test_api_submission_returns_task_warning_as_json(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 42)
+    monkeypatch.setattr(problem_core_routes, "archive_submission_by_id", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(problem_core_routes, "_evaluate_submission_task", None)
+
+    with _route_app().test_request_context(
+        "/api/problems/7/submissions",
+        method="POST",
+        data={"code": "print(1)"},
+        headers={"Accept": "application/json"},
+    ):
+        response, status = problem_core_routes.submit_solution(7)
+
+    payload = response.get_json()
+    assert status == 201
+    assert payload["success"] is True
+    assert payload["submission_id"] == 42
+    assert "评测任务未初始化" in payload["warning"]["message"]
+
+
+def test_api_archive_failure_keeps_submission_id_and_real_message(monkeypatch):
+    _install_submit_route_fakes(monkeypatch)
+    monkeypatch.setattr(problem_core_routes, "create_submission", lambda **_kwargs: 43)
+    monkeypatch.setattr(
+        problem_core_routes,
+        "archive_submission_by_id",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("archive failed")),
+    )
+    monkeypatch.setattr(problem_core_routes, "mark_submission_archive_failed", lambda *_args, **_kwargs: None)
+
+    with _route_app().test_request_context(
+        "/api/problems/7/submissions",
+        method="POST",
+        data={"code": "print(1)"},
+        headers={"Accept": "application/json"},
+    ):
+        response, status = problem_core_routes.submit_solution(7)
+
+    payload = response.get_json()
+    assert status == 500
+    assert payload == {
+        "success": False,
+        "message": "提交归档失败，已停止入队：archive failed",
+        "submission_id": 43,
+    }

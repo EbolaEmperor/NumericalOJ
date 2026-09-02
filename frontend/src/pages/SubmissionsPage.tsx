@@ -26,14 +26,47 @@ function verdictClass(status: unknown) {
   return String(status || 'Unknown').toLowerCase().replaceAll(' ', '-')
 }
 
-function legacyTimestamp(value: unknown) {
-  const text = String(value || '')
-  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/)
-  if (!match) return text || '—'
-  return new Date(Date.UTC(
-    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
-    Number(match[4]), Number(match[5]), Number(match[6]),
-  )).toUTCString()
+function panelPointClass(value: unknown) {
+  const status = String(value || 'Unknown')
+  return status === 'Accepted' ? 'is-accepted'
+    : ['Pending', 'Waiting', 'Running', 'Generating'].includes(status) ? 'is-active'
+      : status === 'Wrong Answer' ? 'is-wrong-answer'
+        : status === 'Runtime Error' ? 'is-runtime-error'
+          : status === 'Time Limit Exceeded' ? 'is-time-limit'
+            : status === 'Unknown' ? 'is-neutral' : 'is-other-failure'
+}
+
+function useDesktopSubmissionLayout() {
+  const query = '(min-width: 1200px)'
+  const [desktop, setDesktop] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(query).matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(query)
+    const update = () => setDesktop(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  return desktop
+}
+
+function pointSummary(point: JsonRecord | undefined, index: number) {
+  if (!point) return '暂无测试点结果。'
+  const testIndex = String(point.test_index || index + 1)
+  const lines = [`#${testIndex}  ${String(point.status || 'Unknown')}`]
+  const time = point.time ?? point.execution_time
+  if (time !== null && time !== undefined && time !== '') lines.push(`耗时 ${String(time)} ms`)
+  if (point.stderr) lines.push('', '错误摘要', String(point.stderr))
+  else if (point.stdout) lines.push('', '输出摘要', String(point.stdout))
+  else if (point.has_output_image) lines.push('', '该测试点生成了输出图片，请进入完整详情查看。')
+  else lines.push('', '该测试点没有额外输出。')
+  return lines.join('\n')
+}
+
+function panelScoreTone(status: unknown, score: unknown) {
+  if (String(status || '') === 'Accepted') return 'is-accepted'
+  if (score === null || score === undefined || Number(score) === 0) return 'is-zero'
+  return 'is-failed'
 }
 
 function Verdict({status}: {status: unknown}) {
@@ -52,6 +85,7 @@ function TestSpark({points}: {points: unknown}) {
 
 function Panel({id, isAdmin, origin, onLiveSnapshot}: {id?: number; isAdmin: boolean; origin: string; onLiveSnapshot: (submissionId: number, snapshot: SubmissionStatusSnapshot) => void}) {
   const queryClient = useQueryClient()
+  const [selectedPoint, setSelectedPoint] = useState(0)
   const queryKey = ['submission-panel', id] as const
   const result = useQuery({queryKey, queryFn: () => apiFetch<PanelResponse>(`/api/submissions/${id}?view=panel`), enabled: Boolean(id)})
   const applyLiveSnapshot = useCallback((snapshot: SubmissionStatusSnapshot) => {
@@ -76,19 +110,23 @@ function Panel({id, isAdmin, origin, onLiveSnapshot}: {id?: number; isAdmin: boo
     mutationFn: () => apiFetch<ApiEnvelope>(`/api/submissions/${id}/rejudge`, {method: 'POST'}),
     onSuccess: () => applyLiveSnapshot({status: 'Pending', score: 0, is_judging: true, test_points: []}),
   })
+  useEffect(() => {setSelectedPoint(0)}, [id])
   if (!id) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-empty"><span className="submission-detail-empty__mark" aria-hidden="true"><i className="fas fa-arrow-pointer" /></span><strong>选择一条提交</strong><span>点击左侧记录后，在这里查看判题摘要。</span></div></aside>
   if (result.isPending) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-loading"><MathCurveLoader size="md" label="正在加载提交详情…" /></div></aside>
   if (result.isError) return <aside className="submission-detail-panel" aria-label="提交详情预览"><div className="submission-detail-error"><span className="submission-detail-error__mark" aria-hidden="true"><i className="fas fa-triangle-exclamation" /></span><strong>详情加载失败</strong><span>{result.error.message}</span><button type="button" className="submission-button submission-button--ghost" onClick={() => void result.refetch()}><i className="fas fa-rotate-right" /> 重试</button></div></aside>
   const data = result.data!
   const submission = data.submission || {}
   const problem = data.problem || {}
+  const pointIndex = Math.min(selectedPoint, Math.max(0, data.test_points.length - 1))
+  const selected = data.test_points[pointIndex]
+  const maxScore = Number(problem.max_score || 0) > 0 ? problem.max_score : data.test_points.length || '—'
   return <aside className="submission-detail-panel" aria-label="提交详情预览" aria-live="polite"><article className="submission-detail-content">
     <header className="submission-detail-header"><span className="submission-detail-id">#{String(submission.id)}</span><Link className="submission-icon-button" to={`/submissions/${String(submission.id)}`} state={submissionNavigationState(origin)} title="打开完整详情"><i className="fas fa-arrow-up-right-from-square" /><span className="visually-hidden">打开完整详情</span></Link></header>
     <h2 className="submission-detail-title">{String(submission.problem_title || problem.title || '未命名题目')}</h2>
     <div className="submission-detail-verdict"><Verdict status={submission.status} /></div>
-    <div className="submission-detail-score"><strong>{String(submission.score ?? '—')}</strong><span>/{String(problem.max_score ?? '—')}</span></div>
-    <dl className="submission-detail-meta"><dt>题目号</dt><dd>P{String(Number(submission.problem_id || problem.id || 0)).padStart(4, '0')}</dd><dt>语言</dt><dd>{String(problem.lang || '—').toUpperCase()}</dd><dt>提交者</dt><dd>{String(submission.username || '—')}</dd><dt>提交时间</dt><dd>{legacyTimestamp(submission.created_at)}</dd></dl>
-    <section className="submission-detail-section"><div className="submission-detail-section__heading"><h3>用例结果</h3><span>{data.test_points.length} 个</span></div><div className="submission-test-matrix">{data.test_points.map((point, index) => <span className={`submission-test-dot submission-test-dot--${verdictClass(point.status)}`} title={`${String(point.test_index || index + 1)} · ${String(point.status || 'Unknown')}`} key={index} />)}</div><div className="submission-test-summary"><span>{data.test_points.length ? `共 ${data.test_points.length} 个测试点` : '暂无测试点结果。'}</span></div></section>
+    <div className="submission-detail-score"><strong className={panelScoreTone(submission.status, submission.score)}>{String(submission.score ?? '—')}</strong><span>/{String(maxScore)}</span></div>
+    <dl className="submission-detail-meta"><dt>题目号</dt><dd>P{String(Number(submission.problem_id || problem.id || 0)).padStart(4, '0')}</dd><dt>语言</dt><dd>{String(problem.lang || '—').toUpperCase()}</dd><dt>提交者</dt><dd>{String(submission.username || '—')}</dd><dt>提交时间</dt><dd>{String(submission.created_at || '—')}</dd></dl>
+    <section className="submission-detail-section"><div className="submission-detail-section__heading"><h3>用例结果</h3><span>{data.test_points.length} 个</span></div><div className="submission-test-matrix">{data.test_points.map((point, index) => {const active = ['Pending', 'Waiting', 'Running', 'Generating'].includes(String(point.status || '')); return <button type="button" className={`submission-test-point ${panelPointClass(point.status)}${index === pointIndex ? ' is-selected' : ''}`} title={`测试点 #${String(point.test_index || index + 1)} · ${String(point.status || 'Unknown')}`} aria-label={`测试点 ${String(point.test_index || index + 1)}，${String(point.status || 'Unknown')}`} onClick={() => setSelectedPoint(index)} key={index}><span className="submission-test-point__index">{String(point.test_index || index + 1)}</span>{active ? <MathCurveLoader size="xs" iconOnly ariaLabel="评测中" /> : null}</button>})}</div><div className="submission-test-summary"><span>{pointSummary(selected, pointIndex)}</span></div></section>
     <div className="submission-detail-actions"><Link className="submission-button submission-button--dark" to={`/submissions/${String(submission.id)}`} state={submissionNavigationState(origin)}><i className="fas fa-code" /> 查看完整详情</Link>{isAdmin ? <button type="button" className="submission-button submission-button--accent" disabled={rejudge.isPending} onClick={() => {if (window.confirm('确认重测这条提交吗？')) rejudge.mutate()}}><i className="fas fa-rotate-right" /> {rejudge.isPending ? '重测中…' : '重测此提交'}</button> : null}</div>{rejudge.isSuccess ? <div className="submission-action-feedback is-success">已加入重测队列</div> : null}{rejudge.isError ? <div className="submission-action-feedback is-error">重测失败：{rejudge.error.message}</div> : null}
   </article></aside>
 }
@@ -106,6 +144,7 @@ function TimeRangeRejudge() {
   const done = Number(progress.data?.done || 0)
   const total = Number(progress.data?.total || progressTotal || 0)
   useEffect(() => {if (progressActive && percent >= 100) setProgressActive(false)}, [percent, progressActive])
+  useEffect(() => {if (progress.isError) setProgressActive(false)}, [progress.isError])
 
   const submit = async () => {
     if (!start || !end) {window.alert('请选择起始时间和结束时间'); return}
@@ -145,9 +184,20 @@ export default function SubmissionsPage() {
   const problemId = params.get('problem_id') || ''
   const [draft, setDraft] = useState(q)
   const [problemDraft, setProblemDraft] = useState('')
+  const [selectedId, setSelectedId] = useState<number>()
+  const desktop = useDesktopSubmissionLayout()
   const problemInput = useRef<HTMLInputElement>(null)
   const listQueryKey = ['submissions', page, q, status, problemId] as const
   const result = useQuery({queryKey: listQueryKey, queryFn: () => apiFetch<Response>(`/api/submissions${queryString({page, q, status, problem_id: problemId, per_page: 30})}`)})
+  const rows = result.data?.submissions || []
+  const rowIds = rows.map((row) => row.id).join(',')
+  useEffect(() => {
+    setSelectedId((current) => current && rows.some((row) => row.id === current) ? current : rows[0]?.id)
+  }, [rowIds])
+  useEffect(() => {setDraft(q)}, [q])
+  useEffect(() => {
+    if (session?.user) document.title = `${session.user.is_admin ? '所有提交' : '我的提交'} - Numerical OJ`
+  }, [session?.user])
   const applyListLiveSnapshot = useCallback((submissionId: number, snapshot: SubmissionStatusSnapshot) => {
     queryClient.setQueryData<Response>(listQueryKey, (current) => current ? {
       ...current,
@@ -171,8 +221,6 @@ export default function SubmissionsPage() {
   }
   if (result.isPending) return <LoadingState label="正在同步提交记录" />
   if (result.isError) return <ErrorState message={result.error.message} retry={() => void result.refetch()} />
-  const rows = result.data?.submissions || []
-  const selectedId = rows[0]?.id
   const origin = `${location.pathname}${location.search}`
   const openSubmission = (id: number) => navigate(`/submissions/${id}`, {state: submissionNavigationState(origin)})
   const pages = Array.from({length: Math.max(0, Math.min(result.data?.total_pages || 1, page + 3) - Math.max(1, page - 3) + 1)}, (_, index) => Math.max(1, page - 3) + index)
@@ -191,11 +239,11 @@ export default function SubmissionsPage() {
     </section>
     {(result.data?.total_pages || 1) > 1 ? <nav className="submission-pagination" aria-label="提交记录分页"><div className="submission-pagination__links">{page > 1 ? <Link className="submission-page-link submission-page-link--wide" to={`/submissions${queryString({page: page - 1, q, status, problem_id: problemId})}`} rel="prev"><i className="fas fa-arrow-left" /> 上一页</Link> : null}{pages.map((value) => <Link className={`submission-page-link${value === page ? ' is-active' : ''}`} to={`/submissions${queryString({page: value, q, status, problem_id: problemId})}`} aria-current={value === page ? 'page' : undefined} key={value}>{value}</Link>)}{page < (result.data?.total_pages || 1) ? <Link className="submission-page-link submission-page-link--wide" to={`/submissions${queryString({page: page + 1, q, status, problem_id: problemId})}`} rel="next">下一页 <i className="fas fa-arrow-right" /></Link> : null}</div></nav> : null}
     <section className="submission-master-detail">
-      <div className="submission-table-panel"><div className="submission-table-scroll"><table className="submission-data-table" aria-label="提交记录"><tbody>
-        {rows.map((row) => {const created = String(row.created_at || ''); const parts = created.split(/[ T]/); return <tr className="submission-data-row" title={`打开提交 #${row.id}`} onClick={(event) => {if (!(event.target instanceof Element) || !event.target.closest('a, button')) openSubmission(row.id)}} key={row.id}><td className="submission-col-id"><Link className="submission-id-link" to={`/submissions/${row.id}`} state={submissionNavigationState(origin)}>#{row.id}</Link></td><td className="submission-col-status"><Verdict status={row.status} /></td><td className="submission-col-score"><span className={`submission-score${row.status === 'Accepted' ? ' is-accepted' : !row.score ? ' is-zero' : ''}`}>{row.score ?? '—'}</span>{row.display_max_score ? <> <span className="submission-score-max">/{String(row.display_max_score)}</span></> : null}</td><td className="submission-col-problem"><span className="submission-problem-title">{row.display_problem_title || row.problem_title || '未命名题目'}</span><span className="submission-problem-id">P{String(row.problem_id).padStart(4, '0')}</span></td><td className="submission-col-tests"><TestSpark points={row.test_points} /></td><td className="submission-col-language"><span className="submission-language">{String(row.display_language || '—')}</span></td>{session?.user?.is_admin ? <td className="submission-col-user">{row.username}</td> : null}<td className="submission-col-time"><time dateTime={created}><span>{parts[0] || '—'}</span><span>{parts[1]?.slice(0, 8) || ''}</span></time></td><td className="submission-col-action"><Link className="submission-detail-link" to={`/submissions/${row.id}`} state={submissionNavigationState(origin)} title="完整详情"><i className="fas fa-arrow-up-right-from-square" /></Link></td></tr>})}
+      <div className="submission-table-panel"><div className="submission-table-scroll"><table className="submission-data-table" aria-label="提交记录"><thead><tr><th scope="col" className="submission-col-id">提交号</th><th scope="col" className="submission-col-status">状态</th><th scope="col" className="submission-col-score">得分</th><th scope="col" className="submission-col-problem">题目</th><th scope="col" className="submission-col-tests">用例</th><th scope="col" className="submission-col-language">语言</th>{session?.user?.is_admin ? <th scope="col" className="submission-col-user">提交者</th> : null}<th scope="col" className="submission-col-time">提交时间</th><th scope="col" className="submission-col-action"><span className="visually-hidden">操作</span></th></tr></thead><tbody>
+        {rows.map((row) => {const created = String(row.created_at || ''); const parts = created.split(/[ T]/); const select = () => desktop ? setSelectedId(row.id) : openSubmission(row.id); return <tr className={`submission-data-row${selectedId === row.id ? ' is-selected' : ''}`} title={`打开提交 #${row.id}`} tabIndex={0} aria-label={`提交 #${row.id}，${row.status || 'Unknown'}`} aria-selected={selectedId === row.id} onClick={(event) => {if (!(event.target instanceof Element) || !event.target.closest('a, button, input, select, textarea')) select()}} onKeyDown={(event) => {if ((event.key === 'Enter' || event.key === ' ') && (!(event.target instanceof Element) || !event.target.closest('a, button, input, select, textarea'))) {event.preventDefault(); select()}}} key={row.id}><td className="submission-col-id"><Link className="submission-id-link" to={`/submissions/${row.id}`} state={submissionNavigationState(origin)} aria-label={`查看提交 ${row.id} 的完整详情`}>#{row.id}</Link></td><td className="submission-col-status"><Verdict status={row.status} /></td><td className="submission-col-score"><span className={`submission-score${row.status === 'Accepted' ? ' is-accepted' : !row.score ? ' is-zero' : ''}`}>{row.score ?? '—'}</span>{row.display_max_score ? <> <span className="submission-score-max">/{String(row.display_max_score)}</span></> : null}</td><td className="submission-col-problem"><span className="submission-problem-title">{row.display_problem_title || row.problem_title || '未命名题目'}</span><span className="submission-problem-id">P{String(row.problem_id).padStart(4, '0')}</span></td><td className="submission-col-tests"><TestSpark points={row.test_points} /></td><td className="submission-col-language"><span className="submission-language">{String(row.display_language || '—')}</span></td>{session?.user?.is_admin ? <td className="submission-col-user">{row.username}</td> : null}<td className="submission-col-time"><time dateTime={created}><span>{parts[0] || '—'}</span><span>{parts[1]?.slice(0, 8) || ''}</span></time></td><td className="submission-col-action"><Link className="submission-detail-link" to={`/submissions/${row.id}`} state={submissionNavigationState(origin)} title="完整详情" aria-label={`打开提交 ${row.id} 的完整详情`}><i className="fas fa-arrow-up-right-from-square" /></Link></td></tr>})}
         {!rows.length ? <tr><td colSpan={session?.user?.is_admin ? 9 : 8}><div className="submission-empty-state"><span className="submission-empty-state__icon"><i className="fas fa-inbox" /></span><strong>没有找到提交记录</strong><span>调整搜索或筛选条件后再试。</span></div></td></tr> : null}
       </tbody></table></div></div>
-      <Panel id={selectedId} isAdmin={Boolean(session?.user?.is_admin)} origin={origin} onLiveSnapshot={applyListLiveSnapshot} />
+      <Panel id={desktop ? selectedId : undefined} isAdmin={Boolean(session?.user?.is_admin)} origin={origin} onLiveSnapshot={applyListLiveSnapshot} />
     </section>
   </div>
 }

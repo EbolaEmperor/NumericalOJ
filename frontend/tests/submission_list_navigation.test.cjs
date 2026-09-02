@@ -13,9 +13,12 @@ test('提交列表整行统一打开提交详情，题目标题不再跳转题�
   assert.match(source, /to={`\/submissions\/\$\{row\.id\}`}\s+state=/)
 })
 
-test('提交列表不渲染表头，手机端筛选区与列表使用对称水平留白', () => {
-  assert.doesNotMatch(source, /<thead>|提交号<\/th>|状态<\/th>|得分<\/th>|题目<\/th>/)
-  assert.match(source, /<table className="submission-data-table" aria-label="提交记录"><tbody>/)
+test('提交列表恢复桌面表头与主从选择，手机端仍使用对称水平留白', () => {
+  assert.match(source, /<thead>[\s\S]*提交号<\/th>[\s\S]*状态<\/th>[\s\S]*得分<\/th>[\s\S]*题目<\/th>/)
+  assert.match(source, /aria-selected=\{selectedId === row\.id\}/)
+  assert.match(source, /desktop \? setSelectedId\(row\.id\) : openSubmission\(row\.id\)/)
+  assert.match(source, /<Panel id=\{desktop \? selectedId : undefined\}/)
+  assert.match(source, /event\.key === 'Enter' \|\| event\.key === ' '/)
   const mobileStyles = styles.slice(styles.indexOf('@media (max-width: 767.98px)'))
   assert.match(mobileStyles, /\.submission-page-header \{\s*padding: 0 12px 10px;/)
   assert.match(mobileStyles, /\.submission-filter-panel \{\s*padding-right: 12px;\s*padding-left: 12px;/)

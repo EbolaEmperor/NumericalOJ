@@ -80,17 +80,25 @@ def submission_status(submission_id):
         snapshot.get('promptly_review_reply') or snapshot.get('prompt_generation_error') or ''
     ).strip()
 
-    return jsonify({
+    payload = {
         'status': snapshot.get('status'),
         'score': snapshot.get('score'),
         'is_judging': is_judging,
-        'generated_from_prompt': bool(snapshot.get('generated_from_prompt')),
         'prompt_generation_error': promptly_review_reply,
         'promptly_review_reply': promptly_review_reply,
         'test_points_count': snapshot.get('test_points_count', 0),
         'test_points': snapshot.get('test_points', []),
         'last_updated': snapshot.get('last_updated', ''),
-    })
+    }
+    if 'generated_from_prompt' in snapshot:
+        payload['generated_from_prompt'] = bool(snapshot.get('generated_from_prompt'))
+    prompt_code = snapshot.get('code')
+    if payload.get('generated_from_prompt') and not prompt_code:
+        row = get_submission_by_id(submission_id)
+        prompt_code = row.get('code') if row else ''
+    if payload.get('generated_from_prompt'):
+        payload['code'] = str(prompt_code or '')
+    return jsonify(payload)
 
 
 @submission_bp.get('/api/submissions/<int:submission_id>/events')
@@ -108,7 +116,7 @@ def submission_status_stream(submission_id):
     if initial_snapshot.get('username') != user['username'] and not is_admin(user):
         return jsonify({'error': 'Access denied'}), 403
 
-    def _build_payload(snapshot):
+    def _build_payload(snapshot, *, include_prompt_code=False):
         is_judging = (
             snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
             or snapshot.get('score') is None
@@ -133,7 +141,6 @@ def submission_status_stream(submission_id):
             'status': snapshot.get('status'),
             'score': snapshot.get('score'),
             'is_judging': is_judging,
-            'generated_from_prompt': bool(snapshot.get('generated_from_prompt')),
             'prompt_generation_error': str(
                 snapshot.get('promptly_review_reply') or snapshot.get('prompt_generation_error') or ''
             ).strip(),
@@ -141,6 +148,15 @@ def submission_status_stream(submission_id):
             'test_points': snapshot.get('test_points', []),
             'last_updated': snapshot.get('last_updated', ''),
         }
+        if 'generated_from_prompt' in snapshot:
+            payload['generated_from_prompt'] = bool(snapshot.get('generated_from_prompt'))
+        if include_prompt_code and payload.get('generated_from_prompt'):
+            prompt_code = snapshot.get('code')
+            if not prompt_code:
+                row = get_submission_by_id(snapshot.get('id'))
+                prompt_code = row.get('code') if row else ''
+            if prompt_code:
+                payload['code'] = str(prompt_code)
         payload['promptly_review_reply'] = payload['prompt_generation_error']
         if int(snapshot.get('problem_type') or 0) == 2:
             sid = snapshot.get('id')
@@ -168,7 +184,8 @@ def submission_status_stream(submission_id):
     @stream_with_context
     def generate():
         # 首帧立即推送
-        first_payload = _build_payload(initial_snapshot)
+        first_payload = _build_payload(initial_snapshot, include_prompt_code=True)
+        prompt_code_sent = bool(first_payload.get('code'))
         yield _encode_sse("status", first_payload)
         if not first_payload['is_judging']:
             yield _encode_sse("done", first_payload)
@@ -191,7 +208,11 @@ def submission_status_stream(submission_id):
                     yield _encode_sse("error", {"error": "Submission not found"})
                     return
 
-                payload = _build_payload(snapshot)
+                payload = _build_payload(
+                    snapshot, include_prompt_code=not prompt_code_sent,
+                )
+                if payload.get('code'):
+                    prompt_code_sent = True
                 marker = (
                     payload.get('status'),
                     payload.get('score'),
@@ -220,7 +241,12 @@ def submission_status_stream(submission_id):
                 now = time.time()
                 if now - start_ts > 360:
                     latest = get_submission_status_snapshot(submission_id, prefer_cache=True) or initial_snapshot
-                    yield _encode_sse("timeout", _build_payload(latest))
+                    yield _encode_sse(
+                        "timeout",
+                        _build_payload(
+                            latest, include_prompt_code=not prompt_code_sent,
+                        ),
+                    )
                     return
 
                 if not msg:
@@ -241,7 +267,11 @@ def submission_status_stream(submission_id):
                 if not isinstance(snapshot, dict):
                     continue
 
-                payload = _build_payload(snapshot)
+                payload = _build_payload(
+                    snapshot, include_prompt_code=not prompt_code_sent,
+                )
+                if payload.get('code'):
+                    prompt_code_sent = True
                 yield _encode_sse("status", payload)
                 if not payload['is_judging']:
                     yield _encode_sse("done", payload)
