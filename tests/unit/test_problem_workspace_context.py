@@ -227,6 +227,73 @@ def test_problem_list_context_can_defer_class_activity(monkeypatch):
     class_activity.assert_not_called()
 
 
+def _problem_list_api_context(selected_class_en=None):
+    return {
+        "view_mode": "student_multi_class",
+        "classes": [
+            {"class_en": "C1", "class_cn": "一班"},
+            {"class_en": "C2", "class_cn": "二班"},
+        ],
+        "selected_class_en": selected_class_en,
+        "selected_class_cn": "二班" if selected_class_en == "C2" else "一班",
+        "selected_homeworks": [],
+        "homeworks_by_class": [],
+    }
+
+
+def test_problem_list_api_remembers_url_selected_class_for_one_year(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    user = {"id": 8, "username": "student", "is_admin": 0}
+    monkeypatch.setattr(problem_api, "current_user", lambda: user)
+    build_context = MagicMock(return_value=_problem_list_api_context("C2"))
+    monkeypatch.setattr(problem_api, "build_problem_list_context", build_context)
+
+    response = app.test_client().get("/api/problems?class_en=C2")
+
+    assert response.status_code == 200
+    build_context.assert_called_once_with(
+        user,
+        admin_class_view=False,
+        selected_class_en="C2",
+        include_dashboard=True,
+        include_class_activity=False,
+        include_statistics=True,
+    )
+    cookie = response.headers.get("Set-Cookie")
+    assert "numoj_problem_list_class=C2" in cookie
+    assert "Max-Age=31536000" in cookie
+    assert "Path=/" in cookie
+    assert "SameSite=Lax" in cookie
+
+
+def test_problem_list_api_uses_cookie_fallback_and_clears_invalid_value(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    user = {"id": 8, "username": "student", "is_admin": 0}
+    monkeypatch.setattr(problem_api, "current_user", lambda: user)
+    build_context = MagicMock(side_effect=[
+        _problem_list_api_context("C1"),
+        _problem_list_api_context(None),
+    ])
+    monkeypatch.setattr(problem_api, "build_problem_list_context", build_context)
+    client = app.test_client()
+    client.set_cookie("numoj_problem_list_class", "C1")
+
+    remembered = client.get("/api/problems")
+
+    assert remembered.status_code == 200
+    assert build_context.call_args_list[0].kwargs["selected_class_en"] == "C1"
+
+    cleared = client.get("/api/problems")
+
+    assert cleared.status_code == 200
+    assert any(
+        "numoj_problem_list_class=" in header and "Max-Age=0" in header
+        for header in cleared.headers.getlist("Set-Cookie")
+    )
+
+
 def test_problem_library_attaches_global_metrics_without_deadline(monkeypatch):
     _stub_base_context(monkeypatch)
     problems = [{"id": 1, "title": "A"}, {"id": 2, "title": "B"}]

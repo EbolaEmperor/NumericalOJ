@@ -219,8 +219,14 @@ export function AppShell() {
   }, [queryClient, session?.navigation.items])
 
   const logout = useMemo(() => () => {
-    void apiFetch<ApiEnvelope>('/api/session', {method: 'DELETE'}).then(refresh).then(() => navigate('/login', {replace: true}))
-  }, [navigate, refresh])
+    void apiFetch<ApiEnvelope>('/api/session', {method: 'DELETE'}).then(async () => {
+      // React Query 的默认 30 分钟 GC 会让下一个账号短暂命中上一个账号的私有数据。
+      // 会话本身先由 refresh 对账，其余查询在登出确认后立即移除。
+      queryClient.removeQueries({predicate: (query) => query.queryKey[0] !== 'session'})
+      await refresh()
+      navigate('/login', {replace: true})
+    })
+  }, [navigate, queryClient, refresh])
 
   const player = pageDisplayMode !== 'vibehub-not-found' && location.pathname !== '/vibehub/guide' && /^\/vibehub\/[^/]+(?:\/play)?$/.test(location.pathname)
   return <div className={`numoj-site-shell numoj-site-shell-authenticated${sidebarCollapsed ? ' is-sidebar-collapsed' : ''}${player ? ' vibehub-player-shell' : ''}`} data-numoj-shell>

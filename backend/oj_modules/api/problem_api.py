@@ -21,6 +21,7 @@ from backend.oj_modules.problems.context import (
 
 
 problem_api_bp = Blueprint("problem_api", __name__, url_prefix="/api")
+_PROBLEM_LIST_CLASS_COOKIE = "numoj_problem_list_class"
 
 
 def _homework_problem_item(hw, class_en=None, class_cn=None):
@@ -103,7 +104,9 @@ def problems():
 
     limit = clamp_limit(request.args.get("limit"), default=None)
     is_library = str(request.args.get("view") or "").strip() == "library"
-    selected_class_en = str(request.args.get("class_en") or "").strip() or None
+    requested_class_en = str(request.args.get("class_en") or "").strip()
+    remembered_class_en = str(request.cookies.get(_PROBLEM_LIST_CLASS_COOKIE) or "").strip()
+    selected_class_en = requested_class_en or remembered_class_en or None
     context = (
         build_problem_library_context(user, include_statistics=True)
         if is_library
@@ -117,7 +120,7 @@ def problems():
         )
     )
     items = _visible_items_from_context(context)
-    return json_success(
+    response = json_success(
         user=public_user(user),
         view_mode=context.get("view_mode"),
         total_submissions=context.get("total_submissions"),
@@ -137,6 +140,24 @@ def problems():
         problems=apply_limit(items, limit),
         count=len(items),
     )
+    if is_library:
+        return response
+    selected_class_en = str(context.get("selected_class_en") or "").strip()
+    if selected_class_en:
+        response.set_cookie(
+            _PROBLEM_LIST_CLASS_COOKIE,
+            selected_class_en,
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            secure=request.is_secure,
+            samesite="Lax",
+            # React 通过 /api/problems 读取列表；Cookie 必须同时覆盖页面与 API。
+            path="/",
+        )
+    elif remembered_class_en:
+        response.delete_cookie(_PROBLEM_LIST_CLASS_COOKIE, path="/")
+        response.delete_cookie(_PROBLEM_LIST_CLASS_COOKIE, path="/problems")
+    return response
 
 
 @problem_api_bp.route("/problems/<int:problem_id>", methods=["GET"])

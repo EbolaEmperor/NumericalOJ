@@ -219,12 +219,12 @@ function WrittenPdf({submission}: {submission: DetailResponse['submission']}) {
         timer = window.setTimeout(() => {void check()}, 1_000)
       } else setState('error')
     }
-    const onFocus = () => {if (!readyRef.current || activeRef.current) {attempts = 0; void check()}}
+    const onFocus = () => {if (readyRef.current && !activeRef.current) setVersion(Date.now()); else {attempts = 0; void check()}}
     window.addEventListener('focus', onFocus)
     void check()
     return () => {cancelled = true; if (timer) window.clearTimeout(timer); window.removeEventListener('focus', onFocus)}
   }, [url])
-  return <div className="submission-pdf-surface" id="pdfViewer">{state === 'ready' ? <iframe title="submission-pdf" className="w-100 h-100 border-0" referrerPolicy="no-referrer" src={`${url}?v=${version}`} /> : <div className={`submission-pdf-hint ${state === 'error' ? 'text-danger' : 'text-muted'}`}>{state === 'error' ? '暂无可渲染的 PDF（可能是编译失败）。' : <MathCurveLoader size="lg" label={active ? 'PDF 生成中，请稍候...' : '正在加载 PDF…'} />}</div>}</div>
+  return <div className="submission-pdf-surface" id="pdfViewer">{state === 'ready' ? <iframe title="submission-pdf" className="w-100 h-100 border-0" referrerPolicy="no-referrer" src={`${url}?v=${version}`} onError={() => {readyRef.current = false; setState('error')}} /> : <div className={`submission-pdf-hint ${state === 'error' ? 'text-danger' : 'text-muted'}`}>{state === 'error' ? '暂无可渲染的 PDF（可能是编译失败）。' : <MathCurveLoader size="lg" label={active ? 'PDF 生成中，请稍候...' : '正在加载 PDF…'} />}</div>}</div>
 }
 
 function WrittenComment({text}: {text: string}) {

@@ -56,6 +56,7 @@ type NavigationState = {
   }
   quota?: {remaining?: number; limit?: number}
 }
+interface NavigationResponse extends ApiEnvelope {revision?: string; navigation?: NavigationState}
 
 interface Response extends ApiEnvelope {
   competition: CompetitionSummary & {
@@ -130,6 +131,24 @@ function modeLabel(scoring: string) {
 function numberValue(value: unknown, fallback = 0) {
   const numeric = Number(value)
   return Number.isFinite(numeric) ? numeric : fallback
+}
+
+function useUnsavedChangesWarning(dirty: boolean) {
+  useEffect(() => {
+    if (!dirty) return undefined
+    const beforeUnload = (event: BeforeUnloadEvent) => {event.preventDefault(); event.returnValue = ''}
+    const linkClick = (event: MouseEvent) => {
+      const guardedEvent = event as MouseEvent & {numojUnsavedPromptShown?: boolean}
+      if (guardedEvent.numojUnsavedPromptShown) return
+      const link = event.target instanceof Element ? event.target.closest('a[href]') : null
+      if (!link || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
+      guardedEvent.numojUnsavedPromptShown = true
+      if (!window.confirm('当前页面有未保存的修改，确定离开吗？')) {event.preventDefault(); event.stopPropagation()}
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    document.addEventListener('click', linkClick, true)
+    return () => {window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('click', linkClick, true)}
+  }, [dirty])
 }
 
 function fileSize(bytesValue: unknown) {
@@ -290,8 +309,8 @@ function SubmitPanel({data, competitionId}: {data: Response; competitionId: stri
       <div className="my-history-header"><strong>我的历史提交</strong>{submissions.length ? <div className="history-stats"><span className="history-stat"><span className="history-stat-val">{submissions.length}</span><span className="history-stat-label">次</span></span><span className="history-stat"><span className="history-stat-val">{best == null ? '—' : best.toFixed(isElo ? 0 : 2)}</span><span className="history-stat-label">{isElo ? '最高 ELO' : '最高分'}</span></span></div> : null}</div>
       {submissions.length ? <div className="aj-subs">{submissions.map((row) => <SubmissionCard row={row} competition={data.competition} scoring={scoring} isElo={isElo} onDetail={(item) => setDetailTarget({id: item.id, createdAt: item.created_at, status: item.status, username: item.username, answerDownloadUrl: item.ai_answer_download_url})} key={row.id} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>提交作品后，这里会显示每次评测结果。</span></div>}
     </div>
-    {isAgentJudge ? <JudgeDetailModal competitionId={competitionId} target={detailTarget} canAppeal onClose={() => setDetailTarget(null)} /> : null}
-    {isReverseJudge ? <ReverseJudgeDetailModal competitionId={competitionId} target={detailTarget} onClose={() => setDetailTarget(null)} /> : null}
+    {isAgentJudge ? <JudgeDetailModal competitionId={competitionId} target={detailTarget} canAppeal onClose={() => setDetailTarget(null)} onTerminal={() => queryClient.invalidateQueries({queryKey: ['ranking', competitionId]})} /> : null}
+    {isReverseJudge ? <ReverseJudgeDetailModal competitionId={competitionId} target={detailTarget} onClose={() => setDetailTarget(null)} onTerminal={() => queryClient.invalidateQueries({queryKey: ['ranking', competitionId]})} /> : null}
   </section>
 }
 
@@ -464,6 +483,7 @@ function AllSubmissionsPanel({data}: {data: Response}) {
             return <div className="rk-bulk-row" key={row.id}><label className="rk-bulk-check"><input type="checkbox" checked={selected.includes(row.id)} disabled={tooMany || running} onChange={(event) => setSelected((current) => event.target.checked ? [...current, row.id] : current.filter((id) => id !== row.id))} /><span>#{row.id}</span></label><div className="rk-bulk-cell rk-user">{row.username}</div><div className={`rk-bulk-pill ${statusClasses[status] === 's-ok' ? 'ok' : statusClasses[status] === 's-info' ? 'info' : statusClasses[status] === 's-err' ? 'err' : 'muted'}`}>{statusLabels[status] || status || '—'}</div><div className="rk-bulk-cell rk-score">{score == null ? '—' : numberValue(score).toFixed(isElo ? 0 : 2)}</div><div className="rk-bulk-cell rk-model">{row.base_model ? <><ModelLogo model={row.base_model} /> <span>{row.base_model}</span></> : '—'}</div><div className="rk-bulk-cell rk-time">{row.created_at}</div></div>
           }) : <div className="rk-bulk-empty">暂无筛选结果</div>}</div>
           {jobId ? <div className="rk-bulk-progress"><div className="rk-bulk-progress-track"><div className={`rk-bulk-progress-bar${job.data?.done ? ' is-done' : ''}`} style={{width: `${progress}%`}}>{progress}%</div></div><div className="rk-bulk-progress-text">重测入队进度 {numberValue(job.data?.processed)} / {numberValue(job.data?.total, selected.length)}，已入队 {numberValue(job.data?.requeued ?? job.data?.created)}，失败 {numberValue(job.data?.failed)}{job.data?.done ? '。重测已入队，原提交将按队列并发限制重新评测。' : ''}</div></div> : null}
+          {start.isError || job.isError ? <div className="alert alert-danger mt-3 mb-0" role="alert">{errorMessage(start.error || job.error)}</div> : null}
         </div>
         <div className="modal-footer"><button type="button" className="rk-bulk-secondary" onClick={() => setBulkOpen(false)}>关闭</button><button type="button" className="rk-bulk-primary" disabled={!selected.length || selected.length > maxSelected || tooMany || running || start.isPending} onClick={() => start.mutate()}><i className="fas fa-play" /><span>确认重测</span></button></div>
       </div>
@@ -471,8 +491,8 @@ function AllSubmissionsPanel({data}: {data: Response}) {
 
     {rows.length ? <div className="aj-subs" data-ranking-submission-list>{rows.map((row) => <SubmissionCard row={row} competition={data.competition} scoring={scoring} isElo={isElo} onDetail={(item) => setDetailTarget({id: item.id, createdAt: item.created_at, status: item.status, username: item.username, answerDownloadUrl: item.ai_answer_download_url})} key={row.id} onDelete={(item) => {if (window.confirm(`确认删除提交 #${item.id}？`)) remove.mutate(item.id)}} />)}</div> : <div className="ranking-v2-empty submissions-empty"><i className="fas fa-inbox" /><strong>暂无提交</strong><span>尚未有选手提交作品。</span></div>}
     {total > 0 ? <div className="submissions-pagination mt-3"><Pagination data={data} tab="all_submissions" /></div> : null}
-    {scoring === 'agent_judge' ? <JudgeDetailModal competitionId={data.competition.id} target={detailTarget} canAppeal={false} onClose={() => setDetailTarget(null)} /> : null}
-    {scoring === 'reverse_judge' ? <ReverseJudgeDetailModal competitionId={data.competition.id} target={detailTarget} onClose={() => setDetailTarget(null)} /> : null}
+    {scoring === 'agent_judge' ? <JudgeDetailModal competitionId={data.competition.id} target={detailTarget} canAppeal={false} onClose={() => setDetailTarget(null)} onTerminal={() => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})} /> : null}
+    {scoring === 'reverse_judge' ? <ReverseJudgeDetailModal competitionId={data.competition.id} target={detailTarget} onClose={() => setDetailTarget(null)} onTerminal={() => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})} /> : null}
   </section>
 }
 
@@ -718,6 +738,7 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   const [gateEnabled, setGateEnabled] = useState(Boolean(data.competition.reverse_quality_gate_enabled))
   const [gatePrompt, setGatePrompt] = useState(String(data.competition.reverse_quality_gate_prompt || ''))
   const [editor, setEditor] = useState<{kind: 'main' | 'gate'; index: number; value: JsonRecord} | null>(null)
+  const [editorError, setEditorError] = useState('')
   const harnessOptions: AjeChoiceOption[] = [
     {value: 'claude_code', label: 'Claude Code', icon: harnessIconClass('claude_code')},
     {value: 'codex', label: 'Codex', icon: harnessIconClass('codex')},
@@ -727,19 +748,40 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   const sourceOptions: AjeChoiceOption[] = [{value: 'custom', label: '自定义', icon: 'fa-pen'}, {value: 'global', label: '从全局端点复制', icon: 'fa-project-diagram'}]
   const protocolOptions: AjeChoiceOption[] = [{value: 'openai', label: 'OpenAI 兼容', icon: 'fa-code'}, {value: 'anthropic', label: 'Anthropic 兼容', icon: 'fa-code'}]
   const statusOptions: AjeChoiceOption[] = [{value: 'enabled', label: '启用', icon: 'fa-circle-play'}, {value: 'paused', label: '暂停', icon: 'fa-circle-pause'}, {value: 'disabled', label: '停用', icon: 'fa-circle-stop'}]
-  useEffect(() => {setEndpoints(data.aj_endpoints || []); setGateEndpoints(data.quality_gate_endpoints || [])}, [data.aj_endpoints, data.quality_gate_endpoints])
+  const serverMainFingerprint = JSON.stringify({endpoints: data.aj_endpoints || [], timeout: numberValue(data.competition.agent_judge_timeout_seconds, 1800), finalizeTimeout: numberValue(data.competition.reverse_judge_finalize_timeout_seconds, 180), orchestration: String(data.competition.agent_judge_orchestration_mode || 'single')})
+  const serverGateFingerprint = JSON.stringify({endpoints: data.quality_gate_endpoints || [], enabled: Boolean(data.competition.reverse_quality_gate_enabled), prompt: String(data.competition.reverse_quality_gate_prompt || '')})
+  const mainBaselineRef = useRef(serverMainFingerprint)
+  const gateBaselineRef = useRef(serverGateFingerprint)
+  const mainFingerprint = JSON.stringify({endpoints, timeout, finalizeTimeout, orchestration})
+  const gateFingerprint = JSON.stringify({endpoints: gateEndpoints, enabled: gateEnabled, prompt: gatePrompt})
+  const mainDirty = mainFingerprint !== mainBaselineRef.current
+  const gateDirty = gateFingerprint !== gateBaselineRef.current
+  useUnsavedChangesWarning(mainDirty || gateDirty || Boolean(editor))
+  useEffect(() => {
+    if (!mainDirty && serverMainFingerprint !== mainBaselineRef.current) {mainBaselineRef.current = serverMainFingerprint; setEndpoints(data.aj_endpoints || []); setTimeoutValue(numberValue(data.competition.agent_judge_timeout_seconds, 1800)); setFinalizeTimeout(numberValue(data.competition.reverse_judge_finalize_timeout_seconds, 180)); setOrchestration(String(data.competition.agent_judge_orchestration_mode || 'single'))}
+    if (!gateDirty && serverGateFingerprint !== gateBaselineRef.current) {gateBaselineRef.current = serverGateFingerprint; setGateEndpoints(data.quality_gate_endpoints || []); setGateEnabled(Boolean(data.competition.reverse_quality_gate_enabled)); setGatePrompt(String(data.competition.reverse_quality_gate_prompt || ''))}
+  }, [data, gateDirty, mainDirty, serverGateFingerprint, serverMainFingerprint])
   const save = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope & {endpoints?: JsonRecord[]}>(`/api/ranking/competitions/${data.competition.id}/agent-judge/endpoints`, {method: 'POST', body: JSON.stringify({timeout_seconds: timeout, reverse_judge_finalize_timeout_seconds: finalizeTimeout, orchestration_mode: orchestration, endpoints})}),
-    onSuccess: (payload) => {if (payload.endpoints) setEndpoints(payload.endpoints); void queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})},
+    onSuccess: (payload) => {const savedEndpoints = payload.endpoints || endpoints; setEndpoints(savedEndpoints); mainBaselineRef.current = JSON.stringify({endpoints: savedEndpoints, timeout, finalizeTimeout, orchestration}); void queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})},
   })
   const saveGate = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope & {endpoints?: JsonRecord[]}>(`/api/ranking/competitions/${data.competition.id}/reverse-judge/quality-gate`, {method: 'POST', body: JSON.stringify({enabled: gateEnabled, prompt: gatePrompt, endpoints: gateEndpoints})}),
-    onSuccess: (payload) => {if (payload.endpoints) setGateEndpoints(payload.endpoints); void queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})},
+    onSuccess: (payload) => {const savedEndpoints = payload.endpoints || gateEndpoints; setGateEndpoints(savedEndpoints); gateBaselineRef.current = JSON.stringify({endpoints: savedEndpoints, enabled: gateEnabled, prompt: gatePrompt}); void queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})},
   })
-  const openNew = (kind: 'main' | 'gate') => setEditor({kind, index: -1, value: {harness: 'claude_code', source_mode: 'custom', protocol: 'anthropic', concurrency_limit: 1, status: 'enabled', context_window_tokens: 1000000, max_output_tokens: 384000, thinking_compatibility: true}})
+  const openNew = (kind: 'main' | 'gate') => {setEditorError(''); setEditor({kind, index: -1, value: {harness: 'claude_code', source_mode: 'custom', protocol: 'anthropic', concurrency_limit: 1, status: 'enabled', context_window_tokens: 1000000, max_output_tokens: 384000, thinking_compatibility: true}})}
   const applyEditor = () => {
     if (!editor) return
     let next = {...editor.value}
+    const contextWindow = Number(next.context_window_tokens)
+    const maxOutput = Number(next.max_output_tokens)
+    const concurrency = Number(next.concurrency_limit)
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64) {setEditorError('并发上限必须是 1–64 的整数'); return}
+    if (!Number.isInteger(contextWindow) || contextWindow < 1 || contextWindow > 1000000) {setEditorError('上下文窗口必须是 1–1000000 的整数'); return}
+    if (!Number.isInteger(maxOutput) || maxOutput < 1 || maxOutput > 1000000) {setEditorError('最大输出必须是 1–1000000 的整数'); return}
+    if (maxOutput > contextWindow) {setEditorError('最大输出不能超过上下文窗口'); return}
+    if (String(next.source_mode || 'custom') === 'custom' && (!String(next.base_url || '').trim() || !String(next.model || '').trim())) {setEditorError('请填写 Base URL 和模型'); return}
+    if (editor.index < 0 && String(next.source_mode || 'custom') === 'global' && !next.global_endpoint_id) {setEditorError('请选择要复制的全局端点'); return}
     if (editor.index < 0 && String(next.source_mode || 'custom') === 'global') {
       const candidates = data.agent_global_endpoint_candidates?.[String(next.harness || 'claude_code')] || []
       const candidate = candidates.find((item) => String(item.id) === String(next.global_endpoint_id || ''))
@@ -747,6 +789,7 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
     }
     const update = editor.kind === 'main' ? setEndpoints : setGateEndpoints
     update((current) => editor.index < 0 ? [...current, next] : current.map((item, index) => index === editor.index ? next : item))
+    setEditorError('')
     setEditor(null)
   }
   const deleteEditor = () => {
@@ -761,17 +804,17 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   const editorSource = String(editor?.value.source_mode || 'custom')
   const editorProtocol = String(editor?.value.protocol || (editorHarness === 'claude_code' ? 'anthropic' : 'openai'))
   const editorCandidates = data.agent_global_endpoint_candidates?.[editorHarness] || []
-  const updateEditorValue = (patch: JsonRecord) => setEditor((current) => current ? {...current, value: {...current.value, ...patch}} : current)
+  const updateEditorValue = (patch: JsonRecord) => {setEditorError(''); setEditor((current) => current ? {...current, value: {...current.value, ...patch}} : current)}
   const changeEditorHarness = (harness: string) => updateEditorValue({harness, protocol: harness === 'claude_code' ? 'anthropic' : harness === 'codex' || harness === 'opencode' ? 'openai' : editorProtocol, global_endpoint_id: ''})
   const changeGlobalCandidate = (candidateId: string) => {
     const candidate = editorCandidates.find((item) => String(item.id) === candidateId)
     updateEditorValue(candidate ? {global_endpoint_id: candidateId, base_url: candidate.base_url || '', model: candidate.model || '', protocol: candidate.protocol || 'openai', thinking_compatibility: Boolean(candidate.thinking_enabled)} : {global_endpoint_id: ''})
   }
   return <>
-    <div className="card mb-3"><div className="card-header"><i className="fas fa-robot me-2" /> {reverse ? 'AI 作答端点' : 'AI 评测模型端点'}</div><div className="card-body aje"><div className="aje-shell"><div className="aje-head"><div><div className="aje-title">{reverse ? 'AI 作答端点池' : '端点池'}</div></div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{endpoints.length} 个端点</span><span className="aje-total">并发 <b>{total(endpoints)}</b></span></div><button type="button" className="aje-add" title="添加端点" aria-label="添加端点" onClick={() => openNew('main')}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{endpoints.length ? endpoints.map((endpoint, index) => <EndpointCard endpoint={endpoint} onEdit={() => setEditor({kind: 'main', index, value: {...endpoint}})} key={String(endpoint.id || index)} />) : <div className="aje-empty">暂无端点</div>}</div><div className="aje-foot"><div className={`aje-settings${reverse ? ' reverse-timeout-settings' : ''}`}>{timeoutControl(reverse ? 'AI 作答超时' : '单次评测超时', 'fa-clock', timeout, setTimeoutValue, 60, 60)}{reverse ? timeoutControl('收尾超时', 'fa-hourglass-end', finalizeTimeout, setFinalizeTimeout, 30, 30) : <div className="aje-setting aje-mode"><span className="aje-setting-label"><i className="fas fa-diagram-project me-2" />编排</span><AjeChoice value={orchestration} onChange={setOrchestration} label="评测编排" options={[{value: 'single', label: '一次性评测', icon: 'fa-layer-group'}, {value: 'topological', label: '拓扑序编排', icon: 'fa-diagram-project'}]} /></div>}</div><div className="aje-actions"><span className="small">{save.isError ? errorMessage(save.error) : save.isSuccess ? '已保存' : ''}</span><button type="button" className="aje-save" disabled={save.isPending} onClick={() => save.mutate()}><i className="fas fa-save me-2" />保存</button></div></div></div></div></div>
-    {reverse ? <div className="card mb-3"><div className="card-header"><i className="fas fa-shield-halved me-2" /> 质量门禁</div><div className="card-body aje"><div className="qge-config"><div className="qge-config-head"><span className="qge-config-title">审核标准</span><div className="form-check form-switch qge-switch"><input className="form-check-input" type="checkbox" id="qgeEnabled" checked={gateEnabled} onChange={(event) => setGateEnabled(event.target.checked)} /><label className="form-check-label" htmlFor="qgeEnabled">启用</label></div></div><textarea className="qge-prompt" maxLength={20000} aria-label="质量门禁审核标准" value={gatePrompt} onChange={(event) => setGatePrompt(event.target.value)} /></div><div className="aje-shell qge-shell"><div className="aje-head"><div className="aje-title">审核端点池</div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{gateEndpoints.length} 个端点</span><span className="aje-total">并发 <b>{total(gateEndpoints)}</b></span></div><button type="button" className="aje-add" title="添加端点" aria-label="添加质量门禁端点" onClick={() => openNew('gate')}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{gateEndpoints.length ? gateEndpoints.map((endpoint, index) => <EndpointCard endpoint={endpoint} onEdit={() => setEditor({kind: 'gate', index, value: {...endpoint}})} key={String(endpoint.id || index)} />) : <div className="aje-empty">暂无端点</div>}</div><div className="aje-foot"><div /><div className="aje-actions"><span className="small">{saveGate.isError ? errorMessage(saveGate.error) : saveGate.isSuccess ? '已保存' : ''}</span><button type="button" className="aje-save" disabled={saveGate.isPending} onClick={() => saveGate.mutate()}><i className="fas fa-save me-2" />保存</button></div></div></div></div></div> : null}
-    {editor ? <ReactModal open onClose={() => setEditor(null)} id="ajeEditModal" labelledBy="ajeEditModalLabel" className="aje-modal" dialogClassName="modal-lg modal-dialog-scrollable"><div className="modal-content">
-          <div className="modal-header"><h5 className="modal-title" id="ajeEditModalLabel">{editor.index < 0 ? '添加' : '编辑'}{editor.kind === 'gate' ? '质量门禁端点' : '端点'}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={() => setEditor(null)} /></div>
+    <div className="card mb-3"><div className="card-header"><i className="fas fa-robot me-2" /> {reverse ? 'AI 作答端点' : 'AI 评测模型端点'}</div><div className="card-body aje"><div className="aje-shell"><div className="aje-head"><div><div className="aje-title">{reverse ? 'AI 作答端点池' : '端点池'}</div></div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{endpoints.length} 个端点</span><span className="aje-total">并发 <b>{total(endpoints)}</b></span></div><button type="button" className="aje-add" title="添加端点" aria-label="添加端点" onClick={() => openNew('main')}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{endpoints.length ? endpoints.map((endpoint, index) => <EndpointCard endpoint={endpoint} onEdit={() => {setEditorError(''); setEditor({kind: 'main', index, value: {...endpoint}})}} key={String(endpoint.id || index)} />) : <div className="aje-empty">暂无端点</div>}</div><div className="aje-foot"><div className={`aje-settings${reverse ? ' reverse-timeout-settings' : ''}`}>{timeoutControl(reverse ? 'AI 作答超时' : '单次评测超时', 'fa-clock', timeout, setTimeoutValue, 60, 60)}{reverse ? timeoutControl('收尾超时', 'fa-hourglass-end', finalizeTimeout, setFinalizeTimeout, 30, 30) : <div className="aje-setting aje-mode"><span className="aje-setting-label"><i className="fas fa-diagram-project me-2" />编排</span><AjeChoice value={orchestration} onChange={setOrchestration} label="评测编排" options={[{value: 'single', label: '一次性评测', icon: 'fa-layer-group'}, {value: 'topological', label: '拓扑序编排', icon: 'fa-diagram-project'}]} /></div>}</div><div className="aje-actions"><span className="small">{save.isError ? errorMessage(save.error) : save.isSuccess ? '已保存' : ''}</span><button type="button" className="aje-save" disabled={save.isPending} onClick={() => save.mutate()}><i className="fas fa-save me-2" />保存</button></div></div></div></div></div>
+    {reverse ? <div className="card mb-3"><div className="card-header"><i className="fas fa-shield-halved me-2" /> 质量门禁</div><div className="card-body aje"><div className="qge-config"><div className="qge-config-head"><span className="qge-config-title">审核标准</span><div className="form-check form-switch qge-switch"><input className="form-check-input" type="checkbox" id="qgeEnabled" checked={gateEnabled} onChange={(event) => setGateEnabled(event.target.checked)} /><label className="form-check-label" htmlFor="qgeEnabled">启用</label></div></div><textarea className="qge-prompt" maxLength={20000} aria-label="质量门禁审核标准" value={gatePrompt} onChange={(event) => setGatePrompt(event.target.value)} /></div><div className="aje-shell qge-shell"><div className="aje-head"><div className="aje-title">审核端点池</div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{gateEndpoints.length} 个端点</span><span className="aje-total">并发 <b>{total(gateEndpoints)}</b></span></div><button type="button" className="aje-add" title="添加端点" aria-label="添加质量门禁端点" onClick={() => openNew('gate')}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{gateEndpoints.length ? gateEndpoints.map((endpoint, index) => <EndpointCard endpoint={endpoint} onEdit={() => {setEditorError(''); setEditor({kind: 'gate', index, value: {...endpoint}})}} key={String(endpoint.id || index)} />) : <div className="aje-empty">暂无端点</div>}</div><div className="aje-foot"><div /><div className="aje-actions"><span className="small">{saveGate.isError ? errorMessage(saveGate.error) : saveGate.isSuccess ? '已保存' : ''}</span><button type="button" className="aje-save" disabled={saveGate.isPending} onClick={() => saveGate.mutate()}><i className="fas fa-save me-2" />保存</button></div></div></div></div></div> : null}
+    {editor ? <ReactModal open onClose={() => {setEditorError(''); setEditor(null)}} id="ajeEditModal" labelledBy="ajeEditModalLabel" className="aje-modal" dialogClassName="modal-lg modal-dialog-scrollable"><div className="modal-content">
+          <div className="modal-header"><h5 className="modal-title" id="ajeEditModalLabel">{editor.index < 0 ? '添加' : '编辑'}{editor.kind === 'gate' ? '质量门禁端点' : '端点'}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={() => {setEditorError(''); setEditor(null)}} /></div>
           <div className="modal-body"><div className={`aje-modal-grid${editor.index < 0 ? ' is-add' : ''}`}>
             <div className="aje-modal-field aje-col-pick"><span>Agent Harness</span><AjeChoice value={editorHarness} onChange={changeEditorHarness} label="Agent Harness" options={harnessOptions} /></div>
             {editor.index < 0 ? <div className="aje-modal-field aje-col-pick"><span>创建方式</span><RankingChoice name="source_mode" value={editorSource} onChange={(source_mode) => updateEditorValue({source_mode, global_endpoint_id: ''})} label="创建方式" options={sourceOptions} /></div> : null}
@@ -787,8 +830,8 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
             <label className="aje-modal-field aje-col-4"><span>上下文窗口</span><input type="number" min={1} max={1000000} step={1} required inputMode="numeric" aria-label="上下文窗口" value={numberValue(editor.value.context_window_tokens, 1000000)} onChange={(event) => updateEditorValue({context_window_tokens: numberValue(event.target.value, 1000000)})} /></label>
             <label className="aje-modal-field aje-col-4"><span>最大输出</span><input type="number" min={1} max={1000000} step={1} required inputMode="numeric" aria-label="最大输出" value={numberValue(editor.value.max_output_tokens, 384000)} onChange={(event) => updateEditorValue({max_output_tokens: numberValue(event.target.value, 384000)})} /></label>
             <div className="aje-modal-field aje-col-4"><span id="ajeEditThinkingLabel">Thinking 兼容</span><div className="aje-thinking-compatibility"><div className="form-check form-switch"><input className="form-check-input" type="checkbox" aria-labelledby="ajeEditThinkingLabel" checked={editor.value.thinking_compatibility !== false} onChange={(event) => updateEditorValue({thinking_compatibility: event.target.checked})} /></div></div></div>
-          </div></div>
-          <div className="modal-footer d-flex justify-content-between">{editor.index >= 0 ? <button type="button" className="aje-modal-delete" onClick={deleteEditor}><i className="fas fa-trash-can" /> 删除端点</button> : null}<div className="aje-modal-footer-actions"><button type="button" className="aje-modal-cancel" onClick={() => setEditor(null)}>取消</button><button type="button" className="aje-modal-apply" onClick={applyEditor}><i className="fas fa-check" /> 应用修改</button></div></div>
+          </div>{editorError ? <div className="alert alert-danger mt-3 mb-0" role="alert">{editorError}</div> : null}</div>
+          <div className="modal-footer d-flex justify-content-between">{editor.index >= 0 ? <button type="button" className="aje-modal-delete" onClick={deleteEditor}><i className="fas fa-trash-can" /> 删除端点</button> : null}<div className="aje-modal-footer-actions"><button type="button" className="aje-modal-cancel" onClick={() => {setEditorError(''); setEditor(null)}}>取消</button><button type="button" className="aje-modal-apply" onClick={applyEditor}><i className="fas fa-check" /> 应用修改</button></div></div>
         </div>
     </ReactModal> : null}
   </>
@@ -801,6 +844,7 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
   const [linkSource, setLinkSource] = useState<number | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<{from: number; to: number} | null>(null)
   const [modalIndex, setModalIndex] = useState<number | null>(null)
+  const [modalDraft, setModalDraft] = useState<JsonRecord | null>(null)
   const {engine, layout, edges, routes} = useRuleTopology(rules, {nodeWidth: 168, nodeHeight: 100, marginX: 24, marginY: 20, columnGap: 88, rowGap: 80, slotPadding: 42, maxSlotStep: 17})
   const compact = (value: unknown, length: number) => {
     const text = String(value || '').replace(/\s+/g, ' ').trim()
@@ -808,8 +852,13 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
     return text.length > length ? `${text.slice(0, length)}…` : text
   }
   const updateModalRule = (field: string, value: unknown) => {
-    if (modalIndex == null) return
-    setRules((current) => current.map((rule, index) => index === modalIndex ? {...rule, [field]: value} : rule))
+    setModalDraft((current) => current ? {...current, [field]: value} : current)
+  }
+  const closeRuleModal = () => {setModalIndex(null); setModalDraft(null)}
+  const saveRuleModal = () => {
+    if (modalIndex == null || !modalDraft) return
+    setRules((current) => modalIndex >= current.length ? [...current, modalDraft] : current.map((rule, index) => index === modalIndex ? modalDraft : rule))
+    closeRuleModal()
   }
   const canAddEdge = (from: number, to: number) => {
     if (!from || !to || from === to || edges.some((edge) => edge.from === from && edge.to === to)) return false
@@ -827,7 +876,7 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
       return
     }
     if (!linkMode) {
-      setModalIndex(index)
+      setModalIndex(index); setModalDraft({...rules[index]})
       return
     }
     if (linkSource == null) {
@@ -867,7 +916,7 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
     }
     return current.map((rule, index) => ({...rule, dependencies: (Array.isArray(rule.dependencies) ? rule.dependencies : []).filter((dependency) => !redundant.has(`${numberValue(dependency)}:${numberValue(rule.rule_id, index + 1)}`))}))
   })
-  const modalRule = modalIndex == null ? null : rules[modalIndex]
+  const modalRule = modalDraft
   return <>
     <div className="aj-topo-layout"><div className="aj-topo-main"><div className="aj-topo-canvas">{!rules.length ? <div className="aj-topo-empty"><div><i className="fas fa-diagram-project mb-2 d-block" style={{fontSize: '1.5rem', opacity: .5}} />还没有评分规则。</div></div> : !layout || !engine ? <div className="aj-topo-empty text-danger">当前依赖存在环，无法生成 DAG。请切回文本视图调整。</div> : <div className="aj-topo-stage" style={{width: Math.ceil(layout.width), height: Math.ceil(layout.height)}}><div className={`aj-topo-surface${linkMode ? ` link-mode${linkSource ? ' link-has-source' : ''}` : ''}${deleteMode ? ' delete-mode' : ''}`} style={{width: layout.width, height: layout.height}}><svg className="aj-topo-svg" width={layout.width} height={layout.height} viewBox={`0 0 ${layout.width} ${layout.height}`}>{edges.map((edge) => {
       const key = engine.edgeKey(edge.from, edge.to)
@@ -880,8 +929,8 @@ function AgentRulesTopology({rules, setRules}: {rules: JsonRecord[]; setRules: D
       const position = layout.positions[id]
       const blocked = linkMode && linkSource != null && linkSource !== id && !canAddEdge(linkSource, id)
       return <button type="button" className={`aj-topo-node${deleteMode && deleteSelection.includes(index) ? ' delete-selected' : ''}${linkMode && linkSource === id ? ' link-source' : linkMode && linkSource != null && !blocked ? ' link-target' : blocked ? ' link-blocked' : linkMode ? ' link-ready' : ''}`} title={String(rule.rule_text || '未填写规则内容')} style={{left: position.x, top: position.y}} onClick={() => clickNode(index)} key={id}><span className="aj-topo-node-id">规则 {id} · {numberValue(rule.value)} 分</span><span className="aj-topo-node-title">{String(rule.rule_name || '').trim() || compact(rule.rule_text, 14)}</span><span className="aj-topo-node-text">{compact(rule.rule_text, 42)}</span></button>
-    })}</div></div>}</div></div><aside className="aj-topo-panel" aria-label="拓扑工具"><div className="aj-topo-actions"><button type="button" className="aj-topo-icon-btn" aria-label="增加节点" title="增加节点" disabled={deleteMode} onClick={() => {setRules((current) => [...current, {rule_id: current.length + 1, rule_name: '', rule_text: '', value: 0, dependencies: []}]); setModalIndex(rules.length)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><path d="M12 9v6M9 12h6M12 2v3M12 19v3M2 12h3M19 12h3" /></svg></button><div className="aj-topo-delete-wrap"><button type="button" className={`aj-topo-icon-btn${deleteMode ? ' delete-active' : ''}`} aria-label="删除节点" title="删除节点" disabled={!rules.length} onClick={() => {setDeleteMode((current) => !current); setDeleteSelection([]); setLinkMode(false); setLinkSource(null)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg></button><button type="button" className={`aj-topo-confirm-btn${deleteMode ? ' show' : ''}`} aria-label="确认删除" title="确认删除" disabled={!deleteSelection.length} onClick={deleteSelectedNodes}><i className="fas fa-check" /></button></div><button type="button" className={`aj-topo-icon-btn${linkMode ? ' active' : ''}`} aria-label="添加连接" title="添加连接" disabled={rules.length < 2 || deleteMode} onClick={() => {setLinkMode((current) => !current); setLinkSource(null); setSelectedEdge(null)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="12" r="2.5" /><path d="M8 12h8.5M14 8.5 17.5 12 14 15.5" /><circle cx="20" cy="12" r="2.5" /></svg></button><button type="button" className="aj-topo-icon-btn" aria-label="简化拓扑关系" title="简化拓扑关系" disabled={!rules.length || deleteMode} onClick={simplify}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="17" r="2" /><circle cx="12" cy="7" r="2" /><circle cx="19" cy="17" r="2" /><path d="M6.5 15.2 10.5 8.8M13.5 8.8 17.5 15.2M7.5 17h9" /></svg></button></div></aside></div>
-    {modalRule && modalIndex != null ? <ReactModal open onClose={() => setModalIndex(null)} id="ajRuleModal" labelledBy="ajRuleModalLabel" className="aj-rule-modal" dialogClassName="modal-lg modal-dialog-scrollable"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="ajRuleModalLabel">编辑规则 {numberValue(modalRule.rule_id, modalIndex + 1)}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={() => setModalIndex(null)} /></div><div className="modal-body"><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalName">规则名称</label><input type="text" className="form-control" id="ajRuleModalName" maxLength={120} placeholder="规则名称" value={String(modalRule.rule_name || '')} onChange={(event) => updateModalRule('rule_name', event.target.value)} /></div><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalText">规则原文</label><textarea className="form-control" id="ajRuleModalText" placeholder="用自然语言描述这条评分规则……" value={String(modalRule.rule_text || '')} onChange={(event) => updateModalRule('rule_text', event.target.value)} /></div><div><label className="form-label" htmlFor="ajRuleModalValue">分值</label><input type="number" min={0} step={0.5} className="form-control" id="ajRuleModalValue" value={numberValue(modalRule.value)} onChange={(event) => updateModalRule('value', numberValue(event.target.value))} /></div></div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={() => setModalIndex(null)}>取消</button><button type="button" className="btn btn-success" onClick={() => setModalIndex(null)}>保存修改</button></div></div></ReactModal> : null}
+    })}</div></div>}</div></div><aside className="aj-topo-panel" aria-label="拓扑工具"><div className="aj-topo-actions"><button type="button" className="aj-topo-icon-btn" aria-label="增加节点" title="增加节点" disabled={deleteMode} onClick={() => {setModalIndex(rules.length); setModalDraft({rule_id: rules.length + 1, rule_name: '', rule_text: '', value: 0, dependencies: []})}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><path d="M12 9v6M9 12h6M12 2v3M12 19v3M2 12h3M19 12h3" /></svg></button><div className="aj-topo-delete-wrap"><button type="button" className={`aj-topo-icon-btn${deleteMode ? ' delete-active' : ''}`} aria-label="删除节点" title="删除节点" disabled={!rules.length} onClick={() => {setDeleteMode((current) => !current); setDeleteSelection([]); setLinkMode(false); setLinkSource(null)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg></button><button type="button" className={`aj-topo-confirm-btn${deleteMode ? ' show' : ''}`} aria-label="确认删除" title="确认删除" disabled={!deleteSelection.length} onClick={deleteSelectedNodes}><i className="fas fa-check" /></button></div><button type="button" className={`aj-topo-icon-btn${linkMode ? ' active' : ''}`} aria-label="添加连接" title="添加连接" disabled={rules.length < 2 || deleteMode} onClick={() => {setLinkMode((current) => !current); setLinkSource(null); setSelectedEdge(null)}}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="12" r="2.5" /><path d="M8 12h8.5M14 8.5 17.5 12 14 15.5" /><circle cx="20" cy="12" r="2.5" /></svg></button><button type="button" className="aj-topo-icon-btn" aria-label="简化拓扑关系" title="简化拓扑关系" disabled={!rules.length || deleteMode} onClick={simplify}><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="5" cy="17" r="2" /><circle cx="12" cy="7" r="2" /><circle cx="19" cy="17" r="2" /><path d="M6.5 15.2 10.5 8.8M13.5 8.8 17.5 15.2M7.5 17h9" /></svg></button></div></aside></div>
+    {modalRule && modalIndex != null ? <ReactModal open onClose={closeRuleModal} id="ajRuleModal" labelledBy="ajRuleModalLabel" className="aj-rule-modal" dialogClassName="modal-lg modal-dialog-scrollable"><div className="modal-content"><div className="modal-header"><h5 className="modal-title" id="ajRuleModalLabel">编辑规则 {numberValue(modalRule.rule_id, modalIndex + 1)}</h5><button type="button" className="btn-close" aria-label="关闭" onClick={closeRuleModal} /></div><div className="modal-body"><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalName">规则名称</label><input type="text" className="form-control" id="ajRuleModalName" maxLength={120} placeholder="规则名称" value={String(modalRule.rule_name || '')} onChange={(event) => updateModalRule('rule_name', event.target.value)} /></div><div className="mb-3"><label className="form-label" htmlFor="ajRuleModalText">规则原文</label><textarea className="form-control" id="ajRuleModalText" placeholder="用自然语言描述这条评分规则……" value={String(modalRule.rule_text || '')} onChange={(event) => updateModalRule('rule_text', event.target.value)} /></div><div><label className="form-label" htmlFor="ajRuleModalValue">分值</label><input type="number" min={0} step={0.5} className="form-control" id="ajRuleModalValue" value={numberValue(modalRule.value)} onChange={(event) => updateModalRule('value', numberValue(event.target.value))} /></div></div><div className="modal-footer"><button type="button" className="btn btn-outline-secondary" onClick={closeRuleModal}>取消</button><button type="button" className="btn btn-success" onClick={saveRuleModal}>保存修改</button></div></div></ReactModal> : null}
   </>
 }
 
@@ -889,8 +938,12 @@ function AgentRulesSettings({data}: {data: Response}) {
   const queryClient = useQueryClient()
   const [rules, setRules] = useState<JsonRecord[]>(data.judge_rules || [])
   const [view, setView] = useState<'text' | 'topo'>('text')
-  useEffect(() => {setRules(data.judge_rules || [])}, [data.judge_rules])
-  const save = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${data.competition.id}/agent-judge/rules`, {method: 'POST', body: JSON.stringify({rules})}), onSuccess: () => queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})})
+  const serverFingerprint = JSON.stringify(data.judge_rules || [])
+  const baselineRef = useRef(serverFingerprint)
+  const dirty = JSON.stringify(rules) !== baselineRef.current
+  useUnsavedChangesWarning(dirty)
+  useEffect(() => {if (!dirty && serverFingerprint !== baselineRef.current) {baselineRef.current = serverFingerprint; setRules(data.judge_rules || [])}}, [data.judge_rules, dirty, serverFingerprint])
+  const save = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${data.competition.id}/agent-judge/rules`, {method: 'POST', body: JSON.stringify({rules})}), onSuccess: () => {baselineRef.current = JSON.stringify(rules); void queryClient.invalidateQueries({queryKey: ['ranking', String(data.competition.id)]})}})
   const update = (index: number, field: string, value: unknown) => setRules((current) => current.map((rule, ruleIndex) => ruleIndex === index ? {...rule, [field]: value} : rule))
   const toggleDependency = (index: number, dependencyId: number) => setRules((current) => current.map((rule, ruleIndex) => {
     if (ruleIndex !== index) return rule
@@ -911,6 +964,7 @@ function AgentRulesSettings({data}: {data: Response}) {
 function EditPanel({data}: {data: Response}) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const formRef = useRef<HTMLFormElement>(null)
   const competition = data.competition
   const [mode, setMode] = useState(String(competition.scoring_mode || 'absolute'))
   const [answerFormat, setAnswerFormat] = useState(String(competition.answer_format || 'json'))
@@ -920,13 +974,16 @@ function EditPanel({data}: {data: Response}) {
   const [scriptFile, setScriptFile] = useState<File | null>(null)
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
   const [attachmentPreview, setAttachmentPreview] = useState<RankingMediaTarget | null>(null)
+  const [formDirty, setFormDirty] = useState(false)
+  const baseDirty = formDirty || mode !== String(competition.scoring_mode || 'absolute') || answerFormat !== String(competition.answer_format || 'json') || submissionMethod !== String(competition.submission_method || 'zip') || runtimeMode !== String(competition.elo_runtime_mode || 'legacy')
+  useUnsavedChangesWarning(baseDirty || Boolean(referenceFile || scriptFile || attachmentFile))
   const save = useMutation({
     mutationFn: (body: FormData) => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${competition.id}`, {method: 'POST', body}),
-    onSuccess: () => queryClient.invalidateQueries({queryKey: ['ranking', String(competition.id)]}),
+    onSuccess: () => {setFormDirty(false); void queryClient.invalidateQueries({queryKey: ['ranking', String(competition.id)]})},
   })
   const upload = useMutation({
     mutationFn: ({path, field, file}: {path: string; field: string; file: File}) => {const body = new FormData(); body.append(field, file); return apiFetch<ApiEnvelope>(`/api/ranking/competitions/${competition.id}/${path}`, {method: 'POST', body})},
-    onSuccess: () => queryClient.invalidateQueries({queryKey: ['ranking', String(competition.id)]}),
+    onSuccess: (_payload, request) => {if (request.field === 'reference') setReferenceFile(null); else if (request.field === 'scoring_script') setScriptFile(null); else if (request.field === 'attachment') setAttachmentFile(null); void queryClient.invalidateQueries({queryKey: ['ranking', String(competition.id)]})},
   })
   const command = useMutation({
     mutationFn: ({path, method = 'POST'}: {path: string; method?: 'POST' | 'DELETE'}) => apiFetch<ApiEnvelope>(`/api/ranking/competitions/${competition.id}/${path}`, {method}),
@@ -942,11 +999,11 @@ function EditPanel({data}: {data: Response}) {
   const scriptName = String(competition.scoring_script_name || '')
   const referenceName = String(competition.reference_answer_name || '')
   const uploadCard = (title: ReactNode, current: ReactNode, path: string, field: string, file: File | null, setFile: (file: File | null) => void, accept?: string) => <div className={`card mb-3${!current ? ' border-warning' : ''}`}><div className="card-header">{title}</div><div className="card-body"><div className="mb-3"><strong>当前{field === 'reference' ? '文件' : '脚本'}：</strong>{current}</div><div className="mb-3"><input type="file" className="form-control" accept={accept} onChange={(event) => setFile(event.target.files?.[0] || null)} /></div><button type="button" className="btn btn-outline-primary" disabled={upload.isPending} onClick={(event) => {if (file) upload.mutate({path, field, file}); else event.currentTarget.parentElement?.querySelector<HTMLInputElement>('input[type=file]')?.click()}}><i className="fas fa-cloud-upload-alt me-2" />上传并替换</button>{field === 'scoring_script' && scriptName ? <button type="button" className="btn btn-outline-danger btn-sm ms-2" onClick={() => {if (window.confirm('确认清除评测脚本？')) command.mutate({path: 'scoring-script', method: 'DELETE'})}}><i className="fas fa-trash me-2" />清除评测脚本</button> : null}</div></div>
-  return <section className="ranking-v2-settings" data-ranking-tab-panel="edit"><div className="card mb-3"><div className="card-header"><i className="fas fa-pencil-alt me-2" /> 基本信息</div><div className="card-body"><form id="rankingEditForm" onSubmit={(event) => {event.preventDefault(); save.mutate(new FormData(event.currentTarget))}}>
+  return <section className="ranking-v2-settings" data-ranking-tab-panel="edit"><div className="card mb-3"><div className="card-header"><i className="fas fa-pencil-alt me-2" /> 基本信息</div><div className="card-body"><form ref={formRef} id="rankingEditForm" onChange={() => setFormDirty(true)} onSubmit={(event) => {event.preventDefault(); if (event.currentTarget.reportValidity()) save.mutate(new FormData(event.currentTarget))}}>
     <div className="mb-3"><label className="form-label"><i className="fas fa-heading me-2 text-muted" />标题</label><input className="form-control" name="title" defaultValue={String(competition.title || '')} required maxLength={255} /></div>
     <div className="mb-3"><label className="form-label"><i className="fas fa-align-left me-2 text-muted" />摘要</label><textarea className="form-control" name="summary" rows={2} maxLength={500} placeholder="一句话介绍本场打榜赛（展示在列表卡片上，最多 500 字）" defaultValue={String(competition.summary || '')} /></div>
-    <div className="row mb-3 align-items-start"><div className="col-md-4"><label className="form-label"><i className="fas fa-star-half-alt me-2 text-muted" />评分模式</label><RankingChoice name="scoring_mode" value={mode} onChange={setMode} label="评分模式" options={[{value: 'absolute', label: '标准答案评分', icon: 'fa-award'}, {value: 'elo', label: 'ELO 对战', icon: 'fa-chess'}, {value: 'agent_judge', label: 'Agent 评测', icon: 'fa-robot'}, {value: 'reverse_judge', label: '反向评测', icon: 'fa-undo-alt'}]} /></div>{mode === 'absolute' ? <><div className="col-md-4"><label className="form-label"><i className="fas fa-trophy me-2 text-muted" />满分</label><input type="number" className="form-control" name="max_score" min={1} max={100000} defaultValue={numberValue(competition.max_score, 100)} /></div><div className="col-md-4"><label className="form-label"><i className="fas fa-file-code me-2 text-muted" />答案格式</label><RankingChoice name="answer_format" value={answerFormat} onChange={setAnswerFormat} label="答案格式" options={[{value: 'json', label: 'JSON（.json）', icon: 'fa-file-code'}, {value: 'zip', label: 'ZIP 压缩包（.zip）', icon: 'fa-file-archive'}]} /></div></> : null}{mode === 'agent_judge' ? <div className="col-md-4"><label className="form-label"><i className="fas fa-upload me-2 text-muted" />提交方式</label><RankingChoice name="submission_method" value={submissionMethod} onChange={setSubmissionMethod} label="提交方式" options={[{value: 'zip', label: '上传 ZIP 压缩包', icon: 'fa-file-archive'}, {value: 'git', label: 'Git 仓库拉取', icon: 'fa-code-branch'}]} /></div> : null}{mode === 'agent_judge' || mode === 'reverse_judge' ? <div className="col-md-4"><label className="form-label"><i className="fas fa-hourglass-half me-2 text-muted" />每 48 小时提交次数</label><LimitControl competition={competition} onReset={() => command.mutate({path: 'submission-limit/reset'})} /></div> : null}</div>
-    {mode !== 'agent_judge' ? <div className="row mb-3"><div className="col-md-4"><label className="form-label"><i className="fas fa-stopwatch me-2 text-muted" />评测脚本超时（秒）</label><input className="form-control" name="scoring_script_timeout_seconds" type="number" min={5} max={1800} defaultValue={numberValue(competition.scoring_script_timeout_seconds, 120)} /></div>{mode === 'elo' ? <div className="col-md-4"><label className="form-label"><i className="fas fa-layer-group me-2 text-muted" />评测脚本执行模式</label><RankingChoice name="elo_runtime_mode" value={runtimeMode} onChange={setRuntimeMode} label="评测脚本执行模式" options={[{value: 'legacy', label: '单容器运行时', icon: 'fa-cube'}, {value: 'isolated', label: '隔离运行时', icon: 'fa-shield-alt'}]} /></div> : null}</div> : null}
+    <div className="row mb-3 align-items-start"><div className="col-md-4"><label className="form-label"><i className="fas fa-star-half-alt me-2 text-muted" />评分模式</label><RankingChoice name="scoring_mode" value={mode} onChange={(value) => {setMode(value); setFormDirty(true)}} label="评分模式" options={[{value: 'absolute', label: '标准答案评分', icon: 'fa-award'}, {value: 'elo', label: 'ELO 对战', icon: 'fa-chess'}, {value: 'agent_judge', label: 'Agent 评测', icon: 'fa-robot'}, {value: 'reverse_judge', label: '反向评测', icon: 'fa-undo-alt'}]} /></div>{mode === 'absolute' ? <><div className="col-md-4"><label className="form-label"><i className="fas fa-trophy me-2 text-muted" />满分</label><input type="number" className="form-control" name="max_score" min={1} max={100000} defaultValue={numberValue(competition.max_score, 100)} /></div><div className="col-md-4"><label className="form-label"><i className="fas fa-file-code me-2 text-muted" />答案格式</label><RankingChoice name="answer_format" value={answerFormat} onChange={(value) => {setAnswerFormat(value); setFormDirty(true)}} label="答案格式" options={[{value: 'json', label: 'JSON（.json）', icon: 'fa-file-code'}, {value: 'zip', label: 'ZIP 压缩包（.zip）', icon: 'fa-file-archive'}]} /></div></> : null}{mode === 'agent_judge' ? <div className="col-md-4"><label className="form-label"><i className="fas fa-upload me-2 text-muted" />提交方式</label><RankingChoice name="submission_method" value={submissionMethod} onChange={(value) => {setSubmissionMethod(value); setFormDirty(true)}} label="提交方式" options={[{value: 'zip', label: '上传 ZIP 压缩包', icon: 'fa-file-archive'}, {value: 'git', label: 'Git 仓库拉取', icon: 'fa-code-branch'}]} /></div> : null}{mode === 'agent_judge' || mode === 'reverse_judge' ? <div className="col-md-4"><label className="form-label"><i className="fas fa-hourglass-half me-2 text-muted" />每 48 小时提交次数</label><LimitControl competition={competition} onReset={() => command.mutate({path: 'submission-limit/reset'})} /></div> : null}</div>
+    {mode !== 'agent_judge' ? <div className="row mb-3"><div className="col-md-4"><label className="form-label"><i className="fas fa-stopwatch me-2 text-muted" />评测脚本超时（秒）</label><input className="form-control" name="scoring_script_timeout_seconds" type="number" min={5} max={1800} defaultValue={numberValue(competition.scoring_script_timeout_seconds, 120)} /></div>{mode === 'elo' ? <div className="col-md-4"><label className="form-label"><i className="fas fa-layer-group me-2 text-muted" />评测脚本执行模式</label><RankingChoice name="elo_runtime_mode" value={runtimeMode} onChange={(value) => {setRuntimeMode(value); setFormDirty(true)}} label="评测脚本执行模式" options={[{value: 'legacy', label: '单容器运行时', icon: 'fa-cube'}, {value: 'isolated', label: '隔离运行时', icon: 'fa-shield-alt'}]} /></div> : null}</div> : null}
     {(mode === 'agent_judge' || mode === 'reverse_judge') && (mode === 'reverse_judge' || submissionMethod === 'git') ? <div className="row mb-3"><div className="col-md-12"><label className="form-label"><i className="fas fa-code-branch me-2 text-muted" />Git 仓库标准命名</label><input className="form-control" name="git_format" defaultValue={String(competition.git_format || '')} placeholder="gitea@10.72.190.121:<username>/FinalProject.git" /></div></div> : null}
     {mode !== 'agent_judge' && mode !== 'reverse_judge' ? <div className="row mb-3 align-items-end"><div className="col-md-4"><label className="form-label"><i className="fas fa-hourglass-half me-2 text-muted" />每 48 小时提交次数</label><LimitControl competition={competition} onReset={() => command.mutate({path: 'submission-limit/reset'})} /></div></div> : null}
     <div className="mb-3"><div className="form-check form-switch rank-online-row"><input className="form-check-input" type="checkbox" id="rankingActive" name="is_active" value="1" defaultChecked={active} /><label className="form-check-label" htmlFor="rankingActive"><i className="fas fa-bullhorn me-2 text-muted" />上线</label></div></div>
@@ -967,6 +1024,7 @@ function EditPanel({data}: {data: Response}) {
   {mode === 'agent_judge' ? <AgentRulesSettings data={data} /> : null}
   <div className="card mb-3"><div className="card-header"><i className="fas fa-paperclip me-2" /> 附件</div><div className="card-body"><div className="row g-2 mb-3"><div className="col"><input type="file" className="form-control" onChange={(event) => setAttachmentFile(event.target.files?.[0] || null)} /></div><div className="col-auto"><button type="button" className="btn btn-outline-primary" disabled={upload.isPending} onClick={(event) => {if (attachmentFile) upload.mutate({path: 'attachments', field: 'attachment', file: attachmentFile}); else event.currentTarget.closest('.row')?.querySelector<HTMLInputElement>('input[type=file]')?.click()}}><i className="fas fa-cloud-upload-alt me-1" /> 上传附件</button></div></div>{files.length ? <div className="list-group">{files.map((file) => <div className="list-group-item d-flex justify-content-between align-items-center" key={file.id}><div><i className="fas fa-file me-2" />{file.filename}<small className="text-muted ms-2">{Math.floor(numberValue(file.file_size) / 1024)} KB · {String(file.uploaded_at || '')}</small></div><div>{file.media_kind ? <button type="button" className="btn btn-sm btn-outline-primary me-1 rk-media-btn" title={`${file.media_kind === 'video' ? '播放' : '查看'} ${file.filename}`} onClick={() => setAttachmentPreview({filename: file.filename, mediaKind: file.media_kind || 'image', inlineUrl: `${file.download_url}?inline=1`, downloadUrl: file.download_url})}><i className={`fas ${file.media_kind === 'video' ? 'fa-play' : 'fa-eye'}`} /></button> : null}<a href={file.download_url} className="btn btn-sm btn-outline-primary me-1" download><i className="fas fa-download" /></a><button type="button" className="btn btn-sm btn-outline-danger" onClick={() => {if (window.confirm(`删除附件：${file.filename} ?`)) command.mutate({path: `attachments/${file.id}`, method: 'DELETE'})}}><i className="fas fa-trash" /></button></div></div>)}</div> : <p className="text-muted mb-0">暂无附件。</p>}{upload.isError ? <div className="small text-danger mt-3">{errorMessage(upload.error)}</div> : null}</div></div>
   {mode === 'elo' ? <div className="card mb-3"><div className="card-header d-flex justify-content-between align-items-center"><span><i className="fas fa-toggle-on me-2" /> 动态评分运行控制</span><span className={`badge ${eloRunning ? 'bg-success' : 'bg-secondary'}`}><i className={`${eloRunning ? 'fas' : 'far'} fa-circle me-1`} /> {eloRunning ? '运行中' : '已停止'}</span></div><div className="card-body"><div className="d-flex flex-wrap gap-2"><button type="button" className="btn btn-success" disabled={eloRunning || command.isPending} onClick={() => command.mutate({path: 'elo/start'})}><i className="fas fa-play me-1" /> 启动动态评分</button><button type="button" className="btn btn-warning" disabled={!eloRunning || command.isPending} onClick={() => command.mutate({path: 'elo/stop'})}><i className="fas fa-pause me-1" /> 停止动态评分</button><button type="button" className="btn btn-outline-danger" disabled={command.isPending} onClick={() => {if (window.confirm(`重置后将清空本场赛事的全部对战历史，并把池中所有提交的 ELO 分恢复到初始分（${numberValue(competition.elo_initial_rating, 1500).toFixed(0)}）。该操作不可撤销，确认重置吗？`)) command.mutate({path: 'elo/reset'})}}><i className="fas fa-undo me-1" /> 重置动态评分</button></div></div></div> : null}
+  {upload.isError || command.isError || removeCompetition.isError ? <div className="alert alert-danger" role="alert"><i className="fas fa-triangle-exclamation me-2" />{errorMessage(upload.error || command.error || removeCompetition.error)}</div> : null}
   <div className="card border-danger"><div className="card-header text-danger"><i className="fas fa-exclamation-triangle me-2" /> 危险操作</div><div className="card-body"><button type="button" className="btn btn-outline-danger" disabled={removeCompetition.isPending} onClick={() => {if (window.confirm(`删除后将同时清除比赛的全部提交与附件，且无法恢复。确认删除 ${competition.title} 吗？`)) removeCompetition.mutate()}}><i className="fas fa-trash me-1" /> 删除比赛</button></div></div>
   <MediaPreviewModal target={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
   </section>
@@ -1005,17 +1063,25 @@ function BatchPanel({data}: {data: Response}) {
 
 export default function RankingDetailPage() {
   const {competitionId = ''} = useParams()
+  const queryClient = useQueryClient()
   const {session} = useSession()
   const [params] = useSearchParams()
   const tab = params.get('tab') || 'description'
   const [railOpen, setRailOpen] = useState(false)
-  const result = useQuery({queryKey: ['ranking', competitionId, tab, params.toString()], queryFn: () => apiFetch<Response>(`/api/ranking/competitions/${competitionId}${queryString({tab, page: params.get('page'), mine: params.get('mine'), q: params.get('q'), status: params.get('status')})}`)})
+  const result = useQuery({queryKey: ['ranking', competitionId, tab, params.toString()], queryFn: () => apiFetch<Response>(`/api/ranking/competitions/${competitionId}${queryString({tab, page: params.get('page'), mine: params.get('mine'), q: params.get('q'), status: params.get('status')})}`), refetchOnWindowFocus: 'always'})
+  const navigation = useQuery({queryKey: ['ranking', competitionId, 'navigation-state'], queryFn: () => apiFetch<NavigationResponse>(`/ranking/${competitionId}/navigation-state`), enabled: Boolean(competitionId), refetchInterval: 10000, refetchIntervalInBackground: false, refetchOnWindowFocus: 'always'})
   useEffect(() => {setRailOpen(false)}, [tab])
   useEffect(() => {
     if (result.data?.competition.title) document.title = `${result.data.competition.title} - Numerical OJ`
   }, [result.data?.competition.title])
+  useEffect(() => {
+    const currentRevision = String(result.data?.navigation?.revision || '')
+    const nextRevision = String(navigation.data?.revision || '')
+    if (currentRevision && nextRevision && currentRevision !== nextRevision) void queryClient.invalidateQueries({queryKey: ['ranking', competitionId], predicate: (query) => query.queryKey[2] !== 'navigation-state'})
+  }, [competitionId, navigation.data?.revision, queryClient, result.data?.navigation?.revision])
   const data = result.data
-  const navCounts = data?.navigation?.counts || {}
+  const liveNavigation = navigation.data?.navigation ? {...navigation.data.navigation, revision: navigation.data.revision} : data?.navigation
+  const navCounts = liveNavigation?.counts || {}
   const scoring = String(data?.competition.scoring_mode || 'absolute').toLowerCase()
   const isElo = scoring === 'elo'
   const isAgentJudge = scoring === 'agent_judge'

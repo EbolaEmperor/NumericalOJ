@@ -93,6 +93,11 @@ export default function AdminPage() {
   const [classCn, setClassCn] = useState('')
   const users = useQuery({queryKey: ['admin', 'users', query, classFilter, page], queryFn: () => apiFetch<UsersResponse>(`/api/admin/users${queryString({user_search: query, class: classFilter, page})}`), enabled: Boolean(session?.user?.is_admin)})
   const refresh = async () => {await queryClient.invalidateQueries({queryKey: ['admin', 'users']})}
+  useEffect(() => {
+    if (!selectedUser) return
+    const latest = users.data?.users.find((item) => Number(item.id) === Number(selectedUser.id))
+    if (latest && latest !== selectedUser) setSelectedUser(latest)
+  }, [selectedUser, users.data?.users])
   const createClass = useMutation({mutationFn: () => apiFetch<ApiEnvelope>('/api/admin/classes', {method: 'POST', body: formData({class_en: classEn.replace(/^C/, ''), class_cn: classCn})}), onSuccess: async () => {setClassOpen(false); setClassEn(''); setClassCn(''); await refresh()}})
   const submit = (event: FormEvent) => {event.preventDefault(); setPage(1); setQuery(draft.trim()); setClassFilter(draftClass)}
   if (!session?.user?.is_admin) return <ErrorState message="该页面仅管理员可访问" />

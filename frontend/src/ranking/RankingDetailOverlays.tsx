@@ -99,8 +99,10 @@ export function MediaPreviewModal({target, onClose}: {target: RankingMediaTarget
 
 type SseState = {snapshot: JsonRecord | null; streamError: string}
 
-function useRankingEventSnapshot(url: string | null, open: boolean) {
+function useRankingEventSnapshot(url: string | null, open: boolean, onTerminal?: () => void) {
   const [state, setState] = useState<SseState>({snapshot: null, streamError: ''})
+  const onTerminalRef = useRef(onTerminal)
+  useEffect(() => {onTerminalRef.current = onTerminal}, [onTerminal])
   useEffect(() => {
     setState({snapshot: null, streamError: ''})
     if (!open || !url) return undefined
@@ -110,16 +112,18 @@ function useRankingEventSnapshot(url: string | null, open: boolean) {
     }
     let settled = false
     const source = new EventSource(url)
+    source.onopen = () => setState((current) => ({...current, streamError: ''}))
     const update = (event: MessageEvent) => {
       try { setState({snapshot: JSON.parse(event.data) as JsonRecord, streamError: ''}) } catch { /* 保留上一个完整快照 */ }
     }
     source.addEventListener('progress', update as EventListener)
-    source.addEventListener('done', ((event: MessageEvent) => {settled = true; update(event); source.close()}) as EventListener)
-    source.addEventListener('timeout', (() => {settled = true; setState((current) => ({...current, streamError: '实时连接超时，请关闭弹窗后重试。'})); source.close()}) as EventListener)
+    source.addEventListener('done', ((event: MessageEvent) => {settled = true; update(event); source.close(); onTerminalRef.current?.()}) as EventListener)
+    source.addEventListener('timeout', (() => {settled = true; setState((current) => ({...current, streamError: '实时连接超时，请关闭弹窗后重试。'})); source.close(); onTerminalRef.current?.()}) as EventListener)
     source.onerror = () => {
       if (settled) return
-      setState((current) => ({...current, streamError: '实时连接中断，请关闭弹窗后重试。'}))
-      source.close()
+      // EventSource 会使用服务端 retry 指令自动重连。长时间反向评测不能在
+      // 第一次网络抖动时主动关闭，否则用户再也看不到后续进度。
+      setState((current) => ({...current, streamError: '实时连接暂时中断，正在自动重连…'}))
     }
     return () => {settled = true; source.close()}
   }, [open, url])
@@ -196,10 +200,10 @@ function JudgeRules({rules}: {rules: JsonRecord[]}) {
 
 type AppealState = ApiEnvelope & {has_appeal?: boolean; status?: string; status_label?: string; reason?: string; admin_response?: string; already?: boolean}
 
-export function JudgeDetailModal({competitionId, target, canAppeal, onClose}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; canAppeal: boolean; onClose: () => void}) {
+export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; canAppeal: boolean; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const streamUrl = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/judge-events` : null
-  const {snapshot, streamError} = useRankingEventSnapshot(streamUrl, open)
+  const {snapshot, streamError} = useRankingEventSnapshot(streamUrl, open, onTerminal)
   const [view, setView] = useState<'topo' | 'detail' | 'trace'>('trace')
   const [manualView, setManualView] = useState(false)
   const [rulePopup, setRulePopup] = useState<JsonRecord | null>(null)
@@ -288,10 +292,10 @@ function QualityGate({step}: {step: JsonRecord}) {
   }) : <div className="rj-empty">无违规项</div>}{step.result ? <details className="rj-raw-json"><summary>展开原始 JSON</summary><pre className="rj-pre mt-2">{textValue(result)}</pre></details> : null}</>
 }
 
-export function ReverseJudgeDetailModal({competitionId, target, onClose}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; onClose: () => void}) {
+export function ReverseJudgeDetailModal({competitionId, target, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const url = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/reverse-judge-events` : null
-  const {snapshot, streamError} = useRankingEventSnapshot(url, open)
+  const {snapshot, streamError} = useRankingEventSnapshot(url, open, onTerminal)
   const steps = useMemo(() => Array.isArray(snapshot?.steps) ? snapshot.steps as JsonRecord[] : [], [snapshot?.steps])
   const [activeStep, setActiveStep] = useState('solution_check')
   const [manual, setManual] = useState(false)

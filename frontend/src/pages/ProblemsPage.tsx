@@ -83,7 +83,17 @@ export default function ProblemsPage() {
   const selectedClass = useMemo(() => (result.data?.classes || []).find((item) => String(item.class_en) === result.data?.selected_class_en) || result.data?.classes?.[0], [result.data])
   const activity = useQuery({
     queryKey: ['class-activity', result.data?.selected_class_en],
-    queryFn: () => apiFetch<ActivityResponse>(`/api/class-activity${queryString({class_en: result.data?.selected_class_en})}`),
+    queryFn: async () => {
+      const classCode = String(result.data?.selected_class_en || '')
+      const cacheKey = `numoj.problemActivity.v1:${String(session?.user?.id || session?.user?.username || 'anonymous')}:${classCode}`
+      try {
+        const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || 'null') as {savedAt?: number; payload?: ActivityResponse} | null
+        if (cached?.payload?.success && cached.savedAt && Date.now() - cached.savedAt < 30_000) return cached.payload
+      } catch { /* 隐私模式下直接请求 */ }
+      const payload = await apiFetch<ActivityResponse>(`/api/class-activity${queryString({class_en: classCode})}`)
+      try {window.sessionStorage.setItem(cacheKey, JSON.stringify({savedAt: Date.now(), payload}))} catch { /* 缓存不可用不阻断页面 */ }
+      return payload
+    },
     enabled: !library && Boolean(result.data?.selected_class_en),
     staleTime: 30_000,
   })

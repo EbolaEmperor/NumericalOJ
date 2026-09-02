@@ -1,4 +1,4 @@
-import {useMutation} from '@tanstack/react-query'
+import {useMutation, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useState, type FormEvent} from 'react'
 import {useLocation} from 'react-router-dom'
 
@@ -10,6 +10,7 @@ import {useSession} from '../session'
 
 export default function LoginPage() {
   const {session, loading, refresh} = useSession()
+  const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
   const [username, setUsername] = useState('')
@@ -25,6 +26,7 @@ export default function LoginPage() {
   const mutation = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope>('/api/session', {method: 'POST', body: JSON.stringify({username, password, next: '/problems'})}),
     onSuccess: async () => {
+      queryClient.removeQueries({predicate: (query) => query.queryKey[0] !== 'session'})
       await refresh()
       const target = new URLSearchParams(location.search).get('next')
       navigate(target?.startsWith('/') && !target.startsWith('//') ? target : '/problems', {replace: true})

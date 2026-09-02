@@ -9,7 +9,7 @@ import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {useSession} from '../session'
 
 interface ItemsResponse extends ApiEnvelope {endpoints?: JsonRecord[]; bindings?: JsonRecord[]; settings?: JsonRecord}
-interface EndpointTestResponse extends ApiEnvelope {test_token?: string; test?: JsonRecord}
+interface EndpointTestResponse extends ApiEnvelope {test_token?: string; test?: JsonRecord; context_window_tokens?: number; max_output_tokens?: number; limits_adjusted?: boolean}
 interface AgentAccessResponse extends ApiEnvelope {enabled?: boolean; public_enabled?: boolean; agent_public_enabled?: boolean; settings?: JsonRecord}
 interface AgentConcurrencyResponse extends ApiEnvelope {limit?: number; applied?: boolean; settings?: JsonRecord}
 const unlockConfirmation = '我已阅读上述内容，我清楚后果，我坚持要解锁'
@@ -20,6 +20,28 @@ function endpointIdentity(endpoint: JsonRecord) {
   const model = String(endpoint.model || '未命名模型')
   const id = Number(endpoint.id)
   return Number.isSafeInteger(id) && id > 0 ? `${model}（节点 #${id}）` : model
+}
+function existingEndpointPayload(endpoint: JsonRecord): JsonRecord {
+  return {
+    endpoint_id: Number(endpoint.id),
+    protocol: endpoint.protocol,
+    category: endpoint.category,
+    base_url: endpoint.base_url,
+    api_key: '',
+    model: endpoint.model,
+    context_window_tokens: endpoint.context_window_tokens,
+    max_output_tokens: endpoint.max_output_tokens,
+    thinking_enabled: Boolean(endpoint.thinking_enabled),
+    thinking_format: endpoint.thinking_format,
+    input_price_per_million: String(endpoint.input_price_per_million ?? ''),
+    cached_input_price_per_million: String(endpoint.cached_input_price_per_million ?? ''),
+    output_price_per_million: String(endpoint.output_price_per_million ?? ''),
+    peak_pricing_enabled: Boolean(endpoint.peak_pricing_enabled),
+    peak_time_ranges: endpoint.peak_time_ranges || '',
+    peak_input_price_per_million: String(endpoint.peak_input_price_per_million ?? ''),
+    peak_cached_input_price_per_million: String(endpoint.peak_cached_input_price_per_million ?? ''),
+    peak_output_price_per_million: String(endpoint.peak_output_price_per_million ?? ''),
+  }
 }
 const protocolLabels: Record<string, string> = {openai: 'OpenAI 兼容', anthropic: 'Anthropic 兼容'}
 const categoryLabels: Record<string, string> = {omni: '全模态', text: '纯文本', vision: '视觉理解', embedding: 'Embedding'}
@@ -72,8 +94,19 @@ function EndpointDialog({endpoint, close, refresh}: {endpoint: JsonRecord | null
     })
   }, [])
   const payload = () => ({...Object.fromEntries(Object.entries(form).filter(([, item]) => item !== '')), thinking_enabled: thinking && form.category !== 'embedding', thinking_format: thinking && form.category !== 'embedding' ? (form.protocol === 'anthropic' ? 'thinking_type' : 'enable_thinking') : 'none', peak_pricing_enabled: peakPricing})
-  const test = useMutation({mutationFn: () => apiFetch<EndpointTestResponse>('/api/admin/dynamic-config/llm-endpoints/test', {method: 'POST', body: JSON.stringify({...payload(), endpoint_id: endpoint?.id})}), onSuccess: (data) => setTestToken(data.test_token || '')})
-  const save = useMutation({mutationFn: () => apiFetch<ApiEnvelope>(endpoint ? `/api/admin/dynamic-config/llm-endpoints/${endpoint.id}` : '/api/admin/dynamic-config/llm-endpoints', {method: endpoint ? 'PUT' : 'POST', body: JSON.stringify({...payload(), test_token: testToken})}), onSuccess: async () => {await refresh(); close()}})
+  const requireValidForm = () => {
+    const element = document.querySelector<HTMLFormElement>('.numoj-endpoint-editor')
+    if (!element?.reportValidity()) throw new Error('请先修正表单中的无效字段')
+  }
+  const test = useMutation({
+    mutationFn: () => {requireValidForm(); return apiFetch<EndpointTestResponse>('/api/admin/dynamic-config/llm-endpoints/test', {method: 'POST', body: JSON.stringify({...payload(), endpoint_id: endpoint?.id})})},
+    onSuccess: (data) => {
+      const tested = (data.test || data) as JsonRecord
+      setForm((current) => ({...current, ...(tested.context_window_tokens != null ? {context_window_tokens: String(tested.context_window_tokens)} : {}), ...(tested.max_output_tokens != null ? {max_output_tokens: String(tested.max_output_tokens)} : {})}))
+      setTestToken(String(data.test_token || tested.test_token || ''))
+    },
+  })
+  const save = useMutation({mutationFn: () => {requireValidForm(); return apiFetch<ApiEnvelope>(endpoint ? `/api/admin/dynamic-config/llm-endpoints/${endpoint.id}` : '/api/admin/dynamic-config/llm-endpoints', {method: endpoint ? 'PUT' : 'POST', body: JSON.stringify({...payload(), test_token: testToken})})}, onSuccess: async () => {await refresh(); close()}})
   const set = (key: string, next: string) => {setTestToken(''); setForm((current) => ({...current, [key]: next}))}
   const toggleThinking = () => {setTestToken(''); setThinking((current) => !current)}
   const togglePeak = () => {setTestToken(''); setPeakPricing((current) => !current)}
@@ -112,7 +145,20 @@ export default function SiteConfigPage() {
   const removeEndpoint = useMutation({mutationFn: (id: number) => apiFetch<ApiEnvelope>(`/api/admin/dynamic-config/llm-endpoints/${id}`, {method: 'DELETE'}), onSuccess: async () => {setDeleteTarget(null); await refresh()}})
   const endpointAction = useMutation({mutationFn: ({id, action, body}: {id: number; action: 'lock' | 'unlock'; body: JsonRecord}) => apiFetch<ApiEnvelope>(`/api/admin/dynamic-config/llm-endpoints/${id}/${action}`, {method: 'POST', body: JSON.stringify(action === 'unlock' ? {...body, confirmation: unlockConfirmation} : body)}), onSuccess: async () => {setLockTarget(null); setUnlockTarget(null); await refresh()}})
   const bindingAction = useMutation({mutationFn: ({action, body}: {action: 'lock' | 'unlock'; body: JsonRecord}) => apiFetch<ApiEnvelope>(`/api/admin/dynamic-config/feature-bindings/repository_embedding/${action}`, {method: 'POST', body: JSON.stringify(action === 'unlock' ? {...body, confirmation: unlockConfirmation} : body)}), onSuccess: async () => {setLockTarget(null); setUnlockTarget(null); await refresh()}})
-  const retestEndpoint = useMutation({mutationFn: (item: JsonRecord) => apiFetch<EndpointTestResponse>('/api/admin/dynamic-config/llm-endpoints/test', {method: 'POST', body: JSON.stringify({endpoint_id: Number(item.id)})}), onSuccess: refresh})
+  const retestEndpoint = useMutation({
+    mutationFn: async (item: JsonRecord) => {
+      const candidate = existingEndpointPayload(item)
+      const tested = await apiFetch<EndpointTestResponse>('/api/admin/dynamic-config/llm-endpoints/test', {method: 'POST', body: JSON.stringify(candidate)})
+      const result = (tested.test || tested) as JsonRecord
+      if (result.limits_adjusted) {
+        const updated: JsonRecord = {...candidate, context_window_tokens: result.context_window_tokens, max_output_tokens: result.max_output_tokens, test_token: tested.test_token || result.test_token}
+        delete updated.endpoint_id
+        await apiFetch<ApiEnvelope>(`/api/admin/dynamic-config/llm-endpoints/${Number(item.id)}`, {method: 'PUT', body: JSON.stringify(updated)})
+      }
+      return tested
+    },
+    onSuccess: refresh,
+  })
   const accessValue = agentAccess.data?.settings?.public_enabled ?? agentAccess.data?.settings?.enabled ?? agentAccess.data?.public_enabled ?? agentAccess.data?.enabled ?? agentAccess.data?.agent_public_enabled ?? true
   const saveAgentAccess = useMutation({mutationFn: () => apiFetch<AgentAccessResponse>('/api/admin/dynamic-config/agent-public-access', {method: 'PUT', body: JSON.stringify({enabled: !Boolean(accessValue)})}), onSuccess: () => queryClient.invalidateQueries({queryKey: ['admin', 'dynamic-config', 'agent-public-access']})})
   const savedConcurrency = Number(agentConcurrency.data?.settings?.limit ?? agentConcurrency.data?.limit ?? 8)
@@ -148,6 +194,6 @@ export default function SiteConfigPage() {
     {lockTarget ? <><div className="modal fade show d-block site-config-modal" role="dialog" aria-modal="true" aria-labelledby="siteConfigLockTitle"><div className="modal-dialog modal-dialog-centered"><form className="modal-content" onSubmit={(event) => {event.preventDefault(); const reason = lockReason.trim(); if (!reason) return; if (lockTarget.kind === 'endpoint') endpointAction.mutate({id: Number(lockTarget.item.id), action: 'lock', body: {reason}}); else bindingAction.mutate({action: 'lock', body: {reason}})}}><div className="modal-header"><div><p>CHANGE PROTECTION</p><h2 className="modal-title" id="siteConfigLockTitle">{lockTarget.kind === 'endpoint' ? `加锁 · ${endpointIdentity(lockTarget.item)}` : '加锁 · Embedding 绑定'}</h2></div><button type="button" className="btn-close" aria-label="关闭" onClick={() => setLockTarget(null)} /></div><div className="modal-body"><label className="site-config-field"><span>加锁原因</span><textarea required maxLength={1000} rows={4} autoFocus value={lockReason} onChange={(event) => setLockReason(event.target.value)} /></label></div><div className="modal-footer"><button type="button" className="site-config-secondary" onClick={() => setLockTarget(null)}>取消</button><button type="submit" className="site-config-primary" disabled={endpointAction.isPending || bindingAction.isPending}><i className="fas fa-lock" />{endpointAction.isPending || bindingAction.isPending ? '加锁中…' : '加锁'}</button></div></form></div></div><div className="modal-backdrop fade show" /></> : null}
     {unlockTarget ? <><div className="modal fade show d-block site-config-modal" role="dialog" aria-modal="true" aria-labelledby="siteConfigUnlockTitle"><div className="modal-dialog modal-dialog-centered"><form className="modal-content" autoComplete="off" onSubmit={(event) => {event.preventDefault(); if (!unlockTarget.item.can_unlock || unlockText !== unlockConfirmation) return; const body = {password: unlockPassword, confirmation: unlockText}; if (unlockTarget.kind === 'endpoint') endpointAction.mutate({id: Number(unlockTarget.item.id), action: 'unlock', body}); else bindingAction.mutate({action: 'unlock', body})}}><div className="modal-header"><div><p>PROTECTED CONFIG</p><h2 className="modal-title" id="siteConfigUnlockTitle">{unlockTarget.kind === 'endpoint' ? `解锁 · ${endpointIdentity(unlockTarget.item)}` : '解锁 · Embedding 绑定'}</h2></div><button type="button" className="btn-close" aria-label="关闭" onClick={() => setUnlockTarget(null)} /></div><div className="modal-body"><div className="site-config-lock-reason"><span>加锁原因</span><p>{String(unlockTarget.item.lock_reason || '未记录原因')}</p></div>{!unlockTarget.item.can_unlock ? <div className="site-config-lock-denied"><i className="fas fa-user-lock" />你无法解锁</div> : <div data-unlock-owner-fields><label className="site-config-field"><span>当前密码</span><input type="password" required autoComplete="current-password" autoFocus value={unlockPassword} onChange={(event) => setUnlockPassword(event.target.value)} /></label><label className="site-config-field"><span>确认文本</span><input required autoComplete="off" placeholder={unlockConfirmation} value={unlockText} onChange={(event) => setUnlockText(event.target.value)} /></label><p className="site-config-confirmation-copy">{unlockConfirmation}</p></div>}</div><div className="modal-footer"><button type="button" className="site-config-secondary" onClick={() => setUnlockTarget(null)}>关闭</button>{unlockTarget.item.can_unlock ? <button type="submit" className="site-config-danger" disabled={endpointAction.isPending || bindingAction.isPending}><i className="fas fa-unlock" />{endpointAction.isPending || bindingAction.isPending ? '解锁中…' : '解锁'}</button> : null}</div></form></div></div><div className="modal-backdrop fade show" /></> : null}
     {deleteTarget ? <><div className="modal fade show d-block site-config-modal" role="dialog" aria-modal="true" aria-labelledby="siteConfigDeleteTitle"><div className="modal-dialog modal-dialog-centered modal-sm"><form className="modal-content" onSubmit={(event) => {event.preventDefault(); removeEndpoint.mutate(Number(deleteTarget.id))}}><div className="modal-header"><div><p>DELETE ENDPOINT</p><h2 className="modal-title" id="siteConfigDeleteTitle">确认删除</h2></div><button type="button" className="btn-close" aria-label="关闭" onClick={() => setDeleteTarget(null)} /></div><div className="modal-body"><p className="site-config-modal-copy">删除端点 <strong>{endpointIdentity(deleteTarget)}</strong>？</p></div><div className="modal-footer"><button type="button" className="site-config-secondary" onClick={() => setDeleteTarget(null)}>取消</button><button type="submit" className="site-config-danger" disabled={removeEndpoint.isPending}>{removeEndpoint.isPending ? '删除中…' : '删除'}</button></div></form></div></div><div className="modal-backdrop fade show" /></> : null}
-    {removeEndpoint.isError || updateBinding.isError || endpointAction.isError || bindingAction.isError || retestEndpoint.isError ? <div className="site-config-toast-region"><div className="site-config-toast">{errorMessage(removeEndpoint.error || updateBinding.error || endpointAction.error || bindingAction.error || retestEndpoint.error)}</div></div> : null}
+    {removeEndpoint.isError || updateBinding.isError || endpointAction.isError || bindingAction.isError || retestEndpoint.isError || saveAgentAccess.isError || saveAgentConcurrency.isError ? <div className="site-config-toast-region"><div className="site-config-toast">{errorMessage(removeEndpoint.error || updateBinding.error || endpointAction.error || bindingAction.error || retestEndpoint.error || saveAgentAccess.error || saveAgentConcurrency.error)}</div></div> : null}
   </section>
 }
