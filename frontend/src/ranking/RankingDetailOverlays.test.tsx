@@ -141,6 +141,33 @@ describe('打榜赛评测详情实时连接', () => {
 })
 
 describe('ELO 互动详情 Safari 生命周期', () => {
+  it('Blob 子文档保留原生视口，不重复补偿 Safari 页面缩放', () => {
+    const documents: string[] = []
+    const createObjectURL = vi.fn(() => 'blob:numoj-native-viewport')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('Blob', class {
+      constructor(parts: BlobPart[] = []) {
+        documents.push(parts.map(String).join(''))
+      }
+    })
+    vi.stubGlobal('URL', {...URL, createObjectURL, revokeObjectURL})
+
+    render(<MatchDetailModal
+      open
+      detail={{success: true, id: 5965, detail_output: {format: 'html', content: '<main style="height:100dvh">replay</main>', height: 540}}}
+      pending={false}
+      onClose={vi.fn()}
+      retry={vi.fn()}
+    />)
+
+    expect(documents).toHaveLength(1)
+    expect(documents[0]).toContain('<main style="height:100dvh">replay</main>')
+    expect(documents[0]).toContain('numoj:html-detail-ready')
+    expect(documents[0]).not.toContain('data-numoj-viewport-fix')
+    expect(documents[0]).not.toContain('data-numoj-embedded-scale')
+    expect(documents[0]).not.toContain('transform:scale(')
+  })
+
   it('在父级 layout effect 运行前已把 Blob URL 交给挂载后的全新 iframe', async () => {
     const onParentLayout = vi.fn()
     const createObjectURL = vi.fn(() => 'blob:numoj-match-detail')

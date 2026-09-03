@@ -26,19 +26,7 @@ function contentFingerprint(content: string) {
   return `${content.length}-${(hash >>> 0).toString(36)}`
 }
 
-function safariScaleHint() {
-  const userAgent = navigator.userAgent || ''
-  const isSafari = /Safari\//.test(userAgent) && !/(?:Chrome|Chromium|CriOS|Edg|OPR)\//.test(userAgent)
-  if (!isSafari || !window.innerWidth || !window.outerWidth) return 1
-  const scale = window.outerWidth / window.innerWidth
-  if (!Number.isFinite(scale) || scale <= .25 || scale >= 4) return 1
-  const nativeDpr = (window.devicePixelRatio || 1) / scale
-  const roundedDpr = Math.round(nativeDpr)
-  if (roundedDpr < 1 || roundedDpr > 4 || Math.abs(nativeDpr - roundedDpr) > .03) return 1
-  return Math.abs(scale - 1) < .005 ? 1 : scale
-}
-
-function htmlDetailDocument(content: string, readyToken: string, scaleHint: number) {
+function htmlDetailDocument(content: string, readyToken: string) {
   const csp = [
     "default-src 'none'", "img-src data: blob: https: http:", "media-src data: blob: https: http:",
     "font-src data: blob: https: http:", "style-src 'unsafe-inline' https: http:",
@@ -46,9 +34,10 @@ function htmlDetailDocument(content: string, readyToken: string, scaleHint: numb
     "worker-src blob:", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'",
   ].join('; ')
 
-  // 这是旧版多轮 Safari 实机修复后的最终协议。不要改成 CSS zoom，也不要
-  // transform iframe 外框：两种做法都会让 WebKit 的绘制坐标和点击坐标分离。
-  const readyScript = `<script>(function(){var token=${JSON.stringify(readyToken)};var scale=${JSON.stringify(scaleHint)};var root=document.documentElement;root.setAttribute("data-numoj-embedded-scale",String(scale));if(isFinite(scale)&&scale>0&&Math.abs(scale-1)>=.005){var percent=scale*100;var style=document.createElement("style");style.setAttribute("data-numoj-viewport-fix","");style.textContent="body{transform-origin:0 0!important;transform:scale("+(1/scale)+")!important;width:"+percent+"%!important;height:"+percent+"%!important;min-height:"+percent+"%!important}";document.head.appendChild(style);var body=document.body;var observer=new MutationObserver(function(records){if(!records.some(function(record){return record.type==="childList"||record.type==="characterData"}))return;var visibility=body.style.getPropertyValue("visibility");var priority=body.style.getPropertyPriority("visibility");body.style.setProperty("visibility","hidden","important");void body.offsetHeight;if(visibility)body.style.setProperty("visibility",visibility,priority);else body.style.removeProperty("visibility")});observer.observe(body,{subtree:true,childList:true,characterData:true})}window.parent.postMessage({type:"numoj:html-detail-ready",token:token},"*")})()<\/script>`
+  // React 版已经用 fresh iframe + Blob URL 隔离每份文档。不要再把父页面的
+  // Safari 页面缩放反向施加到 body：iframe 的 vw/vh/dvh 本就按自身视口计算，
+  // 二次补偿会把正好占满视口的互动内容放大并裁掉底部控制栏。
+  const readyScript = `<script>(function(){window.parent.postMessage({type:"numoj:html-detail-ready",token:${JSON.stringify(readyToken)}},"*")})()<\/script>`
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>html{color-scheme:light}html,body{min-height:100%;margin:0}body{overflow:auto;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}</style></head><body>${content}${readyScript}</body></html>`
 }
 
@@ -90,7 +79,7 @@ export function useMatchHtmlFrame({
     let fallbackTimer: number | null = null
     const readyToken = `${++readySequence}-${Date.now()}`
     const objectUrl = URL.createObjectURL(new Blob(
-      [htmlDetailDocument(content, readyToken, safariScaleHint())],
+      [htmlDetailDocument(content, readyToken)],
       {type: 'text/html;charset=utf-8'},
     ))
 
