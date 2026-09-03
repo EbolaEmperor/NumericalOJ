@@ -205,6 +205,30 @@ def test_claude_effort_argument_is_normalized_and_allowlisted(
         assert args[args.index("--effort") + 1] == expected
 
 
+def test_claude_print_harness_promises_to_wait_for_background_workflows(
+        monkeypatch):
+    module = _load_run_harness()
+    calls = []
+    _set_anthropic_endpoint(monkeypatch, module)
+    monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "0")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda args, **kwargs: calls.append((list(args), kwargs))
+        or SimpleNamespace(returncode=0, stdout="{}", stderr=""),
+    )
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+
+    assert module._run_claude_code("research") == 0
+
+    args, _kwargs = calls[0]
+    completion_prompt = args[args.index("--append-system-prompt") + 1]
+    assert "Background subagents and workflows are supported" in completion_prompt
+    assert "Do not return the final answer" in completion_prompt
+    assert "promise to report later is not completion" in completion_prompt
+    assert "--disallowed-tools" not in args
+
+
 def test_claude_endpoint_capabilities_can_disable_thinking(monkeypatch):
     module = _load_run_harness()
     calls = []
@@ -2423,6 +2447,129 @@ def test_claude_stream_json_adapter_acks_steer_only_after_user_replay(monkeypatc
         item["id"] for item in emitted
         if item.get("type") == "numoj_control" and item.get("status") == "accepted"
     ] == ["__start__", "steer-1"]
+
+
+def test_claude_stream_json_waits_for_background_subagents_and_parent_result(
+        monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    session_id = "22222222-2222-2222-2222-222222222222"
+    events = _event_queue(
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {"type": "result", "session_id": session_id},
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "message": {
+                "role": "assistant",
+                "id": "answer-after-subagents",
+                "content": [{"type": "text", "text": "已汇总全部结果"}],
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            },
+        },
+        {"type": "result", "session_id": session_id},
+    )
+    snapshots = iter([
+        [{
+            "subagent_id": "worker-a",
+            "name": "检索官方文档",
+            "status": "running",
+        }],
+        [{
+            "subagent_id": "worker-a",
+            "name": "检索官方文档",
+            "status": "completed",
+        }],
+    ])
+    monkeypatch.setattr(
+        module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "_claude_subagent_snapshot",
+        lambda _env, found_session_id: (
+            next(snapshots) if found_session_id == session_id else []
+        ),
+    )
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands(),
+        "",
+    )
+
+    assert completed.returncode == 0
+    subagent_events = [
+        json.loads(item["event"]["text"])
+        for item in emitted
+        if item.get("type") == "numoj_trace"
+        and item.get("event", {}).get("meta")
+        == module._CLAUDE_SUBAGENT_STATUS_META
+    ]
+    assert [item["status"] for item in subagent_events] == [
+        "running", "completed",
+    ]
+    assert any(
+        item.get("event", {}).get("text") == "已汇总全部结果"
+        for item in emitted if item.get("type") == "numoj_trace"
+    )
+
+
+def test_claude_subagent_snapshot_reads_workflow_journal_and_names(
+        monkeypatch, tmp_path):
+    module = _load_run_harness()
+    session_id = "22222222-2222-2222-2222-222222222222"
+    workflow = (
+        tmp_path / ".claude" / "projects" / "-workspace" / session_id
+        / "subagents" / "workflows" / "wf-test"
+    )
+    workflow.mkdir(parents=True)
+    (workflow / "journal.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "type": "started", "key": "one", "agentId": "agent-one",
+            }),
+            json.dumps({
+                "type": "result", "key": "one", "agentId": "agent-one",
+                "result": {"ok": True},
+            }),
+            json.dumps({
+                "type": "started", "key": "two", "agentId": "agent-two",
+            }),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    for agent_id, title in (
+        ("agent-one", "## 第一组：官方资料"),
+        ("agent-two", "## 第二组：限流核对"),
+    ):
+        (workflow / f"agent-{agent_id}.jsonl").write_text(
+            json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": title},
+            }, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    assert module._claude_subagent_snapshot(
+        {"HOME": str(tmp_path)}, session_id,
+    ) == [
+        {
+            "subagent_id": "agent-one",
+            "name": "第一组：官方资料",
+            "status": "completed",
+        },
+        {
+            "subagent_id": "agent-two",
+            "name": "第二组：限流核对",
+            "status": "running",
+        },
+    ]
 
 
 def test_claude_stream_json_does_not_ack_steer_for_tool_result_user_event(

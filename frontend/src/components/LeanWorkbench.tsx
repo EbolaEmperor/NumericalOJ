@@ -2,6 +2,7 @@ import {useCallback, useEffect, useMemo, useRef, useState, type RefObject} from 
 
 import {createLeanSemanticTokens} from '../editor/leanSemanticTokens'
 import type {Disposable, MonacoApi, MonacoEditorInstance, MonacoEditorReadyContext, MonacoModel} from '../editor/types'
+import {browserUuid} from '../lib/browserUuid'
 import {MonacoEditor} from './MonacoEditor'
 
 export type LeanSubmissionPayload = {revision: string; files: Record<string, string>}
@@ -37,7 +38,7 @@ const SOURCE_DEBOUNCE_MS = 700
 const CURSOR_DEBOUNCE_MS = 250
 
 function createClientSessionId() {
-  return crypto.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return browserUuid()
 }
 
 function normalizeWorkspace(workspace: LeanWorkspace | null | undefined, value: string): NormalizedWorkspace {

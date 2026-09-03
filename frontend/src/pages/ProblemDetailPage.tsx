@@ -14,6 +14,7 @@ import {ReactModal} from '../components/ReactModal'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {submissionNavigationState} from '../lib/submissionNavigation'
 import {useSession} from '../session'
+import {agentSessionUrl} from './agent/legacyBehavior'
 
 interface DetailResponse extends ApiEnvelope {
   problem: ProblemSummary & {content?: string; time_limit_ms?: number; max_score?: number; submission_limit?: number; written_grading_mode?: number}
@@ -225,8 +226,7 @@ function AgentLaunchModal({problemId, kind, maxScore, open, onClose, navigate}: 
       return apiFetch<AgentLaunchResponse>(`/api/problems/${problemId}/agent/generate-testdata`, {method: 'POST', body: form})
     },
     onSuccess: (payload) => {
-      const target = payload.view_url?.replace(/^\/agent\/tasks\//, '/agents/') || (payload.task_id ? `/agents/${payload.task_id}` : '/agents')
-      navigate(target)
+      navigate(agentSessionUrl(payload.task_id, payload.view_url))
     },
   })
   const harnessOptions = harnesses.map((item) => {const value = String(item.value || item.key || item.harness || item.id || ''); const key = value.toLowerCase().replaceAll('-', '_'); const logo = key === 'claude_code' ? 'claude-code' : key === 'open_code' ? 'opencode' : key; return {value, label: String(item.label || item.name || value), icon: `harness-logo harness-logo--${logo}`}})

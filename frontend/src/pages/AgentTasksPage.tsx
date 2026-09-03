@@ -11,7 +11,7 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {PendingAttachmentStrip} from './agent/AgentAttachments'
-import {agentComposerEnterAction, createAgentMessageId, decimalText, fileIdentity, mergeFiles, multiplyDecimal} from './agent/legacyBehavior'
+import {agentComposerEnterAction, agentSessionUrl, createAgentMessageId, decimalText, fileIdentity, mergeFiles, multiplyDecimal} from './agent/legacyBehavior'
 import {useAutosizeTextarea} from './agent/useAutosizeTextarea'
 
 interface Response extends ApiEnvelope {
@@ -321,8 +321,7 @@ export default function AgentTasksPage() {
       setMessage('')
       setAttachments([])
       await queryClient.invalidateQueries({queryKey: ['agent-tasks']})
-      if (data.detail_url) navigate(data.detail_url)
-      else if (data.session_id) navigate(`/agents/${encodeURIComponent(data.session_id)}`)
+      navigate(agentSessionUrl(data.session_id, data.detail_url))
     },
   })
 

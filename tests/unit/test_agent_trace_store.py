@@ -157,6 +157,118 @@ def test_ingest_ignores_malformed_record_versions(monkeypatch):
     )
 
 
+def test_subagent_status_is_persisted_without_splitting_work_block(monkeypatch):
+    inserted = []
+    updates = []
+
+    def handler(sql, params):
+        if sql.startswith("SELECT schema_version"):
+            return {"one": {
+                "schema_version": 2,
+                "last_event_order": 0,
+                "next_item_index": 1,
+                "active_block_id": None,
+                "active_item_index": None,
+            }}
+        if sql.startswith("INSERT IGNORE INTO agent_trace_events"):
+            inserted.append(params)
+            return {"rowcount": 1}
+        if sql.startswith("UPDATE agent_trace_sync_state"):
+            updates.append(params)
+            return {"rowcount": 1}
+        return {"rowcount": 1}
+
+    monkeypatch.setattr(
+        trace_store,
+        "get_db_connection",
+        lambda: _Connection(handler),
+    )
+    status_payload = json.dumps({
+        "schema_version": 1,
+        "subagent_id": "worker-a",
+        "name": "检索免费模型",
+        "status": "running",
+    }, ensure_ascii=False)
+
+    assert trace_store.ingest_agent_trace_records("task-subagent", [
+        _record(1, "thinking", "先制定计划"),
+        _record(
+            2,
+            "subagent",
+            status_payload,
+            title="检索免费模型",
+            meta=trace_store.AGENT_SUBAGENT_STATUS_META,
+            format="json",
+        ),
+        _record(3, "tool", "继续主任务"),
+    ]) == 3
+
+    assert inserted[0][4] == inserted[2][4]
+    assert inserted[1][4] is None
+    assert updates[-1][1:4] == (2, inserted[0][4], 1)
+
+
+def test_list_subagents_returns_latest_status_in_first_seen_order(monkeypatch):
+    rows = [
+        {
+            "event_order": 2,
+            "title": "资料检索",
+            "text": json.dumps({
+                "schema_version": 1,
+                "subagent_id": "worker-a",
+                "name": "资料检索",
+                "status": "running",
+            }, ensure_ascii=False),
+        },
+        {
+            "event_order": 3,
+            "title": "限流核对",
+            "text": json.dumps({
+                "schema_version": 1,
+                "subagent_id": "worker-b",
+                "name": "限流核对",
+                "status": "running",
+            }, ensure_ascii=False),
+        },
+        {
+            "event_order": 8,
+            "title": "资料检索",
+            "text": json.dumps({
+                "schema_version": 1,
+                "subagent_id": "worker-a",
+                "name": "资料检索",
+                "status": "completed",
+            }, ensure_ascii=False),
+        },
+    ]
+
+    def handler(sql, params):
+        assert "kind='subagent' AND meta=%s" in sql
+        assert params == (
+            "task-subagents", trace_store.AGENT_SUBAGENT_STATUS_META,
+        )
+        return {"all": rows}
+
+    monkeypatch.setattr(
+        trace_store,
+        "get_db_connection",
+        lambda: _Connection(handler),
+    )
+
+    assert trace_store.list_agent_trace_subagents("task-subagents") == [
+        {
+            "subagent_id": "worker-a",
+            "name": "资料检索",
+            "status": "completed",
+        },
+        {
+            "subagent_id": "worker-b",
+            "name": "限流核对",
+            "status": "running",
+        },
+    ]
+
+
 def test_public_timeline_contains_only_replies_steers_and_work_summaries(
     monkeypatch,
 ):

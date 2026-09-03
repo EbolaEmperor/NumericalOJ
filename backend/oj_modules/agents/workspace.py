@@ -807,10 +807,17 @@ def initialize_agent_task_workspace(
         session_id,
         filename,
         (
-            "You are now running in the cloud container environment provided by NumOJ."
-            f"You may use the {skill_name} skill to respond to user requests."
+            "You are now running in the cloud container environment provided by NumOJ. "
+            f"You may use the {skill_name} skill to respond to user requests. "
             "Do not attempt to access the system /tmp directory; "
-            "for temporary files, create and use a tmp subdirectory within the current project."
+            "for temporary files, create and use a tmp subdirectory within the current project.\n\n"
+            "Background subagents and workflows are supported, and NumOJ keeps this turn "
+            "alive while they run. Do not return the final answer while any subagent or "
+            "workflow from this turn is still running. Wait for every completion notification, "
+            "collect the required results, and incorporate them before returning the final "
+            "answer. A progress update or a promise to report later is not completion. If the "
+            "request is genuinely blocked after all background work has ended, state the "
+            "blocker explicitly."
         ),
     )
     return workspace

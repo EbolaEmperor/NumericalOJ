@@ -38,6 +38,7 @@ import {
 } from './agent/runEvents'
 import {
   agentComposerEnterAction,
+  agentSessionUrl,
   cachedFallbackMessage,
   createAgentMessageId,
   mergeFiles,
@@ -158,7 +159,7 @@ function WorkBlock({taskId, summary, live, liveRevision}: {taskId: string; summa
 }
 
 function AgentTimeline({taskId, messages, live, liveRevision, sessionId, openFile}: {taskId: string; messages: JsonRecord[]; live: boolean; liveRevision: number; sessionId: string; openFile: (path: string) => void}) {
-  if (!messages.length) return <div className="agent-workspace-empty">本轮没有可展示的工作详情。</div>
+  if (!messages.length) return null
   return <>{messages.map((message, index) => {
     const kind = traceKind(message)
     if (kind === 'work_summary') return <WorkBlock taskId={taskId} summary={message} live={live} liveRevision={liveRevision} key={String(message.block_id || index)} />
@@ -169,12 +170,22 @@ function AgentTimeline({taskId, messages, live, liveRevision, sessionId, openFil
   })}</>
 }
 
+function AgentSubagents({items}: {items: JsonRecord[]}) {
+  if (!items.length) return null
+  return <section className="agent-subagent-list" aria-label="Subagent 状态"><header>SUBAGENTS</header><ul>{items.map((item, index) => {
+    const subagentId = String(item.subagent_id || '')
+    const running = statusKey(item.status) === 'running'
+    return <li className={running ? 'is-running' : 'is-completed'} key={subagentId || String(index)}>{running ? <MathCurveLoader className="agent-subagent-loader" size="xs" iconOnly ariaLabel={`${String(item.name || 'Subagent')} 正在运行`} colorA="#8c7251" colorB="#c19a66" /> : <span className="agent-subagent-completed-dot" aria-hidden="true" />}<span>{String(item.name || `Subagent ${subagentId.slice(-8)}`)}</span><small>{running ? '正在运行' : '已完成'}</small></li>
+  })}</ul></section>
+}
+
 function AgentTurnDetails({taskId, duration, running = false, defaultOpen = false, liveRevision = 0, sessionId, openFile}: {taskId: string; duration?: unknown; running?: boolean; defaultOpen?: boolean; liveRevision?: number; sessionId: string; openFile: (path: string) => void}) {
   const [open, setOpen] = useState(defaultOpen)
   const result = useQuery({queryKey: agentRunQueryKey(taskId), queryFn: ({signal}) => fetchAgentRun(taskId, signal), enabled: open && Boolean(taskId), staleTime: Infinity, gcTime: Infinity, refetchOnReconnect: false})
   const trace = asRecord(result.data?.state?.execution_trace)
   const messages = Array.isArray(trace.trace_messages) ? trace.trace_messages as JsonRecord[] : []
-  return <details className="agent-turn-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><i className="fas fa-chevron-right" aria-hidden="true" />{running ? 'Agent 正在工作' : '工作详情'}</span>{running ? <span className="agent-live-mark"><i />LIVE</span> : duration ? <small>{String(duration)}</small> : null}</summary><div className="agent-turn-trace">{result.isPending ? <div className="agent-working-placeholder"><MathCurveLoader size="sm" label="正在加载工作详情" /></div> : result.isError ? <div className="agent-work-block-placeholder">工作详情加载失败，请收起后重试。</div> : <AgentTimeline taskId={taskId} messages={messages} live={running && open} liveRevision={liveRevision} sessionId={sessionId} openFile={openFile} />}</div></details>
+  const subagents = Array.isArray(trace.subagents) ? trace.subagents as JsonRecord[] : []
+  return <details className="agent-turn-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><i className="fas fa-chevron-right" aria-hidden="true" />{running ? 'Agent 正在工作' : '工作详情'}</span>{running ? <span className="agent-live-mark"><i />LIVE</span> : duration ? <small>{String(duration)}</small> : null}</summary><div className="agent-turn-trace">{result.isPending ? <div className="agent-working-placeholder"><MathCurveLoader size="sm" label="正在加载工作详情" /></div> : result.isError ? <div className="agent-work-block-placeholder">工作详情加载失败，请收起后重试。</div> : <><AgentTimeline taskId={taskId} messages={messages} live={running && open} liveRevision={liveRevision} sessionId={sessionId} openFile={openFile} />{!messages.length && !subagents.length ? <div className="agent-workspace-empty">本轮没有可展示的工作详情。</div> : null}<AgentSubagents items={subagents} /></>}</div></details>
 }
 
 function AgentUsage({usage, personal}: {usage: JsonRecord | null; personal: boolean}) {
@@ -325,7 +336,7 @@ export default function AgentSessionPage() {
   const dispatch = useMutation({
     mutationFn: (request: DispatchRequest) => apiFetch<DispatchResponse>(`/api/agent/sessions/${encodeURIComponent(sessionId)}`, {method: 'POST', body: request.body}),
     onSuccess: (payload, request) => {
-      if (payload.detail_url) {window.location.assign(payload.detail_url); return}
+      if (payload.detail_url) {window.location.assign(agentSessionUrl('', payload.detail_url)); return}
       const record = payload.agent_message || {}
       const actualMode = (messageMode(record) || statusKey(payload.delivery_mode || request.deliveryMode)) as AgentDeliveryMode
       if (!request.retrying && ['queue', 'steer'].includes(actualMode)) {if (payload.session_state) applyMessageState(payload.session_state); clearComposer(); reportFeedback('', false); if (actualMode === 'steer') scrollToLatest(); return}
@@ -344,7 +355,7 @@ export default function AgentSessionPage() {
     onError: (error, request) => {
       if (!request.retrying && error instanceof ApiError && error.status >= 400 && error.status < 500) attemptRef.current = {fingerprint: '', id: '', mode: '', expectedTaskId: ''}
       const detailUrl = error instanceof ApiError ? String(error.payload?.detail_url || '') : ''
-      if (detailUrl) {window.location.assign(detailUrl); return}
+      if (detailUrl) {window.location.assign(agentSessionUrl('', detailUrl)); return}
       reportFeedback(errorMessage(error))
     },
   })

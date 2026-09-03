@@ -10,6 +10,7 @@ from backend.oj_modules.infrastructure.mysql import get_db_connection
 
 
 AGENT_TRACE_SCHEMA_VERSION = 2
+AGENT_SUBAGENT_STATUS_META = "numoj-subagent-status-v1"
 
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _BLOCK_ID_RE = re.compile(r"work-[0-9a-f]{16}")
@@ -131,13 +132,19 @@ def _normalize_canonical_record(task_id, record):
     text = _truncate_text(event.get("text"), text_limit)
     if not text:
         return None
+    metadata = _truncate_text(event.get("meta"), 255)
+    is_subagent_status = (
+        kind == "subagent"
+        and metadata == AGENT_SUBAGENT_STATUS_META
+        and str(event.get("format") or "").strip().lower() == "json"
+    )
     return {
         "event_id": _event_storage_id(task_id, source_id),
         "event_order": sequence,
         "kind": kind,
         "title": _truncate_text(event.get("title"), 255),
         "text": text,
-        "meta": _truncate_text(event.get("meta"), 255),
+        "meta": metadata,
         "format": (
             str(event.get("format") or "text").strip().lower()
             if str(event.get("format") or "text").strip().lower()
@@ -146,6 +153,7 @@ def _normalize_canonical_record(task_id, record):
         ),
         "is_error": bool(event.get("is_error")),
         "message_id": None,
+        "is_subagent_status": is_subagent_status,
     }
 
 
@@ -208,7 +216,11 @@ def ingest_agent_trace_records(task_id, records, *, final=False):
                 if event_order <= last_order:
                     continue
                 kind = event["kind"]
-                is_internal = kind not in {"assistant", "user"}
+                is_subagent_status = bool(event.get("is_subagent_status"))
+                is_internal = (
+                    kind not in {"assistant", "user"}
+                    and not is_subagent_status
+                )
                 if is_internal:
                     candidate_block_id = active_block_id or _work_block_id(
                         task_id, event["event_id"]
@@ -218,7 +230,12 @@ def ingest_agent_trace_records(task_id, records, *, final=False):
                         if active_item_index is not None
                         else next_item_index
                     )
+                elif not is_subagent_status:
+                    candidate_block_id = None
+                    candidate_item_index = next_item_index
                 else:
+                    # Subagent 生命周期另行投影到工作详情底部，不应制造新的
+                    # 时间线工作块，也不能切断当时仍在展开的工具工作块。
                     candidate_block_id = None
                     candidate_item_index = next_item_index
 
@@ -256,7 +273,7 @@ def ingest_agent_trace_records(task_id, records, *, final=False):
                         active_block_id = candidate_block_id
                         active_item_index = candidate_item_index
                         next_item_index += 1
-                else:
+                elif not is_subagent_status:
                     active_block_id = ""
                     active_item_index = None
                     next_item_index += 1
@@ -448,6 +465,55 @@ def get_agent_trace_work_block(task_id, block_id):
     return {"block_id": block_id, "messages": messages}
 
 
+def list_agent_trace_subagents(task_id):
+    """按首次出现顺序返回每个 subagent 的最新持久化状态。"""
+
+    task_id = _normalize_task_id(task_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT event_order, title, text
+                FROM agent_trace_events
+                WHERE task_id=%s AND kind='subagent' AND meta=%s
+                ORDER BY event_order ASC
+                """,
+                (task_id, AGENT_SUBAGENT_STATUS_META),
+            )
+            rows = cursor.fetchall() or []
+    finally:
+        conn.close()
+
+    ordered_ids = []
+    latest = {}
+    for row in rows:
+        try:
+            payload = json.loads(str(row.get("text") or ""))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            continue
+        subagent_id = str(payload.get("subagent_id") or "").strip()
+        status = str(payload.get("status") or "").strip().lower()
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", subagent_id)
+            or status not in {"running", "completed"}
+        ):
+            continue
+        name = _truncate_text(payload.get("name") or row.get("title"), 160)
+        if not name:
+            name = f"Subagent {subagent_id[-8:]}"
+        if subagent_id not in latest:
+            ordered_ids.append(subagent_id)
+        latest[subagent_id] = {
+            "subagent_id": subagent_id,
+            "name": name,
+            "status": status,
+        }
+    return [latest[subagent_id] for subagent_id in ordered_ids]
+
+
 def get_last_agent_trace_assistant(task_id):
     task_id = _normalize_task_id(task_id)
     conn = get_db_connection()
@@ -562,11 +628,13 @@ def get_agent_trace_token_usage(task_id):
 
 __all__ = [
     "AGENT_TRACE_SCHEMA_VERSION",
+    "AGENT_SUBAGENT_STATUS_META",
     "AgentTraceStoreError",
     "get_agent_trace_work_block",
     "get_agent_trace_token_usage",
     "get_last_agent_trace_assistant",
     "ingest_agent_trace_records",
     "list_agent_trace_timeline",
+    "list_agent_trace_subagents",
     "save_agent_trace_token_usage",
 ]

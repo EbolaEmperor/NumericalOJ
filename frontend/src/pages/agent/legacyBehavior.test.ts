@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from 'vitest'
 
 import {
   agentComposerEnterAction,
+  agentSessionUrl,
   cachedFallbackMessage,
   createAgentMessageId,
   formatTokenCount,
@@ -17,11 +18,22 @@ describe('Agent 旧版浏览器行为兼容', () => {
     expect(createAgentMessageId()).toBe('12345678123412341234123456789abc')
   })
 
-  it('HTTP 等不提供 randomUUID 的环境沿用旧版前缀回退', () => {
-    vi.stubGlobal('crypto', {})
-    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
-    vi.spyOn(Math, 'random').mockReturnValue(.125)
-    expect(createAgentMessageId('retry')).toBe(`retry${(1_700_000_000_000).toString(36)}${(.125).toString(36).slice(2)}`)
+  it('把旧版 Agent 详情地址规范化到 React 会话路由', () => {
+    expect(agentSessionUrl('session / 1', '/agent/tasks/stale')).toBe('/agents/session%20%2F%201')
+    expect(agentSessionUrl('', '/agent/tasks/abc?turn=2')).toBe('/agents/abc?turn=2')
+    expect(agentSessionUrl('', '/admin/agent_tasks/legacy')).toBe('/agents/legacy')
+    expect(agentSessionUrl('', '/api/agent/sessions/native')).toBe('/agents/native')
+    expect(agentSessionUrl('', '')).toBe('/agents')
+  })
+
+  it('HTTP 环境沿用旧版 getRandomValues UUID 并移除连字符', () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.fill(0)
+        return bytes
+      },
+    })
+    expect(createAgentMessageId('retry')).toBe('00000000000040008000000000000000')
   })
 
   it('保持旧版输入框快捷键：Enter 排队、Ctrl/Cmd+Enter 插话、Shift+Enter 换行', () => {

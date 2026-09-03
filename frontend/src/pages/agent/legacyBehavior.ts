@@ -1,4 +1,5 @@
 import type {JsonRecord} from '../../api/types'
+import {browserUuid} from '../../lib/browserUuid'
 
 export type AgentDeliveryMode = 'turn' | 'queue' | 'steer'
 export type AgentComposerEnterAction = 'send' | 'steer' | null
@@ -24,12 +25,16 @@ export function agentComposerEnterAction({
   return running && (ctrlKey || metaKey) ? 'steer' : 'send'
 }
 
-export function createAgentMessageId(prefix = 'msg') {
-  const browserCrypto = globalThis.crypto
-  if (browserCrypto && typeof browserCrypto.randomUUID === 'function') {
-    return browserCrypto.randomUUID().replace(/-/g, '')
-  }
-  return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`
+export function createAgentMessageId(_prefix = 'msg') {
+  return browserUuid(globalThis.crypto).replace(/-/g, '')
+}
+
+export function agentSessionUrl(sessionId: unknown, detailUrl: unknown = '') {
+  const id = String(sessionId || '').trim()
+  if (id) return `/agents/${encodeURIComponent(id)}`
+  const url = String(detailUrl || '').trim()
+  if (!url) return '/agents'
+  return url.replace(/^\/(?:api\/agent\/sessions|agent\/tasks|admin\/agent_tasks)\/([^/?#]+)/, '/agents/$1')
 }
 
 export function fileIdentity(file: File) {

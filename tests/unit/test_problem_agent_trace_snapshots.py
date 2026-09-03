@@ -19,6 +19,11 @@ def _empty_v2_timeline(monkeypatch):
         "get_agent_trace_token_usage",
         lambda _task_id: None,
     )
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_subagents",
+        lambda _task_id: [],
+    )
 
 
 def test_agent_trace_dir_is_task_scoped_and_rejects_untrusted_ids(
@@ -76,6 +81,7 @@ def test_hydrate_agent_run_snapshot_reads_public_v2_timeline_only(
     trace = snapshot["execution_trace"]
     assert trace["status"] == "running"
     assert trace["trace_messages"] == public_timeline
+    assert trace["subagents"] == []
     assert trace["trace_files"] == []
     assert all(
         message.get("text") != "真实 harness 回复"
@@ -157,6 +163,29 @@ def test_canonical_steer_boundary_is_delivery_fact_if_status_write_was_lost(
     assert trace["trace_messages"][0]["attachments"][0]["name"] == "note.txt"
     assert captured["task_id"] == "task-steer"
     assert captured["status"] == "Running"
+
+
+def test_agent_snapshot_includes_persisted_subagent_status(monkeypatch):
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_subagents",
+        lambda task_id: [{
+            "subagent_id": "worker-a",
+            "name": "核对官方文档",
+            "status": "completed",
+        }] if task_id == "task-subagents" else [],
+    )
+
+    trace = agent_runs.build_agent_execution_trace({
+        "task_id": "task-subagents",
+        "status": "Completed",
+    })
+
+    assert trace["subagents"] == [{
+        "subagent_id": "worker-a",
+        "name": "核对官方文档",
+        "status": "completed",
+    }]
 
 
 def test_canonical_steer_boundary_does_not_render_unconfirmed_message(

@@ -65,6 +65,11 @@ def _patch_agent_runtime_checkpoint_io(monkeypatch):
         "get_agent_trace_token_usage",
         lambda _task_id: None,
     )
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_subagents",
+        lambda _task_id: [],
+    )
     monkeypatch.setattr(routes, "get_last_agent_trace_assistant", lambda _task_id: "")
     monkeypatch.setattr(routes, "get_agent_session_by_task_id", lambda _task_id: None)
 
@@ -1556,6 +1561,19 @@ def test_agent_state_markdown_only_projects_public_v2_items(monkeypatch):
         "conclusion_html": "<script>unsafe()</script>",
         "execution_trace": {
             "conclusion_html": "<img src=x onerror=unsafe()>",
+            "subagents": [
+                {
+                    "subagent_id": "worker-a",
+                    "name": "核对官方文档",
+                    "status": "completed",
+                    "private_trace": "不应公开",
+                },
+                {
+                    "subagent_id": "../escape",
+                    "name": "非法",
+                    "status": "running",
+                },
+            ],
             "trace_messages": [
                 {"kind": "assistant", "text": "**回答**", "html": "<b>伪造</b>"},
                 {"kind": "thinking", "content": "$x$"},
@@ -1571,6 +1589,11 @@ def test_agent_state_markdown_only_projects_public_v2_items(monkeypatch):
 
     assert messages[0]["html"] == "<safe>**回答**</safe>"
     assert len(messages) == 1
+    assert state["execution_trace"]["subagents"] == [{
+        "subagent_id": "worker-a",
+        "name": "核对官方文档",
+        "status": "completed",
+    }]
     assert state["conclusion"] == "**最终结论**"
     assert state["conclusion_html"] == "<safe>**最终结论**</safe>"
     assert "conclusion_html" not in state["execution_trace"]

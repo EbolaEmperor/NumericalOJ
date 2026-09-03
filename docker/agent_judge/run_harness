@@ -4,6 +4,7 @@
 import hashlib
 import json
 from collections import deque
+import glob
 import http.server
 import os
 import queue
@@ -49,6 +50,19 @@ ENDPOINT_THINKING_FORMATS = frozenset({"enable_thinking", "thinking_type", "none
 NUMOJ_CONTROL_PROTOCOL = "numoj-ndjson-v1"
 _NUMOJ_OUTPUT_LOCK = threading.Lock()
 CONTROL_ACK_DRAIN_SECONDS = 2.0
+
+# Claude Code 的后台 subagent / Workflow 会在父模型先产出一次 result 后继续
+# 工作。NumOJ 的 adapter 会保持 stream-json stdin 与容器存活，直到后台工作
+# 完成且父模型吸收通知、再次产出终态；提示词同时约束模型不能把阶段性答复
+# 或“稍后汇报”当作完成。
+CLAUDE_NUMOJ_COMPLETION_PROMPT = (
+    "Background subagents and workflows are supported, and NumOJ keeps this turn alive while "
+    "they run. Do not return the final answer while any subagent or workflow from this turn is "
+    "still running. Wait for every completion notification, collect the required results, and "
+    "incorporate them before returning the final answer. A progress update or a promise to "
+    "report later is not completion. If genuinely blocked after all background work has ended, "
+    "state the blocker explicitly."
+)
 _TRACE_EVENT_ID_MAX_CHARS = 512
 _TRACE_DETAIL_MAX_CHARS = 1200
 _TRACE_ASSISTANT_MAX_CHARS = 2 * 1024 * 1024
@@ -59,6 +73,10 @@ OPENCODE_PROMPT_PERSISTENCE_SECONDS = 15.0
 _EMPTY_ASSISTANT_CONTENT_ERROR = (
     "Provider returned error: empty assistant content; retry the request"
 )
+_CLAUDE_SUBAGENT_STATUS_META = "numoj-subagent-status-v1"
+_CLAUDE_SUBAGENT_SCAN_INTERVAL_SECONDS = 0.5
+_CLAUDE_BACKGROUND_RESUME_DELAY_SECONDS = 1.5
+_CLAUDE_NATIVE_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 def _emit_numoj(payload):
@@ -235,6 +253,209 @@ def _start_json_process(args, env):
 def _write_json(proc, payload):
     proc.stdin.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     proc.stdin.flush()
+
+
+def _read_first_jsonl_record(path, max_bytes=256 * 1024):
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.readline(max_bytes + 1)
+    except OSError:
+        return None
+    if not raw or len(raw) > max_bytes:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8", "replace"))
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _read_last_jsonl_records(path, max_bytes=1024 * 1024):
+    """读取 JSONL 的有限尾部；进行中的最后半行会被自然忽略。"""
+
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as stream:
+            offset = max(0, size - max_bytes)
+            stream.seek(offset)
+            if offset:
+                stream.readline()
+            raw_lines = stream.readlines()
+    except OSError:
+        return []
+    records = []
+    for raw in raw_lines:
+        try:
+            value = json.loads(raw.decode("utf-8", "replace"))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+def _claude_subagent_name(transcript_path, agent_id):
+    meta_path = os.path.splitext(transcript_path)[0] + ".meta.json"
+    try:
+        with open(meta_path, encoding="utf-8") as stream:
+            metadata = json.load(stream)
+    except (OSError, TypeError, ValueError):
+        metadata = {}
+    if isinstance(metadata, dict):
+        description = str(metadata.get("description") or "").strip()
+        if description:
+            return description[:160]
+
+    first = _read_first_jsonl_record(transcript_path) or {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "\n".join(
+            str(block.get("text") or "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    for raw_line in str(content or "").splitlines():
+        line = re.sub(r"^[#>*\-\s]+", "", raw_line).strip()
+        if line:
+            return line[:160]
+    return f"Subagent {str(agent_id or '')[-8:]}"
+
+
+def _claude_direct_subagent_completed(transcript_path):
+    """直接 Task subagent 的最终一条纯文本 assistant 即为结束。"""
+
+    for record in reversed(_read_last_jsonl_records(transcript_path)):
+        if str(record.get("type") or "") != "assistant":
+            continue
+        message = record.get("message") if isinstance(record.get("message"), dict) else {}
+        content = message.get("content")
+        if isinstance(content, str):
+            return bool(content.strip())
+        if not isinstance(content, list) or not content:
+            return False
+        block_types = {
+            str(block.get("type") or "")
+            for block in content
+            if isinstance(block, dict)
+        }
+        return bool(block_types) and block_types <= {"text"} and any(
+            str(block.get("text") or "").strip()
+            for block in content
+            if isinstance(block, dict)
+        )
+    return False
+
+
+def _claude_subagent_snapshot(env, session_id):
+    """从 Claude 原生 session 投影本轮 subagent 名称与运行状态。"""
+
+    normalized_session_id = str(session_id or "").strip()
+    if not _CLAUDE_NATIVE_SESSION_ID_RE.fullmatch(normalized_session_id):
+        return []
+    home_value = str(env.get("HOME") or "").strip()
+    if not home_value:
+        return []
+    home = os.path.abspath(home_value)
+    session_roots = glob.glob(os.path.join(
+        home,
+        ".claude",
+        "projects",
+        "*",
+        normalized_session_id,
+        "subagents",
+    ))
+    workflow_status = {}
+    workflow_order = []
+    for root in sorted(session_roots):
+        for journal_path in sorted(glob.glob(os.path.join(
+            root, "workflows", "*", "journal.jsonl",
+        ))):
+            for record in _read_last_jsonl_records(
+                journal_path, max_bytes=4 * 1024 * 1024,
+            ):
+                agent_id = str(record.get("agentId") or "").strip()
+                if not agent_id:
+                    continue
+                record_type = str(record.get("type") or "").strip().lower()
+                if record_type not in {
+                    "started", "result", "completed", "failed", "error",
+                    "canceled", "cancelled",
+                }:
+                    continue
+                if agent_id not in workflow_status:
+                    workflow_order.append(agent_id)
+                if record_type == "started":
+                    workflow_status[agent_id] = "running"
+                elif record_type in {
+                    "result", "completed", "failed", "error",
+                    "canceled", "cancelled",
+                }:
+                    workflow_status[agent_id] = "completed"
+
+    transcript_by_id = {}
+    for root in sorted(session_roots):
+        pattern = os.path.join(root, "**", "agent-*.jsonl")
+        for transcript_path in sorted(glob.glob(pattern, recursive=True)):
+            filename = os.path.basename(transcript_path)
+            agent_id = filename[len("agent-"):-len(".jsonl")]
+            if agent_id:
+                transcript_by_id.setdefault(agent_id, transcript_path)
+
+    ordered_ids = list(workflow_order)
+    ordered_ids.extend(
+        agent_id for agent_id in transcript_by_id if agent_id not in workflow_status
+    )
+    snapshot = []
+    for agent_id in ordered_ids:
+        transcript_path = transcript_by_id.get(agent_id, "")
+        if agent_id in workflow_status:
+            status = workflow_status[agent_id]
+        else:
+            status = (
+                "completed"
+                if transcript_path
+                and _claude_direct_subagent_completed(transcript_path)
+                else "running"
+            )
+        snapshot.append({
+            "subagent_id": agent_id[:128],
+            "name": (
+                _claude_subagent_name(transcript_path, agent_id)
+                if transcript_path else f"Subagent {agent_id[-8:]}"
+            ),
+            "status": status,
+        })
+    return snapshot
+
+
+def _emit_claude_subagent_changes(previous, current):
+    previous_by_id = {
+        str(item.get("subagent_id") or ""): item
+        for item in previous or () if isinstance(item, dict)
+    }
+    for item in current or ():
+        if not isinstance(item, dict):
+            continue
+        agent_id = str(item.get("subagent_id") or "").strip()
+        status = str(item.get("status") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not agent_id or item == previous_by_id.get(agent_id):
+            continue
+        name_digest = hashlib.sha256(
+            name.encode("utf-8", "replace")
+        ).hexdigest()[:12]
+        payload = {"schema_version": 1, **item}
+        _emit_trace(
+            "subagent",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            title=name,
+            meta=_CLAUDE_SUBAGENT_STATUS_META,
+            fmt="json",
+            event_id=(
+                f"claude-subagent:{agent_id}:{status}:{name_digest}"
+            ),
+        )
 
 
 def _content_blocks(message):
@@ -4068,11 +4289,34 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
     terminal_failed_while_waiting = False
     control_drain_deadline = None
     failure_detail = ""
+    session_id = ""
+    subagents = []
+    last_subagent_scan_at = 0.0
+    waiting_for_background_result = False
+    background_idle_since = None
+    background_resume_sent = False
+
+    def refresh_subagents(*, force=False):
+        nonlocal subagents, last_subagent_scan_at
+        now = time.monotonic()
+        if (
+            not force
+            and now - last_subagent_scan_at
+            < _CLAUDE_SUBAGENT_SCAN_INTERVAL_SECONDS
+        ):
+            return any(item.get("status") == "running" for item in subagents)
+        last_subagent_scan_at = now
+        current = _claude_subagent_snapshot(env, session_id)
+        _emit_claude_subagent_changes(subagents, current)
+        subagents = current
+        return any(item.get("status") == "running" for item in subagents)
+
     try:
         _write_json(proc, _claude_user_frame(prompt, "__start__", task_id))
         done = False
         terminal_status = ""
         while not done:
+            refresh_subagents()
             if (
                 control_drain_deadline is not None
                 and time.monotonic() >= control_drain_deadline
@@ -4115,6 +4359,33 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             except queue.Empty:
                 if control_drain_deadline is not None:
                     continue
+                if waiting_for_background_result:
+                    active_subagents = refresh_subagents()
+                    if active_subagents:
+                        background_idle_since = None
+                        background_resume_sent = False
+                    elif background_idle_since is None:
+                        background_idle_since = time.monotonic()
+                    elif (
+                        not background_resume_sent
+                        and time.monotonic() - background_idle_since
+                        >= _CLAUDE_BACKGROUND_RESUME_DELAY_SECONDS
+                    ):
+                        # 新版 Claude Code 会主动用 task-notification 续跑；
+                        # 旧版或兼容实现若只落盘结果却不触发模型，则补一条
+                        # 不进入 NumOJ 用户时间线的内部 continuation，避免 turn
+                        # 在全部 subagent 已结束后永久悬挂。
+                        _write_json(
+                            proc,
+                            _claude_user_frame(
+                                "All background subagents for this turn have finished. "
+                                "Collect their results, finish the requested work, and "
+                                "return the final answer now.",
+                                f"__background_complete_{result_sequence}__",
+                                task_id,
+                            ),
+                        )
+                        background_resume_sent = True
                 if proc.poll() is not None:
                     raise RuntimeError("Claude Code stream-json 意外退出")
                 continue
@@ -4201,6 +4472,14 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             normalized_done = _normalize_stream_event("claude_code", event)
             if normalized_done:
                 assistant_usage_since_result = False
+                active_subagents = refresh_subagents(force=True)
+                if active_subagents:
+                    # Claude 的 Workflow / 后台 Task 会先结束当前模型调用，
+                    # 再通过仍然存活的 stream-json 会话投递完成通知。这里不能
+                    # 把第一次 result 当作整个 NumOJ turn 的终态。
+                    waiting_for_background_result = True
+                    background_idle_since = None
+                    background_resume_sent = False
                 pending_followup_ack = any(
                     command_id != "__start__"
                     for command_id in waiting_user_acks.values()
@@ -4225,7 +4504,13 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
                     control_drain_deadline = (
                         time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
                     )
+                elif active_subagents:
+                    terminal_waiting_for_control = False
+                    control_drain_deadline = None
                 else:
+                    waiting_for_background_result = False
+                    background_idle_since = None
+                    background_resume_sent = False
                     done = True
         returncode = (
             2 if terminal_status == "failed"
@@ -4342,6 +4627,7 @@ def _run_claude_code(prompt, commands=None):
             "claude",
             "--dangerously-skip-permissions",
             "--add-dir", "/workspace",
+            "--append-system-prompt", CLAUDE_NUMOJ_COMPLETION_PROMPT,
             "--output-format", "json",
             "-p",
         ]

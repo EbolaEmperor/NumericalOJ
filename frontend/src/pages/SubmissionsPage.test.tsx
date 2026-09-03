@@ -44,6 +44,14 @@ afterEach(() => {
 })
 
 describe('提交列表主从视图', () => {
+  it('保留表格语义但不显示旧版已移除的表头行', async () => {
+    renderPage()
+    await screen.findByLabelText('提交 #1，Accepted')
+
+    const table = screen.getByRole('table', {name: '提交记录'})
+    expect(table.querySelector('thead')?.classList.contains('visually-hidden')).toBe(true)
+  })
+
   it('桌面点击和键盘选择只切换右侧预览，不离开列表', async () => {
     renderPage()
     const first = await screen.findByLabelText('提交 #1，Accepted')

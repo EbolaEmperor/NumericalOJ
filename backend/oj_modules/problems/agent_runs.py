@@ -12,6 +12,7 @@ from backend.oj_modules.agents.messages import (
 )
 from backend.oj_modules.agents.trace_store import (
     get_agent_trace_token_usage,
+    list_agent_trace_subagents,
     list_agent_trace_timeline,
 )
 from backend.oj_modules.config import AGENT_WORKSPACE_ROOT
@@ -134,6 +135,7 @@ def build_agent_execution_trace(state, *, steer_records=None):
         )
         if task_id else []
     )
+    subagents = list_agent_trace_subagents(task_id) if task_id else []
     trace = {
         "schema_version": 2,
         "trace_id": (
@@ -149,6 +151,7 @@ def build_agent_execution_trace(state, *, steer_records=None):
         "stderr": "",
         "trace_files": [],
         "trace_messages": trace_messages,
+        "subagents": subagents,
         "token_usage": token_usage,
         "incremental": True,
     }

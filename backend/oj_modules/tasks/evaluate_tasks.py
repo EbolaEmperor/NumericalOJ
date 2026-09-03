@@ -161,16 +161,12 @@ def _finalize_programming_terminal_submission(
     return test_point_statuses
 
 
-def _mark_repository_snapshot_terminal_error(submission):
-    """把不可恢复的仓库快照错误固化为终态，禁止 watchdog 无限重投。"""
-    message = (
-        "提交绑定的代码仓库快照缺失、损坏或无法安全读取，评测已停止。"
-        "请联系管理员检查仓库存储。"
-    )
+def _mark_submission_terminal_error(submission, message):
+    """把不可恢复的判题异常同时固化到数据库与 SSE 状态快照。"""
     test_points = _build_terminal_test_point_statuses(
         [],
         "Error",
-        stderr=message,
+        stderr=str(message or "判题任务异常退出，请联系管理员检查服务日志。"),
     )
     update_submission_evaluation(
         int(submission["id"]),
@@ -190,6 +186,17 @@ def _mark_repository_snapshot_terminal_error(submission):
         test_points=test_points,
     )
     return test_points
+
+
+def _mark_repository_snapshot_terminal_error(submission):
+    """把不可恢复的仓库快照错误固化为终态，禁止 watchdog 无限重投。"""
+    return _mark_submission_terminal_error(
+        submission,
+        (
+            "提交绑定的代码仓库快照缺失、损坏或无法安全读取，评测已停止。"
+            "请联系管理员检查仓库存储。"
+        ),
+    )
 
 
 def _finalize_programming_submission(submission, problem_id, test_point_statuses, score, final_status):
@@ -333,10 +340,22 @@ def register_evaluate_submission_task(celery_app):
             ):
                 # Celery 任务开始处理题目时固定端点快照；后续全站端点修改只影响
                 # 新任务，不能让同一次判题在运行中切换目标。
-                image_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
-                    problem,
-                    "output_image_grading_endpoint_id",
-                )
+                try:
+                    image_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
+                        problem,
+                        "output_image_grading_endpoint_id",
+                    )
+                except _MYSQL_RETRY_ERRORS:
+                    raise
+                except Exception as exc:
+                    # 题目引用已删除/停用端点属于稳定配置错误，重试不会自愈。
+                    # 旧实现让异常越过终态写入，导致数据库永远停在 Running，
+                    # watchdog 再把它改回 Pending；页面因而出现状态倒退并卡死。
+                    _mark_submission_terminal_error(
+                        submission,
+                        f"程序输出图片批改配置不可用：{str(exc)[:800]}",
+                    )
+                    return
             required_output_image_filename = (
                 str(problem.get('output_image_filename') or 'output.png').strip()
                 or 'output.png'
@@ -901,9 +920,24 @@ def register_evaluate_submission_task(celery_app):
             # 软超时（先于硬 time_limit 触发）：标记 Error 并让 finally 正常释放锁，
             # 避免被硬超时 SIGKILL 导致锁泄露、提交长期卡在 Running。
             try:
-                update_submission_status(submission_id, 'Error')
+                _mark_submission_terminal_error(
+                    submission,
+                    "判题任务运行超时，评测已停止。",
+                )
             except Exception:
                 pass
+        except _MYSQL_RETRY_ERRORS:
+            # 保留 Celery 对瞬时数据库故障的既有自动重试语义；提前写 Error
+            # 会让下一次重试因终态幂等检查而直接跳过。
+            raise
+        except Exception:
+            # 未知异常仍应让 Celery 记录 FAILURE，便于运维定位；但提交本身
+            # 必须先进入稳定终态并发布最终 SSE，不能遗留 Pending/Running。
+            _mark_submission_terminal_error(
+                submission,
+                "判题任务异常退出，请联系管理员检查服务日志。",
+            )
+            raise
         finally:
             # 清理本次提交的运行目录临时产物（保留输出图片），兜底磁盘增长。
             try:

@@ -13,8 +13,8 @@ test('提交列表整行统一打开提交详情，题目标题不再跳转题�
   assert.match(source, /to={`\/submissions\/\$\{row\.id\}`}\s+state=/)
 })
 
-test('提交列表恢复桌面表头与主从选择，手机端仍使用对称水平留白', () => {
-  assert.match(source, /<thead>[\s\S]*提交号<\/th>[\s\S]*状态<\/th>[\s\S]*得分<\/th>[\s\S]*题目<\/th>/)
+test('提交列表隐藏视觉表头并保留主从选择，手机端仍使用对称水平留白', () => {
+  assert.match(source, /<thead className="visually-hidden">[\s\S]*提交号<\/th>[\s\S]*状态<\/th>[\s\S]*得分<\/th>[\s\S]*题目<\/th>/)
   assert.match(source, /aria-selected=\{selectedId === row\.id\}/)
   assert.match(source, /desktop \? setSelectedId\(row\.id\) : openSubmission\(row\.id\)/)
   assert.match(source, /<Panel id=\{desktop \? selectedId : undefined\}/)

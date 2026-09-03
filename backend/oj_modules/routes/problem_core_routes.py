@@ -508,8 +508,31 @@ def _decorate_agent_state_markdown(raw_state):
             if kind in _AGENT_RICH_TRACE_KINDS and text:
                 message['html'] = str(render_rich_markdown(text))
             messages.append(message)
+    raw_subagents = trace.get('subagents') or []
+    subagents = []
+    if isinstance(raw_subagents, list):
+        for raw_subagent in raw_subagents:
+            if not isinstance(raw_subagent, dict):
+                continue
+            subagent_id = str(
+                raw_subagent.get('subagent_id') or ''
+            ).strip()
+            status = str(raw_subagent.get('status') or '').strip().lower()
+            name = str(raw_subagent.get('name') or '').strip()
+            if (
+                not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', subagent_id)
+                or status not in {'running', 'completed'}
+                or not name
+            ):
+                continue
+            subagents.append({
+                'subagent_id': subagent_id,
+                'name': name[:160],
+                'status': status,
+            })
     if has_trace:
         trace['trace_messages'] = messages
+        trace['subagents'] = subagents
         state['execution_trace'] = trace
 
     # 同样不信任任务快照中自带的 *_html，只根据规范纯文本重新生成。
