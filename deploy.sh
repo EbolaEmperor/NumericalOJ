@@ -208,7 +208,7 @@ install -d -m 0700 \
   "$STATIC_PRECOMPRESSION_STATE_DIR" \
   "$FRONTEND_NODE_MODULES_DIR"
 
-for command_name in docker flock pgrep; do
+for command_name in docker flock git pgrep; do
   command -v "$command_name" >/dev/null || {
     printf '缺少部署命令: %s\n' "$command_name" >&2
     exit 1
@@ -219,6 +219,14 @@ if ! flock -n 9; then
   printf '本机已有 NumericalOJ 部署正在运行。\n' >&2
   exit 1
 fi
+
+phase='读取发布版本'
+DEPLOY_COMMIT_SHA="$(git rev-parse --verify HEAD)"
+if [[ ! "$DEPLOY_COMMIT_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then
+  printf '无法读取有效的 Git commit 哈希。\n' >&2
+  exit 1
+fi
+printf '发布版本：%.12s\n' "$DEPLOY_COMMIT_SHA"
 
 if ! docker buildx inspect "$DOCKER_BUILDER" >/dev/null 2>&1; then
   printf 'Docker builder 不存在或不可用：%s\n' "$DOCKER_BUILDER" >&2
@@ -615,6 +623,7 @@ docker run --rm \
   --env HOME=/tmp/numoj-frontend \
   --env npm_config_cache=/tmp/numoj-npm-cache \
   --env npm_config_registry=https://registry.npmmirror.com \
+  --env VITE_NUMOJ_COMMIT_SHA="$DEPLOY_COMMIT_SHA" \
   --mount "type=bind,src=$ROOT_DIR/frontend,dst=/workspace" \
   --mount "type=bind,src=$FRONTEND_NODE_MODULES_DIR,dst=/workspace/node_modules" \
   --entrypoint /bin/sh \

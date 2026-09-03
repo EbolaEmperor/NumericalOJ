@@ -45,7 +45,6 @@ def test_deploy_is_an_in_place_entry_without_environment_whitelists_or_tests():
         "ssh ",
         "rsync",
         "git status",
-        "git rev-parse",
         "pytest",
         "tests/",
         "--dry-run",
@@ -53,6 +52,15 @@ def test_deploy_is_an_in_place_entry_without_environment_whitelists_or_tests():
         "/health/ready",
     ):
         assert forbidden not in script
+
+
+def test_deploy_injects_current_commit_into_frontend_build():
+    script = _read("deploy.sh")
+
+    assert 'for command_name in docker flock git pgrep' in script
+    assert 'DEPLOY_COMMIT_SHA="$(git rev-parse --verify HEAD)"' in script
+    assert '[[ ! "$DEPLOY_COMMIT_SHA" =~ ^[0-9a-f]{40,64}$ ]]' in script
+    assert '--env VITE_NUMOJ_COMMIT_SHA="$DEPLOY_COMMIT_SHA"' in script
 
 
 def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everything():

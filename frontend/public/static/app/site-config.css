@@ -405,6 +405,20 @@
   background: #16a34a;
 }
 
+.site-config-deploy-commit {
+  display: inline-flex;
+  min-height: 17px;
+  align-items: center;
+  margin-left: 2px;
+  padding-left: 7px;
+  border-left: 1px solid #bbf7d0;
+  background: transparent;
+  color: var(--cfg-ink-3);
+  font: 650 9px/1 var(--cfg-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
 .site-config-rail-backdrop {
   display: none;
 }
@@ -1365,6 +1379,14 @@
     transform: translateX(0);
     visibility: visible;
     transition: transform 180ms ease;
+  }
+
+  .site-config-rail-runtime {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 7px;
+    padding-inline: 11px;
   }
 
   .site-config-rail-close {

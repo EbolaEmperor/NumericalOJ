@@ -1286,7 +1286,7 @@
   .numoj-nav-item {
     position: relative;
     display: flex;
-    width: auto;
+    width: calc(100% - 16px);
     min-height: 34px;
     align-items: center;
     gap: 10px;
@@ -1350,10 +1350,6 @@
 
   .numoj-logout-form {
     margin: 0;
-  }
-
-  .numoj-logout-form .numoj-nav-item {
-    width: calc(100% - 16px);
   }
 
   .numoj-sidebar-footer {
@@ -3434,7 +3430,7 @@ html.is-problem-pane-resizing * {
   .numoj-mobile-sidebar .numoj-nav-item {
     position: relative;
     display: flex;
-    width: auto;
+    width: calc(100% - 12px);
     min-height: 34px;
     align-items: center;
     gap: 7px;
@@ -3498,10 +3494,6 @@ html.is-problem-pane-resizing * {
 
   .numoj-mobile-sidebar .numoj-logout-form {
     margin: 0;
-  }
-
-  .numoj-mobile-sidebar .numoj-logout-form .numoj-nav-item {
-    width: calc(100% - 12px);
   }
 
   .numoj-mobile-sidebar .numoj-sidebar-footer {

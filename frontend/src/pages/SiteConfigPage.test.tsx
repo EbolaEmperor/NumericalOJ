@@ -4,7 +4,7 @@ import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
-import SiteConfigPage from './SiteConfigPage'
+import SiteConfigPage, {normalizeDeploymentCommit} from './SiteConfigPage'
 
 vi.mock('../session', () => ({
   useSession: () => ({session: {user: {id: 1, username: 'admin', is_admin: true}}}),
@@ -52,7 +52,23 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   vi.restoreAllMocks()
+})
+
+describe('全站配置部署版本', () => {
+  it('只接受完整 commit，并在 LIVE 右侧显示前六位', async () => {
+    const commit = 'ABCDEF1234567890ABCDEF1234567890ABCDEF12'
+    expect(normalizeDeploymentCommit(commit)).toBe(commit.toLowerCase())
+    expect(normalizeDeploymentCommit('abcdef')).toBe('')
+    vi.stubEnv('VITE_NUMOJ_COMMIT_SHA', commit)
+
+    renderPage()
+
+    const badge = await screen.findByLabelText('当前部署 commit abcdef')
+    expect(badge.textContent).toBe('abcdef')
+    expect(badge.getAttribute('title')).toContain(commit.toLowerCase())
+  })
 })
 
 describe('全站配置服务测试反馈', () => {

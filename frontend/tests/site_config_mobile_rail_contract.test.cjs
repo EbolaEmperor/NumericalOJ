@@ -22,6 +22,13 @@ test('邮件与联网搜索测试恢复旧版短时 toast 反馈', () => {
   assert.match(siteConfigPage, /tone === 'error' \? 6500 : 3500/)
 })
 
+test('全站配置在 LIVE 右侧显示部署 commit 的前六位', () => {
+  assert.match(siteConfigPage, /import\.meta\.env\.VITE_NUMOJ_COMMIT_SHA/)
+  assert.match(siteConfigPage, /className="site-config-deploy-commit"/)
+  assert.match(siteConfigPage, /deploymentCommit\.slice\(0, 6\)/)
+  assert.match(siteConfigStyles, /\.site-config-deploy-commit\s*\{[^}]*border-left:[^}]*font-variant-numeric:\s*tabular-nums;/s)
+})
+
 test('邮件与联网搜索并入功能配置并删除其他配置分类', () => {
   assert.match(siteConfigPage, /site-config-feature-card site-config-service-card/)
   assert.match(siteConfigPage, /site-config-services-panel/)
