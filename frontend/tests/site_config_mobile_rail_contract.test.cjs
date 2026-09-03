@@ -5,6 +5,7 @@ const assert = require('node:assert/strict')
 
 const frontendRoot = path.resolve(__dirname, '..')
 const siteConfigStyles = fs.readFileSync(path.join(frontendRoot, 'public/static/app/site-config.css'), 'utf8')
+const choicePickerStyles = fs.readFileSync(path.join(frontendRoot, 'public/static/app/choice-picker.css'), 'utf8')
 const layoutStyles = fs.readFileSync(path.join(frontendRoot, 'public/static/app/layout.css'), 'utf8')
 const siteConfigPage = fs.readFileSync(path.join(frontendRoot, 'src/pages/SiteConfigPage.tsx'), 'utf8')
 
@@ -37,12 +38,31 @@ test('邮件与联网搜索并入功能配置并删除其他配置分类', () =>
   assert.doesNotMatch(siteConfigStyles, /site-config-other-grid/)
 })
 
+test('功能配置不再显示已配置和自动保存标签', () => {
+  assert.doesNotMatch(siteConfigPage, /site-config-service-state/)
+  assert.doesNotMatch(siteConfigPage, /site-config-auto-state/)
+  assert.doesNotMatch(siteConfigStyles, /site-config-service-state/)
+  assert.doesNotMatch(siteConfigStyles, /site-config-auto-state/)
+})
+
+test('功能配置下拉菜单不被下方服务区遮挡', () => {
+  assert.match(siteConfigStyles, /\.site-config-v2\.is-features \.site-config-panel:not\(\.site-config-services-panel\)\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/s)
+  assert.match(siteConfigStyles, /\.site-config-v2\.is-features \.site-config-services-panel\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s)
+  assert.match(choicePickerStyles, /\.rk-choice-menu\s*\{[^}]*position:\s*absolute;[^}]*z-index:\s*1085;/s)
+})
+
 test('邮件服务在桌面端使用两行两栏字段布局', () => {
   assert.match(siteConfigStyles, /\.site-config-form-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s)
   assert.match(siteConfigPage, /<label><span>SMTP 服务器<\/span>/)
   assert.match(siteConfigPage, /<label><span>端口<\/span>/)
   assert.match(siteConfigPage, /<label><span>用户名<\/span>/)
   assert.match(siteConfigPage, /<label><span>密码<\/span>/)
+})
+
+test('邮件配置恢复 Jinja 的凭据自动填充语义且不主动聚焦', () => {
+  assert.match(siteConfigPage, /name="smtp_username" required autoComplete="username"/)
+  assert.match(siteConfigPage, /name="smtp_password" type="password" autoComplete="new-password"/)
+  assert.doesNotMatch(siteConfigPage, /name="smtp_username"[^>]*autoFocus/)
 })
 
 test('全站配置的手机端分类栏沿用全站 layout 宽度', () => {

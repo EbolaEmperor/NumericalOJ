@@ -74,7 +74,9 @@ describe('全站配置部署版本', () => {
 describe('全站配置服务测试反馈', () => {
   it('把邮件和联网搜索并入功能配置，并用旧版短时 toast 显示测试结果', async () => {
     const view = renderPage()
-    fireEvent.click(await screen.findByRole('tab', {name: /功能配置/}))
+    const featureTab = await screen.findByRole('tab', {name: /功能配置/})
+    featureTab.focus()
+    fireEvent.click(featureTab)
 
     const featureGrid = view.container.querySelector('.site-config-services-panel .site-config-feature-grid')
     const mailForm = (await screen.findByText('邮件服务')).closest('form')
@@ -89,8 +91,13 @@ describe('全站配置服务测试反馈', () => {
     expect(mailForm?.classList.contains('site-config-service-card')).toBe(true)
     expect(searchForm?.classList.contains('site-config-feature-card')).toBe(true)
     expect(searchForm?.classList.contains('site-config-service-card')).toBe(true)
+    expect(screen.queryByText('已配置')).toBeNull()
+    expect(screen.queryByText('自动保存')).toBeNull()
     expect(within(mailForm as HTMLFormElement).getByText('SMTP 服务器').closest('label')?.classList.contains('wide')).toBe(false)
     expect(within(mailForm as HTMLFormElement).getByText('密码').closest('label')?.classList.contains('wide')).toBe(false)
+    expect(within(mailForm as HTMLFormElement).getByLabelText('用户名').getAttribute('autocomplete')).toBe('username')
+    expect(within(mailForm as HTMLFormElement).getByLabelText('密码').getAttribute('autocomplete')).toBe('new-password')
+    expect(document.activeElement).toBe(featureTab)
     fireEvent.click(within(mailForm as HTMLFormElement).getByRole('button', {name: '测试'}))
 
     expect((await screen.findByRole('status')).textContent).toContain('测试邮件已发送（18 ms）')
