@@ -90,10 +90,6 @@ def test_build_judge_snapshot_includes_shared_trace_payload(monkeypatch, tmp_pat
         db, "agent_judge_trace_dir", lambda _sid, _attempt: str(expected_dir),
     )
     monkeypatch.setattr(
-        db, "collect_agent_trace_files",
-        lambda path: seen.append(("files", path)) or [{"path": "trace.jsonl"}],
-    )
-    monkeypatch.setattr(
         db, "collect_agent_trace_messages",
         lambda path: seen.append(("messages", path)) or [{"kind": "assistant", "text": "ok"}],
     )
@@ -110,12 +106,11 @@ def test_build_judge_snapshot_includes_shared_trace_payload(monkeypatch, tmp_pat
         "error_message": "",
         "stdout": "",
         "stderr": "",
-        "trace_files": [{"path": "trace.jsonl"}],
+        "trace_files": [],
         "trace_messages": [{"kind": "assistant", "text": "ok"}],
         "token_usage": {"input_total_tokens": 12},
     }
     assert seen == [
-        ("files", str(expected_dir)),
         ("messages", str(expected_dir)),
         ("usage", str(expected_dir)),
     ]
@@ -384,7 +379,7 @@ def test_public_trace_projection_hides_raw_files_and_random_result_name():
     assert owner["rules"][0]["evidence"] == "evidence [redacted]"
     assert owner["rules"][0]["evidence_html"] == "<p>[redacted]</p>"
     assert admin["rules"][0]["evidence"] == f"evidence {api_key}"
-    assert admin["execution_trace"]["trace_files"][0]["content"] == "[result-file]"
+    assert admin["execution_trace"]["trace_files"] == []
     assert secret_name not in json.dumps(owner, ensure_ascii=False)
     assert secret_name not in json.dumps(admin, ensure_ascii=False)
     assert api_key not in json.dumps(owner, ensure_ascii=False)

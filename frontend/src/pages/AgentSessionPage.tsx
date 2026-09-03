@@ -24,6 +24,7 @@ import {Link} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {AgentFilePreview} from './agent/AgentFilePreview'
 import {PendingAttachmentStrip, SavedAttachments} from './agent/AgentAttachments'
+import {AgentExecutionTrace} from './agent/AgentExecutionTrace'
 import {AgentMessageQueue} from './agent/AgentMessageQueue'
 import {AgentWorkspaceTree} from './agent/AgentWorkspace'
 import {
@@ -120,72 +121,16 @@ function RichHtml({html, fallback}: {html: unknown; fallback?: unknown}) {
   return rendered ? <MarkdownContent className="numoj-markdown" html={rendered} /> : <div className="numoj-markdown"><p>{String(fallback || '')}</p></div>
 }
 
-function traceText(message: JsonRecord) {
-  const value = message.text ?? message.content ?? message.input ?? message.output ?? ''
-  if (typeof value === 'string') return value
-  try {return JSON.stringify(value, null, 2)} catch {return String(value)}
-}
-
-function traceKind(message: JsonRecord) {return statusKey(message.kind || message.type || message.role || 'assistant')}
-
 function SteerMessage({message, sessionId, openFile, variant}: {message: JsonRecord; sessionId: string; openFile: (path: string) => void; variant: 'summary' | 'detail'}) {
   const html = String(message.html || message.user_message_html || message.message_html || '')
-  return <section className={`agent-user-message agent-timeline-steer agent-timeline-steer--${variant}`} data-message-id={messageId(message)}><div className={`agent-user-bubble${html ? ' numoj-markdown' : ''}`}>{html ? <MarkdownContent className="numoj-markdown" html={html} /> : <p>{messageCopy(message) || traceText(message)}</p>}</div><SavedAttachments attachments={messageAttachments(message)} sessionId={sessionId} openFile={openFile} /></section>
-}
-
-function TraceWorkDetail({message}: {message: JsonRecord}) {
-  const kind = traceKind(message)
-  const result = kind === 'tool_result'
-  const failed = result && (message.is_error === true || message.error === true)
-  const visualKind = result ? (failed ? 'error' : 'result') : kind.replaceAll('_', '-')
-  const title = String(message.title || message.name || message.tool_name || (['thinking', 'reasoning'].includes(kind) ? '思考过程' : kind === 'tool' || kind === 'tool_call' ? '工具调用' : result ? failed ? '工具执行失败' : '工具结果' : kind === 'subagent' ? '子 Agent' : '工作详情'))
-  const icon = ['thinking', 'reasoning'].includes(kind) ? 'fa-circle-notch' : result ? failed ? 'fa-times-circle' : 'fa-check' : kind === 'subagent' ? 'fa-code-branch' : 'fa-terminal'
-  const html = String(message.html || '')
-  return <section className={`agent-work-detail agent-work-detail--${visualKind}`}><header><i className={`fas ${icon}`} aria-hidden="true" /><strong>{title}</strong></header><div className="agent-work-detail-body">{html && ['thinking', 'reasoning', 'assistant'].includes(kind) ? <MarkdownContent className="agent-trace-copy numoj-markdown" html={html} /> : <pre>{traceText(message)}</pre>}</div></section>
-}
-
-function WorkBlock({taskId, summary, live, liveRevision}: {taskId: string; summary: JsonRecord; live: boolean; liveRevision: number}) {
-  const [open, setOpen] = useState(false)
-  const blockId = String(summary.block_id || '')
-  const running = summary.is_running === true
-  const lastRevision = useRef(liveRevision)
-  const result = useQuery({queryKey: workBlockQueryKey(taskId, blockId), queryFn: ({signal}) => fetchAgentWorkBlock(taskId, blockId, signal), enabled: open && Boolean(taskId && blockId), staleTime: Infinity, gcTime: Infinity, refetchOnReconnect: false})
-  useEffect(() => {
-    if (!open || !live || !running || liveRevision === lastRevision.current) return
-    lastRevision.current = liveRevision
-    if (result.data !== undefined || result.isError) void result.refetch()
-  }, [live, liveRevision, open, result, running])
-  return <details className={`agent-work-block${running ? ' is-running' : ''}`} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><i className="fas fa-wrench" aria-hidden="true" /><span>{String(summary.summary || '工作详情')}</span></summary><div className="agent-work-block-body">{result.isPending ? <div className="agent-work-block-placeholder"><MathCurveLoader size="xs" label="正在加载工作详情…" /></div> : result.isError ? <div className="agent-work-block-placeholder">工作详情加载失败，请收起后重试。</div> : result.data.block.messages.length ? result.data.block.messages.map((message, index) => <TraceWorkDetail message={message} key={String(message.event_id || `${traceKind(message)}-${index}`)} />) : <div className="agent-work-block-placeholder">这个工作块没有可展示的详情。</div>}</div></details>
-}
-
-function AgentTimeline({taskId, messages, live, liveRevision, sessionId, openFile}: {taskId: string; messages: JsonRecord[]; live: boolean; liveRevision: number; sessionId: string; openFile: (path: string) => void}) {
-  if (!messages.length) return null
-  return <>{messages.map((message, index) => {
-    const kind = traceKind(message)
-    if (kind === 'work_summary') return <WorkBlock taskId={taskId} summary={message} live={live} liveRevision={liveRevision} key={String(message.block_id || index)} />
-    if (kind === 'user') return <SteerMessage message={message} sessionId={sessionId} openFile={openFile} variant="detail" key={messageId(message) || String(message.event_id || index)} />
-    if (kind !== 'assistant') return null
-    const html = String(message.html || '')
-    return <section className="agent-trace-reply" key={String(message.item_id || message.event_id || index)}>{html ? <MarkdownContent className="agent-trace-copy numoj-markdown" html={html} /> : <div className="agent-trace-copy"><pre>{traceText(message)}</pre></div>}</section>
-  })}</>
-}
-
-function AgentSubagents({items}: {items: JsonRecord[]}) {
-  if (!items.length) return null
-  return <section className="agent-subagent-list" aria-label="Subagent 状态"><header>SUBAGENTS</header><ul>{items.map((item, index) => {
-    const subagentId = String(item.subagent_id || '')
-    const running = statusKey(item.status) === 'running'
-    return <li className={running ? 'is-running' : 'is-completed'} key={subagentId || String(index)}>{running ? <MathCurveLoader className="agent-subagent-loader" size="xs" iconOnly ariaLabel={`${String(item.name || 'Subagent')} 正在运行`} colorA="#8c7251" colorB="#c19a66" /> : <span className="agent-subagent-completed-dot" aria-hidden="true" />}<span>{String(item.name || `Subagent ${subagentId.slice(-8)}`)}</span><small>{running ? '正在运行' : '已完成'}</small></li>
-  })}</ul></section>
+  return <section className={`agent-user-message agent-timeline-steer agent-timeline-steer--${variant}`} data-message-id={messageId(message)}><div className={`agent-user-bubble${html ? ' numoj-markdown' : ''}`}>{html ? <MarkdownContent className="numoj-markdown" html={html} /> : <p>{messageCopy(message)}</p>}</div><SavedAttachments attachments={messageAttachments(message)} sessionId={sessionId} openFile={openFile} /></section>
 }
 
 function AgentTurnDetails({taskId, duration, running = false, defaultOpen = false, liveRevision = 0, sessionId, openFile}: {taskId: string; duration?: unknown; running?: boolean; defaultOpen?: boolean; liveRevision?: number; sessionId: string; openFile: (path: string) => void}) {
   const [open, setOpen] = useState(defaultOpen)
   const result = useQuery({queryKey: agentRunQueryKey(taskId), queryFn: ({signal}) => fetchAgentRun(taskId, signal), enabled: open && Boolean(taskId), staleTime: Infinity, gcTime: Infinity, refetchOnReconnect: false})
   const trace = asRecord(result.data?.state?.execution_trace)
-  const messages = Array.isArray(trace.trace_messages) ? trace.trace_messages as JsonRecord[] : []
-  const subagents = Array.isArray(trace.subagents) ? trace.subagents as JsonRecord[] : []
-  return <details className="agent-turn-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><i className="fas fa-chevron-right" aria-hidden="true" />{running ? 'Agent 正在工作' : '工作详情'}</span>{running ? <span className="agent-live-mark"><i />LIVE</span> : duration ? <small>{String(duration)}</small> : null}</summary><div className="agent-turn-trace">{result.isPending ? <div className="agent-working-placeholder"><MathCurveLoader size="sm" label="正在加载工作详情" /></div> : result.isError ? <div className="agent-work-block-placeholder">工作详情加载失败，请收起后重试。</div> : <><AgentTimeline taskId={taskId} messages={messages} live={running && open} liveRevision={liveRevision} sessionId={sessionId} openFile={openFile} />{!messages.length && !subagents.length ? <div className="agent-workspace-empty">本轮没有可展示的工作详情。</div> : null}<AgentSubagents items={subagents} /></>}</div></details>
+  return <details className="agent-turn-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}><summary><span><i className="fas fa-chevron-right" aria-hidden="true" />{running ? 'Agent 正在工作' : '工作详情'}</span>{running ? <span className="agent-live-mark"><i />LIVE</span> : duration ? <small>{String(duration)}</small> : null}</summary><div>{result.isPending ? <div className="agent-working-placeholder"><MathCurveLoader size="sm" label="正在加载工作详情" /></div> : result.isError ? <div className="agent-work-block-placeholder">工作详情加载失败，请收起后重试。</div> : <AgentExecutionTrace trace={trace} traceScope={taskId} live={running && open} liveRevision={liveRevision} loadWorkBlock={(blockId, signal) => fetchAgentWorkBlock(taskId, blockId, signal)} workBlockQueryKey={(blockId) => workBlockQueryKey(taskId, blockId)} sessionId={sessionId} openFile={openFile} />}</div></details>
 }
 
 function AgentUsage({usage, personal}: {usage: JsonRecord | null; personal: boolean}) {

@@ -12,7 +12,6 @@ from backend.oj_modules.ranking.db import get_ranking_submission, submission_dir
 from backend.oj_modules.ranking.agent_judge import rules as aj
 from backend.oj_modules.ranking.reverse_judge.traces import (
     collect_agent_token_usage,
-    collect_agent_trace_files,
     collect_agent_trace_messages,
 )
 
@@ -1090,7 +1089,8 @@ def _build_execution_trace_payload(submission):
         'error_message': submission.get('error_message') or '',
         'stdout': '',
         'stderr': '',
-        'trace_files': collect_agent_trace_files(trace_dir),
+        # 原始 JSONL 只留在服务端用于审计，不再随评分详情下发。
+        'trace_files': [],
         'trace_messages': collect_agent_trace_messages(trace_dir),
         'token_usage': collect_agent_token_usage(trace_dir),
     }

@@ -695,6 +695,25 @@
   padding: 6px 0 2px;
 }
 
+/* Agent 会话、Agent Judge 与反向评测共用同一套轨迹 DOM。弹窗不在
+   agent-session-shell 下，因此共享表面需要自行补齐同一组视觉变量。 */
+.agent-trace-surface {
+  --agent-paper: #fffefb;
+  --agent-canvas: #f7f5ef;
+  --agent-ink: var(--numoj-ink, #18181b);
+  --agent-muted: var(--numoj-ink-3, #71717a);
+  --agent-faint: var(--numoj-ink-4, #a1a1aa);
+  --agent-line: #e5e0d6;
+  --agent-success: #268653;
+  --agent-mono: var(--numoj-mono, "SFMono-Regular", Consolas, "Liberation Mono", monospace);
+  min-width: 0;
+  color: var(--agent-ink);
+}
+
+.ranking-v2-detail .agent-trace-surface {
+  padding: 2px 1px 8px;
+}
+
 .agent-trace-reply {
   min-width: 0;
   margin: 6px 0 0;
@@ -702,6 +721,10 @@
 }
 
 .agent-session .agent-trace-copy p {
+  margin-bottom: 8px;
+}
+
+.agent-trace-surface .agent-trace-copy p {
   margin-bottom: 8px;
 }
 

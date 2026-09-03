@@ -5,6 +5,7 @@ import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {ReactModal} from '../components/ReactModal'
+import {AgentExecutionTrace} from '../pages/agent/AgentExecutionTrace'
 import {useRuleTopology} from './ruleTopology'
 import {useMatchHtmlFrame} from './useMatchHtmlFrame'
 
@@ -97,24 +98,60 @@ export function MediaPreviewModal({target, onClose}: {target: RankingMediaTarget
   </ReactModal>
 }
 
-type SseState = {snapshot: JsonRecord | null; streamError: string}
+type SseState = {snapshot: JsonRecord | null; streamError: string; revision: number}
+
+function mergeExecutionTrace(previous: unknown, incoming: unknown) {
+  const oldTrace = previous && typeof previous === 'object' && !Array.isArray(previous) ? previous as JsonRecord : null
+  const nextTrace = incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? incoming as JsonRecord : null
+  if (!nextTrace) return oldTrace
+  const sameTrace = !oldTrace
+    || (oldTrace.trace_id && nextTrace.trace_id ? oldTrace.trace_id === nextTrace.trace_id
+      : oldTrace.started_at && nextTrace.started_at ? oldTrace.started_at === nextTrace.started_at
+        : true)
+  const base = sameTrace ? oldTrace : null
+  return {
+    ...(base || {}),
+    ...nextTrace,
+    ...(!Array.isArray(nextTrace.trace_messages) && Array.isArray(base?.trace_messages) ? {trace_messages: base.trace_messages} : {}),
+    ...(!Array.isArray(nextTrace.subagents) && Array.isArray(base?.subagents) ? {subagents: base.subagents} : {}),
+  }
+}
+
+function mergeRankingSnapshot(previous: JsonRecord | null, incoming: JsonRecord) {
+  if (!previous) return incoming
+  const merged: JsonRecord = {...previous, ...incoming}
+  const trace = mergeExecutionTrace(previous.execution_trace, incoming.execution_trace)
+  if (trace) merged.execution_trace = trace
+  if (Array.isArray(incoming.steps)) {
+    const oldSteps = new Map((Array.isArray(previous.steps) ? previous.steps as JsonRecord[] : []).map((step) => [String(step.step_key || ''), step]))
+    merged.steps = (incoming.steps as JsonRecord[]).map((step) => {
+      const oldStep = oldSteps.get(String(step.step_key || ''))
+      if (!oldStep) return step
+      return mergeExecutionTrace(oldStep, step) || step
+    })
+  }
+  return merged
+}
 
 function useRankingEventSnapshot(url: string | null, open: boolean, onTerminal?: () => void, reconnect = false) {
-  const [state, setState] = useState<SseState>({snapshot: null, streamError: ''})
+  const [state, setState] = useState<SseState>({snapshot: null, streamError: '', revision: 0})
   const onTerminalRef = useRef(onTerminal)
   useEffect(() => {onTerminalRef.current = onTerminal}, [onTerminal])
   useEffect(() => {
-    setState({snapshot: null, streamError: ''})
+    setState({snapshot: null, streamError: '', revision: 0})
     if (!open || !url) return undefined
     if (!window.EventSource) {
-      setState({snapshot: null, streamError: '当前浏览器不支持实时进度，请刷新页面后重试。'})
+      setState({snapshot: null, streamError: '当前浏览器不支持实时进度，请刷新页面后重试。', revision: 0})
       return undefined
     }
     let settled = false
     const source = new EventSource(url)
     source.onopen = () => setState((current) => ({...current, streamError: ''}))
     const update = (event: MessageEvent) => {
-      try { setState({snapshot: JSON.parse(event.data) as JsonRecord, streamError: ''}) } catch { /* 保留上一个完整快照 */ }
+      try {
+        const incoming = JSON.parse(event.data) as JsonRecord
+        setState((current) => ({snapshot: mergeRankingSnapshot(current.snapshot, incoming), streamError: '', revision: current.revision + 1}))
+      } catch { /* 保留上一个完整快照 */ }
     }
     source.addEventListener('progress', update as EventListener)
     source.addEventListener('done', ((event: MessageEvent) => {settled = true; update(event); source.close(); onTerminalRef.current?.()}) as EventListener)
@@ -158,32 +195,6 @@ function htmlOrText(record: JsonRecord, htmlKey: string, textKey: string) {
   return html ? <MarkdownContent html={html} className="aj-md" /> : <div className="aj-md" style={{whiteSpace: 'pre-wrap'}}>{String(record[textKey] || '')}</div>
 }
 
-function TraceMessage({message}: {message: JsonRecord}) {
-  const kind = String(message.kind || message.type || message.role || 'assistant').replace('_', '-')
-  const titleMap: Record<string, string> = {assistant: 'Agent 回复', thinking: '思考过程', tool: '工具调用', 'tool-result': '工具结果', subagent: '子 Agent'}
-  const iconMap: Record<string, string> = {assistant: 'fa-robot', thinking: 'fa-lightbulb', tool: 'fa-wrench', 'tool-result': 'fa-terminal', subagent: 'fa-diagram-project'}
-  const title = String(message.title || titleMap[kind] || '执行记录')
-  const body = String(message.html || '')
-  const plain = textValue(message.content ?? message.text ?? message.output ?? message.arguments ?? message.data)
-  const rendered = body ? <MarkdownContent html={body} className="rj-msg-body rj-md" /> : <div className={`rj-msg-body${kind === 'tool' ? ' rj-tool-text' : kind === 'tool-result' ? ' rj-tool-result-text' : ''}`}>{plain}</div>
-  if (kind === 'assistant') return <div className="rj-msg assistant"><div className="rj-msg-head"><span className="rj-msg-title"><i className={`fas ${iconMap[kind]}`} />{title}</span>{message.timestamp ? <span>{String(message.timestamp)}</span> : null}</div>{rendered}</div>
-  const summaryClass = kind === 'thinking' ? 'rj-thinking-summary' : kind === 'tool' ? 'rj-tool-summary' : kind === 'tool-result' ? 'rj-tool-result-summary' : 'rj-subagent-summary'
-  const preview = plain.replace(/\s+/g, ' ').trim().slice(0, 90)
-  return <details className={`rj-msg ${kind}${message.error ? ' error' : ''}`}><summary className={summaryClass}><span className="rj-summary-main"><i className={`fas ${iconMap[kind] || 'fa-circle-info'}`} /><strong>{title}</strong>{preview ? <span className="rj-summary-preview">{preview}</span> : null}</span>{message.name ? <span className="rj-summary-meta">{String(message.name)}</span> : null}</summary>{rendered}</details>
-}
-
-function ExecutionTrace({trace}: {trace?: JsonRecord | null}) {
-  const [expanded, setExpanded] = useState(false)
-  useEffect(() => setExpanded(false), [trace])
-  if (!trace) return <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载执行轨迹…" /></div>
-  const status = String(trace.status || '')
-  const messages = Array.isArray(trace.trace_messages) ? trace.trace_messages as JsonRecord[] : []
-  const files = Array.isArray(trace.trace_files) ? trace.trace_files as JsonRecord[] : []
-  if (!messages.length && (status === 'running' || status === 'pending')) return <div className="agent-trace-pending"><MathCurveLoader iconOnly size="lg" ariaLabel="执行中" /></div>
-  const visible = expanded || messages.length <= 9 ? messages : [...messages.slice(0, 7), {kind: '__ellipsis'}, ...messages.slice(-2)]
-  return <div className="agent-execution-trace">{trace.error_message ? <div className="rj-alert">{String(trace.error_message)}</div> : null}<div className="rj-agent-feed">{visible.map((message, index) => String(message.kind) === '__ellipsis' ? <button type="button" className="agent-trace-ellipsis" aria-label="展开全部执行记录" onClick={() => setExpanded(true)} key="ellipsis">•••</button> : <TraceMessage message={message} key={String(message.id || `${index}-${message.kind || message.type || ''}`)} />)}</div>{!messages.length ? <div className="rj-empty">暂无执行记录</div> : null}{files.length ? <details className="rj-raw-json"><summary>轨迹文件</summary><pre className="rj-pre mt-2">{textValue(files)}</pre></details> : null}{trace.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(trace.stdout)}</pre></details> : null}{trace.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(trace.stderr)}</pre></details> : null}</div>
-}
-
 function JudgeTopology({rules, onRule}: {rules: JsonRecord[]; onRule: (rule: JsonRecord) => void}) {
   const topology = useRuleTopology(rules, {nodeWidth: 176, nodeHeight: 96, marginX: 24, marginY: 20, columnGap: 88, rowGap: 72, slotPadding: 46, maxSlotStep: 18})
   const [focus, setFocus] = useState<number | null>(null)
@@ -218,7 +229,7 @@ type AppealState = ApiEnvelope & {has_appeal?: boolean; status?: string; status_
 export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; canAppeal: boolean; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const streamUrl = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/judge-events` : null
-  const {snapshot, streamError} = useRankingEventSnapshot(streamUrl, open, onTerminal)
+  const {snapshot, streamError, revision} = useRankingEventSnapshot(streamUrl, open, onTerminal)
   const [view, setView] = useState<'topo' | 'detail' | 'trace'>('trace')
   const [manualView, setManualView] = useState(false)
   const [rulePopup, setRulePopup] = useState<JsonRecord | null>(null)
@@ -263,7 +274,7 @@ export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onT
       {canAppeal && appealOpen ? <div className="border rounded p-3 mb-3">{appeal?.has_appeal ? <div><div className="mb-2"><span className="small text-muted me-1"><i className="fas fa-gavel me-1" />申诉状态：</span><span className="fw-semibold">{appeal.status_label || appeal.status}</span></div><div className="small text-muted mb-1">你的申诉意见：</div><div className="aj-evi small p-2 mb-2">{appeal.reason}</div>{appeal.admin_response ? <><div className="small text-muted mb-1">管理员回复：</div><div className="aj-evi small p-2 mb-0">{appeal.admin_response}</div></> : null}</div> : <div><label className="form-label small text-muted mb-1" htmlFor="appealReason"><i className="fas fa-comment-dots me-2" />申诉意见</label><textarea id="appealReason" className="form-control mb-2" rows={3} maxLength={4000} placeholder="例如：规则 X 我已实现并能正常运行，截图见 …" value={appealReason} onChange={(event) => setAppealReason(event.target.value)} autoFocus /><div className="d-flex align-items-center gap-2"><button type="button" className="btn btn-sm btn-warning" disabled={appealPending} onClick={() => void submitAppeal()}><i className="fas fa-paper-plane me-1" />提交申诉</button><span className={`small${appealError ? ' text-danger' : ''}`}>{appealPending ? '提交中…' : appealError}</span></div></div>}</div> : null}
       <div className="aj-result-view" hidden={view !== 'topo'}>{snapshot ? <JudgeTopology rules={rules} onRule={setRulePopup} /> : <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载评分拓扑…" /></div>}</div>
       <div className="aj-result-view" hidden={view !== 'detail'}>{snapshot ? <JudgeRules rules={rules} /> : <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载评分细则…" /></div>}</div>
-      <div className="aj-result-view" hidden={view !== 'trace'}><ExecutionTrace trace={snapshot?.execution_trace as JsonRecord | undefined} /></div>
+      <div className="aj-result-view" hidden={view !== 'trace'}><AgentExecutionTrace trace={snapshot?.execution_trace as JsonRecord | undefined} traceScope={`judge:${competitionId}:${target?.id || ''}:${String((snapshot?.execution_trace as JsonRecord | undefined)?.trace_id || '')}`} live={['Judging', 'Queued', 'Pending'].includes(status)} liveRevision={revision} emptyLabel="暂无执行记录" /></div>
     </div></div>
   </ReactModal>{rulePopup ? <div className="aj-result-pop" role="presentation" onMouseDown={(event) => {if (event.target === event.currentTarget) setRulePopup(null)}}><div className="aj-result-pop-box" role="dialog" aria-modal="true" aria-labelledby="judgeRuleReadTitle"><div className="aj-result-pop-head"><div><div className="aj-result-pop-title" id="judgeRuleReadTitle">规则 {numberValue(rulePopup.rule_id)} · {String(rulePopup.rule_name || String(rulePopup.rule_text || '').slice(0, 14))}</div><div className="aj-result-pop-meta"><span className="badge me-2" style={{color: (resultBadge[String(rulePopup.effective)] || resultBadge.pending).color, background: (resultBadge[String(rulePopup.effective)] || resultBadge.pending).background, borderRadius: 999}}>{(resultBadge[String(rulePopup.effective)] || resultBadge.pending).label}</span><span>得分 {numberValue(rulePopup.score)} / {numberValue(rulePopup.value)}</span></div></div><button type="button" className="aj-result-pop-close" aria-label="关闭" onClick={() => setRulePopup(null)}><i className="fas fa-times" /></button></div><div className="aj-result-pop-body"><div className="aj-result-pop-section"><div className="aj-result-pop-label">规则原文</div>{htmlOrText(rulePopup, 'rule_html', 'rule_text')}</div><div className="aj-result-pop-section"><div className="aj-result-pop-label">评分证据</div><div className="aj-evi small p-2">{rulePopup.evidence_html || rulePopup.evidence ? htmlOrText(rulePopup, 'evidence_html', 'evidence') : <span className="text-muted">暂无评分证据。</span>}</div></div></div></div></div> : null}</>
 }
@@ -310,7 +321,7 @@ function QualityGate({step}: {step: JsonRecord}) {
 export function ReverseJudgeDetailModal({competitionId, target, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const url = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/reverse-judge-events` : null
-  const {snapshot, streamError} = useRankingEventSnapshot(url, open, onTerminal, true)
+  const {snapshot, streamError, revision} = useRankingEventSnapshot(url, open, onTerminal, true)
   const steps = useMemo(() => Array.isArray(snapshot?.steps) ? snapshot.steps as JsonRecord[] : [], [snapshot?.steps])
   const [activeStep, setActiveStep] = useState('solution_check')
   const [manual, setManual] = useState(false)
@@ -324,7 +335,7 @@ export function ReverseJudgeDetailModal({competitionId, target, onClose, onTermi
   return <ReactModal open={open} onClose={onClose} id="reverseJudgeDetailModal" labelledBy="reverseJudgeDetailModalLabel" className="ranking-v2-detail" dialogClassName="modal-xl modal-dialog-scrollable">
     <div className="modal-content rj-modal"><div className="modal-header"><div><h5 className="modal-title" id="reverseJudgeDetailModalLabel"><i className="fas fa-list-check me-2 text-warning" />反向评测详情</h5><div className="text-muted small">#{target?.id}{target?.createdAt ? ` · ${target.createdAt}` : ''}</div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="rj-summary"><span>{streamError || `${statusLabels[status] || status || '正在连接评测进度…'}${snapshot?.error_message ? ` · ${snapshot.error_message}` : ''}`}</span><span className="rj-summary-actions">{agentStep?.answer_available && answerDownloadUrl ? <a className="rj-answer-download" href={answerDownloadUrl} download><i className="fas fa-download" />下载 AI 解答</a> : null}<span className="rj-total">学生得分 <strong>{snapshot?.total_score == null ? '—' : numberValue(snapshot.total_score)}</strong><small>/100</small></span></span></div>
       <div className="rj-tabs mb-3" role="tablist" aria-label="反向评测步骤">{steps.filter(stepVisible).map((item) => {const key = String(item.step_key); const itemStatus = String(item.status || 'pending'); return <button type="button" className={`rj-tab${activeStep === key ? ' active' : ''}`} disabled={itemStatus === 'pending'} onClick={() => {setActiveStep(key); setManual(true)}} key={key}>{reverseStepLabels[key] || key} <span className={`rj-dot${itemStatus === 'running' ? ' running' : itemStatus === 'passed' ? ' ok' : ['failed', 'error'].includes(itemStatus) ? ' err' : itemStatus === 'skipped' ? ' skip' : ''}`} /></button>})}</div>
-      {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : String(step.status) === 'running' && activeStep !== 'agent_answer' ? <div className="rj-step-running"><MathCurveLoader iconOnly size="lg" ariaLabel={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <ExecutionTrace trace={step} /> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
+      {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : String(step.status) === 'running' && activeStep !== 'agent_answer' ? <div className="rj-step-running"><MathCurveLoader iconOnly size="lg" ariaLabel={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <AgentExecutionTrace trace={step} traceScope={`reverse:${competitionId}:${target?.id || ''}:${String(step.started_at || '')}`} live={['running', 'pending'].includes(String(step.status))} liveRevision={revision} emptyLabel="暂无执行记录" /> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
     </div></div>
   </ReactModal>
 }

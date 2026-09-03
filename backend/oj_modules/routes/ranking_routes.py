@@ -2470,7 +2470,7 @@ def _redact_agent_trace_value(value, sensitive_values=()):
 
 def _project_agent_judge_snapshot(snapshot, *, include_internal=False,
                                   sensitive_values=(), redaction_ready=True):
-    """投影评分轨迹：所有查看者都隐藏随机结果文件名，普通选手不拿原始文件。"""
+    """投影评分轨迹：所有查看者都不拿原始轨迹文件，并隐藏随机结果文件名。"""
     if not isinstance(snapshot, dict):
         return snapshot
     projected = copy.deepcopy(snapshot)
@@ -2479,6 +2479,7 @@ def _project_agent_judge_snapshot(snapshot, *, include_internal=False,
         trace = _redact_agent_trace_value(
             trace, tuple(sensitive_values or ()),
         )
+        trace['trace_files'] = []
         projected['execution_trace'] = trace
     if isinstance(trace, dict) and not include_internal:
         trace['trace_files'] = []
@@ -2634,12 +2635,19 @@ def ranking_judge_stream(competition_id, submission_id):
 
 def _project_reverse_judge_snapshot(snapshot, *, include_internal=False):
     """按查看者权限投影反向评测快照，避免泄露质量门禁私有标准。"""
-    if include_internal or not isinstance(snapshot, dict):
+    if not isinstance(snapshot, dict):
         return snapshot
 
     projected = copy.deepcopy(snapshot)
     steps = projected.get('steps')
     if not isinstance(steps, list):
+        return projected
+
+    # 轨迹消息仍用于分段式 UI；原始 JSONL 始终只保留在服务器上。
+    for step in steps:
+        if isinstance(step, dict):
+            step['trace_files'] = []
+    if include_internal:
         return projected
 
     gate_rejected = False

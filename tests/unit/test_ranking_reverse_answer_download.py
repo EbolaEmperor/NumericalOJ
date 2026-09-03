@@ -900,7 +900,6 @@ def test_build_reverse_judge_snapshot_exposes_current_archive_only_on_agent_step
             or archive_path
         ),
     )
-    monkeypatch.setattr(reverse_service, "collect_agent_trace_files", lambda _path: [])
     monkeypatch.setattr(reverse_service, "collect_agent_trace_messages", lambda _path: [])
 
     snapshot = reverse_service.build_reverse_judge_snapshot(9)
