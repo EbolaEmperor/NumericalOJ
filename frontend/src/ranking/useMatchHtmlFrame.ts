@@ -1,4 +1,4 @@
-import {useEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
+import {useLayoutEffect, useMemo, useRef, useState, type CSSProperties} from 'react'
 
 const DEFAULT_HEIGHT = 520
 const MIN_HEIGHT = 240
@@ -77,7 +77,11 @@ export function useMatchHtmlFrame({
   const [readyDocumentKey, setReadyDocumentKey] = useState('')
   const ready = readyDocumentKey === documentKey
 
-  useEffect(() => {
+  // 旧版 Jinja 的关键不只是“fresh iframe + Blob URL”，还要求 replaceWith 后
+  // 在同一个浏览器绘制周期内立刻设置 src。普通 useEffect 会等到提交后的绘制
+  // 阶段，Safari 此时可能已经为无文档 iframe 缓存了错误的缩放与裁剪合成层。
+  // layout effect 保留 React DOM 提交，同时恢复旧版 attach -> src 的同步时序。
+  useLayoutEffect(() => {
     const mountedFrame = frameRef.current
     if (!mountedFrame) return undefined
     const frame: HTMLIFrameElement = mountedFrame
@@ -142,9 +146,17 @@ export function useMatchHtmlFrame({
       active = false
       clearReadyWait()
       setFrameReady(frame, false)
-      frame.removeAttribute('src')
-      frame.removeAttribute('srcdoc')
-      URL.revokeObjectURL(objectUrl)
+      // React StrictMode 会在开发环境同步执行一次 setup -> cleanup -> setup，且
+      // 复用同一个 DOM 节点。若这里立刻导航到空白页，Safari 会把那次空白合成
+      // 层留给紧随其后的真实 Blob。推迟到微任务，并只清理仍指向本次 URL 的
+      // iframe；新的 setup 若已接管该节点，就只回收旧 Object URL。
+      queueMicrotask(() => {
+        if (frame.src === objectUrl) {
+          frame.removeAttribute('src')
+          frame.removeAttribute('srcdoc')
+        }
+        URL.revokeObjectURL(objectUrl)
+      })
     }
   }, [content, documentKey, height])
 

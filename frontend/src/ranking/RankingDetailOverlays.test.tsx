@@ -2,10 +2,10 @@
 
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react'
-import type {ReactNode} from 'react'
+import {StrictMode, useLayoutEffect, type ReactNode} from 'react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
-import {JudgeDetailModal, ReverseJudgeDetailModal} from './RankingDetailOverlays'
+import {JudgeDetailModal, MatchDetailModal, ReverseJudgeDetailModal} from './RankingDetailOverlays'
 
 type Listener = (event: MessageEvent) => void
 
@@ -137,5 +137,76 @@ describe('打榜赛评测详情实时连接', () => {
     expect(screen.queryByText(/answer\.jsonl/)).toBeNull()
     fireEvent.click(screen.getByText('工作中…1 tool call'))
     await waitFor(() => expect(screen.getByText('读取题目附件')).toBeTruthy())
+  })
+})
+
+describe('ELO 互动详情 Safari 生命周期', () => {
+  it('在父级 layout effect 运行前已把 Blob URL 交给挂载后的全新 iframe', async () => {
+    const onParentLayout = vi.fn()
+    const createObjectURL = vi.fn(() => 'blob:numoj-match-detail')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', {...URL, createObjectURL, revokeObjectURL})
+
+    function LayoutProbe() {
+      useLayoutEffect(() => {
+        const frame = document.querySelector<HTMLIFrameElement>('#matchDetailModal iframe')
+        onParentLayout({
+          connected: frame?.isConnected,
+          src: frame?.getAttribute('src'),
+          visibility: frame?.style.visibility,
+          pointerEvents: frame?.style.pointerEvents,
+        })
+      }, [])
+      return <MatchDetailModal
+        open
+        detail={{success: true, id: 5965, detail_output: {format: 'html', content: '<main>replay</main>', height: 540}}}
+        pending={false}
+        onClose={vi.fn()}
+        retry={vi.fn()}
+      />
+    }
+
+    const view = render(<LayoutProbe />)
+
+    expect(createObjectURL).toHaveBeenCalledOnce()
+    expect(onParentLayout).toHaveBeenCalledWith({
+      connected: true,
+      src: 'blob:numoj-match-detail',
+      visibility: 'hidden',
+      pointerEvents: 'none',
+    })
+
+    const firstFrame = document.querySelector<HTMLIFrameElement>('#matchDetailModal iframe')
+    view.rerender(<MatchDetailModal
+      open
+      detail={{success: true, id: 5964, detail_output: {format: 'html', content: '<main>next replay</main>', height: 580}}}
+      pending={false}
+      onClose={vi.fn()}
+      retry={vi.fn()}
+    />)
+    const secondFrame = document.querySelector<HTMLIFrameElement>('#matchDetailModal iframe')
+    expect(secondFrame).not.toBe(firstFrame)
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:numoj-match-detail'))
+  })
+
+  it('StrictMode 重放 layout effect 时不会用旧 cleanup 清空最新 Blob', async () => {
+    const objectUrls = ['blob:numoj-first', 'blob:numoj-current']
+    const createObjectURL = vi.fn(() => objectUrls.shift() || 'blob:numoj-unexpected')
+    const revokeObjectURL = vi.fn()
+    vi.stubGlobal('URL', {...URL, createObjectURL, revokeObjectURL})
+
+    render(<StrictMode><MatchDetailModal
+      open
+      detail={{success: true, id: 5965, detail_output: {format: 'html', content: '<main>replay</main>', height: 540}}}
+      pending={false}
+      onClose={vi.fn()}
+      retry={vi.fn()}
+    /></StrictMode>)
+
+    const frame = document.querySelector<HTMLIFrameElement>('#matchDetailModal iframe')
+    expect(createObjectURL).toHaveBeenCalledTimes(2)
+    expect(frame?.getAttribute('src')).toBe('blob:numoj-current')
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:numoj-first'))
+    expect(frame?.getAttribute('src')).toBe('blob:numoj-current')
   })
 })
