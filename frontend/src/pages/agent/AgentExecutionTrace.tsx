@@ -51,7 +51,7 @@ function subagentStatus(message: JsonRecord) {
     return {
       subagent_id: subagentId,
       name: String(value.name || message.title || 'Subagent'),
-      status: statusKey(value.status) === 'running' ? 'running' : 'completed',
+      status: ['running', 'ended'].includes(statusKey(value.status)) ? statusKey(value.status) : 'completed',
     } satisfies JsonRecord
   } catch {
     return null
@@ -131,7 +131,11 @@ export function normalizeAgentExecutionTrace(trace?: JsonRecord | null): Normali
   })
   flush()
 
-  return {messages, blocks, subagents: subagentOrder.map((id) => subagents.get(id)).filter(Boolean) as JsonRecord[]}
+  const traceRunning = new Set(['running', 'pending', 'judging', 'queued']).has(statusKey(trace?.status))
+  const normalizedSubagents = subagentOrder.map((id) => subagents.get(id)).filter(Boolean).map((item) => (
+    !traceRunning && statusKey(item?.status) === 'running' ? {...item, status: 'ended'} : item
+  )) as JsonRecord[]
+  return {messages, blocks, subagents: normalizedSubagents}
 }
 
 function SteerMessage({message, sessionId, openFile}: {message: JsonRecord; sessionId?: string; openFile?: (path: string) => void}) {
@@ -175,8 +179,10 @@ function AgentSubagents({items}: {items: JsonRecord[]}) {
   if (!items.length) return null
   return <section className="agent-subagent-list" aria-label="Subagent 状态"><header>SUBAGENTS</header><ul>{items.map((item, index) => {
     const subagentId = String(item.subagent_id || '')
-    const running = statusKey(item.status) === 'running'
-    return <li className={running ? 'is-running' : 'is-completed'} key={subagentId || String(index)}>{running ? <MathCurveLoader className="agent-subagent-loader" size="xs" iconOnly ariaLabel={`${String(item.name || 'Subagent')} 正在运行`} colorA="#8c7251" colorB="#c19a66" /> : <span className="agent-subagent-completed-dot" aria-hidden="true" />}<span>{String(item.name || `Subagent ${subagentId.slice(-8)}`)}</span><small>{running ? '正在运行' : '已完成'}</small></li>
+    const normalizedStatus = statusKey(item.status)
+    const running = normalizedStatus === 'running'
+    const ended = normalizedStatus === 'ended'
+    return <li className={running ? 'is-running' : ended ? 'is-ended' : 'is-completed'} key={subagentId || String(index)}>{running ? <MathCurveLoader className="agent-subagent-loader" size="xs" iconOnly ariaLabel={`${String(item.name || 'Subagent')} 正在运行`} colorA="#8c7251" colorB="#c19a66" /> : <span className="agent-subagent-completed-dot" aria-hidden="true" />}<span>{String(item.name || `Subagent ${subagentId.slice(-8)}`)}</span><small>{running ? '正在运行' : ended ? '已结束' : '已完成'}</small></li>
   })}</ul></section>
 }
 

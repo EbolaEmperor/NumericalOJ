@@ -76,4 +76,16 @@ describe('共享 Agent 执行轨迹', () => {
     expect(screen.getByText('已完成')).toBeTruthy()
     expect(document.querySelector('.agent-subagent-completed-dot')).toBeTruthy()
   })
+
+  it('父任务终止后不再把缺少完成事件的 subagent 显示为运行中', () => {
+    renderTrace({
+      status: 'error',
+      subagents: [{subagent_id: 'worker-stale', name: '未收束的检索', status: 'running'}],
+    })
+
+    expect(screen.queryByText('正在运行')).toBeNull()
+    expect(screen.getByText('已结束')).toBeTruthy()
+    expect(document.querySelector('.agent-subagent-loader')).toBeNull()
+    expect(document.querySelector('.agent-subagent-completed-dot')).toBeTruthy()
+  })
 })

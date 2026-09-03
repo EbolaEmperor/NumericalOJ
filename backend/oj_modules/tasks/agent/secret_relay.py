@@ -52,8 +52,11 @@ _CLIENT_TIMEOUT_SECONDS = 30
 # 会在 5 秒后被误判为凭据代理泄漏。
 _HANDLER_SHUTDOWN_TIMEOUT_SECONDS = _CLIENT_TIMEOUT_SECONDS + 5
 _HANDLER_SHUTDOWN_POLL_SECONDS = 0.2
-_ENDPOINT_USAGE_GATE_WAIT_SECONDS = 30
 _ENDPOINT_USAGE_DRAIN_SECONDS = _UPSTREAM_TIMEOUT_SECONDS + 5
+# Claude Code workflow 会让多个 subagent 同时请求模型和 MCP。身份 relay 仍
+# 保持 4 条连接的窄能力边界；密钥 relay 需要覆盖一轮正常 workflow 的并发，
+# 同时继续由逐 relay 请求次数、请求体总量和响应大小限制资源消耗。
+_MAX_SECRET_RELAY_CONNECTIONS = 128
 _DEFAULT_CACHED_HIT_RATE_PERCENT = 90
 _REDACTION = b"[REDACTED]"
 _EMPTY_ASSISTANT_CONTENT_ERROR = (
@@ -1383,6 +1386,9 @@ def _response_headers(headers, secret_values):
 class _BoundedSecretRelayServer(_BoundedIdentityRelayServer):
     """在通用连接边界外额外追踪每个 handler 的完整生命周期。"""
 
+    max_connections = _MAX_SECRET_RELAY_CONNECTIONS
+    request_queue_size = _MAX_SECRET_RELAY_CONNECTIONS * 2
+
     def __init__(self, server_address, handler_class):
         self._handler_condition = threading.Condition()
         self._pending_handlers = set()
@@ -1543,9 +1549,12 @@ class _AgentSecretRelay:
             raise AgentSecretRelayError("模型端点实时计费 callback 未配置")
         self._request_count = 0
         self._inflight_request_bytes = 0
-        self._endpoint_request_inflight = False
+        self._endpoint_request_claims = set()
         self._usage_failure = None
         self._usage_condition = threading.Condition(self._state_lock)
+        # 模型请求必须并发到达上游；只有很短的数据库记账 callback 串行，
+        # 让额度账户保持确定顺序，也避免一次 workflow 瞬间占满数据库连接。
+        self._usage_callback_lock = threading.Lock()
 
     @property
     def container_credential(self):
@@ -1585,43 +1594,28 @@ class _AgentSecretRelay:
             return True
 
     def _claim_endpoint_request(self):
-        """串行放行一条需计费的模型请求。
-
-        relay 临时凭据对容器内所有进程可见，因此必须以 relay 观察到的上游
-        usage 为权威边界。上一条响应没有完整读取、解析并入账前，下一条生成
-        请求不能到达上游；adapter stdout 只负责展示轨迹。
-        """
+        """登记一条需计费的模型请求，不阻塞其他 subagent 并发转发。"""
 
         if not self._require_usage_ack:
             return True
-        deadline = time.monotonic() + _ENDPOINT_USAGE_GATE_WAIT_SECONDS
         with self._usage_condition:
-            while self._endpoint_request_inflight:
-                if (
-                    not self._active
-                    or self._closed
-                    or self._stop_event.is_set()
-                ):
-                    return False
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                self._usage_condition.wait(timeout=remaining)
             if (
                 not self._active
                 or self._closed
                 or self._stop_event.is_set()
             ):
                 return False
-            self._endpoint_request_inflight = True
-            return True
+            claim = object()
+            self._endpoint_request_claims.add(claim)
+            return claim
 
-    def _abandon_endpoint_request(self):
+    def _abandon_endpoint_request(self, claim):
         if not self._require_usage_ack:
             return
         with self._usage_condition:
-            self._endpoint_request_inflight = False
-            self._usage_condition.notify_all()
+            if claim in self._endpoint_request_claims:
+                self._endpoint_request_claims.discard(claim)
+                self._usage_condition.notify_all()
 
     def _record_usage_failure(self, exc):
         failure = exc if isinstance(exc, Exception) else AgentSecretRelayUsageError(
@@ -1630,11 +1624,10 @@ class _AgentSecretRelay:
         with self._usage_condition:
             if self._usage_failure is None:
                 self._usage_failure = failure
-            self._endpoint_request_inflight = False
             self._usage_condition.notify_all()
         self.deny_new_requests()
 
-    def _account_endpoint_response(self, relative_route, payload):
+    def _account_endpoint_response(self, claim, relative_route, payload):
         if not self._require_usage_ack:
             return None
         try:
@@ -1662,7 +1655,8 @@ class _AgentSecretRelay:
                 "id": "relay-" + secrets.token_urlsafe(24),
                 "usage": usage,
             }
-            result = self._usage_callback(event)
+            with self._usage_callback_lock:
+                result = self._usage_callback(event)
             if not isinstance(result, dict) or result.get("applied") is not True:
                 raise AgentSecretRelayUsageError("模型 usage 没有产生新的记账记录")
             if bool(result.get("hard_stop")):
@@ -1678,9 +1672,8 @@ class _AgentSecretRelay:
         except Exception as exc:
             self._record_usage_failure(exc)
             raise
-        with self._usage_condition:
-            self._endpoint_request_inflight = False
-            self._usage_condition.notify_all()
+        finally:
+            self._abandon_endpoint_request(claim)
         return result
 
     def raise_if_usage_failed(self):
@@ -1690,11 +1683,11 @@ class _AgentSecretRelay:
             raise failure
 
     def wait_for_endpoint_usage(self, timeout=_ENDPOINT_USAGE_DRAIN_SECONDS):
-        """正常结束 harness 时等最后一个已接受请求读完并完成记账。"""
+        """正常结束 harness 时等待全部已接受请求读完并完成记账。"""
 
         deadline = time.monotonic() + max(0.0, float(timeout))
         with self._usage_condition:
-            while self._endpoint_request_inflight and self._usage_failure is None:
+            while self._endpoint_request_claims and self._usage_failure is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise AgentSecretRelayUsageError("等待模型 usage 记账超时")
@@ -1785,7 +1778,7 @@ class _AgentSecretRelay:
                 connection_handle = None
                 connection_registered = False
                 reserved_body_bytes = 0
-                endpoint_request_claimed = False
+                endpoint_request_claim = None
                 endpoint_response_accepted = False
                 endpoint_accounting_attempted = False
                 endpoint_accounted = False
@@ -1829,12 +1822,12 @@ class _AgentSecretRelay:
                             relay.upstream.base_path,
                         )
                     ):
-                        if not relay._claim_endpoint_request():
+                        endpoint_request_claim = relay._claim_endpoint_request()
+                        if not endpoint_request_claim:
                             raise _RequestRejected(
                                 503,
                                 "usage acknowledgement required",
                             )
-                        endpoint_request_claimed = True
                     upstream_headers, secret_values = (
                         relay._forwarding_snapshot()
                     )
@@ -1849,7 +1842,7 @@ class _AgentSecretRelay:
                     body = self.rfile.read(content_length) if content_length else None
                     if content_length and (body is None or len(body) != content_length):
                         raise _RequestRejected(400, "incomplete request")
-                    if endpoint_request_claimed:
+                    if endpoint_request_claim is not None:
                         body = _prepare_endpoint_request_body(
                             relay.mode,
                             relative_route,
@@ -1879,7 +1872,7 @@ class _AgentSecretRelay:
                     if 300 <= status < 400:
                         raise _RequestRejected(502, "upstream redirect refused")
                     endpoint_response_accepted = bool(
-                        endpoint_request_claimed and 200 <= status < 300
+                        endpoint_request_claim is not None and 200 <= status < 300
                     )
                     _response_content_length(response.headers)
                     _validate_response_content_encoding(response.headers)
@@ -1904,7 +1897,7 @@ class _AgentSecretRelay:
                         socket.timeout,
                     ):
                         # 客户端断开不等于上游请求没有发生。继续 drain 上游，
-                        # 只有完整 usage 入账后才释放串行闸门。
+                        # 只有完整 usage 入账后才注销这条请求的计费 claim。
                         client_writable = False
                     transferred = 0
                     response_payload = bytearray()
@@ -1982,6 +1975,7 @@ class _AgentSecretRelay:
                     if endpoint_response_accepted:
                         endpoint_accounting_attempted = True
                         relay._account_endpoint_response(
+                            endpoint_request_claim,
                             relative_route,
                             bytes(response_payload),
                         )
@@ -2024,11 +2018,10 @@ class _AgentSecretRelay:
                         relay._record_usage_failure(exc)
                 finally:
                     if (
-                        endpoint_request_claimed
-                        and not endpoint_response_accepted
+                        endpoint_request_claim is not None
                         and not endpoint_accounted
                     ):
-                        relay._abandon_endpoint_request()
+                        relay._abandon_endpoint_request(endpoint_request_claim)
                     if reserved_body_bytes:
                         relay._release_request_body(reserved_body_bytes)
                     if response is not None:
@@ -2127,8 +2120,8 @@ class _AgentSecretRelay:
                 return
             self._closed = True
             self._active = False
-            # 唤醒 usage 记账闸门与 drain 等待者；它们必须立即观察 _closed
-            # 并 fail-closed 退出，而不是睡到自己的 30/605 秒截止，把
+            # 唤醒 usage drain 等待者；它们必须立即观察 _closed
+            # 并 fail-closed 退出，而不是睡到自己的 605 秒截止，把
             # close() 的限时等待拖成清理失败。
             self._usage_condition.notify_all()
             server = self.server

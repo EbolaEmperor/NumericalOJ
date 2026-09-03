@@ -597,10 +597,11 @@ def _read_response_chunk(response, size=64 * 1024):
 
 class _BoundedIdentityRelayServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
+    max_connections = _MAX_CONNECTIONS
     request_queue_size = _MAX_CONNECTIONS * 2
 
     def __init__(self, server_address, handler_class):
-        self._slots = threading.BoundedSemaphore(_MAX_CONNECTIONS)
+        self._slots = threading.BoundedSemaphore(self.max_connections)
         self._active_lock = threading.Lock()
         self._active_clients = set()
         self._active_upstreams = set()

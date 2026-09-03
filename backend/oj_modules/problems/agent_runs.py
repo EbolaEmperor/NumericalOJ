@@ -136,6 +136,19 @@ def build_agent_execution_trace(state, *, steer_records=None):
         if task_id else []
     )
     subagents = list_agent_trace_subagents(task_id) if task_id else []
+    if status in {"passed", "error"}:
+        terminal_subagent_status = (
+            "completed" if status == "passed" else "ended"
+        )
+        subagents = [
+            {
+                **subagent,
+                "status": terminal_subagent_status,
+            }
+            if str(subagent.get("status") or "").strip().lower() == "running"
+            else subagent
+            for subagent in subagents
+        ]
     trace = {
         "schema_version": 2,
         "trace_id": (

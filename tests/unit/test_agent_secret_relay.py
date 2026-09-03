@@ -1219,7 +1219,7 @@ def test_close_interrupts_handler_blocked_in_upstream_connect(monkeypatch):
         assert not client_thread.is_alive()
 
 
-def test_close_wakes_gate_waiter_and_aborts_stalled_connect(monkeypatch):
+def test_close_aborts_concurrent_stalled_endpoint_connects(monkeypatch):
     monkeypatch.setattr(relay, "_relay_bind_host", lambda: "127.0.0.1")
     instance = relay._AgentSecretRelay(
         upstream_base_url="http://192.0.2.1/v1",
@@ -1275,7 +1275,7 @@ def test_close_wakes_gate_waiter_and_aborts_stalled_connect(monkeypatch):
         inflight = False
         while time.monotonic() < deadline:
             with instance._usage_condition:
-                inflight = instance._endpoint_request_inflight
+                inflight = bool(instance._endpoint_request_claims)
             if inflight:
                 break
             time.sleep(0.05)
@@ -1290,7 +1290,7 @@ def test_close_wakes_gate_waiter_and_aborts_stalled_connect(monkeypatch):
         assert len(instance.server._pending_handlers) == 2
         started = time.monotonic()
         instance.close()
-        # close() 必须立刻唤醒闸门等待者并中断建连，而不是等待闸门 30 秒截止。
+        # close() 必须同时中断所有并发建连，并等 handler 完成 finally 收束。
         assert time.monotonic() - started < (
             relay._HANDLER_SHUTDOWN_TIMEOUT_SECONDS
         )
@@ -1631,6 +1631,100 @@ def test_direct_endpoint_requests_are_accounted_by_relay_and_reopen_gate(
         json.loads(payload)["stream_options"]["include_usage"] is True
         for payload in request_bodies
     )
+
+
+def test_endpoint_requests_forward_concurrently_and_account_each_response(
+    monkeypatch,
+):
+    charged = []
+    upstream_barrier = threading.Barrier(2)
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": True,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class ConcurrentResponse:
+        status = 200
+        headers = _headers(Content_Type="application/json")
+
+        def __init__(self):
+            self.chunks = [
+                b'{"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+            ]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class ConcurrentConnection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            # 两条请求都必须在任意一条收到响应前抵达上游。旧的 usage
+            # 串行闸门会让这里超时并打破 barrier。
+            upstream_barrier.wait(timeout=2)
+
+        def getresponse(self):
+            return ConcurrentResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: ConcurrentConnection(),
+    )
+    authorization = f"Bearer {instance.temporary_secret}".encode("ascii")
+    body = b"{}"
+    request = (
+        b"POST /v1/chat/completions HTTP/1.0\r\nAuthorization: "
+        + authorization
+        + b"\r\nContent-Type: application/json\r\nContent-Length: 2"
+        b"\r\n\r\n"
+        + body
+    )
+    results = []
+    errors = []
+
+    def send_request():
+        try:
+            results.append(_send(instance, request)[0])
+        except Exception as exc:  # pragma: no cover - assertion reports detail
+            errors.append(exc)
+
+    threads = [threading.Thread(target=send_request) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=4)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert results == [200, 200]
+    assert len(charged) == 2
+    assert charged[0]["id"] != charged[1]["id"]
+    assert instance._endpoint_request_claims == set()
+
+
+def test_secret_relay_capacity_covers_parallel_workflow_without_widening_identity(
+):
+    assert relay._BoundedSecretRelayServer.max_connections >= 96
+    assert relay._BoundedSecretRelayServer.request_queue_size >= 192
+    assert relay._BoundedIdentityRelayServer.max_connections == 4
 
 
 def test_anthropic_empty_content_is_forwarded_as_error_and_billed_as_zero(

@@ -188,6 +188,35 @@ def test_agent_snapshot_includes_persisted_subagent_status(monkeypatch):
     }]
 
 
+def test_failed_agent_snapshot_ends_stale_running_subagents(monkeypatch):
+    monkeypatch.setattr(
+        agent_runs,
+        "list_agent_trace_subagents",
+        lambda _task_id: [
+            {
+                "subagent_id": "worker-running",
+                "name": "仍在检索",
+                "status": "running",
+            },
+            {
+                "subagent_id": "worker-done",
+                "name": "已经完成",
+                "status": "completed",
+            },
+        ],
+    )
+
+    trace = agent_runs.build_agent_execution_trace({
+        "task_id": "task-failed-subagents",
+        "status": "Failed",
+    })
+
+    assert [item["status"] for item in trace["subagents"]] == [
+        "ended",
+        "completed",
+    ]
+
+
 def test_canonical_steer_boundary_does_not_render_unconfirmed_message(
     monkeypatch,
     tmp_path,
