@@ -42,6 +42,28 @@ export function readonlyTokenClass(token: HighlightToken) {
   return classes.join(' ')
 }
 
+export function readonlyIssueReasons(lineCount: number, issues: unknown) {
+  const reasons = new Map<number, string[]>()
+  if (!Array.isArray(issues)) return reasons
+  issues.forEach((raw) => {
+    const issue = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    let start = Number.parseInt(String(issue.line_start || 1), 10)
+    let end = Number.parseInt(String(issue.line_end || start), 10)
+    if (!Number.isFinite(start)) start = 1
+    if (!Number.isFinite(end)) end = start
+    if (start > end) [start, end] = [end, start]
+    start = Math.max(1, Math.min(lineCount || 1, start))
+    end = Math.max(1, Math.min(lineCount || 1, end))
+    const reason = String(issue.reason || '这里可能有问题').trim()
+    for (let line = start; line <= end; line += 1) {
+      const current = reasons.get(line) || []
+      if (!current.includes(reason)) current.push(reason)
+      reasons.set(line, current)
+    }
+  })
+  return reasons
+}
+
 function cachedHighlight(key: string) {
   return highlightCache.get(key) || null
 }
@@ -51,9 +73,10 @@ function rememberHighlight(key: string, tokens: HighlightToken[][]) {
   while (highlightCache.size > 12) highlightCache.delete(highlightCache.keys().next().value as string)
 }
 
-export function ReadonlyCodeViewer({language, value, ariaLabel}: {language: string; value: string; ariaLabel: string}) {
+export function ReadonlyCodeViewer({language, value, ariaLabel, issues}: {language: string; value: string; ariaLabel: string; issues?: unknown}) {
   const source = useMemo(() => normalizeCodeSource(value), [value])
   const sourceLines = useMemo(() => source.split('\n'), [source])
+  const issueReasons = useMemo(() => readonlyIssueReasons(sourceLines.length, issues), [issues, sourceLines.length])
   const cacheKey = `${String(language || '').toLowerCase()}\u0000${source}`
   const [tokens, setTokens] = useState<HighlightToken[][] | null>(() => cachedHighlight(cacheKey))
 
@@ -77,10 +100,10 @@ export function ReadonlyCodeViewer({language, value, ariaLabel}: {language: stri
 
   return <div className="submission-static-code-viewer" role="region" aria-label={ariaLabel} data-language={language}>
     <pre className="submission-static-code"><code>
-      {sourceLines.map((line, lineIndex) => <span className="submission-static-code-line" key={lineIndex}>
+      {sourceLines.map((line, lineIndex) => {const reasons = issueReasons.get(lineIndex + 1); return <span className="submission-static-code-line" key={lineIndex}>
         <span className="submission-static-code-line-number" aria-hidden="true">{lineIndex + 1}</span>
-        <span className="submission-static-code-line-content">{tokens ? tokens[lineIndex].map((token, tokenIndex) => <span className={readonlyTokenClass(token)} key={tokenIndex}>{token.content}</span>) : line}</span>
-      </span>)}
+        <span className={`submission-static-code-line-content${reasons ? ' monaco-ai-issue-underline' : ''}`} title={reasons?.join('\n')}>{tokens ? tokens[lineIndex].map((token, tokenIndex) => <span className={readonlyTokenClass(token)} key={tokenIndex}>{token.content}</span>) : line}</span>
+      </span>})}
     </code></pre>
   </div>
 }

@@ -9,6 +9,7 @@ import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {MonacoEditor, type MonacoEditorInstance, type MonacoEditorReadyContext} from '../components/MonacoEditor'
+import {ReadonlyCodeViewer} from '../components/ReadonlyCodeViewer'
 import {ReactModal} from '../components/ReactModal'
 import {usePersistentVerticalSplitter} from '../components/usePersistentVerticalSplitter'
 import {clearMath, typesetMath} from '../markdown/mathjaxRuntime'
@@ -23,6 +24,20 @@ interface DetailResponse extends ApiEnvelope {user?: {is_admin?: number}; submis
 type SubmissionEditorContext = MonacoEditorReadyContext & {setDisplayCode: (value: string) => void}
 
 const submissionDetailQueryKey = (submissionId: string | undefined) => ['submission', submissionId] as const
+const nativeCodeViewerQuery = '(max-width: 991.98px), (hover: none) and (pointer: coarse)'
+
+function useNativeSubmissionCodeViewer() {
+  const [nativeViewer, setNativeViewer] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(nativeCodeViewerQuery).matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(nativeCodeViewerQuery)
+    const update = () => setNativeViewer(media.matches)
+    update()
+    media.addEventListener?.('change', update)
+    return () => media.removeEventListener?.('change', update)
+  }, [])
+  return nativeViewer
+}
 
 export function mergeSubmissionDetailSnapshot(current: DetailResponse | undefined, snapshot: SubmissionStatusSnapshot) {
   if (!current) return current
@@ -121,7 +136,7 @@ function LeanTree({files, active, select}: {files: LeanFile[]; active: string; s
   return <LeanTreeBranch node={root} active={active} select={select} />
 }
 
-function LeanSubmissionSurface({workspace, onEditorReady}: {workspace: LeanWorkspace; onEditorReady: (context: SubmissionEditorContext) => void | (() => void)}) {
+function LeanSubmissionSurface({workspace, onEditorReady, nativeViewer, analysis}: {workspace: LeanWorkspace; onEditorReady: (context: SubmissionEditorContext) => void | (() => void); nativeViewer: boolean; analysis: JsonRecord | null}) {
   const files = (workspace.files || []).filter((file) => file.path)
   const requested = String(workspace.default_file || '')
   const [active, setActive] = useState(files.some((file) => file.path === requested) ? requested : files[0]?.path || '')
@@ -131,6 +146,9 @@ function LeanSubmissionSurface({workspace, onEditorReady}: {workspace: LeanWorks
   const activeRef = useRef(active)
   const file = files.find((item) => item.path === active) || files[0]
   const readonly = file?.mode === 'readonly'
+  const defaultPath = files.some((item) => item.path === requested) ? requested : files[0]?.path || ''
+  const analyzedCode = file?.path === defaultPath && typeof analysis?.code_used === 'string' ? analysis.code_used : file?.content || ''
+  const analyzedIssues = file?.path === defaultPath ? analysis?.issues : undefined
   const selectFile = (path: string) => {
     const editor = editorRef.current
     const previous = activeRef.current
@@ -177,7 +195,7 @@ function LeanSubmissionSurface({workspace, onEditorReady}: {workspace: LeanWorks
   }
   return <div className="submission-code-surface submission-code-viewer submission-lean-workspace" id="submissionEditorShell">
     <aside className="lean-file-explorer submission-lean-file-explorer" aria-label="本次提交的 Lean 文件"><header className="lean-file-explorer-bar"><span>Files</span><span className="lean-file-count">{files.length}</span></header><div className="lean-file-tree" role="tree"><LeanTree files={files} active={file?.path || ''} select={selectFile} /></div></aside>
-    <section className="submission-lean-editor-pane" aria-label="Lean 4 文件内容"><header className="submission-lean-editor-bar"><span className="submission-lean-active-file"><span className="lean-file-mark" aria-hidden="true">λ</span><span title={file?.path}>{file?.path || 'Submission.lean'}</span><span className={`submission-lean-file-mode${readonly ? ' is-readonly' : ''}`}>{readonly ? '题目只读' : '学生提交'}</span></span><span className="submission-lean-revision" title={`工作区版本 ${String(workspace.revision || '')}`}>R{String(workspace.revision_number || 0)}</span></header><div className="submission-lean-editor-body">{file ? <MonacoEditor language="lean4" problemId={Number(workspace.submission_id || 0)} value={files.find((item) => item.path === requested)?.content || files[0]?.content || ''} onChange={() => undefined} idPrefix="submissionLean" ariaLabel="Lean 4 提交文件，只读" readOnly bundle="full" wordWrap="on" shellBaseClassName="submission-monaco-container" hostClassName="submission-monaco-container" fallbackClassName="submission-code-fallback" onReady={onReady} /> : null}</div></section>
+    <section className="submission-lean-editor-pane" aria-label="Lean 4 文件内容"><header className="submission-lean-editor-bar"><span className="submission-lean-active-file"><span className="lean-file-mark" aria-hidden="true">λ</span><span title={file?.path}>{file?.path || 'Submission.lean'}</span><span className={`submission-lean-file-mode${readonly ? ' is-readonly' : ''}`}>{readonly ? '题目只读' : '学生提交'}</span></span><span className="submission-lean-revision" title={`工作区版本 ${String(workspace.revision || '')}`}>R{String(workspace.revision_number || 0)}</span></header><div className="submission-lean-editor-body">{file ? nativeViewer ? <ReadonlyCodeViewer key={file.path} language="lean4" value={analyzedCode} ariaLabel="Lean 4 提交文件，只读" issues={analyzedIssues} /> : <MonacoEditor language="lean4" problemId={Number(workspace.submission_id || 0)} value={files.find((item) => item.path === requested)?.content || files[0]?.content || ''} onChange={() => undefined} idPrefix="submissionLean" ariaLabel="Lean 4 提交文件，只读" readOnly bundle="full" wordWrap="on" shellBaseClassName="submission-monaco-container" hostClassName="submission-monaco-container" fallbackClassName="submission-code-fallback" onReady={onReady} /> : null}</div></section>
   </div>
 }
 
@@ -334,7 +352,7 @@ function AiTutor({submissionId, cached, editorContext, onResult}: {submissionId:
           if (!payload.success) throw new Error(String(payload.message || 'AI 未返回可用结果'))
           setResult(payload)
           const issues = Array.isArray(payload.issues) ? payload.issues : []
-          setStatus(String(payload.summary || (issues.length ? `已定位 ${issues.length} 处关键问题（鼠标悬停红色波浪线可查看原因）` : '未定位到明确的问题代码位置。')))
+          setStatus(String(payload.summary || (issues.length ? `已定位 ${issues.length} 处关键问题，相关代码已用红色波浪线标出。` : '未定位到明确的问题代码位置。')))
           setStatusTone(issues.length ? 'warning' : 'success')
         }
       }, controller.signal)
@@ -350,7 +368,7 @@ function AiTutor({submissionId, cached, editorContext, onResult}: {submissionId:
     }
   }
   const issues = Array.isArray(result?.issues) ? result.issues : []
-  return <section className="submission-detail-section submission-ai-section"><header className="submission-detail-section-heading"><div><span>AI TUTOR</span><h2>代码诊断</h2></div></header><button type="button" className="submission-button submission-button--ghost" id="askAiBtn" disabled={loading || !editorContext} onClick={() => void ask()}>{loading ? <MathCurveLoader size="sm" label="AI 分析中…" /> : <><i className="fas fa-robot" aria-hidden="true" /> 询问 AI 助教</>}</button>{reasoning || loading ? <details className={`submission-ai-cot${loading ? ' is-streaming' : ''}`} open={cotOpen} onToggle={(event) => setCotOpen(event.currentTarget.open)}><summary><span><i className="fas fa-wave-square" aria-hidden="true" /> AI 分析过程</span><span className="submission-ai-cot-hint">生成后可展开</span></summary><pre className="submission-ai-cot-text" aria-live="polite">{reasoning || '正在等待模型输出分析过程…'}</pre></details> : null}{status ? <div className={`submission-ai-status${statusTone === 'info' ? '' : ` is-${statusTone}`}`} role="status">{status}</div> : null}{issues.length ? <div className="submission-ai-hint">鼠标移动到红色波浪线上可查看更详细的错误。</div> : null}</section>
+  return <section className="submission-detail-section submission-ai-section"><header className="submission-detail-section-heading"><div><span>AI TUTOR</span><h2>代码诊断</h2></div></header><button type="button" className="submission-button submission-button--ghost" id="askAiBtn" disabled={loading} onClick={() => void ask()}>{loading ? <MathCurveLoader size="sm" label="AI 分析中…" /> : <><i className="fas fa-robot" aria-hidden="true" /> 询问 AI 助教</>}</button>{reasoning || loading ? <details className={`submission-ai-cot${loading ? ' is-streaming' : ''}`} open={cotOpen} onToggle={(event) => setCotOpen(event.currentTarget.open)}><summary><span><i className="fas fa-wave-square" aria-hidden="true" /> AI 分析过程</span><span className="submission-ai-cot-hint">生成后可展开</span></summary><pre className="submission-ai-cot-text" aria-live="polite">{reasoning || '正在等待模型输出分析过程…'}</pre></details> : null}{status ? <div className={`submission-ai-status${statusTone === 'info' ? '' : ` is-${statusTone}`}`} role="status">{status}</div> : null}{issues.length ? <div className="submission-ai-hint">红色波浪线标出了相关代码；桌面端悬停时可查看详细原因。</div> : null}</section>
 }
 
 export default function SubmissionDetailPage() {
@@ -361,6 +379,7 @@ export default function SubmissionDetailPage() {
   const [imagePreview, setImagePreview] = useState<{url: string; alt: string} | null>(null)
   const [codeEditorContext, setCodeEditorContext] = useState<SubmissionEditorContext | null>(null)
   const [aiOmniResult, setAiOmniResult] = useState<JsonRecord | null>(null)
+  const nativeCodeViewer = useNativeSubmissionCodeViewer()
   const pageRef = useRef<HTMLDivElement>(null)
   const splitterRef = useRef<HTMLDivElement>(null)
   const routedOrigin = submissionOriginFromState(location.state)
@@ -428,8 +447,9 @@ export default function SubmissionDetailPage() {
   const omniAnalysis = aiOmniResult?.success && Number(aiOmniResult.image_analysis_test_index || 0) === activeTestIndex ? String(aiOmniResult.image_mismatch_analysis || '').trim() : ''
   const returnTo = routedOrigin || rememberedOrigin || `/submissions?problem_id=${submission.problem_id}`
   const returnLabel = returnTo.startsWith('/problems/') ? 'PROBLEM' : 'SUBMISSIONS'
+  const analyzedCode = typeof aiOmniResult?.code_used === 'string' ? aiOmniResult.code_used : submission.code || ''
   return <div ref={pageRef} className="submission-detail-page" data-math-curve-stroke-scale="1.2">
-    <section className="submission-detail-primary" id="submissionDetailPrimary" aria-label={lean ? 'Lean 4 提交文件' : programming ? '提交代码' : '书面作业 PDF'}>{programming ? lean && data.lean_workspace ? <LeanSubmissionSurface workspace={data.lean_workspace} onEditorReady={(context) => {setCodeEditorContext(context); return () => setCodeEditorContext((current) => current?.editor === context.editor ? null : current)}} /> : <div className="submission-code-surface submission-code-viewer"><MonacoEditor language={data.plang || 'matlab'} problemId={submission.problem_id} value={submission.code || ''} onChange={() => undefined} idPrefix="submission" ariaLabel="提交代码，只读" readOnly bundle="full" wordWrap="on" shellBaseClassName="submission-monaco-container" hostClassName="submission-monaco-container" fallbackClassName="submission-code-fallback" onReady={(context) => {const submissionContext = {...context, setDisplayCode: (value: string) => context.editor.setValue(value)}; setCodeEditorContext(submissionContext); return () => setCodeEditorContext((current) => current?.editor === context.editor ? null : current)}} /></div> : <WrittenPdf submission={submission} />}</section>
+    <section className="submission-detail-primary" id="submissionDetailPrimary" aria-label={lean ? 'Lean 4 提交文件' : programming ? '提交代码' : '书面作业 PDF'}>{programming ? lean && data.lean_workspace ? <LeanSubmissionSurface workspace={data.lean_workspace} nativeViewer={nativeCodeViewer} analysis={aiOmniResult} onEditorReady={(context) => {setCodeEditorContext(context); return () => setCodeEditorContext((current) => current?.editor === context.editor ? null : current)}} /> : <div className="submission-code-surface submission-code-viewer">{nativeCodeViewer ? <ReadonlyCodeViewer language={data.plang || 'matlab'} value={analyzedCode} ariaLabel="提交代码，只读" issues={aiOmniResult?.issues} /> : <MonacoEditor language={data.plang || 'matlab'} problemId={submission.problem_id} value={submission.code || ''} onChange={() => undefined} idPrefix="submission" ariaLabel="提交代码，只读" readOnly bundle="full" wordWrap="on" shellBaseClassName="submission-monaco-container" hostClassName="submission-monaco-container" fallbackClassName="submission-code-fallback" onReady={(context) => {const submissionContext = {...context, setDisplayCode: (value: string) => context.editor.setValue(value)}; setCodeEditorContext(submissionContext); return () => setCodeEditorContext((current) => current?.editor === context.editor ? null : current)}} />}</div> : <WrittenPdf submission={submission} />}</section>
     <aside className="submission-detail-summary-card" id="submissionDetailSummary" aria-label="提交摘要"><div className="submission-detail-topline"><Link className="submission-detail-back" to={returnTo}><i className="fas fa-arrow-left" /> {returnLabel}</Link><span className="submission-detail-id">#{submission.id}</span></div><h1 className="visually-hidden">提交 #{submission.id}</h1>{routedNotice ? <div className={`submission-action-feedback ${routedNoticeTone === 'error' ? 'is-error' : 'is-warning'}`} role="status">{routedNotice}</div> : null}<div className="submission-detail-result"><span className={`submission-verdict submission-verdict--${statusClass(submission.status)}`}><span className="submission-verdict__dot" /><span>{submission.status || 'Unknown'}</span></span><div className="submission-detail-score"><strong className={accepted ? 'is-accepted' : submission.score ? 'is-partial' : 'is-failed'}>{submission.score ?? '—'}</strong><span>/ <span>{maxScore}</span></span></div></div><dl className="submission-detail-meta"><dt>题目</dt><dd className="submission-detail-problem-meta"><Link to={`/problems/${submission.problem_id}`}>{data.problem?.title || submission.problem_title || '未命名题目'}</Link><span>P{String(submission.problem_id).padStart(4, '0')}</span></dd><dt>提交者</dt><dd>{submission.username}</dd><dt>提交时间</dt><dd>{submission.created_at || '—'}</dd></dl>{submission.generated_from_prompt ? <details className="submission-detail-disclosure submission-prompt-card" open><summary><span>ORIGINAL PROMPT</span><i className="fas fa-chevron-down" /></summary><pre>{submission.prompt_text || ''}</pre>{submission.prompt_generation_error ? <div className="submission-inline-error">{submission.prompt_generation_error}</div> : null}</details> : null}{Number(data.user?.is_admin) === 1 ? <><button type="button" className="submission-button submission-button--accent submission-detail-rejudge" disabled={rejudge.isPending} onClick={() => {if (window.confirm('确认重测这条提交吗？')) rejudge.mutate()}}><i className="fas fa-rotate-right" />{rejudge.isPending ? '正在提交重测…' : '重测此提交'}</button><div className={`submission-action-feedback${rejudge.isSuccess ? ' is-success' : rejudge.isError ? ' is-error' : ''}`} role="status">{rejudge.isSuccess ? '已加入重测队列' : rejudge.isError ? `重测失败：${rejudge.error.message}` : ''}</div></> : null}</aside>
     <div ref={splitterRef} className="submission-detail-splitter" role="separator" tabIndex={0} aria-label="调整提交信息与提交内容宽度" aria-orientation="vertical" aria-controls="submissionDetailSummary submissionDetailResults submissionDetailPrimary" aria-valuemin={26} aria-valuemax={66} aria-valuenow={50} />
     <aside className="submission-detail-results" id="submissionDetailResults" aria-label={lean ? '证明验证详情' : programming ? '测试点详情' : '批改详情'}>{programming ? <><section className="submission-detail-section"><header className="submission-detail-section-heading"><div><span>{lean ? 'PROOF CHECK' : 'TEST POINTS'}</span></div></header>{submissionStatusIsActive(submission.status) ? <div className="submission-judging-state" role="status"><MathCurveLoader size="md" label={stream.message} /></div> : null}<div className="test-point-grid">{data.test_points.map((point, index) => <button className={`test-point-card ${pointClass(point.status)}${index === activePointIndex ? ' selected' : ''}`} type="button" title={lean ? `证明验证 · ${String(point.status || 'Unknown')}` : `测试点 #${index + 1} · ${String(point.status || 'Unknown')}`} aria-label={lean ? `证明验证，${String(point.status || 'Unknown')}` : `测试点 ${index + 1}，${String(point.status || 'Unknown')}`} aria-pressed={index === activePointIndex} onClick={() => setSelectedPoint(index)} key={index}><span className="tp-index">{lean ? '⊢' : String(index + 1).padStart(2, '0')}</span>{pointClass(point.status) === 'is-active' ? <MathCurveLoader iconOnly size="xs" /> : null}</button>)}</div>{activePoint ? <TestPointDetail key={`${submission.id}:${activePointIndex}:${String(activePoint.test_index || '')}`} point={activePoint} index={activePointIndex} submissionId={submission.id} lean={lean} omniAnalysis={omniAnalysis} onOpenImage={setImagePreview} /> : <div className="submission-test-detail-hint">{lean ? '证明验证中，结果稍后显示。' : '判题中，暂时没有可展示的测试点结果。'}</div>}</section>{submission.status === 'Unaccepted' ? <AiTutor key={submission.id} submissionId={submission.id} cached={data.cached_ai_code_marks} editorContext={codeEditorContext} onResult={setAiOmniResult} /> : null}</> : <WrittenResults data={data} refresh={() => void result.refetch()} />}</aside>

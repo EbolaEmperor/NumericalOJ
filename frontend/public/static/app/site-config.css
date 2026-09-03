@@ -10,6 +10,14 @@
   background: #fff;
 }
 
+/* React 路由在页面容器与工作台之间多了一层过渡节点。必须继续传递确定
+ * 高度，否则长端点列表会被外层 overflow 截断，短面板也只有 min-height 而在
+ * 页面下方留出一整块无效空白。 */
+.site-config-shell > .numoj-spa-route {
+  height: 100%;
+  min-height: 0;
+}
+
 .site-config-v2 {
   --cfg-ink: #18181b;
   --cfg-ink-2: #3f3f46;
@@ -191,9 +199,29 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #c4c4c8 #f7f7f7;
   background:
     linear-gradient(90deg, rgba(250, 250, 248, 0.4), transparent 28px),
     #fff;
+}
+
+.site-config-content-scroll::-webkit-scrollbar {
+  width: 9px;
+}
+
+.site-config-content-scroll::-webkit-scrollbar-track {
+  background: #f7f7f7;
+}
+
+.site-config-content-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid #f7f7f7;
+  border-radius: 999px;
+  background: #c4c4c8;
+}
+
+.site-config-content-scroll::-webkit-scrollbar-thumb:hover {
+  background: #9f9fa6;
 }
 
 .site-config-panel-stage,
@@ -839,8 +867,7 @@
   background: #fff;
 }
 
-.site-config-feature-icon,
-.site-config-service-icon {
+.site-config-feature-icon {
   display: inline-grid;
   width: 31px;
   height: 31px;
@@ -908,44 +935,28 @@
   border: 1px solid var(--cfg-line);
 }
 
-/* Other services */
-.site-config-other-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  gap: 12px;
+/* Feature services */
+.site-config-v2.is-features .site-config-panel {
+  min-height: 0;
+}
+
+.site-config-v2.is-features .site-config-panel:not(.site-config-services-panel) {
+  padding-bottom: 10px;
+}
+
+.site-config-v2.is-features .site-config-services-panel {
+  padding-top: 0;
+  animation: none;
 }
 
 .site-config-service-card {
-  min-width: 0;
-  border: 1px solid var(--cfg-line);
-  border-radius: 5px;
-  background: #fff;
+  align-items: start;
 }
 
-.site-config-service-card > header {
-  display: grid;
-  min-height: 55px;
-  grid-template-columns: 31px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--cfg-line);
-  background: #fafafa;
-}
-
-.site-config-service-card > header p {
-  margin: 0 0 2px;
-  color: var(--cfg-ink-4);
-  font: 600 8px/1.2 var(--cfg-mono);
-  letter-spacing: 0.09em;
-}
-
-.site-config-service-card > header h3 {
-  margin: 0;
-  color: var(--cfg-ink);
-  font-size: 12px;
-  font-weight: 680;
+.site-config-service-copy {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
 }
 
 .site-config-service-state {
@@ -967,17 +978,17 @@
 }
 
 .site-config-service-card .site-config-form-grid {
-  padding: 15px 14px 16px;
+  margin-top: 1px;
 }
 
-.site-config-service-card > footer {
+.site-config-service-actions {
   display: flex;
-  min-height: 45px;
+  min-height: 42px;
   align-items: center;
   gap: 7px;
-  padding: 6px 9px;
+  margin-top: 13px;
+  padding-top: 10px;
   border-top: 1px solid var(--cfg-line);
-  background: #fafafa;
 }
 
 .site-config-action-spacer {
@@ -1384,9 +1395,6 @@
     overflow: hidden;
   }
 
-  .site-config-other-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 760px) {
@@ -1464,7 +1472,7 @@
     align-items: flex-start;
   }
 
-  .site-config-service-card > footer {
+  .site-config-service-actions {
     flex-wrap: wrap;
   }
 
@@ -1472,12 +1480,12 @@
     display: none;
   }
 
-  .site-config-service-card > footer button {
+  .site-config-service-actions button {
     flex: 1 1 calc(50% - 7px);
     min-height: 38px;
   }
 
-  .site-config-service-card > footer .site-config-danger-ghost {
+  .site-config-service-actions .site-config-danger-ghost {
     flex-basis: 100%;
   }
 

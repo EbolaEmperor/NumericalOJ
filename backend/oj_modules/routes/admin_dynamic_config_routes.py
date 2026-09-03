@@ -26,7 +26,7 @@ _dynamic_config_testers = {
     "web_search": dynamic_config_testers.test_web_search_settings,
 }
 
-_SITE_CONFIG_TABS = frozenset({"endpoints", "features", "other"})
+_SITE_CONFIG_TABS = frozenset({"endpoints", "features"})
 
 
 def configure_dynamic_config_testers(*, llm_endpoint=None, mail=None, web_search=None):

@@ -36,7 +36,7 @@ def test_site_config_route_identifier_is_stable(monkeypatch):
 def test_site_config_encoded_internal_page_redirects_to_canonical_fragment(monkeypatch):
     _app, client = make_client(monkeypatch)
 
-    for tab in ("endpoints", "features", "other"):
+    for tab in ("endpoints", "features"):
         response = client.get(f"/admin/site-config%23{tab}")
 
         assert response.status_code == 302
@@ -47,6 +47,14 @@ def test_site_config_rejects_unknown_encoded_internal_page(monkeypatch):
     _app, client = make_client(monkeypatch)
 
     response = client.get("/admin/site-config%23unknown")
+
+    assert response.status_code == 404
+
+
+def test_site_config_rejects_removed_other_page(monkeypatch):
+    _app, client = make_client(monkeypatch)
+
+    response = client.get("/admin/site-config%23other")
 
     assert response.status_code == 404
 

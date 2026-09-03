@@ -7,6 +7,7 @@ const frontendRoot = path.resolve(__dirname, '..')
 const detailSource = fs.readFileSync(path.join(frontendRoot, 'src/pages/SubmissionDetailPage.tsx'), 'utf8')
 const editorSource = fs.readFileSync(path.join(frontendRoot, 'src/components/MonacoEditor.tsx'), 'utf8')
 const detailStyles = fs.readFileSync(path.join(frontendRoot, 'public/static/app/submissions/detail.css'), 'utf8')
+const globalStyles = fs.readFileSync(path.join(frontendRoot, 'src/styles.css'), 'utf8')
 
 test('提交详情恢复 Jinja 版只读 Monaco、Lean 多文件模型与 AI 标注能力', () => {
   assert.match(detailSource, /<MonacoEditor language="lean4"[\s\S]*readOnly bundle="full"/)
@@ -21,6 +22,14 @@ test('提交详情恢复 Jinja 版只读 Monaco、Lean 多文件模型与 AI 标
   assert.match(detailSource, /monaco-ai-issue-underline/)
   assert.match(editorSource, /readOnly/)
   assert.match(editorSource, /onReady/)
+})
+
+test('触屏和手机端使用 Safari 原生惯性滚动的静态代码查看器', () => {
+  assert.match(detailSource, /nativeCodeViewerQuery = '\(max-width: 991\.98px\), \(hover: none\) and \(pointer: coarse\)'/)
+  assert.match(detailSource, /nativeViewer \? <ReadonlyCodeViewer[\s\S]*: <MonacoEditor language="lean4"/)
+  assert.match(detailSource, /nativeCodeViewer \? <ReadonlyCodeViewer[\s\S]*: <MonacoEditor language=\{data\.plang \|\| 'matlab'\}/)
+  assert.match(globalStyles, /\.submission-static-code-viewer \{[\s\S]*?overflow-y: auto;[\s\S]*?-webkit-overflow-scrolling: touch;[\s\S]*?touch-action: pan-y;/)
+  assert.match(detailSource, /disabled=\{loading\}/)
 })
 
 test('提交详情编辑器加载动画和文案使用白色', () => {
