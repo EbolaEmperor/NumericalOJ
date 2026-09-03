@@ -7,6 +7,7 @@ import {afterEach, describe, expect, it, vi} from 'vitest'
 
 import {
   agentRunQueryKey,
+  cacheAgentRunSnapshot,
   fetchAgentRun,
   synchronizeFinalAgentRun,
   useAgentRunEvents,
@@ -76,6 +77,57 @@ afterEach(() => {
 })
 
 describe('Agent 运行事件流', () => {
+  it('稀疏会话终态不会覆盖 SSE 已缓存的执行轨迹', async () => {
+    const client = testClient()
+    const trace = {
+      trace_messages: [{kind: 'work_summary', block_id: 'work-0123456789abcdef', is_running: false}],
+      subagents: [{subagent_id: 'agent-a', name: '检查架构', status: 'completed'}],
+    }
+    await cacheAgentRunSnapshot(client, 'task-1', {
+      task_id: 'task-1',
+      status: 'Running',
+      execution_trace: trace,
+    })
+
+    await cacheAgentRunSnapshot(client, 'task-1', {
+      task_id: 'task-1',
+      status: 'Completed',
+      session_token_usage: {input_tokens: 12},
+    })
+
+    expect(client.getQueryData<AgentRunResponse>(agentRunQueryKey('task-1'))?.state).toMatchObject({
+      status: 'Completed',
+      execution_trace: trace,
+      session_token_usage: {input_tokens: 12},
+    })
+  })
+
+  it('首次载入的稀疏终态不阻止历史详情按需请求', async () => {
+    const client = testClient()
+    await cacheAgentRunSnapshot(client, 'task-1', {task_id: 'task-1', status: 'Completed'})
+    expect(client.getQueryData(agentRunQueryKey('task-1'))).toBeUndefined()
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      success: true,
+      state: {
+        task_id: 'task-1',
+        status: 'Completed',
+        execution_trace: {
+          trace_messages: [],
+          subagents: [{subagent_id: 'agent-a', name: '检查架构', status: 'completed'}],
+        },
+      },
+    }), {status: 200, headers: {'Content-Type': 'application/json'}}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await synchronizeFinalAgentRun(client, 'task-1')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/agent/runs/task-1', expect.any(Object))
+    expect(client.getQueryData<AgentRunResponse>(agentRunQueryKey('task-1'))?.state.execution_trace).toMatchObject({
+      subagents: [{subagent_id: 'agent-a', name: '检查架构', status: 'completed'}],
+    })
+  })
+
   it('收到 status 后直接更新运行详情缓存，不再等待轮询', async () => {
     vi.stubGlobal('EventSource', MockEventSource)
     const client = testClient()
@@ -161,11 +213,15 @@ describe('Agent 运行事件流', () => {
     expect(client.getQueryData<AgentRunResponse>(agentRunQueryKey('task-1'))?.state.status).toBe('Completed')
   })
 
-  it('已经缓存终态时再次展开不会重复请求后端', async () => {
+  it('已经缓存完整终态时再次展开不会重复请求后端', async () => {
     const client = testClient()
     client.setQueryData<AgentRunResponse>(agentRunQueryKey('task-1'), {
       success: true,
-      state: {task_id: 'task-1', status: 'Completed'},
+      state: {
+        task_id: 'task-1',
+        status: 'Completed',
+        execution_trace: {trace_messages: [], subagents: []},
+      },
     })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

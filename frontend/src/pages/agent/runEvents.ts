@@ -34,6 +34,12 @@ function traceMessages(state: JsonRecord) {
   return Array.isArray(trace.trace_messages) ? trace.trace_messages as JsonRecord[] : []
 }
 
+function executionTrace(state: JsonRecord) {
+  return state.execution_trace && typeof state.execution_trace === 'object' && !Array.isArray(state.execution_trace)
+    ? state.execution_trace as JsonRecord
+    : null
+}
+
 export function runningWorkBlockId(state: JsonRecord) {
   const messages = traceMessages(state)
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -75,10 +81,22 @@ export function cacheAgentRunSnapshot(queryClient: QueryClient, taskId: string, 
   const previous = queryClient.getQueryData<AgentRunResponse>(agentRunQueryKey(taskId))
   const previousBlockId = runningWorkBlockId(previous?.state || {})
   const nextBlockId = runningWorkBlockId(state)
+  const previousTrace = executionTrace(previous?.state || {})
+  const nextTrace = executionTrace(state)
+
+  // 会话详情接口只携带任务状态、用量等轻量字段。它会在 done 后刷新，
+  // 不能用这份稀疏终态覆盖 SSE/API 已缓存的完整执行轨迹；首次载入时也
+  // 应留给 /api/agent/runs/:taskId 按需取得权威历史轨迹。
+  if (!previous && !nextTrace) return Promise.resolve()
+
   queryClient.setQueryData<AgentRunResponse>(agentRunQueryKey(taskId), (current) => ({
     ...(current || {}),
     success: true,
-    state,
+    state: {
+      ...(current?.state || {}),
+      ...state,
+      ...(!nextTrace && previousTrace ? {execution_trace: previousTrace} : {}),
+    },
   }))
   return previousBlockId && previousBlockId !== nextBlockId
     ? refreshFinalWorkBlock(queryClient, taskId, previousBlockId)
@@ -88,7 +106,7 @@ export function cacheAgentRunSnapshot(queryClient: QueryClient, taskId: string, 
 export async function synchronizeFinalAgentRun(queryClient: QueryClient, taskId: string) {
   const queryKey = agentRunQueryKey(taskId)
   const current = queryClient.getQueryData<AgentRunResponse>(queryKey)
-  if (agentRunIsTerminal(current?.state || {})) return
+  if (agentRunIsTerminal(current?.state || {}) && executionTrace(current?.state || {})) return
 
   const previousBlockId = runningWorkBlockId(current?.state || {})
   await queryClient.cancelQueries({queryKey, exact: true})
