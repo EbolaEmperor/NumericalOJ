@@ -6,6 +6,7 @@ const test = require('node:test')
 const frontendRoot = path.resolve(__dirname, '..')
 const detailSource = fs.readFileSync(path.join(frontendRoot, 'src/pages/SubmissionDetailPage.tsx'), 'utf8')
 const editorSource = fs.readFileSync(path.join(frontendRoot, 'src/components/MonacoEditor.tsx'), 'utf8')
+const detailStyles = fs.readFileSync(path.join(frontendRoot, 'public/static/app/submissions/detail.css'), 'utf8')
 
 test('提交详情恢复 Jinja 版只读 Monaco、Lean 多文件模型与 AI 标注能力', () => {
   assert.match(detailSource, /<MonacoEditor language="lean4"[\s\S]*readOnly bundle="full"/)
@@ -20,4 +21,15 @@ test('提交详情恢复 Jinja 版只读 Monaco、Lean 多文件模型与 AI 标
   assert.match(detailSource, /monaco-ai-issue-underline/)
   assert.match(editorSource, /readOnly/)
   assert.match(editorSource, /onReady/)
+})
+
+test('提交详情编辑器加载动画和文案使用白色', () => {
+  assert.match(editorSource, /colorA="var\(--problem-editor-loading-color-a, #fb923c\)"/)
+  assert.match(editorSource, /colorB="var\(--problem-editor-loading-color-b, #f97316\)"/)
+  assert.match(detailStyles, /\.submission-code-surface \.problem-editor-loading-state \{[\s\S]*?--problem-editor-loading-color-a: #ffffff;[\s\S]*?--problem-editor-loading-color-b: #ffffff;[\s\S]*?color: #ffffff;[\s\S]*?\}/)
+})
+
+test('提交详情只读代码查看器不显示文本光标', () => {
+  assert.match(detailStyles, /\.submission-code-viewer \.monaco-editor \.cursors-layer \{\s*display: none;/)
+  assert.match(detailStyles, /\.submission-code-viewer \.monaco-editor \.monaco-mouse-cursor-text,[\s\S]*?\.submission-code-viewer textarea\[readonly\] \{[\s\S]*?caret-color: transparent;[\s\S]*?cursor: default;/)
 })

@@ -51,18 +51,9 @@ NUMOJ_CONTROL_PROTOCOL = "numoj-ndjson-v1"
 _NUMOJ_OUTPUT_LOCK = threading.Lock()
 CONTROL_ACK_DRAIN_SECONDS = 2.0
 
-# Claude Code 的后台 subagent / Workflow 会在父模型先产出一次 result 后继续
-# 工作。NumOJ 的 adapter 会保持 stream-json stdin 与容器存活，直到后台工作
-# 完成且父模型吸收通知、再次产出终态；提示词同时约束模型不能把阶段性答复
-# 或“稍后汇报”当作完成。
-CLAUDE_NUMOJ_COMPLETION_PROMPT = (
-    "Background subagents and workflows are supported, and NumOJ keeps this turn alive while "
-    "they run. Do not return the final answer while any subagent or workflow from this turn is "
-    "still running. Wait for every completion notification, collect the required results, and "
-    "incorporate them before returning the final answer. A progress update or a promise to "
-    "report later is not completion. If genuinely blocked after all background work has ended, "
-    "state the blocker explicitly."
-)
+# Claude Code 的后台 subagent / Workflow 可能在父模型先产出一次 result 后继续
+# 工作。是否结束 NumOJ turn 只能由下面的 stream-json 生命周期状态机结合原生
+# workflow journal 和 subagent transcript 判定，不能委托给模型提示词。
 _TRACE_EVENT_ID_MAX_CHARS = 512
 _TRACE_DETAIL_MAX_CHARS = 1200
 _TRACE_ASSISTANT_MAX_CHARS = 2 * 1024 * 1024
@@ -75,6 +66,7 @@ _EMPTY_ASSISTANT_CONTENT_ERROR = (
 )
 _CLAUDE_SUBAGENT_STATUS_META = "numoj-subagent-status-v1"
 _CLAUDE_SUBAGENT_SCAN_INTERVAL_SECONDS = 0.5
+_CLAUDE_BACKGROUND_DISCOVERY_GRACE_SECONDS = 5.0
 _CLAUDE_BACKGROUND_RESUME_DELAY_SECONDS = 1.5
 _CLAUDE_NATIVE_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
@@ -465,6 +457,33 @@ def _content_blocks(message):
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     return content if isinstance(content, list) else []
+
+
+def _claude_starts_background_subagent(event):
+    """识别先于 journal 落盘出现的后台 Agent/Task 工具调用。"""
+
+    if not isinstance(event, dict) or str(event.get("type") or "") != "assistant":
+        return False
+    message = event.get("message") if isinstance(event.get("message"), dict) else {}
+    for block in _content_blocks(message):
+        if not isinstance(block, dict) or str(block.get("type") or "") != "tool_use":
+            continue
+        name = str(block.get("name") or "").strip().lower()
+        arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+        background = (
+            arguments.get("run_in_background")
+            if "run_in_background" in arguments
+            else arguments.get("runInBackground", arguments.get("background"))
+        )
+        if name == "workflow" or (
+            name in {"agent", "task"}
+            and (
+                background is True
+                or str(background or "").strip().lower() in {"1", "true", "yes", "on", "background"}
+            )
+        ):
+            return True
+    return False
 
 
 def _token_count(value):
@@ -4293,6 +4312,8 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
     subagents = []
     last_subagent_scan_at = 0.0
     waiting_for_background_result = False
+    background_launch_observed = False
+    background_discovery_deadline = None
     background_idle_since = None
     background_resume_sent = False
 
@@ -4364,6 +4385,15 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
                     if active_subagents:
                         background_idle_since = None
                         background_resume_sent = False
+                    elif (
+                        background_launch_observed
+                        and not subagents
+                        and background_discovery_deadline is not None
+                        and time.monotonic() < background_discovery_deadline
+                    ):
+                        # Agent 工具调用事件可能先于 Claude journal/transcript
+                        # 落盘；在发现窗口内绝不能把第一条 result 当作终态。
+                        continue
                     elif background_idle_since is None:
                         background_idle_since = time.monotonic()
                     elif (
@@ -4402,6 +4432,17 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
                 event.get("message")
                 if isinstance(event.get("message"), dict) else {}
             )
+            if waiting_for_background_result and event_type == "assistant":
+                # 后台完成通知已经重新唤起父模型；这次 assistant 后的 result
+                # 才有资格成为终态，除非它又启动了新的后台工作。
+                background_launch_observed = False
+                background_discovery_deadline = None
+            if _claude_starts_background_subagent(event):
+                background_launch_observed = True
+                background_discovery_deadline = (
+                    time.monotonic()
+                    + _CLAUDE_BACKGROUND_DISCOVERY_GRACE_SECONDS
+                )
             if (
                 event_type == "assistant"
                 and isinstance(message.get("usage"), dict)
@@ -4473,7 +4514,8 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             if normalized_done:
                 assistant_usage_since_result = False
                 active_subagents = refresh_subagents(force=True)
-                if active_subagents:
+                background_pending = active_subagents or background_launch_observed
+                if background_pending:
                     # Claude 的 Workflow / 后台 Task 会先结束当前模型调用，
                     # 再通过仍然存活的 stream-json 会话投递完成通知。这里不能
                     # 把第一次 result 当作整个 NumOJ turn 的终态。
@@ -4504,7 +4546,7 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
                     control_drain_deadline = (
                         time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
                     )
-                elif active_subagents:
+                elif background_pending:
                     terminal_waiting_for_control = False
                     control_drain_deadline = None
                 else:
@@ -4627,7 +4669,6 @@ def _run_claude_code(prompt, commands=None):
             "claude",
             "--dangerously-skip-permissions",
             "--add-dir", "/workspace",
-            "--append-system-prompt", CLAUDE_NUMOJ_COMPLETION_PROMPT,
             "--output-format", "json",
             "-p",
         ]

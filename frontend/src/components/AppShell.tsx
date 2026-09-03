@@ -2,7 +2,7 @@ import {useQueryClient} from '@tanstack/react-query'
 import {createContext, useContext, useEffect, useMemo, useState, type Dispatch, type SetStateAction} from 'react'
 import {Outlet, useLocation} from 'react-router-dom'
 
-import {apiFetch} from '../api/client'
+import {apiFetch, queryString} from '../api/client'
 import type {ApiEnvelope, NavigationItem} from '../api/types'
 import {preloadNavigationRoute} from '../routeLoaders'
 import {useSession} from '../session'
@@ -54,13 +54,21 @@ const prefetchTargets: Record<string, readonly PrefetchTarget[]> = {
   ],
 }
 
-function warmNavigationItem(id: string, queryClient: ReturnType<typeof useQueryClient>, staleTime: number) {
+function warmNavigationItem(id: string, queryClient: ReturnType<typeof useQueryClient>, staleTime: number, rememberedClassEn = '') {
   preloadNavigationRoute(id === 'library' ? 'problems' : id)
   for (const target of prefetchTargets[id] || []) {
+    // “班级作业”没有 class_en 路由参数，预取必须按会话从 HttpOnly Cookie
+    // 解析出的上次班级暖缓存；同时禁止预取本身延长或改写记忆。
+    const path = id === 'problems'
+      ? `/api/problems${queryString({class_en: rememberedClassEn || undefined, remember: 0})}`
+      : target.path
+    const queryKey = id === 'problems'
+      ? ['problems', 'homework', rememberedClassEn]
+      : target.queryKey
     if (target.infinite) {
       void queryClient.prefetchInfiniteQuery({
-        queryKey: target.queryKey,
-        queryFn: () => apiFetch<ApiEnvelope>(target.path),
+        queryKey,
+        queryFn: () => apiFetch<ApiEnvelope>(path),
         initialPageParam: 1,
         getNextPageParam: () => undefined,
         staleTime,
@@ -68,8 +76,8 @@ function warmNavigationItem(id: string, queryClient: ReturnType<typeof useQueryC
       continue
     }
     void queryClient.prefetchQuery({
-      queryKey: target.queryKey,
-      queryFn: () => apiFetch<ApiEnvelope>(target.path),
+      queryKey,
+      queryFn: () => apiFetch<ApiEnvelope>(path),
       staleTime,
     })
   }
@@ -119,7 +127,7 @@ function NavigationLink({item, mobile = false, onNavigate}: {item: NavigationIte
   const count = session?.navigation.counts[countKey]
   const prefetch = () => {
     if (!item.spa) return
-    warmNavigationItem(item.id, queryClient, 30_000)
+    warmNavigationItem(item.id, queryClient, 30_000, session?.navigation.selected_class_en || '')
   }
   const contents = <><LayoutIcon name={item.icon} /><span className="numoj-nav-label" {...(mobile && item.id === 'problems' ? {'data-problem-list-label': 'mobile'} : {})}>{item.label}</span>{typeof count === 'number' ? <span className="numoj-nav-count">{count}</span> : null}{item.id === 'agents' && session?.navigation.agent_active ? <span className="numoj-nav-dot" aria-label="存在运行中的 Agent 任务" /> : null}</>
   const className = `numoj-nav-item${active ? ' active' : ''}`
@@ -212,13 +220,13 @@ export function AppShell() {
     }
     const warmSecondary = () => {
       if (cancelled) return
-      for (const id of secondary) warmNavigationItem(id, queryClient, 60_000)
+      for (const id of secondary) warmNavigationItem(id, queryClient, 60_000, session?.navigation.selected_class_en || '')
     }
     const warmPrimary = () => {
       if (cancelled) return
       // 先下载所有当前账号可见页面的代码块，再预取高频页面数据；低频数据放到下一次闲时。
       for (const id of available) preloadNavigationRoute(id === 'library' ? 'problems' : id)
-      for (const id of priority) warmNavigationItem(id, queryClient, 60_000)
+      for (const id of priority) warmNavigationItem(id, queryClient, 60_000, session?.navigation.selected_class_en || '')
       schedule(warmSecondary, 5_000, 2_000)
     }
     schedule(warmPrimary, 2_500, 1_200)
@@ -227,7 +235,7 @@ export function AppShell() {
       for (const handle of idleHandles) browser.cancelIdleCallback?.(handle)
       for (const handle of timeoutHandles) window.clearTimeout(handle)
     }
-  }, [queryClient, session?.navigation.items])
+  }, [queryClient, session?.navigation.items, session?.navigation.selected_class_en])
 
   const logout = useMemo(() => () => {
     void apiFetch<ApiEnvelope>('/api/session', {method: 'DELETE'}).then(async () => {

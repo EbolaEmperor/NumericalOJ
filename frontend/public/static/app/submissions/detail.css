@@ -262,19 +262,27 @@ html.is-submission-detail-resizing * {
   font: 14px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
-.submission-editor-loading {
+.submission-code-viewer .monaco-editor .cursors-layer {
+  display: none;
+}
+
+.submission-code-viewer .monaco-editor .monaco-mouse-cursor-text,
+.submission-code-viewer .monaco-editor .view-lines,
+.submission-code-viewer textarea[readonly] {
+  caret-color: transparent;
+  cursor: default;
+}
+
+.submission-code-surface .problem-editor-loading-state {
+  --problem-editor-loading-color-a: #ffffff;
+  --problem-editor-loading-color-b: #ffffff;
   position: absolute;
   z-index: 2;
   inset: 0;
   display: grid;
   place-items: center;
   background: #1e1e1e;
-  color: #d4d4d4;
-}
-
-.submission-editor-loading .math-curve-loader {
-  --math-curve-color-a: #ffffff;
-  --math-curve-color-b: #ffffff;
+  color: #ffffff;
 }
 
 .submission-semantic-loading {

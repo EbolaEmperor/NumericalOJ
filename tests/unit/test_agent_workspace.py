@@ -70,9 +70,8 @@ def test_initialize_agent_task_workspace_writes_harness_memory_file(
     assert actual == workspace_root / "sessions" / "session-01" / "workspace"
     assert (actual / filename).is_file()
     memory = (actual / filename).read_text(encoding="utf-8")
-    assert "Background subagents and workflows are supported" in memory
-    assert "Do not return the final answer" in memory
-    assert "promise to report later is not completion" in memory
+    assert f"use the {'numoj-admin' if access_role == 'admin' else 'numoj-user'} skill" in memory
+    assert "Background subagents and workflows" not in memory
 
 
 @pytest.mark.parametrize("session_id", ["", ".", "..", "../escape", "a/b", "a\\b", "空"])

@@ -189,7 +189,7 @@ export function MonacoEditor({
       hidden={fallback}
     >
       <div id={`${idPrefix}EditorLoading`} className="problem-editor-loading-state" hidden={ready}>
-        <MathCurveLoader className="problem-editor-loading-indicator" size="lg" colorA="#fb923c" colorB="#f97316" label="代码编辑器正在加载" />
+        <MathCurveLoader className="problem-editor-loading-indicator" size="lg" colorA="var(--problem-editor-loading-color-a, #fb923c)" colorB="var(--problem-editor-loading-color-b, #f97316)" label="代码编辑器正在加载" />
       </div>
       <div ref={hostRef} id={`${idPrefix}EditorContainer`} className={hostClassName || undefined} data-language={language} />
     </div>

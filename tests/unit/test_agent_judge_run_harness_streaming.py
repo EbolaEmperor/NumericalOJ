@@ -205,7 +205,7 @@ def test_claude_effort_argument_is_normalized_and_allowlisted(
         assert args[args.index("--effort") + 1] == expected
 
 
-def test_claude_print_harness_promises_to_wait_for_background_workflows(
+def test_claude_print_harness_keeps_lifecycle_out_of_model_prompts(
         monkeypatch):
     module = _load_run_harness()
     calls = []
@@ -222,10 +222,7 @@ def test_claude_print_harness_promises_to_wait_for_background_workflows(
     assert module._run_claude_code("research") == 0
 
     args, _kwargs = calls[0]
-    completion_prompt = args[args.index("--append-system-prompt") + 1]
-    assert "Background subagents and workflows are supported" in completion_prompt
-    assert "Do not return the final answer" in completion_prompt
-    assert "promise to report later is not completion" in completion_prompt
+    assert "--append-system-prompt" not in args
     assert "--disallowed-tools" not in args
 
 
@@ -2504,6 +2501,7 @@ def test_claude_stream_json_waits_for_background_subagents_and_parent_result(
     )
 
     assert completed.returncode == 0
+    assert "--append-system-prompt" not in completed.args
     subagent_events = [
         json.loads(item["event"]["text"])
         for item in emitted
@@ -2516,6 +2514,66 @@ def test_claude_stream_json_waits_for_background_subagents_and_parent_result(
     ]
     assert any(
         item.get("event", {}).get("text") == "已汇总全部结果"
+        for item in emitted if item.get("type") == "numoj_trace"
+    )
+
+
+def test_claude_stream_json_does_not_finish_before_background_journal_exists(
+        monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    session_id = "22222222-2222-2222-2222-222222222222"
+    events = _event_queue(
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "message": {
+                "role": "assistant",
+                "id": "launch-background-agent",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tool-agent-1",
+                    "name": "Agent",
+                    "input": {
+                        "description": "检查实现",
+                        "run_in_background": True,
+                    },
+                }],
+            },
+        },
+        # journal 尚未落盘时 Claude 已先结束父模型的第一次调用。
+        {"type": "result", "session_id": session_id},
+        {
+            "type": "assistant",
+            "session_id": session_id,
+            "message": {
+                "role": "assistant",
+                "id": "answer-after-notification",
+                "content": [{"type": "text", "text": "后台结果已经汇总"}],
+            },
+        },
+        {"type": "result", "session_id": session_id},
+    )
+    monkeypatch.setattr(
+        module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
+    )
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_claude_subagent_snapshot", lambda *_args: [])
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
+
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        {},
+        "开始",
+        _Commands(),
+        "",
+    )
+
+    assert completed.returncode == 0
+    assert any(
+        item.get("event", {}).get("text") == "后台结果已经汇总"
         for item in emitted if item.get("type") == "numoj_trace"
     )
 

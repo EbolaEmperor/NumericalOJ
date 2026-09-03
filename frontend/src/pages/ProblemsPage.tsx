@@ -65,6 +65,10 @@ function randomProjects() {
   return shuffledIndexes(frontierProjects.length).slice(0, 3).map((index) => frontierProjects[index])
 }
 
+function homeworkQueryKey(classEn: string) {
+  return ['problems', 'homework', classEn] as const
+}
+
 export default function ProblemsPage() {
   const {session} = useSession()
   const navigate = useNavigate()
@@ -72,6 +76,8 @@ export default function ProblemsPage() {
   const [params] = useSearchParams()
   const library = params.get('view') === 'library'
   const classEn = params.get('class_en') || ''
+  const rememberedClassEn = session?.navigation.selected_class_en || ''
+  const effectiveClassEn = classEn || rememberedClassEn
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerRef = useDismissibleDropdown<HTMLDivElement>(pickerOpen, () => setPickerOpen(false))
   const insightQueue = useRef<number[]>([])
@@ -90,14 +96,19 @@ export default function ProblemsPage() {
   const [insightIndex, setInsightIndex] = useState(nextInsight)
   const [projects, setProjects] = useState(randomProjects)
   const [plagiarismNotice, setPlagiarismNotice] = useState('')
-  const prefetchClass = (classEn: string) => {
+  const prefetchClass = (itemClassEn: string) => {
     void queryClient.prefetchQuery({
-      queryKey: ['problems', 'homework', classEn],
-      // 预取只能暖缓存；保持为立即过期，用户真正进入班级时必须再请求一次，
-      // 由后端更新旧版的一年期记忆 Cookie。
-      queryFn: () => apiFetch<Response>(`/api/problems${queryString({class_en: classEn, remember: 0})}`),
-      staleTime: 0,
+      queryKey: homeworkQueryKey(itemClassEn),
+      // 悬停只负责暖缓存，不能把尚未打开的班级写进 HttpOnly 记忆 Cookie。
+      queryFn: ({signal}) => apiFetch<Response>(`/api/problems${queryString({class_en: itemClassEn, remember: 0})}`, {signal}),
+      staleTime: 15_000,
     })
+  }
+  const selectClass = (itemClassEn: string) => {
+    // 若用户在预取完成前点击，先同步取消无记忆请求，避免正式查询复用它；
+    // 路由切换后的 queryFn 会发出不带 remember=0 的请求并更新 Cookie。
+    void queryClient.cancelQueries({queryKey: homeworkQueryKey(itemClassEn), exact: true})
+    setPickerOpen(false)
   }
   const deleteProblem = useMutation({
     mutationFn: (problemId: number) => apiFetch<ApiEnvelope>(`/api/admin/problems/${problemId}`, {method: 'DELETE'}),
@@ -105,8 +116,14 @@ export default function ProblemsPage() {
     onError: (error: Error) => window.alert(error.message || '删除失败'),
   })
   const result = useQuery({
-    queryKey: ['problems', library ? 'library' : 'homework', classEn],
-    queryFn: () => apiFetch<Response>(`/api/problems${queryString({view: library ? 'library' : undefined, class_en: classEn || undefined})}`),
+    // 没有显式 URL 参数时，查询键也必须包含服务端从 Cookie 解析出的班级，
+    // 从而与侧栏预取使用同一份缓存，并隔离不同的历史选择。
+    queryKey: library ? ['problems', 'library', classEn] : homeworkQueryKey(effectiveClassEn),
+    queryFn: ({signal}) => apiFetch<Response>(`/api/problems${queryString({view: library ? 'library' : undefined, class_en: classEn || undefined})}`, {signal}),
+    // 会话把 HttpOnly Cookie 解析出的班级映射进 query key；重新进入 /problems
+    // 仍需回源确认，且让仅带 remember=0 的预取补上真正的 Cookie 写入。
+    staleTime: library ? undefined : 0,
+    refetchOnMount: library ? undefined : 'always',
   })
   const selectedClass = useMemo(() => (result.data?.classes || []).find((item) => String(item.class_en) === result.data?.selected_class_en) || result.data?.classes?.[0], [result.data])
   const activity = useQuery({
@@ -144,7 +161,7 @@ export default function ProblemsPage() {
             <span className="numoj-class-switcher-label">CLASS</span>
             <div ref={pickerRef} className={`numoj-class-picker${pickerOpen ? ' is-open' : ''}`} data-numoj-class-picker>
               <button type="button" className="numoj-class-picker-trigger" aria-haspopup="listbox" aria-expanded={pickerOpen} onClick={() => setPickerOpen((value) => !value)} title={String(selectedClass.class_cn || '')}><ClassLogo item={selectedClass} /><span className="numoj-class-picker-current">{String(selectedClass.class_cn || '')}</span><i className="fas fa-chevron-down numoj-class-picker-chevron" aria-hidden="true" /></button>
-              <div className="numoj-class-picker-menu" role="listbox" aria-label="可选择的班级" hidden={!pickerOpen}>{(result.data?.classes || []).map((item) => {const itemClassEn = String(item.class_en); return <Link className={`numoj-class-picker-option${itemClassEn === result.data?.selected_class_en ? ' active' : ''}`} to={`/problems${queryString({class_en: itemClassEn})}`} role="option" aria-selected={itemClassEn === result.data?.selected_class_en} key={itemClassEn} viewTransition onPointerEnter={() => prefetchClass(itemClassEn)} onFocus={() => prefetchClass(itemClassEn)} onClick={() => setPickerOpen(false)}><ClassLogo item={item} /><span className="numoj-class-picker-option-name">{String(item.class_cn)}</span>{itemClassEn === result.data?.selected_class_en ? <i className="fas fa-check numoj-class-picker-check" aria-hidden="true" /> : null}</Link>})}</div>
+              <div className="numoj-class-picker-menu" role="listbox" aria-label="可选择的班级" hidden={!pickerOpen}>{(result.data?.classes || []).map((item) => {const itemClassEn = String(item.class_en); return <Link className={`numoj-class-picker-option${itemClassEn === result.data?.selected_class_en ? ' active' : ''}`} to={`/problems${queryString({class_en: itemClassEn})}`} role="option" aria-selected={itemClassEn === result.data?.selected_class_en} key={itemClassEn} viewTransition onPointerEnter={() => prefetchClass(itemClassEn)} onFocus={() => prefetchClass(itemClassEn)} onClick={() => selectClass(itemClassEn)}><ClassLogo item={item} /><span className="numoj-class-picker-option-name">{String(item.class_cn)}</span>{itemClassEn === result.data?.selected_class_en ? <i className="fas fa-check numoj-class-picker-check" aria-hidden="true" /> : null}</Link>})}</div>
             </div>
           </div> : null}
           <div className="numoj-assignment-list">
