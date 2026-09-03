@@ -94,6 +94,15 @@ def test_agent_harness_args_do_not_invalidate_heavy_toolchain_cache():
     assert heavy_tail < first_harness_arg < harness_install
 
 
+def test_agent_judge_installs_cpu_only_pytorch_runtime():
+    dockerfile = _dockerfile('docker/agent_judge/Dockerfile')
+    torch_install = dockerfile.index('torch torchvision')
+    cpu_index = dockerfile.index('https://download.pytorch.org/whl/cpu')
+
+    assert cpu_index < torch_install
+    assert 'nvidia-' not in dockerfile
+
+
 def test_agent_ai_sdk_pins_support_the_node_24_base():
     dockerfile = _dockerfile('docker/agent_judge/Dockerfile')
 

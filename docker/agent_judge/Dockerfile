@@ -58,8 +58,12 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         pytesseract
 
 # 重 ML / OCR 栈：每个单独成 best-effort 层（装失败不连累上层与镜像构建）。
+# Agent 评测容器不会挂载 GPU，必须使用 PyTorch 官方 CPU wheel。若沿用全局 PyPI
+# 镜像，当前 torch 会解析为 CUDA 版本并下载数 GB 永远不会使用的 NVIDIA 运行库。
 # 注意：easyocr / paddleocr 的模型权重仍在首次评测时按需下载，这里只预装 Python 包本体。
-RUN pip3 install --no-cache-dir --break-system-packages torch torchvision \
+RUN pip3 install --no-cache-dir --break-system-packages \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch torchvision \
         || echo "WARN: torch/torchvision 预装失败（best-effort，评测时可现装）"
 RUN pip3 install --no-cache-dir --break-system-packages easyocr \
         || echo "WARN: easyocr 预装失败（best-effort）"
