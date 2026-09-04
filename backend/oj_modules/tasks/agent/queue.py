@@ -22,6 +22,9 @@ from backend.oj_modules.agents.runtime_checkpoints import (
     remove_agent_runtime_checkpoint,
 )
 from backend.oj_modules.db_services import get_user_by_username, upsert_agent_run_snapshot
+from backend.oj_modules.tasks.agent.usage_accounting import (
+    reconcile_agent_usage_outbox,
+)
 
 
 AGENT_QUEUE_DISPATCH_TASK_NAME = "oj.agent.dispatch_session_queue"
@@ -346,6 +349,9 @@ def register_agent_queue_tasks(
 
         @celery_app.task(name=AGENT_QUEUE_RECOVERY_TASK_NAME)
         def recover_agent_session_queues(limit=100):
+            # 与消息队列恢复共用周期 watchdog：部署、worker 重启或数据库
+            # 暂时不可用后，宿主持久 usage outbox 仍会继续幂等结算。
+            usage_reconciliation = reconcile_agent_usage_outbox(limit=limit)
             session_ids = list_agent_session_queue_recovery_candidates(
                 limit=limit,
             )
@@ -365,6 +371,7 @@ def register_agent_queue_tasks(
                 "success": True,
                 "candidates": len(session_ids),
                 "scheduled": scheduled,
+                "usage_reconciliation": usage_reconciliation,
             }
 
     return dispatch_agent_session_queue, recover_agent_session_queues

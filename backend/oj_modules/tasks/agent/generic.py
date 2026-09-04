@@ -7,12 +7,15 @@ from __future__ import annotations
 from functools import wraps
 import time
 
+from celery.exceptions import Retry
+
 from backend.oj_modules.agents.sessions import (
     AGENT_EMPTY_CONCLUSION_MESSAGE,
     get_agent_session,
     normalize_agent_session_id,
 )
 from backend.oj_modules.agents.quota import (
+    AgentQuotaAccessDeniedError,
     charge_agent_usage,
     get_agent_runtime_quota_summary,
     get_agent_session_usage_cost,
@@ -31,6 +34,7 @@ from backend.oj_modules.problems.agent_launch import (
 from backend.oj_modules.site_config.services import (
     DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
     DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+    DynamicConfigNotFoundError,
     get_llm_endpoint,
 )
 from backend.oj_modules.tasks.agent.conversation import extract_agent_conclusion
@@ -55,6 +59,9 @@ from backend.oj_modules.tasks.agent.shared import (
 from backend.oj_modules.tasks.agent.titles import generate_initial_agent_session_title
 from backend.oj_modules.tasks.agent.traces import prepare_agent_trace_dir
 from backend.oj_modules.tasks.agent.queue import build_agent_control_bridge
+from backend.oj_modules.tasks.agent.usage_accounting import (
+    ResilientAgentUsageAccountant,
+)
 
 
 def _generic_task_id(task):
@@ -295,6 +302,10 @@ def _conclude_unhandled_generic_failures(function):
                 restore_runtime_checkpoint_id,
                 start_fresh_native_session,
             )
+        except Retry:
+            # 计费基础设施暂不可用时保持当前轮次非终态，让 Celery 原 task_id
+            # 继续退避重试，而不是被通用异常收束误写成 Failed。
+            raise
         except Exception as exc:
             return _finalize_unhandled_generic_failure(state, exc)
 
@@ -359,7 +370,7 @@ def register_agent_run_turn_task(celery_app):
     if existing:
         return existing
 
-    @celery_app.task(bind=True, name=AGENT_RUN_TURN_TASK_NAME)
+    @celery_app.task(bind=True, name=AGENT_RUN_TURN_TASK_NAME, max_retries=None)
     @_conclude_unhandled_generic_failures
     def agent_run_turn(
         self,
@@ -462,8 +473,19 @@ def register_agent_run_turn_task(celery_app):
                 is_admin=requester_is_admin,
                 uses_personal_endpoint=uses_personal_endpoint,
             )
-        except Exception as exc:
+        except AgentQuotaAccessDeniedError as exc:
             return _generic_failure(state, str(exc) or "当前不能继续 Agent 会话")
+        except Exception as exc:
+            try:
+                _update_agent_state(
+                    state,
+                    "额度服务暂不可用，正在自动重试启动",
+                    stage="waiting_billing",
+                    harness_status="pending",
+                )
+            except Exception:
+                pass
+            raise self.retry(exc=exc, countdown=5)
 
         try:
             endpoint_ref = (
@@ -500,11 +522,22 @@ def register_agent_run_turn_task(celery_app):
                 is_admin=requester_is_admin,
                 uses_personal_endpoint=uses_personal_endpoint,
             )
-        except Exception as exc:
+        except AgentQuotaAccessDeniedError as exc:
             return _generic_failure(
                 state,
                 str(exc) or "当前不能继续 Agent 会话",
             )
+        except Exception as exc:
+            try:
+                _update_agent_state(
+                    state,
+                    "额度服务暂不可用，正在自动重试启动",
+                    stage="waiting_billing",
+                    harness_status="pending",
+                )
+            except Exception:
+                pass
+            raise self.retry(exc=exc, countdown=5)
         state.update({
             "task_kind": session_task_kind,
             "access_role": normalized_role,
@@ -547,6 +580,7 @@ def register_agent_run_turn_task(celery_app):
             ).get("allowed", False),
         )
         usage_callback = None
+        usage_accountant = None
         if not uses_personal_endpoint:
             pricing = token_pricing_from_endpoint(endpoint)
             if pricing is None:
@@ -560,30 +594,31 @@ def register_agent_run_turn_task(celery_app):
                 # 读取失败时不阻断 harness，后续状态接口会再次从账本恢复。
                 pass
 
-            def charge_usage(event):
-                # 每个上游请求都重新读取节点价格：峰谷切换和管理员调整价格无需
-                # 中断已有会话，账本会保留当次实际采用的配置版本和价格快照。
-                current_endpoint = get_llm_endpoint(
-                    endpoint["id"], include_secret=False,
-                )
+            def current_endpoint_snapshot():
+                # 每个上游请求都尝试读取当前价格；读取失败时容错计费器会沿用
+                # 上一份完整快照，不能让动态配置服务故障中断正在运行的任务。
+                try:
+                    current_endpoint = get_llm_endpoint(
+                        endpoint["id"], include_secret=False,
+                    )
+                except DynamicConfigNotFoundError:
+                    return {
+                        "endpoint_id": None,
+                        "endpoint_revision": endpoint.get("revision"),
+                        "endpoint_model": endpoint.get("model"),
+                        "pricing": pricing,
+                    }
                 current_pricing = token_pricing_from_endpoint(current_endpoint)
                 if current_pricing is None:
                     raise RuntimeError("所选全站节点尚未配置完整价格")
-                result = charge_agent_usage(
-                    user_id=user["id"],
-                    session_id=normalized_session_id,
-                    task_id=task_id,
-                    source=event.get("source"),
-                    usage_event_id=event.get("id"),
-                    endpoint_id=current_endpoint["id"],
-                    # 会话不再冻结节点配置：本轮使用当前端点，并把其版本和
-                    # 价格快照写入逐请求账本，保留审计能力。
-                    endpoint_revision=current_endpoint.get("revision"),
-                    endpoint_model=current_endpoint.get("model"),
-                    usage=event.get("usage"),
-                    pricing=current_pricing,
-                    is_admin=requester_is_admin,
-                )
+                return {
+                    "endpoint_id": current_endpoint["id"],
+                    "endpoint_revision": current_endpoint.get("revision"),
+                    "endpoint_model": current_endpoint.get("model"),
+                    "pricing": current_pricing,
+                }
+
+            def refresh_usage_projection(_result):
                 try:
                     state["session_charged_amount_rmb"] = (
                         get_agent_session_usage_cost(normalized_session_id)
@@ -600,12 +635,23 @@ def register_agent_run_turn_task(celery_app):
                 # 后才会写入规范 trace；紧随其后的 trace tick 会把轨迹、用量和
                 # 额度作为同一份 SSE 快照发布，避免一次 LLM 请求产生两个视觉
                 # 更新，也不会退化为 token 级流式渲染。
-                return {
-                    **result,
-                    "remaining_rmb": result.get("remaining_amount"),
-                }
 
-            usage_callback = charge_usage
+            usage_accountant = ResilientAgentUsageAccountant(
+                user_id=user["id"],
+                session_id=normalized_session_id,
+                task_id=task_id,
+                endpoint_snapshot={
+                    "endpoint_id": endpoint["id"],
+                    "endpoint_revision": endpoint.get("revision"),
+                    "endpoint_model": endpoint.get("model"),
+                    "pricing": pricing,
+                },
+                is_admin=requester_is_admin,
+                endpoint_snapshot_loader=current_endpoint_snapshot,
+                charge_usage=charge_agent_usage,
+                on_settled=refresh_usage_projection,
+            )
+            usage_callback = usage_accountant
 
         def preserve_native_session(native_session_id):
             normalized_native_session_id = normalize_native_session_id(
@@ -689,6 +735,11 @@ def register_agent_run_turn_task(celery_app):
                 f"Agent harness 运行失败：{str(exc)[:800]}",
                 conclusion=conclusion,
             )
+        finally:
+            if usage_accountant is not None:
+                # 待结算事件已经进入宿主持久 outbox；关闭轮内短退避线程不会
+                # 删除记录，周期恢复任务会在进程退出或部署后继续幂等重放。
+                usage_accountant.close()
 
         if agent_run_is_canceled(task_id):
             return canceled_agent_task_result(task_id)

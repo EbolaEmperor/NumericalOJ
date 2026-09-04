@@ -16,6 +16,7 @@ import hmac
 import http.client
 import http.server
 import json
+import logging
 import os
 import re
 import secrets
@@ -39,6 +40,8 @@ from backend.oj_modules.tasks.agent.identity_relay import (
     _single_header,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _CONTAINER_HOST = "host.docker.internal"
 _TEMPORARY_SECRET_BYTES = 32
@@ -1555,6 +1558,13 @@ class _AgentSecretRelay:
         # 模型请求必须并发到达上游；只有很短的数据库记账 callback 串行，
         # 让额度账户保持确定顺序，也避免一次 workflow 瞬间占满数据库连接。
         self._usage_callback_lock = threading.Lock()
+        hard_stop_setter = getattr(
+            self._usage_callback,
+            "set_hard_stop_callback",
+            None,
+        )
+        if callable(hard_stop_setter):
+            hard_stop_setter(self._record_committed_hard_stop)
 
     @property
     def container_credential(self):
@@ -1627,20 +1637,31 @@ class _AgentSecretRelay:
             self._usage_condition.notify_all()
         self.deny_new_requests()
 
-    def _account_endpoint_response(self, claim, relative_route, payload):
+    def _record_committed_hard_stop(self, result):
+        remaining = str(
+            (result or {}).get("remaining_rmb")
+            or (result or {}).get("remaining_amount")
+            or ""
+        ).strip()
+        detail = f"，剩余额度 {remaining} 元" if remaining else ""
+        self._record_usage_failure(
+            AgentSecretRelayUsageHardStopError(
+                f"Agent 额度已达到硬停阈值{detail}"
+            )
+        )
+
+    def _account_endpoint_response(
+        self,
+        claim,
+        relative_route,
+        payload,
+        *,
+        force_zero_usage=False,
+    ):
         if not self._require_usage_ack:
             return None
         try:
-            try:
-                usage = _extract_response_usage(
-                    self.mode,
-                    relative_route,
-                    payload,
-                )
-            except AgentSecretRelayUsageError:
-                # 响应已经实际发生，但第三方代理可能省略、截断或返回非法
-                # usage。解析失败只影响本次计费精度，按全 0 写一条可审计
-                # 账本记录，不能因此封锁 relay 并终止 Agent。
+            if force_zero_usage:
                 usage = {
                     "input_uncached_tokens": 0,
                     "input_cached_tokens": 0,
@@ -1648,6 +1669,24 @@ class _AgentSecretRelay:
                     "output_tokens": 0,
                     "reasoning_output_tokens": 0,
                 }
+            else:
+                try:
+                    usage = _extract_response_usage(
+                        self.mode,
+                        relative_route,
+                        payload,
+                    )
+                except AgentSecretRelayUsageError:
+                    # 响应已经实际发生，但第三方代理可能省略、截断或返回
+                    # 非法 usage。没有完整可计费响应时按全 0 写一条账本
+                    # 记录，不能因此封锁 relay 并终止 Agent。
+                    usage = {
+                        "input_uncached_tokens": 0,
+                        "input_cached_tokens": 0,
+                        "input_cache_write_tokens": 0,
+                        "output_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                    }
             event = {
                 "type": "numoj_usage",
                 "version": 1,
@@ -1655,10 +1694,30 @@ class _AgentSecretRelay:
                 "id": "relay-" + secrets.token_urlsafe(24),
                 "usage": usage,
             }
-            with self._usage_callback_lock:
-                result = self._usage_callback(event)
-            if not isinstance(result, dict) or result.get("applied") is not True:
-                raise AgentSecretRelayUsageError("模型 usage 没有产生新的记账记录")
+            try:
+                with self._usage_callback_lock:
+                    result = self._usage_callback(event)
+            except Exception:
+                # 计费是可恢复旁路。容错计费器会把事件留在宿主 outbox；即使
+                # 自定义 callback 本身异常，也不得关闭 relay 或连带终止并发
+                # subagent。
+                logger.exception("模型 usage callback 异常；任务继续等待恢复结算")
+                return {
+                    "applied": False,
+                    "acknowledged": True,
+                    "deferred": True,
+                    "hard_stop": False,
+                }
+            if not isinstance(result, dict):
+                logger.error("模型 usage callback 未返回结算状态；任务继续运行")
+                return {
+                    "applied": False,
+                    "acknowledged": True,
+                    "deferred": True,
+                    "hard_stop": False,
+                }
+            # applied=False 是账本已存在的正常幂等重放。只有已成功结算后
+            # 明确返回 hard_stop，才允许计费链路终止任务。
             if bool(result.get("hard_stop")):
                 remaining = str(
                     result.get("remaining_rmb")
@@ -1669,7 +1728,7 @@ class _AgentSecretRelay:
                 raise AgentSecretRelayUsageHardStopError(
                     f"Agent 额度已达到硬停阈值{detail}"
                 )
-        except Exception as exc:
+        except AgentSecretRelayUsageHardStopError as exc:
             self._record_usage_failure(exc)
             raise
         finally:
@@ -1784,6 +1843,29 @@ class _AgentSecretRelay:
                 endpoint_accounted = False
                 response_started = False
                 relative_route = ""
+
+                def account_incomplete_response_as_zero():
+                    nonlocal endpoint_accounting_attempted, endpoint_accounted
+                    if (
+                        not endpoint_response_accepted
+                        or endpoint_accounting_attempted
+                    ):
+                        return
+                    endpoint_accounting_attempted = True
+                    try:
+                        relay._account_endpoint_response(
+                            endpoint_request_claim,
+                            relative_route,
+                            b"",
+                            force_zero_usage=True,
+                        )
+                    except Exception:
+                        # 只有这里的账本 callback 失败或返回硬停，才会由
+                        # _account_endpoint_response 封锁 relay；handler 不能
+                        # 再向已经开始的 HTTP 响应追加第二个错误。
+                        return
+                    endpoint_accounted = True
+
                 try:
                     # 临时凭据验证和生命周期门禁必须早于路径、body 与上游 I/O。
                     if not relay._authorize_request(self.headers):
@@ -1981,41 +2063,28 @@ class _AgentSecretRelay:
                         )
                         endpoint_accounted = True
                 except _RequestRejected as exc:
-                    if endpoint_response_accepted:
-                        relay._record_usage_failure(
-                            AgentSecretRelayUsageError(
-                                "模型响应未能完整读取并记账"
-                            )
-                        )
+                    account_incomplete_response_as_zero()
                     if not response_started:
                         try:
                             self._send_plain(exc.status, exc.message)
                         except (BrokenPipeError, ConnectionResetError, OSError):
                             pass
                 except AgentSecretRelayUsageError:
-                    # 解析/记账方法已经记录权威失败并封锁 relay；响应可能已经
-                    # 流式交付，不能再向同一连接拼接另一个 HTTP 错误。
-                    if endpoint_response_accepted and not endpoint_accounting_attempted:
-                        relay._record_usage_failure(
-                            AgentSecretRelayUsageError(
-                                "模型响应未能完整读取并记账"
-                            )
-                        )
+                    # 响应处理失败按 0 cost 收束；若异常来自账本 callback，
+                    # _account_endpoint_response 已记录权威失败并封锁 relay。
+                    account_incomplete_response_as_zero()
                 except (
                     BrokenPipeError,
                     ConnectionResetError,
+                    http.client.HTTPException,
                     OSError,
                     socket.timeout,
-                ) as exc:
-                    if endpoint_response_accepted and not endpoint_accounting_attempted:
-                        relay._record_usage_failure(
-                            AgentSecretRelayUsageError(
-                                "模型响应读取中断，无法确认 usage"
-                            )
-                        )
-                except Exception as exc:
-                    if endpoint_response_accepted and not endpoint_accounting_attempted:
-                        relay._record_usage_failure(exc)
+                ):
+                    # 上游断流没有完整可计费结果：本条写 0 cost，由 harness
+                    # 决定是否重试，不得杀掉其他并发 subagent。
+                    account_incomplete_response_as_zero()
+                except Exception:
+                    account_incomplete_response_as_zero()
                 finally:
                     if (
                         endpoint_request_claim is not None

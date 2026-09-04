@@ -1720,6 +1720,173 @@ def test_endpoint_requests_forward_concurrently_and_account_each_response(
     assert instance._endpoint_request_claims == set()
 
 
+@pytest.mark.parametrize(
+    "stream_error",
+    [
+        ConnectionResetError("upstream stream interrupted"),
+        http.client.IncompleteRead(b"partial response"),
+    ],
+)
+def test_upstream_stream_interruption_is_billed_as_zero_without_closing_relay(
+    monkeypatch,
+    stream_error,
+):
+    charged = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": True,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class InterruptedResponse:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            raise stream_error
+
+        def close(self):
+            return None
+
+    class SuccessfulResponse:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def __init__(self):
+            self.chunks = [
+                b'data: {"type":"message_start","message":{"usage":'
+                b'{"input_tokens":3,"output_tokens":0}}}\n\n',
+                b'data: {"type":"message_delta","usage":'
+                b'{"output_tokens":2}}\n\ndata: {"type":"message_stop"}\n\n',
+            ]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    responses = [InterruptedResponse(), SuccessfulResponse()]
+
+    class Connection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return responses.pop(0)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: Connection(),
+    )
+    request = (
+        b"POST /v1/messages HTTP/1.0\r\nX-Api-Key: "
+        + instance.temporary_secret.encode("ascii")
+        + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    assert _send(instance, request)[0] == 200
+    instance.raise_if_usage_failed()
+    assert not instance._stop_event.is_set()
+    assert charged[0]["usage"] == {
+        "input_uncached_tokens": 0,
+        "input_cached_tokens": 0,
+        "input_cache_write_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+    }
+
+    assert _send(instance, request)[0] == 200
+    instance.raise_if_usage_failed()
+    assert (
+        charged[1]["usage"]["input_uncached_tokens"]
+        + charged[1]["usage"]["input_cached_tokens"]
+        + charged[1]["usage"]["input_cache_write_tokens"]
+    ) == 3
+    assert charged[1]["usage"]["output_tokens"] == 2
+    assert instance._endpoint_request_claims == set()
+
+
+def test_zero_cost_idempotent_replay_after_stream_interruption_keeps_relay_open(
+    monkeypatch,
+):
+    charged = []
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="anthropic",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda event: charged.append(event) or {
+            "applied": False,
+            "hard_stop": False,
+        },
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class InterruptedResponse:
+        status = 200
+        headers = _headers(Content_Type="text/event-stream")
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            raise ConnectionResetError("upstream stream interrupted")
+
+        def close(self):
+            return None
+
+    class Connection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return InterruptedResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: Connection(),
+    )
+    request = (
+        b"POST /v1/messages HTTP/1.0\r\nX-Api-Key: "
+        + instance.temporary_secret.encode("ascii")
+        + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    assert _send(instance, request)[0] == 200
+    instance.raise_if_usage_failed()
+    assert not instance._stop_event.is_set()
+    assert len(charged) == 1
+    assert charged[0]["usage"]["input_uncached_tokens"] == 0
+    assert charged[0]["usage"]["output_tokens"] == 0
+
+
 def test_secret_relay_capacity_covers_parallel_workflow_without_widening_identity(
 ):
     assert relay._BoundedSecretRelayServer.max_connections >= 96
@@ -1891,8 +2058,8 @@ def test_openai_empty_content_is_forwarded_as_error_and_billed_as_zero(
         (
             b'{"usage":{"prompt_tokens":1,"completion_tokens":1}}',
             {"applied": False, "hard_stop": False},
-            relay.AgentSecretRelayUsageError,
-            "新的记账记录",
+            None,
+            "",
         ),
         (
             b'{"usage":{"prompt_tokens":1,"completion_tokens":1}}',
@@ -1902,7 +2069,7 @@ def test_openai_empty_content_is_forwarded_as_error_and_billed_as_zero(
         ),
     ],
 )
-def test_usage_failure_replay_or_hard_stop_closes_relay(
+def test_only_committed_hard_stop_closes_relay(
     monkeypatch,
     payload,
     callback_result,
@@ -1961,11 +2128,77 @@ def test_usage_failure_replay_or_hard_stop_closes_relay(
     )
 
     assert _send(instance, request)[0] == 200
-    with pytest.raises(error_type, match=message):
+    if error_type is None:
         instance.raise_if_usage_failed()
-    assert instance._stop_event.is_set()
-    assert _send(instance, request)[0] == 404
-    assert len(callback_calls) == 1
+        assert not instance._stop_event.is_set()
+        assert _send(instance, request)[0] == 200
+        assert len(callback_calls) == 2
+    else:
+        with pytest.raises(error_type, match=message):
+            instance.raise_if_usage_failed()
+        assert instance._stop_event.is_set()
+        assert _send(instance, request)[0] == 404
+        assert len(callback_calls) == 1
+
+
+def test_usage_callback_exception_does_not_close_relay(monkeypatch):
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode="openai",
+        real_credential="long-lived-model-key",
+        require_usage_ack=True,
+        usage_callback=lambda _event: (_ for _ in ()).throw(
+            RuntimeError("billing database unavailable")
+        ),
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    class Response:
+        status = 200
+        headers = _headers(Content_Type="application/json")
+
+        def __init__(self):
+            self.chunks = [
+                b'{"usage":{"prompt_tokens":1,"completion_tokens":1}}'
+            ]
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            return None
+
+    class Connection:
+        registered = False
+
+        def request(self, *_args, **_kwargs):
+            return None
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream,
+        "open_connection",
+        lambda _self: Connection(),
+    )
+    authorization = f"Bearer {instance.temporary_secret}".encode("ascii")
+    request = (
+        b"POST /v1/chat/completions HTTP/1.0\r\nAuthorization: "
+        + authorization
+        + b"\r\nContent-Length: 2\r\n\r\n{}"
+    )
+
+    assert _send(instance, request)[0] == 200
+    instance.raise_if_usage_failed()
+    assert not instance._stop_event.is_set()
 
 
 def test_client_disconnect_still_drains_and_accounts_upstream(monkeypatch):

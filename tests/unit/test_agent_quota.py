@@ -129,13 +129,6 @@ def test_quota_request_payload_preserves_legacy_amount_and_allows_new_null():
             "output_tokens": 1,
         },
         {
-            "input_uncached_tokens": 0,
-            "input_cached_tokens": 0,
-            "input_cache_write_tokens": 0,
-            "output_tokens": 0,
-            "reasoning_output_tokens": 0,
-        },
-        {
             "input_uncached_tokens": None,
             "input_cached_tokens": 0,
             "input_cache_write_tokens": 0,
@@ -144,7 +137,7 @@ def test_quota_request_payload_preserves_legacy_amount_and_allows_new_null():
         },
     ],
 )
-def test_usage_charge_requires_all_token_fields_and_positive_total(usage):
+def test_usage_charge_requires_all_token_fields_to_be_valid(usage):
     with pytest.raises(quota.AgentQuotaValidationError):
         quota.calculate_agent_usage_charge(
             usage,
@@ -154,6 +147,26 @@ def test_usage_charge_requires_all_token_fields_and_positive_total(usage):
                 "output_price_per_million": "2",
             },
         )
+
+
+def test_usage_charge_accepts_zero_token_request_as_zero_cost():
+    counts, _prices, charged = quota.calculate_agent_usage_charge(
+        {
+            "input_uncached_tokens": 0,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_output_tokens": 0,
+        },
+        {
+            "input_price_per_million": "1",
+            "cached_input_price_per_million": "0.1",
+            "output_price_per_million": "2",
+        },
+    )
+
+    assert all(value == 0 for value in counts.values())
+    assert charged == Decimal("0E-14")
 
 
 class _ChargeStore:
@@ -295,6 +308,87 @@ def test_usage_debit_is_atomic_idempotent_and_reports_hard_stop(monkeypatch):
     assert store.account["used_amount"] == Decimal("5.10000000000000")
     assert all(connection.commits == 1 for connection in connections)
     assert all(connection.rollbacks == 0 for connection in connections)
+
+
+def test_zero_token_usage_is_persisted_without_debiting_quota(monkeypatch):
+    store = _ChargeStore()
+    store.account = {
+        "user_id": 7,
+        "granted_amount": Decimal("10"),
+        "used_amount": Decimal("4.9"),
+    }
+    monkeypatch.setattr(
+        quota,
+        "get_db_connection",
+        lambda: _ChargeConnection(store),
+    )
+
+    result = quota.charge_agent_usage(
+        user_id=7,
+        session_id="session-interrupted",
+        task_id="task-interrupted",
+        source="relay_anthropic",
+        usage_event_id="interrupted-request-1",
+        endpoint_id=3,
+        endpoint_revision=2,
+        endpoint_model="model-a",
+        usage={
+            "input_uncached_tokens": 0,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_output_tokens": 0,
+        },
+        pricing={
+            "input_price_per_million": "1",
+            "cached_input_price_per_million": "0.1",
+            "output_price_per_million": "2",
+        },
+    )
+
+    assert result["applied"] is True
+    assert result["charged_amount"] == "0"
+    assert result["remaining_amount"] == "5.1"
+    assert result["hard_stop"] is False
+    assert store.ledger["charged_amount"] == Decimal("0E-14")
+    assert store.account["used_amount"] == Decimal("4.90000000000000")
+
+
+def test_usage_charge_preserves_snapshot_when_endpoint_was_deleted(monkeypatch):
+    store = _ChargeStore()
+    monkeypatch.setattr(
+        quota,
+        "get_db_connection",
+        lambda: _ChargeConnection(store),
+    )
+
+    result = quota.charge_agent_usage(
+        user_id=7,
+        session_id="session-deleted-endpoint",
+        task_id="task-deleted-endpoint",
+        source="relay_openai",
+        usage_event_id="request-after-delete",
+        endpoint_id=None,
+        endpoint_revision=9,
+        endpoint_model="deleted-model",
+        usage={
+            "input_uncached_tokens": 10,
+            "input_cached_tokens": 0,
+            "input_cache_write_tokens": 0,
+            "output_tokens": 2,
+            "reasoning_output_tokens": 0,
+        },
+        pricing={
+            "input_price_per_million": "1",
+            "cached_input_price_per_million": "0.1",
+            "output_price_per_million": "2",
+        },
+    )
+
+    assert result["applied"] is True
+    assert store.ledger["endpoint_id"] is None
+    assert store.ledger["endpoint_revision"] == 9
+    assert store.ledger["endpoint_model"] == "deleted-model"
 
 
 def test_usage_charge_persists_cached_fallback_audit_metadata(monkeypatch):

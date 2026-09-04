@@ -1079,8 +1079,8 @@ def calculate_agent_usage_charge(usage, pricing):
             usage.get("reasoning_output_tokens"), "推理输出 Token"
         ),
     }
-    if not any(counts.values()):
-        raise AgentQuotaValidationError("Usage 的 Token 计数不能全部为 0")
+    # 上游断流或返回不可计费响应时，relay 会写入一条五项全 0 的 usage
+    # 作为可审计的零费用结算；字段仍须完整且合法，但总量可以为 0。
     missing_price_fields = [
         field for field in _USAGE_PRICE_FIELDS if field not in pricing
     ]
@@ -1130,7 +1130,6 @@ def _ledger_matches_usage(
     required_fields = {
         "user_id",
         "session_id",
-        "endpoint_id",
         "endpoint_revision",
         "endpoint_model",
         "charged_amount",
@@ -1140,13 +1139,18 @@ def _ledger_matches_usage(
     if not isinstance(row, dict) or any(
         field not in row or row.get(field) is None
         for field in required_fields
-    ):
+    ) or "endpoint_id" not in row:
         return False
     try:
+        row_endpoint_id = (
+            None
+            if row.get("endpoint_id") is None
+            else int(row["endpoint_id"])
+        )
         if (
             int(row["user_id"]) != user_id
             or str(row["session_id"]) != session_id
-            or int(row["endpoint_id"]) != endpoint_id
+            or row_endpoint_id != endpoint_id
             or int(row["endpoint_revision"]) != endpoint_revision
             or str(row["endpoint_model"]) != endpoint_model
         ):
@@ -1219,7 +1223,14 @@ def charge_agent_usage(
         raise AgentQuotaValidationError("Usage 事件 ID 无效")
     if not endpoint_model or len(endpoint_model) > 255:
         raise AgentQuotaValidationError("LLM 模型名称无效")
-    endpoint_id = _positive_int(endpoint_id, "LLM 端点 ID")
+    # 节点可能在模型请求完成与账本提交之间被管理员删除。表结构本来就
+    # 允许 endpoint_id 为 NULL；此时仍用版本、模型和价格快照完整审计，
+    # 不能让失效外键把待办永久卡死。
+    endpoint_id = (
+        None
+        if endpoint_id is None
+        else _positive_int(endpoint_id, "LLM 端点 ID")
+    )
     endpoint_revision = _positive_int(endpoint_revision, "LLM 端点版本")
     counts, prices, charge = calculate_agent_usage_charge(usage, pricing)
     (

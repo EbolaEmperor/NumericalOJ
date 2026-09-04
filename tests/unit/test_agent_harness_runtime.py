@@ -372,15 +372,14 @@ def test_secret_relay_hard_stop_is_translated_for_generic_task():
         runtime._check_secret_relay_usage(relayed, wait=True)
 
 
-def test_secret_relay_accounting_failure_is_not_swallowed():
+def test_secret_relay_accounting_failure_does_not_stop_harness():
     relayed = SimpleNamespace(
         raise_if_usage_failed=lambda: (_ for _ in ()).throw(
             RuntimeError("usage database unavailable")
         ),
     )
 
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        runtime._check_secret_relay_usage(relayed)
+    runtime._check_secret_relay_usage(relayed)
 
 
 def test_runtime_env_injects_relayed_web_search_mcp_without_secret_in_args(

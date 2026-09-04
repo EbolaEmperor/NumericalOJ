@@ -38,6 +38,16 @@ def _stub_dispatch_receipts(monkeypatch):
         "release_agent_session_message_dispatch_attempt",
         lambda *_args, **_kwargs: True,
     )
+    monkeypatch.setattr(
+        queue,
+        "reconcile_agent_usage_outbox",
+        lambda **_kwargs: {
+            "scanned": 0,
+            "settled": 0,
+            "hard_stops": 0,
+            "failed": 0,
+        },
+    )
 
 
 def _claim():
@@ -437,7 +447,17 @@ def test_recovery_schedules_every_authoritative_candidate(monkeypatch):
 
     result = recover()
 
-    assert result == {"success": True, "candidates": 2, "scheduled": 2}
+    assert result == {
+        "success": True,
+        "candidates": 2,
+        "scheduled": 2,
+        "usage_reconciliation": {
+            "scanned": 0,
+            "settled": 0,
+            "hard_stops": 0,
+            "failed": 0,
+        },
+    }
     assert [call[1]["args"] for call in calls] == [
         ("session-1",),
         ("session-2",),

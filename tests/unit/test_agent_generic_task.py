@@ -3,6 +3,7 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
+from celery.exceptions import Retry
 
 from backend.oj_modules.tasks.agent import generic
 from backend.oj_modules.tasks.agent.harness_runtime import (
@@ -78,7 +79,11 @@ def test_generic_task_has_stable_celery_name_and_exact_signature():
     celery = _FakeCelery()
     task = generic.register_agent_run_turn_task(celery)
 
-    assert celery.options == [{"bind": True, "name": "oj.agent.run_turn"}]
+    assert celery.options == [{
+        "bind": True,
+        "name": "oj.agent.run_turn",
+        "max_retries": None,
+    }]
     assert str(inspect.signature(task)) == (
         "(self, session_id, requested_by, access_role, harness, endpoint_id, "
         "session_cookie, prompt, session_cookie_name='session', "
@@ -112,6 +117,64 @@ def test_generic_outer_boundary_finalizes_trace_prepare_failure(monkeypatch):
     assert snapshots[-1]["status"] == "Failed"
     assert snapshots[-1]["stage"] == "finished"
     assert snapshots[-1]["session_id"] == "trace-session"
+
+
+def test_billing_start_check_infrastructure_failure_retries_without_terminal_state(
+    monkeypatch,
+):
+    task_id = "billing-start-retry"
+    session = {
+        "session_id": "billing-retry-session",
+        "current_task_id": task_id,
+        "title": "等待计费恢复",
+        "task_kind": "custom",
+        "problem_id": None,
+        "problem_title": None,
+        "access_role": "admin",
+        "harness": "pi",
+        "endpoint_id": 8,
+        "endpoint_source": "global",
+        "endpoint_revision": 4,
+        "native_session_id": "",
+        "turn_count": 1,
+        "is_legacy": False,
+    }
+    snapshots = _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(
+        generic,
+        "require_agent_start_eligibility",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("quota database unavailable")
+        ),
+    )
+    retry_calls = []
+
+    def retry(**kwargs):
+        retry_calls.append(kwargs)
+        raise Retry(exc=kwargs["exc"])
+
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    task_self = SimpleNamespace(
+        request=SimpleNamespace(id=task_id),
+        retry=retry,
+    )
+
+    with pytest.raises(Retry):
+        task(
+            task_self,
+            "billing-retry-session",
+            "admin",
+            "admin",
+            "pi",
+            8,
+            "session-cookie",
+            "执行任务",
+        )
+
+    assert retry_calls[0]["countdown"] == 5
+    assert "database unavailable" in str(retry_calls[0]["exc"])
+    assert snapshots[-1]["status"] == "Running"
+    assert snapshots[-1]["stage"] == "waiting_billing"
 
 
 def test_generic_outer_boundary_recovers_workspace_native_snapshot(monkeypatch):

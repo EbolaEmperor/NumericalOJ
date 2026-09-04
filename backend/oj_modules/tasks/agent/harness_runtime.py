@@ -8,6 +8,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -49,6 +50,8 @@ from backend.oj_modules.tasks.agent.traces import (
     sync_agent_trace,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _CAPTURE_LIMIT_BYTES = 2 * 1024 * 1024
 _STDOUT_MIRROR_LIMIT_BYTES = 8 * 1024 * 1024
@@ -398,6 +401,10 @@ def _check_secret_relay_usage(secret_relay, *, wait=False):
             checker()
     except AgentSecretRelayUsageHardStopError as exc:
         raise AgentUsageHardStopError(str(exc)) from exc
+    except Exception:
+        # 计费服务、outbox 或结算回调异常必须留给恢复链路处理，不能成为
+        # harness 的任务终止条件。只有上面的已提交额度硬停具有终止语义。
+        logger.exception("检查 Agent usage 结算状态失败；任务继续运行")
 
 
 def _read_native_session_state(workspace, harness):
