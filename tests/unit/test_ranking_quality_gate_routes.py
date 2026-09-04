@@ -149,7 +149,7 @@ def test_quality_gate_save_returns_masked_endpoints(monkeypatch):
         "enabled": True,
         "prompt": "不得隐藏私有协议",
         "endpoints": [{
-            "harness": "codex",
+            "harness": "pi",
             "base_url": "https://gate.example/v1",
             "api_key": "secret",
             "model": "gate-model",
@@ -239,7 +239,7 @@ def test_public_answer_endpoints_are_enabled_primary_pool_whitelist():
         {
             "id": 11,
             "pool_kind": "primary",
-            "harness": "codex",
+            "harness": "claude_code",
             "base_url": "https://answer.example/v1",
             "api_key": "answer-secret",
             "model": "answer-model",
@@ -256,7 +256,7 @@ def test_public_answer_endpoints_are_enabled_primary_pool_whitelist():
         {
             "id": 13,
             "pool_kind": "quality_gate",
-            "harness": "opencode",
+            "harness": "pi",
             "model": "private-gate-model",
             "status": "enabled",
         },
@@ -272,9 +272,9 @@ def test_public_answer_endpoints_are_enabled_primary_pool_whitelist():
     assert _public_answer_endpoints(endpoints) == [
         {
             "id": 11,
-            "harness": "codex",
+            "harness": "claude_code",
             "model": "answer-model",
-            "label": "Codex (answer-model)",
+            "label": "Claude Code (answer-model)",
         },
         {
             "id": 14,

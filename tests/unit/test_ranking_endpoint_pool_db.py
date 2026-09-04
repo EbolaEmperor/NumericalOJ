@@ -932,7 +932,7 @@ class _CopyCursor(_FakeCursor):
             self._current_one = None
             self._current_rows = [{
                 'pool_kind': 'quality_gate',
-                'harness': 'codex',
+                'harness': 'pi',
                 'protocol': 'openai',
                 'base_url': 'https://quality.example/v1',
                 'api_key': 'quality-secret',
@@ -985,10 +985,10 @@ def test_copy_competition_preserves_quality_config_and_endpoint_pool(monkeypatch
 
 
 def test_submission_endpoint_sql_never_falls_back_to_quality_gate(monkeypatch):
-    snapshot_cursor = _FakeCursor(one_values=[{'harness': 'codex', 'model': 'gpt-test'}])
+    snapshot_cursor = _FakeCursor(one_values=[{'harness': 'pi', 'model': 'gpt-test'}])
     snapshot = ranking_db._agent_endpoint_snapshot_with_cursor(snapshot_cursor, 17, 8)
     snapshot_sql, snapshot_params = snapshot_cursor.calls[0]
-    assert snapshot == ('codex', 'gpt-test')
+    assert snapshot == ('pi', 'gpt-test')
     assert "pool_kind = 'primary'" in snapshot_sql
     assert snapshot_params == (8, 17)
 
@@ -1027,7 +1027,7 @@ def test_list_user_submissions_selects_current_attempt_and_returns_labeled_rows(
     row = {
         'id': 31,
         'judge_attempt_id': 'attempt-2',
-        'agent_endpoint_harness': 'codex',
+        'agent_endpoint_harness': 'pi',
         'agent_endpoint_model': 'generic-model',
     }
     cursor = _FakeCursor(rows=[row])
@@ -1042,7 +1042,7 @@ def test_list_user_submissions_selects_current_attempt_and_returns_labeled_rows(
     assert "ep.pool_kind = 'primary'" in normalized_sql
     assert params == (17, 'alice')
     assert rows[0]['judge_attempt_id'] == 'attempt-2'
-    assert rows[0]['agent_endpoint_label'] == 'Codex (generic-model)'
+    assert rows[0]['agent_endpoint_label'] == 'Pi (generic-model)'
     assert conn.closed is True
 
 
@@ -1051,7 +1051,7 @@ def test_list_all_submissions_paginated_search_selects_current_attempt(
     row = {
         'id': 32,
         'judge_attempt_id': 'attempt-3',
-        'agent_endpoint_harness': 'codex',
+        'agent_endpoint_harness': 'pi',
         'agent_endpoint_model': 'generic-model',
     }
     cursor = _FakeCursor(rows=[row], one_values=[{'total': 3}])
@@ -1071,6 +1071,6 @@ def test_list_all_submissions_paginated_search_selects_current_attempt(
     assert count_params == (17, '%alice%')
     assert select_params == (17, '%alice%', 2, 2)
     assert rows[0]['judge_attempt_id'] == 'attempt-3'
-    assert rows[0]['agent_endpoint_label'] == 'Codex (generic-model)'
+    assert rows[0]['agent_endpoint_label'] == 'Pi (generic-model)'
     assert (page, total) == (2, 3)
     assert conn.closed is True

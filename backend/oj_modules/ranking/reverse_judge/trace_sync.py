@@ -37,8 +37,6 @@ PI_TRACE_MAX_DEPTH = 16
 PI_TRACE_MAX_PATH_BYTES = 1024
 PI_TRACE_MANIFEST_MAX_BYTES = 128 * 1024
 PI_TRACE_SYNC_TIMEOUT_SECONDS = 30
-STDOUT_TRACE_MAX_BYTES = 8 * 1024 * 1024
-STDOUT_TRACE_MAX_PUBLISHED_BYTES = 16 * 1024 * 1024
 
 
 def _trace_secret_patterns(secrets):
@@ -51,45 +49,6 @@ def _trace_secret_patterns(secrets):
         if encoded and encoded != TRACE_REDACTION_MARKER:
             patterns.add(encoded)
     return sorted(patterns, key=len, reverse=True)
-
-
-def _redact_trace_bytes(payload, secrets):
-    redacted = payload
-    for secret in _trace_secret_patterns(secrets):
-        redacted = redacted.replace(secret, TRACE_REDACTION_MARKER)
-    return redacted
-
-
-def _publish_redacted_stream(
-    source,
-    destination,
-    secrets,
-    *,
-    max_output_bytes=None,
-):
-    """逐行脱敏并原子发布 JSONL，避免正式轨迹短暂出现明文凭证。"""
-
-    temporary = destination + ".tmp"
-    patterns = _trace_secret_patterns(secrets)
-    written = 0
-    try:
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        with open(temporary, "wb") as target:
-            for chunk in source:
-                for secret in patterns:
-                    chunk = chunk.replace(secret, TRACE_REDACTION_MARKER)
-                written += len(chunk)
-                if max_output_bytes is not None and written > max_output_bytes:
-                    raise ValueError("脱敏后的轨迹超过发布上限")
-                target.write(chunk)
-        os.replace(temporary, destination)
-        return True
-    except Exception:
-        try:
-            os.remove(temporary)
-        except OSError:
-            pass
-        return False
 
 
 def _read_exact(source, size):
@@ -145,16 +104,6 @@ def _charge_trace_output(total_output_state, size):
     total_output_state["size"] += int(size)
     if total_output_state["size"] > total_output_state["limit"]:
         raise ValueError("脱敏后的轨迹总发布量超过上限")
-
-
-def _iter_exact_lines(source, size):
-    remaining = int(size)
-    while remaining:
-        chunk = source.readline(remaining)
-        if not chunk:
-            raise ValueError("轨迹源文件提前结束")
-        remaining -= len(chunk)
-        yield chunk
 
 
 def _safe_claude_trace_entry(item, *, combined_filename):
@@ -373,54 +322,6 @@ def sync_claude_project_jsonl(
                     except OSError:
                         pass
                 return False
-    except Exception:
-        return False
-
-
-def sync_stdout_jsonl(
-    source_path,
-    trace_dir,
-    destination_filename,
-    *,
-    secrets=(),
-):
-    """按 Reverse Judge 的方式把宿主捕获 stdout 原子发布为轨迹 JSONL。"""
-
-    try:
-        before = os.lstat(source_path)
-    except OSError:
-        return False
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != 1
-        or before.st_size > STDOUT_TRACE_MAX_BYTES
-    ):
-        return False
-    destination = os.path.join(trace_dir, destination_filename)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        os.makedirs(trace_dir, exist_ok=True)
-        fd = os.open(source_path, flags)
-        try:
-            opened = os.fstat(fd)
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or opened.st_dev != before.st_dev
-                or opened.st_ino != before.st_ino
-                or opened.st_size != before.st_size
-                or opened.st_size > STDOUT_TRACE_MAX_BYTES
-            ):
-                return False
-            with os.fdopen(fd, "rb", closefd=False) as source:
-                return _publish_redacted_stream(
-                    _iter_exact_lines(source, opened.st_size),
-                    destination,
-                    secrets,
-                    max_output_bytes=STDOUT_TRACE_MAX_PUBLISHED_BYTES,
-                )
-        finally:
-            os.close(fd)
     except Exception:
         return False
 
@@ -750,5 +651,4 @@ def sync_pi_agent_sessions(
 __all__ = [
     "sync_claude_project_jsonl",
     "sync_pi_agent_sessions",
-    "sync_stdout_jsonl",
 ]

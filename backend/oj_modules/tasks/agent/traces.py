@@ -14,7 +14,6 @@ from backend.oj_modules.problems.agent_runs import agent_run_trace_dir
 from backend.oj_modules.ranking.reverse_judge.trace_sync import (
     sync_claude_project_jsonl,
     sync_pi_agent_sessions,
-    sync_stdout_jsonl,
 )
 
 
@@ -138,19 +137,7 @@ def sync_agent_trace(
             runtime_user="",
             secrets=secrets,
         )
-    if normalized == "opencode":
-        return sync_stdout_jsonl(
-            stdout_path,
-            trace_dir,
-            "opencode_agent_judge.jsonl",
-            secrets=secrets,
-        )
-    return sync_stdout_jsonl(
-        stdout_path,
-        trace_dir,
-        "codex_reverse_solve.jsonl",
-        secrets=secrets,
-    )
+    return False
 
 
 __all__ = [

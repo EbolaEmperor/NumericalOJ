@@ -47,9 +47,13 @@ def test_hydrate_agent_run_snapshot_reads_public_v2_timeline_only(
     monkeypatch.setattr(agent_runs, "AGENT_WORKSPACE_ROOT", str(tmp_path))
     trace_dir = agent_runs.agent_run_trace_dir("task-2")
     trace_dir.mkdir(parents=True)
-    (trace_dir / "codex_agent_judge.jsonl").write_text(
-        json.dumps({"type": "agent_message", "message": "真实 harness 回复"})
-        + "\n",
+    project = trace_dir / ".claude" / "projects" / "-workspace"
+    project.mkdir(parents=True)
+    (project / "session.jsonl").write_text(
+        json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "真实 harness 回复"}]},
+        }) + "\n",
         encoding="utf-8",
     )
 
@@ -284,7 +288,7 @@ def test_agent_snapshot_recalculates_cost_from_the_current_endpoint_prices(
         agent_runs,
         "get_agent_trace_token_usage",
         lambda _task_id: {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 200_000,
             "input_cached_tokens": 700_000,
@@ -402,7 +406,7 @@ def test_session_usage_aggregates_cached_fallback_audit_metadata():
 def test_session_usage_sums_incremental_tasks_and_overlays_duplicate_task_id():
     usage = agent_runs.aggregate_agent_session_token_usage([
         ("turn-1", {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 100,
             "input_cached_tokens": 20,
@@ -410,25 +414,28 @@ def test_session_usage_sums_incremental_tasks_and_overlays_duplicate_task_id():
             "input_total_tokens": 999,  # 汇总必须从规范分量重算。
             "output_tokens": 10,
             "cost_rmb": "0.10",
+            "incremental": True,
         }),
         ("turn-2", {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 40,
             "input_cached_tokens": 10,
             "input_cache_write_tokens": 2,
             "output_tokens": 5,
             "cost_rmb": "0.05",
+            "incremental": True,
         }),
         # SSE current overlay 以同 task_id 的最新快照替换，不能再加一遍。
         ("turn-2", {
-            "source": "codex",
+            "source": "pi",
             "request_count": 2,
             "input_uncached_tokens": 70,
             "input_cached_tokens": 15,
             "input_cache_write_tokens": 3,
             "output_tokens": 8,
             "cost_rmb": "0.08",
+            "incremental": True,
         }),
     ])
 
@@ -495,17 +502,19 @@ def test_session_usage_sums_canonical_incremental_pi_and_claude_tasks():
 def test_session_usage_hides_partial_cost_when_any_metered_turn_is_unpriced():
     usage = agent_runs.aggregate_agent_session_token_usage([
         ("turn-1", {
-            "source": "opencode",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 100,
             "output_tokens": 10,
             "cost_rmb": "0.12",
+            "incremental": True,
         }),
         ("turn-2", {
-            "source": "opencode",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 50,
             "output_tokens": 5,
+            "incremental": True,
         }),
     ])
 

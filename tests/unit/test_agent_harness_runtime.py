@@ -1005,55 +1005,10 @@ def test_workspace_file_path_cannot_escape(tmp_path):
 
 
 
-@pytest.mark.parametrize(
-    ("harness", "expected_destination"),
-    [
-        ("codex", "codex_reverse_solve.jsonl"),
-        ("opencode", "opencode_agent_judge.jsonl"),
-    ],
-)
-def test_stdout_agents_reuse_reverse_stdout_sync(
-    monkeypatch,
-    tmp_path,
-    harness,
-    expected_destination,
-):
-    calls = []
-    source = tmp_path / "stdout.jsonl"
-    source.write_text('{"type":"agent_message","message":"live"}\n')
-    monkeypatch.setattr(
-        agent_traces,
-        "sync_stdout_jsonl",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
-    )
-
+def test_unknown_harness_has_no_trace_sync_fallback(tmp_path):
     assert agent_traces.sync_agent_trace(
-        "container", tmp_path / "trace", harness, source,
-    ) is True
-    assert calls == [
-        (
-            (source, str(tmp_path / "trace"), expected_destination),
-            {"secrets": ()},
-        ),
-    ]
-
-
-def test_shared_stdout_sync_keeps_more_than_4096_events(tmp_path):
-    source = tmp_path / "stdout.jsonl"
-    secret = "trace-secret"
-    payload = (
-        b'{"type":"agent_message","message":"live trace-secret"}\n' * 4100
-    )
-    source.write_bytes(payload)
-    trace_dir = tmp_path / "trace"
-
-    assert agent_traces.sync_agent_trace(
-        "container", trace_dir, "codex", source, secrets=(secret,),
-    ) is True
-    rendered = (trace_dir / "codex_reverse_solve.jsonl").read_bytes()
-    assert rendered.count(b'"type":"agent_message"') == 4100
-    assert secret.encode() not in rendered
-    assert b"[REDACTED]" in rendered
+        "container", tmp_path / "trace", "unsupported", tmp_path / "stdout",
+    ) is False
 
 
 def test_native_agents_reuse_reverse_container_sync(monkeypatch, tmp_path):
@@ -1450,8 +1405,8 @@ def test_read_agent_steer_capability_does_not_scan_workspace_quota(
 def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path):
     trace_dir = tmp_path / "trace"
     trace_dir.mkdir()
-    (trace_dir / "codex_reverse_solve.jsonl").write_text(
-        json.dumps({"type": "agent_message", "message": "legacy"}) + "\n",
+    (trace_dir / "pi_reverse_solve.jsonl").write_text(
+        json.dumps({"type": "session", "version": 3}) + "\n",
         encoding="utf-8",
     )
     records = [
@@ -1463,7 +1418,7 @@ def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path)
                 "kind": "thinking",
                 "title": "思考片段",
                 "text": "先检查边界",
-                "meta": "codex",
+                "meta": "pi",
             },
         },
         {
@@ -1472,13 +1427,13 @@ def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path)
             "event": {
                 "kind": "assistant",
                 "text": "已经完成",
-                "meta": "codex",
+                "meta": "pi",
             },
         },
         {
             "type": "numoj_usage",
             "version": 1,
-            "source": "codex",
+            "source": "pi",
             "id": "turn-1",
             "usage": {
                 "input_uncached_tokens": 90,
@@ -1509,7 +1464,7 @@ def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path)
         "input_total_tokens": 100,
         "output_tokens": 20,
         "reasoning_output_tokens": 5,
-        "source": "codex",
+        "source": "pi",
         "incremental": True,
         "last_input_total_tokens": 100,
         "last_output_tokens": 20,
@@ -1528,13 +1483,13 @@ def test_canonical_reader_keeps_oversized_final_assistant_record(tmp_path):
         "event": {
             "kind": "assistant",
             "text": oversized_text,
-            "meta": "codex",
+            "meta": "pi",
         },
     }
     trailing_usage = {
         "type": "numoj_usage",
         "version": 1,
-        "source": "codex",
+        "source": "pi",
         "id": "usage-after-large-assistant",
         "usage": {
             "input_uncached_tokens": 1,
@@ -1862,7 +1817,7 @@ def test_canonical_journal_skips_usage_without_stable_trace_id(tmp_path):
     observer.feed((json.dumps({
         "type": "numoj_usage",
         "version": 1,
-        "source": "codex",
+        "source": "pi",
         "id": "  ",
         "usage": {"input_uncached_tokens": 1, "output_tokens": 1},
     }) + "\n").encode("utf-8"))
@@ -1896,7 +1851,7 @@ def test_canonical_journal_capacity_keeps_final_assistant_and_usage(tmp_path):
     observer.feed((json.dumps({
         "type": "numoj_usage",
         "version": 1,
-        "source": "codex",
+        "source": "pi",
         "id": "usage-final",
         "usage": {
             "input_uncached_tokens": 3,

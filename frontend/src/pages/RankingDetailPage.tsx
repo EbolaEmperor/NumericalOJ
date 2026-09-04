@@ -723,12 +723,12 @@ function LimitControl({competition, onReset}: {competition: Response['competitio
 
 function endpointHarnessLabel(value: unknown) {
   const harness = String(value || 'claude_code')
-  return harness === 'claude_code' ? 'Claude Code' : harness === 'codex' ? 'Codex' : harness === 'opencode' ? 'opencode' : harness === 'pi' ? 'Pi' : harness
+  return harness === 'claude_code' ? 'Claude Code' : harness === 'pi' ? 'Pi' : harness
 }
 
 function harnessIconClass(value: unknown) {
   const harness = String(value || 'claude_code')
-  const key = harness === 'codex' || harness === 'opencode' || harness === 'pi' ? harness : 'claude-code'
+  const key = harness === 'pi' ? 'pi' : 'claude-code'
   return `harness-logo harness-logo--${key}`
 }
 
@@ -1095,7 +1095,7 @@ function BatchPanel({data}: {data: Response}) {
 
   const endpointLabel = (item: JsonRecord) => {
     const harness = String(item.harness || 'claude_code')
-    const harnessLabel = harness === 'claude_code' ? 'Claude Code' : harness === 'codex' ? 'Codex' : harness === 'opencode' ? 'OpenCode' : harness === 'pi' ? 'Pi' : harness
+    const harnessLabel = harness === 'claude_code' ? 'Claude Code' : harness === 'pi' ? 'Pi' : harness
     return `${harnessLabel} (${String(item.model || `节点 #${item.id}`)})`
   }
   const probe = useMutation({

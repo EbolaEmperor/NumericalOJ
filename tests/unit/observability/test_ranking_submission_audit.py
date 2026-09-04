@@ -507,7 +507,7 @@ def test_clone_ranking_submission_audits_creation_then_attached_artifacts(
         "code_path": str(source_code),
         "base_model": "model-a",
         "agent_endpoint_id": 8,
-        "agent_endpoint_harness": "codex",
+        "agent_endpoint_harness": "pi",
         "agent_endpoint_model": "model-a",
     }
     events = []

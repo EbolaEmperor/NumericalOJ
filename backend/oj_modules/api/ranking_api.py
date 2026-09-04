@@ -167,8 +167,6 @@ def _public_answer_endpoints(endpoints):
     out = []
     harness_labels = {
         "claude_code": "Claude Code",
-        "codex": "Codex",
-        "opencode": "OpenCode",
         "pi": "Pi",
     }
     for endpoint in endpoints or []:

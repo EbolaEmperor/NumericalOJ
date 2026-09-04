@@ -45,13 +45,13 @@ type ChoiceOption = {value: string; label: string; icon?: string; model?: string
 
 function harnessIcon(value: string) {
   const normalized = canonicalHarness(value).replaceAll('_', '-')
-  const key = ['codex', 'opencode', 'pi'].includes(normalized) ? normalized : 'claude-code'
+  const key = normalized === 'pi' ? 'pi' : 'claude-code'
   return `harness-logo harness-logo--${key}`
 }
 
 function harnessLabel(value: unknown) {
   const text = String(value || 'Harness')
-  return ({claude_code: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', pi: 'Pi'} as Record<string, string>)[canonicalHarness(text)] || text
+  return ({claude_code: 'Claude Code', pi: 'Pi'} as Record<string, string>)[canonicalHarness(text)] || text
 }
 
 function AgentClassLogo({item, className}: {item?: JsonRecord; className: string}) {
@@ -232,7 +232,7 @@ function AgentAccessControl({data, isAdmin}: {data: Response; isAdmin: boolean})
   </aside>, document.body)
 }
 
-function canonicalHarness(value: string) {const normalized = value.trim().toLowerCase().replaceAll('-', '_'); return normalized === 'open_code' ? 'opencode' : normalized}
+function canonicalHarness(value: string) {return value.trim().toLowerCase().replaceAll('-', '_')}
 function endpointValue(item: JsonRecord) {return String(item.ref || item.choice_value || item.value || item.id || item.endpoint_id || '')}
 function personalEndpoint(item: JsonRecord) {return item.is_personal === true || item.scope === 'user' || item.owner_type === 'user' || item.source === 'user' || endpointValue(item).startsWith('user:')}
 function endpointsFor(catalog: Record<string, JsonRecord[]>, harness: string) {

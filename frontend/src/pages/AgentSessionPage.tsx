@@ -106,11 +106,11 @@ const statusLabels: Record<string, string> = {
   canceled: '已停止', cancelled: '已停止', cleanupfailed: '清理失败，需管理员处理',
   cleanup_failed: '清理失败，需管理员处理',
 }
-const harnessLabels: Record<string, string> = {claude_code: 'Claude Code', 'claude-code': 'Claude Code', codex: 'Codex', opencode: 'OpenCode', pi: 'Pi'}
+const harnessLabels: Record<string, string> = {claude_code: 'Claude Code', 'claude-code': 'Claude Code', pi: 'Pi'}
 const effortLabels: Record<string, string> = {default: '默认', off: '关闭', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '极高', max: '最大'}
 
 function harnessName(value: unknown) {const text = String(value || 'Harness'); return harnessLabels[text] || text}
-function harnessIcon(value: unknown) {const normalized = String(value || '').toLowerCase().replaceAll('_', '-'); const key = ['codex', 'opencode', 'pi'].includes(normalized) ? normalized : 'claude-code'; return `harness-logo harness-logo--${key}`}
+function harnessIcon(value: unknown) {const key = String(value || '').toLowerCase().replaceAll('_', '-') === 'pi' ? 'pi' : 'claude-code'; return `harness-logo harness-logo--${key}`}
 function isRunningStatus(value: unknown) {return ['pending', 'running'].includes(statusKey(value))}
 function isBlockedStatus(value: unknown) {return ['cleanupfailed', 'cleanup_failed'].includes(statusKey(value))}
 function asRecord(value: unknown): JsonRecord {return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {}}

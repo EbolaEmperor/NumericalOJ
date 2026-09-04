@@ -1088,10 +1088,6 @@ def _agent_endpoint_harness_label(harness):
     value = str(harness or '').strip().lower().replace('-', '_')
     if value == 'claude_code':
         return 'Claude Code'
-    if value == 'codex':
-        return 'Codex'
-    if value == 'opencode':
-        return 'OpenCode'
     if value == 'pi':
         return 'Pi'
     return str(harness or '').strip()

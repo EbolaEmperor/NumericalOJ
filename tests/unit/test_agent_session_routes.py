@@ -90,8 +90,6 @@ def test_agent_launch_page_options_exposes_harness_native_reasoning_efforts(
         lambda *, user_id: {
             "pi": [{"ref": "global:1"}],
             "claude_code": [{"ref": "global:2"}],
-            "codex": [],
-            "opencode": [],
         },
     )
     monkeypatch.setattr(

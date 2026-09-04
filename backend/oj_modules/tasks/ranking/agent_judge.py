@@ -906,7 +906,7 @@ _TRACE_RESULT_FILE_RE = re.compile(
 )
 _TRACE_ENV_SECRET_RE = re.compile(
     r'((?:AJ_ENDPOINT_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|'
-    r'OPENAI_API_KEY|OPENCODE_API_KEY)\s*[=:]\s*)[^\s"\'<>]+',
+    r'OPENAI_API_KEY)\s*[=:]\s*)[^\s"\'<>]+',
     re.I,
 )
 _TRACE_LOG_CAPTURE_MAX_BYTES = 2 * 1024 * 1024

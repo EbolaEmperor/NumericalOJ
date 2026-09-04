@@ -759,7 +759,7 @@
   word-break: break-word;
 }
 
-/* Codex 式低权重工作摘要：主时间线只占一行，不形成事件卡片。 */
+/* 低权重工作摘要：主时间线只占一行，不形成事件卡片。 */
 .agent-work-block {
   display: block;
   min-width: 0;

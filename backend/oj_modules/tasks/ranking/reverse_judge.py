@@ -479,7 +479,7 @@ def _invalidate_reverse_answer_archive(submission_id, attempt_id):
 
 
 _REVERSE_ANSWER_INTERNAL_DIRS = {
-    '.claude', '.codex', '.git', '.opencode', '.svn',
+    '.claude', '.git', '.svn',
 }
 
 

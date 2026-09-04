@@ -76,48 +76,6 @@ def test_pi_usage_deduplicates_resumed_session_entries(tmp_path):
     assert usage["source"] == "pi"
 
 
-def test_codex_and_opencode_usage_use_their_native_cache_semantics(tmp_path):
-    codex_dir = tmp_path / "codex"
-    _write_jsonl(codex_dir / "codex_reverse_solve.jsonl", [{
-        "type": "turn.completed",
-        "usage": {
-            "input_tokens": 1_000,
-            "cached_input_tokens": 700,
-            "output_tokens": 90,
-            "reasoning_output_tokens": 60,
-        },
-    }])
-    codex = collect_agent_token_usage(codex_dir)
-    assert codex["input_uncached_tokens"] == 300
-    assert codex["input_cached_tokens"] == 700
-    assert codex["input_total_tokens"] == 1_000
-    assert codex["last_input_total_tokens"] == 1_000
-    assert codex["last_output_tokens"] == 90
-    assert codex["output_tokens"] == 90
-    assert codex["source"] == "codex"
-
-    opencode_dir = tmp_path / "opencode"
-    _write_jsonl(opencode_dir / "opencode_agent_judge.jsonl", [{
-        "type": "step_finish",
-        "part": {
-            "id": "step-1",
-            "tokens": {
-                "input": 200,
-                "output": 30,
-                "reasoning": 70,
-                "cache": {"read": 500, "write": 20},
-            },
-        },
-    }])
-    opencode = collect_agent_token_usage(opencode_dir)
-    assert opencode["input_total_tokens"] == 720
-    assert opencode["last_input_total_tokens"] == 720
-    assert opencode["last_output_tokens"] == 100
-    assert opencode["output_tokens"] == 100
-    assert opencode["reasoning_output_tokens"] == 70
-    assert opencode["source"] == "opencode"
-
-
 def test_token_cost_uses_cache_price_and_charges_cache_write_as_regular_input():
     usage = {
         "input_uncached_tokens": 200_000,

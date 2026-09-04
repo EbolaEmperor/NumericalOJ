@@ -2443,7 +2443,7 @@ def _public_agent_trace_message(message):
         if isinstance(value, int):
             projected[key] = value
     source = str(message.get('source') or '')
-    if re.fullmatch(r'(?:claude|codex|opencode|docker)(?:-[A-Za-z0-9]+)*', source):
+    if re.fullmatch(r'(?:claude|docker)(?:-[A-Za-z0-9]+)*', source):
         projected['source'] = source
     if phase:
         projected['phase'] = phase

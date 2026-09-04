@@ -19,7 +19,7 @@ def _session_row(**overrides):
         "problem_id": None,
         "requested_by": "admin",
         "access_role": "admin",
-        "harness": "codex",
+        "harness": "pi",
         "reasoning_effort": "default",
         "endpoint_id": 12,
         "endpoint_revision": 3,

@@ -371,7 +371,7 @@ def test_problem_agent_stream_summary_uses_canonical_execution_trace():
             "trace_id": "trace-1",
             "status": "running",
             "trace_messages": [{"text": "one"}, {"text": "two"}],
-            "trace_files": [{"path": "codex_agent_judge.jsonl"}],
+            "trace_files": [{"path": "session.jsonl"}],
         },
         "events": [{"message": "旧自建轨迹"}],
     })

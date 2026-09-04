@@ -374,7 +374,7 @@ def test_token_usage_round_trips_through_v2_sync_state(monkeypatch):
         lambda: _Connection(handler),
     )
     usage = {
-        "source": "codex",
+        "source": "pi",
         "request_count": 2,
         "input_uncached_tokens": 120,
         "input_cached_tokens": 30,
@@ -385,7 +385,7 @@ def test_token_usage_round_trips_through_v2_sync_state(monkeypatch):
     assert trace_store.save_agent_trace_token_usage("task-4", usage) is True
     assert json.loads(stored_payload["value"])["incremental"] is True
     restored = trace_store.get_agent_trace_token_usage("task-4")
-    assert restored["source"] == "codex"
+    assert restored["source"] == "pi"
     assert restored["request_count"] == 2
     assert restored["input_total_tokens"] == 150
     assert restored["incremental"] is True

@@ -42,12 +42,7 @@ def _preference_from_row(row):
         return None
     preference = dict(row)
     preference["user_id"] = _normalize_user_id(preference["user_id"])
-    try:
-        preference["harness"] = normalize_launch_harness(preference["harness"])
-    except AgentLaunchValidationError:
-        # 移除旧 harness 后，历史偏好不能阻断整个 Agent 启动页面；当作未保存，
-        # 让前端从仍受支持的 Claude Code/Pi 节点中重新选择。
-        return None
+    preference["harness"] = normalize_launch_harness(preference["harness"])
     source = str(preference.get("endpoint_source") or "global").strip().lower()
     if source not in {"global", "user"}:
         raise AgentLaunchValidationError("LLM 节点来源无效")

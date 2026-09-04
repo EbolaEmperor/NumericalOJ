@@ -227,15 +227,3 @@ def test_agent_launch_preferences_schema_is_declared():
         "check (`harness` in ('claude_code','pi'))"
         in compact
     )
-
-
-def test_removed_harness_preference_is_ignored(monkeypatch):
-    connection = _FakeConnection({
-        "user_id": 7,
-        "harness": "codex",
-        "endpoint_source": "global",
-        "endpoint_id": 23,
-    })
-    monkeypatch.setattr(agent_preferences, "get_db_connection", lambda: connection)
-
-    assert agent_preferences.get_agent_launch_preference(7) is None

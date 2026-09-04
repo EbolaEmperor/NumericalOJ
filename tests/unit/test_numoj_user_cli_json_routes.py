@@ -1300,9 +1300,9 @@ def test_user_ranking_detail_projects_only_safe_answer_endpoints():
         ],
         "answer_endpoints": [{
             "id": 7,
-            "harness": "codex",
+            "harness": "pi",
             "model": "gpt-answer",
-            "label": "Codex (gpt-answer)",
+            "label": "Pi (gpt-answer)",
             "base_url": "http://answer.local",
             "api_key": "answer-secret",
             "status": "enabled",
@@ -1315,9 +1315,9 @@ def test_user_ranking_detail_projects_only_safe_answer_endpoints():
     assert "quality_gate_endpoints" not in projected
     assert projected["answer_endpoints"] == [{
         "id": 7,
-        "harness": "codex",
+        "harness": "pi",
         "model": "gpt-answer",
-        "label": "Codex (gpt-answer)",
+        "label": "Pi (gpt-answer)",
     }]
 
 

@@ -64,21 +64,21 @@ def test_reverse_endpoint_proxy_rewrites_credentials_and_pins_upstream():
         upstream, "POST", "/v1/account",
     ) == ""
 
-    codex_incoming = {
+    bearer_incoming = {
         "Authorization": f"Bearer {temporary_token}",
         "Accept": "text/event-stream",
     }
     assert reverse_tasks._reverse_proxy_token_valid(
-        codex_incoming, temporary_token,
+        bearer_incoming, temporary_token,
     ) is True
     assert reverse_tasks._reverse_proxy_upstream_headers(
-        codex_incoming, real_key, reverse_tasks.HARNESS_PI,
+        bearer_incoming, real_key, reverse_tasks.HARNESS_PI,
     ) == {
         "Accept": "text/event-stream",
         "Authorization": f"Bearer {real_key}",
     }
     assert reverse_tasks._reverse_proxy_upstream_headers(
-        codex_incoming,
+        bearer_incoming,
         real_key,
         reverse_tasks.HARNESS_PI,
         protocol="anthropic",
@@ -372,7 +372,7 @@ def test_persist_agent_answer_archive_keeps_delivery_and_excludes_harness_state(
     (source / "src").mkdir(parents=True)
     (source / "src" / "solve.py").write_text("print('ok')\n", encoding="utf-8")
     (source / "README.md").write_text("answer\n", encoding="utf-8")
-    for internal in (".claude", ".codex", ".opencode"):
+    for internal in (".claude",):
         (source / internal).mkdir()
         (source / internal / "credential.txt").write_text("secret", encoding="utf-8")
     (source / ".aj_harness.log").write_text("internal", encoding="utf-8")
@@ -388,7 +388,7 @@ def test_persist_agent_answer_archive_keeps_delivery_and_excludes_harness_state(
         assert "ai_answer/README.md" in names
         assert archive.read("ai_answer/src/solve.py") == b"print('ok')\n"
         assert not any(
-            name.startswith(("ai_answer/.claude", "ai_answer/.codex", "ai_answer/.opencode"))
+            name.startswith("ai_answer/.claude")
             or "/.aj_" in name or name.startswith("ai_answer/.aj_")
             for name in names
         )

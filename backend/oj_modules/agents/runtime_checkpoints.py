@@ -26,7 +26,6 @@ _CHECKPOINT_MANIFEST_FILENAME = "manifest.json"
 _CHECKPOINT_MANIFEST_VERSION = 1
 _MAX_MANIFEST_BYTES = 16 * 1024
 _COPY_CHUNK_BYTES = 64 * 1024
-_EPHEMERAL_RUNTIME_PATHS = (("codex", "tmp"),)
 
 
 @dataclass(slots=True)
@@ -659,69 +658,6 @@ def _checkpoint_exists(checkpoints_fd: int, checkpoint_id: str) -> bool:
     return True
 
 
-def _discard_tree_at(parent_fd: int, name: str) -> None:
-    """不跟随链接地删除一个明确允许丢弃的运行时目录项。"""
-
-    try:
-        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "无法安全检查 Agent 临时运行态"
-        ) from exc
-    if stat.S_ISDIR(info.st_mode):
-        child_fd = workspace_store._open_existing_directory_at(
-            parent_fd,
-            name,
-            label="Agent 临时运行态目录",
-        )
-        try:
-            for raw_name in os.listdir(child_fd):
-                _discard_tree_at(child_fd, _entry_name(raw_name))
-        finally:
-            os.close(child_fd)
-        try:
-            os.rmdir(name, dir_fd=parent_fd)
-        except OSError as exc:
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "无法安全删除 Agent 临时运行态目录"
-            ) from exc
-    else:
-        try:
-            # unlink 固定在 parent_fd 下且不解析链接目标；这里可以安全清理
-            # Codex 为镜像内 arg0 helper 创建的绝对符号链接。
-            os.unlink(name, dir_fd=parent_fd)
-        except OSError as exc:
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "无法安全删除 Agent 临时运行态目录项"
-            ) from exc
-    os.fsync(parent_fd)
-
-
-def _discard_ephemeral_runtime(source_runtime_fd: int) -> None:
-    for path_parts in _EPHEMERAL_RUNTIME_PATHS:
-        parent_fd = source_runtime_fd
-        opened_parent_fds: list[int] = []
-        try:
-            for depth, parent_name in enumerate(path_parts[:-1], start=1):
-                parent_fd = workspace_store._open_existing_directory_at(
-                    parent_fd,
-                    parent_name,
-                    label=(
-                        "Agent harness 运行态目录 "
-                        + "/".join(path_parts[:depth])
-                    ),
-                )
-                opened_parent_fds.append(parent_fd)
-            _discard_tree_at(parent_fd, path_parts[-1])
-        except FileNotFoundError:
-            continue
-        finally:
-            for opened_fd in reversed(opened_parent_fds):
-                os.close(opened_fd)
-
-
 def _create_checkpoint(
     session_id,
     checkpoint_id,
@@ -772,7 +708,6 @@ def _create_checkpoint(
                         raise workspace_store.AgentWorkspaceSecurityError(
                             "Agent runtime 目录不存在；空基线必须显式创建"
                         ) from exc
-                    _discard_ephemeral_runtime(source_runtime_fd)
                     expected_usage, _root_mode = _scan_tree_fd(source_runtime_fd)
 
                 _max_bytes, _max_files, _max_entries, _max_depth, min_free = _limits()

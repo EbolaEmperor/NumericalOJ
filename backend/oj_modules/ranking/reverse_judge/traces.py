@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Claude、Codex 与 Pi 运行轨迹的安全发现、读取和展示投影。"""
+"""Claude Code 与 Pi 运行轨迹的安全发现、读取和展示投影。"""
 
 import json
 import mmap
@@ -77,40 +77,6 @@ def _latest_claude_jsonl(trace_dir):
                     continue
                 rel = os.path.relpath(path, base)
                 if '.claude/projects/-workspace/' not in rel.replace(os.sep, '/'):
-                    continue
-                try:
-                    mtime = os.path.getmtime(path)
-                except OSError:
-                    continue
-                candidates.append((mtime, path))
-    if not candidates:
-        return None
-    candidates.sort(reverse=True)
-    return candidates[0][1]
-
-
-def _latest_codex_jsonl(trace_dir):
-    trace_dir = str(trace_dir or '').strip()
-    if not trace_dir or not os.path.isdir(trace_dir):
-        return None
-    base = os.path.realpath(trace_dir)
-    for preferred_name in (
-            'codex_agent_judge.jsonl', 'opencode_agent_judge.jsonl',
-            'codex_reverse_solve.jsonl'):
-        preferred = os.path.join(base, preferred_name)
-        if os.path.isfile(preferred):
-            return preferred
-    codex_root = os.path.join(base, '.codex')
-    roots = [codex_root] if os.path.isdir(codex_root) else []
-    candidates = []
-    for root in roots:
-        for walk_root, dirs, names in os.walk(root):
-            dirs[:] = [d for d in dirs if d not in {'node_modules', '__pycache__'}]
-            for name in names:
-                if not name.endswith('.jsonl'):
-                    continue
-                path = os.path.realpath(os.path.join(walk_root, name))
-                if path != base and not path.startswith(base + os.sep):
                     continue
                 try:
                     mtime = os.path.getmtime(path)
@@ -298,15 +264,6 @@ def _collect_trace_files(trace_dir):
         # Pi session 允许工具结果携带图片等非文本 payload。原始 JSONL
         # 保留在磁盘用于审计，但不得经 snapshot / SSE 的 raw trace 投影泄露。
         return []
-    codex_jsonl = _latest_codex_jsonl(trace_dir)
-    if codex_jsonl:
-        text, size, _read_bytes = _read_limited_text(codex_jsonl, _TRACE_MAX_TOTAL_BYTES)
-        if text:
-            return [{
-                'path': os.path.relpath(codex_jsonl, os.path.realpath(trace_dir)),
-                'size': size,
-                'content': text,
-            }]
     trace_dir = str(trace_dir or '').strip()
     if not trace_dir or not os.path.isdir(trace_dir):
         return []
@@ -358,25 +315,6 @@ def _content_text(content):
             if text:
                 parts.append(text)
     return '\n\n'.join(parts).strip()
-
-
-def _codex_text(value):
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, dict):
-        for key in ('text', 'message', 'content', 'output_text', 'summary'):
-            text = _codex_text(value.get(key))
-            if text:
-                return text
-        return ''
-    if isinstance(value, list):
-        parts = []
-        for item in value:
-            text = _codex_text(item)
-            if text:
-                parts.append(text)
-        return '\n\n'.join(parts).strip()
-    return ''
 
 
 def _thinking_text(item):
@@ -585,157 +523,6 @@ def _trace_message(kind, title, text, meta, line_no):
     if kind in {'assistant', 'thinking'}:
         msg['html'] = render_md_math(text)
     return msg
-
-
-def _codex_tool_name(event, item):
-    for obj in (item, event):
-        if isinstance(obj, dict):
-            for key in ('name', 'tool_name', 'command', 'cmd'):
-                value = str(obj.get(key) or '').strip()
-                if value:
-                    return 'Shell' if key in {'command', 'cmd'} else value
-    typ = str((item or {}).get('type') or event.get('type') or '').strip()
-    if 'exec' in typ or 'command' in typ:
-        return 'Shell'
-    if typ:
-        return typ
-    return '工具'
-
-
-def _codex_tool_payload(event, item):
-    args = {}
-    for key in ('arguments', 'args', 'input', 'parameters'):
-        value = item.get(key) if isinstance(item, dict) else None
-        parsed = _parse_json_object(value)
-        if parsed:
-            args.update(parsed)
-        elif isinstance(value, dict):
-            args.update(value)
-    for key in ('command', 'cmd'):
-        value = str((item or {}).get(key) or event.get(key) or '').strip()
-        if value and 'command' not in args:
-            args['command'] = value
-    return args
-
-
-def _known_codex_tool_message(name, event, item, line_no):
-    key = str(name or '').strip().lower()
-    payload = _codex_tool_payload(event, item)
-    if key == 'shell':
-        command = payload.get('command') or payload.get('cmd')
-        if command:
-            return _tool_message(
-                '运行命令',
-                _join_tool_lines([
-                    _tool_line('命令', command),
-                    _tool_line('工作目录', payload.get('workdir') or payload.get('cwd')),
-                ]),
-                'Shell',
-                line_no=line_no,
-            )
-    if key in {'apply_patch', 'update_plan', 'view_image'}:
-        text = _dump_trace_json(payload) if payload else _dump_trace_json(item or event)
-        return _tool_message(f'调用 {name}', text, name, line_no=line_no)
-    if payload:
-        # 对普通 function_call，至少把已解析参数展示出来；解析不出参数的才回退原始 JSON。
-        return _tool_message(f'调用 {name}', _dump_trace_json(payload), name, line_no=line_no)
-    return None
-
-
-def _codex_tool_message(event, item, line_no):
-    name = _codex_tool_name(event, item)
-    parsed = _known_codex_tool_message(name, event, item, line_no)
-    if parsed:
-        return parsed
-    return _unknown_tool_message(name, event, line_no=line_no)
-
-
-def _codex_error_message(event, line_no, meta):
-    return _tool_message(
-        'Codex 错误',
-        _dump_trace_json(event),
-        str(meta or 'error'),
-        line_no=line_no,
-        fmt='json',
-    )
-
-
-def _codex_event_messages(event, line_no):
-    typ = str(event.get('type') or '').strip()
-    item = event.get('item') if isinstance(event.get('item'), dict) else {}
-    item_type = str(item.get('type') or '').strip()
-    part = event.get('part') if isinstance(event.get('part'), dict) else {}
-    part_type = str(part.get('type') or '').strip().lower().replace('-', '_')
-    messages = []
-
-    if typ == 'error' or item_type == 'error' or typ in {'turn.failed', 'turn.error'}:
-        messages.append(_codex_error_message(event, line_no, item_type or typ))
-        return messages
-
-    if typ in {'agent_message', 'assistant_message'}:
-        text = _codex_text(event.get('message') or event.get('text') or event.get('content'))
-        if text:
-            messages.append(_trace_message('assistant', 'AI 回复', text, event.get('model') or typ, line_no))
-        return messages
-
-    if (typ in {'agent_reasoning', 'reasoning', 'thinking'}
-            or part_type in {'thinking', 'reasoning'}):
-        text = _codex_text(
-            event.get('message') or event.get('text') or event.get('content')
-            or event.get('summary') or part
-        )
-        if text:
-            messages.append(_trace_message(
-                'thinking', '思考片段', text,
-                event.get('model') or part.get('model')
-                or ('opencode' if part else typ), line_no,
-            ))
-        return messages
-
-    # OpenCode 的 JSON stream 使用顶层 type + part；在公共解析层直接兼容，
-    # 避免任一调用方为了展示而重写、截断原始 journal。
-    if typ in {'text', 'message'} or part_type in {'text', 'message'}:
-        text = _codex_text(part or event)
-        if text:
-            messages.append(_trace_message(
-                'assistant', 'AI 回复', text,
-                event.get('model') or part.get('model') or 'opencode', line_no,
-            ))
-        return messages
-
-    if 'tool' in typ.lower() or part_type == 'tool':
-        state = part.get('state') if isinstance(part.get('state'), dict) else {}
-        tool_item = {
-            'type': 'tool_call',
-            'name': (
-                part.get('tool') or part.get('name')
-                or event.get('tool') or event.get('name') or '工具'
-            ),
-            'input': (
-                state.get('input')
-                if isinstance(state.get('input'), dict)
-                else part.get('input')
-            ),
-        }
-        messages.append(_codex_tool_message(event, tool_item, line_no))
-        return messages
-
-    if item_type == 'message' and str(item.get('role') or '').lower() == 'assistant':
-        text = _codex_text(item.get('content') or item.get('message') or item.get('text'))
-        if text:
-            messages.append(_trace_message('assistant', 'AI 回复', text, event.get('model') or typ, line_no))
-        return messages
-
-    if item_type in {'reasoning', 'reasoning_summary'}:
-        text = _codex_text(item.get('summary') or item.get('content') or item.get('text'))
-        if text:
-            messages.append(_trace_message('thinking', '思考片段', text, event.get('model') or typ, line_no))
-        return messages
-
-    tool_markers = ('tool', 'function_call', 'exec_command', 'command')
-    if item_type in {'function_call', 'tool_call', 'custom_tool_call'} or any(marker in typ for marker in tool_markers):
-        messages.append(_codex_tool_message(event, item, line_no))
-    return messages
 
 
 def _pi_tool_call_message(item, line_no):
@@ -956,37 +743,6 @@ def _collect_claude_trace_messages(path):
     return messages[-_TRACE_MAX_MESSAGES:]
 
 
-def _collect_codex_trace_messages(path):
-    messages = []
-    rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
-    for line_no, (source_offset, raw) in enumerate(
-            rows, start=1):
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            event = json.loads(raw)
-        except Exception:
-            continue
-        if not isinstance(event, dict):
-            continue
-        parsed = _codex_event_messages(event, line_no)
-        event_offset = event.get('_trace_offset', source_offset)
-        event_source = str(event.get('_trace_source') or '')
-        event_phase = str(event.get('_trace_phase') or '')
-        for event_index, item in enumerate(parsed):
-            item['offset'] = event_offset
-            item['event_index'] = event_index
-            if event_source:
-                item['source'] = event_source
-            if event_phase:
-                item['phase'] = event_phase
-        messages.extend(parsed)
-        if len(messages) >= _TRACE_MAX_MESSAGES:
-            messages = messages[-_TRACE_MAX_MESSAGES:]
-    return messages[-_TRACE_MAX_MESSAGES:]
-
-
 def _collect_pi_trace_messages(path):
     messages = []
     rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
@@ -1036,9 +792,6 @@ def _collect_trace_messages(trace_dir, *, include_steer_markers=False):
     pi_path = _latest_pi_jsonl(trace_dir)
     if pi_path:
         return _collect_pi_trace_messages(pi_path)
-    codex_path = _latest_codex_jsonl(trace_dir)
-    if codex_path:
-        return _collect_codex_trace_messages(codex_path)
     return []
 
 
@@ -1170,7 +923,7 @@ def _nonnegative_token_count(value):
 
 
 def _usage_record(source, event):
-    """把四种 harness 的单次模型调用归一化为同一 token 口径。"""
+    """把支持的 harness 单次模型调用归一化为同一 token 口径。"""
 
     event_type = str(event.get('type') or '').strip().lower().replace('-', '_')
     message = event.get('message') if isinstance(event.get('message'), dict) else {}
@@ -1212,45 +965,6 @@ def _usage_record(source, event):
             'reasoning_output_tokens': _nonnegative_token_count(usage.get('reasoning')),
         }
 
-    if event_type == 'turn.completed':
-        usage = event.get('usage') if isinstance(event.get('usage'), dict) else None
-        if usage is None:
-            return None
-        input_total = _nonnegative_token_count(usage.get('input_tokens'))
-        cached = min(
-            input_total,
-            _nonnegative_token_count(usage.get('cached_input_tokens')),
-        )
-        event_id = str(event.get('turn_id') or event.get('id') or '').strip()
-        return {
-            'key': ('codex', event_id) if event_id else None,
-            'input_uncached_tokens': input_total - cached,
-            'input_cached_tokens': cached,
-            'input_cache_write_tokens': 0,
-            'output_tokens': _nonnegative_token_count(usage.get('output_tokens')),
-            'reasoning_output_tokens': _nonnegative_token_count(
-                usage.get('reasoning_output_tokens')
-            ),
-        }
-
-    if event_type == 'step_finish':
-        part = event.get('part') if isinstance(event.get('part'), dict) else {}
-        tokens = part.get('tokens') if isinstance(part.get('tokens'), dict) else None
-        if tokens is None and isinstance(event.get('tokens'), dict):
-            tokens = event['tokens']
-        if tokens is None:
-            return None
-        cache = tokens.get('cache') if isinstance(tokens.get('cache'), dict) else {}
-        reasoning = _nonnegative_token_count(tokens.get('reasoning'))
-        part_id = str(part.get('id') or event.get('id') or '').strip()
-        return {
-            'key': ('opencode', part_id) if part_id else None,
-            'input_uncached_tokens': _nonnegative_token_count(tokens.get('input')),
-            'input_cached_tokens': _nonnegative_token_count(cache.get('read')),
-            'input_cache_write_tokens': _nonnegative_token_count(cache.get('write')),
-            'output_tokens': _nonnegative_token_count(tokens.get('output')) + reasoning,
-            'reasoning_output_tokens': reasoning,
-        }
     return None
 
 
@@ -1329,14 +1043,6 @@ def collect_agent_token_usage(trace_dir):
     pi_path = _latest_pi_jsonl(trace_dir)
     if pi_path:
         return _collect_usage_from_jsonl(pi_path, 'pi')
-    codex_path = _latest_codex_jsonl(trace_dir)
-    if codex_path:
-        source = (
-            'opencode'
-            if 'opencode' in os.path.basename(codex_path).lower()
-            else 'codex'
-        )
-        return _collect_usage_from_jsonl(codex_path, source)
     return None
 
 

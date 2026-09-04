@@ -229,7 +229,7 @@ function AgentLaunchModal({problemId, kind, maxScore, open, onClose, navigate}: 
       navigate(agentSessionUrl(payload.task_id, payload.view_url))
     },
   })
-  const harnessOptions = harnesses.map((item) => {const value = String(item.value || item.key || item.harness || item.id || ''); const key = value.toLowerCase().replaceAll('-', '_'); const logo = key === 'claude_code' ? 'claude-code' : key === 'open_code' ? 'opencode' : key; return {value, label: String(item.label || item.name || value), icon: `harness-logo harness-logo--${logo}`}})
+  const harnessOptions = harnesses.map((item) => {const value = String(item.value || item.key || item.harness || item.id || ''); const logo = value.toLowerCase().replaceAll('-', '_') === 'pi' ? 'pi' : 'claude-code'; return {value, label: String(item.label || item.name || value), icon: `harness-logo harness-logo--${logo}`}})
   const endpointOptions = endpoints.map((item) => {const protocol = String(item.protocol || ''); const category = String(item.category || ''); return {value: String(item.id), label: String(item.model || `节点 #${item.id}`), icon: 'fas fa-microchip', meta: [`节点 #${item.id}`, protocol === 'anthropic' ? 'Anthropic 兼容' : protocol === 'openai' ? 'OpenAI 兼容' : protocol, category === 'omni' ? '全模态' : category === 'text' ? '纯文本' : category === 'vision' ? '视觉理解' : category].filter(Boolean).join(' · ')}})
   const selectHarness = (value: string) => {setHarness(value); setEndpointId(String((endpointsByHarness[value] || [])[0]?.id || ''))}
   const ready = Boolean(harness && endpointId && (kind === 'solve' || (solution && Number.isInteger(testPointCount) && testPointCount > 0)))

@@ -308,35 +308,6 @@ def test_checkpoint_ignores_fifos_without_modifying_source(checkpoint_workspace)
     assert not checkpoint_fifo.exists()
 
 
-def test_checkpoint_discards_codex_arg0_absolute_symlinks(
-    checkpoint_workspace,
-):
-    public = workspace.ensure_agent_workspace("session")
-    runtime = public / ".runtime"
-    codex = runtime / "codex"
-    sessions = codex / "sessions"
-    arg0 = codex / "tmp" / "arg0" / "codex-arg0"
-    sessions.mkdir(parents=True)
-    arg0.mkdir(parents=True)
-    (sessions / "turn.jsonl").write_text("persist\n", encoding="utf-8")
-    (arg0 / "apply_patch").symlink_to("/usr/local/bin/codex")
-
-    runtime_checkpoints.create_agent_runtime_checkpoint(
-        "session",
-        "codex-baseline",
-    )
-
-    assert not (codex / "tmp").exists()
-    saved_runtime = _checkpoint(
-        checkpoint_workspace,
-        "codex-baseline",
-    ) / "runtime"
-    assert (saved_runtime / "codex" / "sessions" / "turn.jsonl").read_text() == (
-        "persist\n"
-    )
-    assert not (saved_runtime / "codex" / "tmp").exists()
-
-
 @pytest.mark.parametrize(
     ("limit_name", "limit", "builder", "message"),
     [

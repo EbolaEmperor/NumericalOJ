@@ -294,7 +294,7 @@ def test_solve_launch_rejects_non_object_json(monkeypatch):
     with app.test_request_context(
         "/admin/agent_solve_problem/9",
         method="POST",
-        json=["codex", 12],
+        json=["pi", 12],
     ):
         response, status = routes.admin_agent_solve_problem(9)
 
@@ -531,17 +531,18 @@ def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
             "state": {
                 "task_id": "turn-2",
                 "session_id": "session-1",
-                "harness": "codex",
+                "harness": "pi",
                 "status": "Canceled",
                 "message": "任务已被手动终止",
                 "execution_trace": {"token_usage": {
-                    "source": "codex",
+                    "source": "pi",
                     "request_count": 1,
                     "input_uncached_tokens": 60,
                     "input_cached_tokens": 15,
                     "input_cache_write_tokens": 0,
                     "output_tokens": 8,
                     "cost_rmb": "0.08",
+                    "incremental": True,
                 }},
             },
         },
@@ -550,13 +551,14 @@ def test_agent_run_cancel_returns_whole_session_token_usage(monkeypatch):
         routes,
         "_load_agent_historical_token_usages",
         lambda session_id, task_id: [("turn-1", {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 100,
             "input_cached_tokens": 20,
             "input_cache_write_tokens": 5,
             "output_tokens": 10,
             "cost_rmb": "0.10",
+            "incremental": True,
         })],
     )
 
@@ -637,7 +639,7 @@ def test_partial_ledger_coverage_keeps_unbilled_historical_trace_usage():
         "_task_ids": ["turn-2"],
     }
     historical = [("turn-1", {
-        "source": "codex",
+        "source": "pi",
         "request_count": 1,
         "input_uncached_tokens": 40,
         "input_cached_tokens": 10,
@@ -651,7 +653,7 @@ def test_partial_ledger_coverage_keeps_unbilled_historical_trace_usage():
         {
             "task_id": "turn-2",
             "execution_trace": {"token_usage": {
-                "source": "codex",
+                "source": "pi",
                 "request_count": 99,
                 "input_uncached_tokens": 999,
                 "input_cached_tokens": 0,
@@ -679,7 +681,7 @@ def test_context_usage_prefers_fresh_current_trace_over_session_totals():
             "task_id": "turn-current",
             "context_window_tokens": 200_000,
             "execution_trace": {"token_usage": {
-                "source": "codex",
+                "source": "pi",
                 "request_count": 3,
                 "input_uncached_tokens": 180,
                 "input_cached_tokens": 120,
@@ -717,7 +719,7 @@ def test_context_usage_prefers_fresh_current_trace_over_session_totals():
 @pytest.mark.parametrize(
     ("source", "earlier_values", "expected_input", "expected_requests"),
     [
-        ("codex", (100, 40), 200, 3),
+        ("pi", (100, 40), 200, 3),
         ("claude_code", (100, 160), 320, 4),
     ],
 )
@@ -825,7 +827,7 @@ def test_historical_usage_failure_keeps_requested_session_task_usage(
         "task_id": task_id,
         "session_id": "session-1",
         "execution_trace": {"token_usage": {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 100,
             "input_cached_tokens": 20,
@@ -1005,7 +1007,7 @@ def test_agent_run_stream_includes_historical_and_current_session_usage(
         "session_id": "session-1",
         "status": "Completed",
         "execution_trace": {"token_usage": {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 60,
             "input_cached_tokens": 15,
@@ -1036,13 +1038,14 @@ def test_agent_run_stream_includes_historical_and_current_session_usage(
         routes,
         "_load_agent_historical_token_usages",
         lambda session_id, task_id: [("turn-1", {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 100,
             "input_cached_tokens": 20,
             "input_cache_write_tokens": 5,
             "output_tokens": 10,
             "cost_rmb": "0.10",
+            "incremental": True,
         })],
     )
 
@@ -1067,7 +1070,7 @@ def test_agent_run_stream_includes_historical_and_current_session_usage(
 
 def test_agent_run_stream_emits_live_usage_and_cost_updates(monkeypatch):
     initial_usage = {
-        "source": "codex",
+        "source": "pi",
         "request_count": 1,
         "input_uncached_tokens": 80,
         "input_cached_tokens": 20,
@@ -1089,7 +1092,7 @@ def test_agent_run_stream_emits_live_usage_and_cost_updates(monkeypatch):
     initial = {
         "task_id": "turn-live-usage",
         "session_id": "session-live-usage",
-        "harness": "codex",
+        "harness": "pi",
         "status": "Running",
         "session_charged_amount_rmb": "0.10",
         "execution_trace": {
@@ -1991,7 +1994,7 @@ def test_agent_run_state_overlays_celery_terminal_on_stale_snapshot(
         "task_id": "task-1",
         "status": "Running",
         "message": "仍在执行",
-        "harness": "codex",
+        "harness": "pi",
         "final_submission_id": None,
         "latest_submission_id": None,
         "attempts": [],
@@ -2013,7 +2016,7 @@ def test_agent_run_state_overlays_celery_terminal_on_stale_snapshot(
 
     assert state["status"] == expected_status
     assert state["message"] == expected_message
-    assert state["harness"] == "codex"
+    assert state["harness"] == "pi"
     if celery_state == "SUCCESS":
         assert state["final_submission_id"] == 91
         assert state["latest_submission_id"] == 92
@@ -2054,7 +2057,7 @@ def test_agent_run_state_prefers_persisted_cancel_over_stale_running_cache(
             "task_id": "task-canceled",
             "status": "Running",
             "message": "旧缓存仍在运行",
-            "harness": "codex",
+            "harness": "pi",
             "attempts": [],
         },
     )
@@ -2073,7 +2076,7 @@ def test_agent_run_state_prefers_persisted_cancel_over_stale_running_cache(
 
     assert state["status"] == "Canceled"
     assert state["message"] == "任务已被手动终止"
-    assert state["harness"] == "codex"
+    assert state["harness"] == "pi"
 
 
 def test_agent_run_state_prefers_persisted_completion_over_stale_cache_and_celery(
@@ -2168,7 +2171,7 @@ def test_agent_run_state_hydrates_empty_worker_trace_from_v2_store(monkeypatch):
             "summary": "工作中…1 thinking",
         }],
         "token_usage": {
-            "source": "codex",
+            "source": "pi",
             "input_total_tokens": 120,
             "input_cached_tokens": 80,
             "output_tokens": 20,
