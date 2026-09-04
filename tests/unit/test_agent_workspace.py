@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import stat
-from types import SimpleNamespace
 
 import pytest
 
@@ -237,11 +236,7 @@ def test_save_unicode_attachments_and_remove_only_listed_files(workspace_root):
         "../secret.txt",
         "/absolute.txt",
         "folder/file.txt",
-        "folder\\file.txt",
-        "control\x01.txt",
-        "bad\u200bname.txt",
-        "trailing. ",
-        "CON.txt",
+        "bad\x00name.txt",
         ".runtime",
         ".numoj-agent-token",
         ".aj_session_state.json",
@@ -257,6 +252,20 @@ def test_save_agent_attachments_rejects_unsafe_names_without_publication(
 
     public = workspace_root / "sessions" / "session" / "workspace"
     assert not any((public / "attachments").glob("task-*"))
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["folder\\file.txt", "control\x01.txt", "bad\u200bname.txt", "trailing. ", "CON.txt"],
+)
+def test_save_agent_attachments_allows_platform_valid_names(workspace_root, filename):
+    saved = workspace.save_agent_attachments(
+        "session",
+        f"task-{abs(hash(filename))}",
+        [Upload(filename, b"content")],
+    )
+
+    assert saved[0]["name"] == filename
 
 
 def test_save_agent_attachments_rejects_casefold_duplicates(workspace_root):
@@ -414,15 +423,24 @@ def test_workspace_tree_skips_and_open_rejects_symlink_escape(workspace_root, tm
         workspace.open_agent_workspace_file("session", "escape.txt")
 
 
-def test_workspace_tree_skips_and_open_rejects_hardlinks(workspace_root):
+def test_workspace_tree_and_preview_allow_hardlinks(workspace_root):
     public = workspace.ensure_agent_workspace("session")
     original = public / "original.txt"
     original.write_text("content")
     os.link(original, public / "linked.txt")
 
-    assert workspace.build_agent_workspace_tree("session") == []
-    with pytest.raises(workspace.AgentWorkspaceSecurityError, match="单链接"):
-        workspace.open_agent_workspace_file("session", "original.txt")
+    assert workspace.build_agent_workspace_tree("session") == [
+        {"name": "linked.txt", "path": "linked.txt", "type": "file", "size": 7},
+        {
+            "name": "original.txt",
+            "path": "original.txt",
+            "type": "file",
+            "size": 7,
+        },
+    ]
+    handle, _metadata = workspace.open_agent_workspace_file("session", "original.txt")
+    with handle:
+        assert handle.read() == b"content"
 
 
 def test_workspace_tree_skips_special_files(workspace_root):
@@ -433,23 +451,20 @@ def test_workspace_tree_skips_special_files(workspace_root):
     assert workspace.build_agent_workspace_tree("session") == []
 
 
-def test_workspace_tree_enforces_entry_and_depth_limits(
-    workspace_root, monkeypatch
-):
+def test_workspace_tree_does_not_enforce_entry_or_depth_limits(workspace_root):
     public = workspace.ensure_agent_workspace("session")
     (public / "one").write_text("1")
     (public / "two").write_text("2")
-    monkeypatch.setattr(workspace, "MAX_WORKSPACE_TREE_ENTRIES", 1)
-    with pytest.raises(workspace.AgentWorkspaceLimitError, match="最多展示"):
-        workspace.build_agent_workspace_tree("session")
-
-    monkeypatch.setattr(workspace, "MAX_WORKSPACE_TREE_ENTRIES", 5000)
-    monkeypatch.setattr(workspace, "MAX_WORKSPACE_TREE_DEPTH", 2)
     (public / "nested").mkdir()
-    (public / "nested" / "deeper").mkdir()
-    (public / "nested" / "deeper" / "file.txt").write_text("x")
-    with pytest.raises(workspace.AgentWorkspaceLimitError, match="深度"):
-        workspace.build_agent_workspace_tree("session")
+    current = public / "nested"
+    for index in range(24):
+        current = current / f"d{index}"
+        current.mkdir()
+    (current / "file.txt").write_text("x")
+
+    tree = workspace.build_agent_workspace_tree("session")
+
+    assert [node["name"] for node in tree] == ["nested", "one", "two"]
 
 
 @pytest.mark.parametrize(
@@ -570,7 +585,6 @@ def test_open_agent_workspace_file_returns_inode_stable_handle(workspace_root):
         "../secret",
         "dir/../secret",
         "dir//secret",
-        "dir\\secret",
         ".runtime/token",
         ".numoj-agent",
         ".aj_session_state.json",
@@ -629,7 +643,7 @@ def test_workspace_quota_counts_but_does_not_follow_links_or_special_files(
     assert usage.total_bytes == link.lstat().st_size + fifo.lstat().st_size
 
 
-def test_workspace_quota_conservatively_counts_each_hardlink(workspace_root):
+def test_workspace_quota_counts_shared_hardlink_inode_once(workspace_root):
     public = workspace.ensure_agent_workspace("session")
     original = public / "package.js"
     original.write_bytes(b"content")
@@ -638,65 +652,45 @@ def test_workspace_quota_conservatively_counts_each_hardlink(workspace_root):
     usage = workspace.check_agent_workspace_quota("session")
 
     assert usage == workspace.AgentWorkspaceUsage(
-        total_bytes=14,
+        total_bytes=7,
         file_count=2,
         entry_count=2,
     )
 
 
-def test_workspace_quota_counts_empty_directories_toward_total_entries(
-    workspace_root,
-    monkeypatch,
-):
+def test_workspace_quota_does_not_limit_empty_directories(workspace_root):
     public = workspace.ensure_agent_workspace("session")
-    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MAX_ENTRIES", 2)
     for name in ("one", "two", "three"):
         (public / name).mkdir()
 
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="总 entry 数"):
-        workspace.check_agent_workspace_quota("session")
+    usage = workspace.check_agent_workspace_quota("session")
+
+    assert usage.entry_count == 3
 
 
-def test_workspace_quota_uses_explicit_stack_and_rejects_excessive_depth(
-    workspace_root,
-    monkeypatch,
-):
+def test_workspace_quota_uses_explicit_stack_without_depth_limit(workspace_root):
     public = workspace.ensure_agent_workspace("session")
-    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MAX_DEPTH", 64)
     current = public
     for index in range(70):
         current = current / f"d{index}"
         current.mkdir()
 
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="目录深度"):
-        workspace.check_agent_workspace_quota("session")
+    assert workspace.check_agent_workspace_quota("session").entry_count == 70
 
 
-@pytest.mark.parametrize(
-    ("limit_name", "limit", "payloads", "message"),
-    [
-        ("AGENT_WORKSPACE_MAX_BYTES", 4, (b"12345",), "总大小"),
-        ("AGENT_WORKSPACE_MAX_FILES", 1, (b"1", b"2"), "文件数"),
-    ],
-)
-def test_workspace_quota_enforces_bytes_and_file_count(
+def test_workspace_quota_enforces_only_total_bytes(
     workspace_root,
     monkeypatch,
-    limit_name,
-    limit,
-    payloads,
-    message,
 ):
     public = workspace.ensure_agent_workspace("session")
-    monkeypatch.setattr(workspace, limit_name, limit)
-    for index, payload in enumerate(payloads):
-        (public / f"entry-{index}").write_bytes(payload)
+    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MAX_BYTES", 4)
+    (public / "entry").write_bytes(b"12345")
 
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match=message):
+    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="总大小"):
         workspace.check_agent_workspace_quota("session")
 
 
-def test_workspace_quota_fails_closed_when_free_space_cannot_be_confirmed(
+def test_workspace_quota_does_not_depend_on_free_space_preflight(
     workspace_root,
     monkeypatch,
 ):
@@ -707,17 +701,7 @@ def test_workspace_quota_fails_closed_when_free_space_cannot_be_confirmed(
         lambda _fd: (_ for _ in ()).throw(OSError("statvfs failed")),
     )
 
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="可用空间"):
-        workspace.check_agent_workspace_quota("session")
-
-    monkeypatch.setattr(
-        workspace.os,
-        "fstatvfs",
-        lambda _fd: SimpleNamespace(f_frsize=1, f_bsize=1, f_bavail=3),
-    )
-    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MIN_FREE_BYTES", 4)
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="可用空间不足"):
-        workspace.check_agent_workspace_quota("session")
+    assert workspace.check_agent_workspace_quota("session").total_bytes == 0
 
 
 def test_attachment_publication_cannot_cross_persistent_session_quota(

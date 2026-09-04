@@ -5,7 +5,6 @@ from pathlib import Path
 import socket
 import stat
 import tempfile
-from types import SimpleNamespace
 
 import pytest
 
@@ -17,7 +16,6 @@ from backend.oj_modules.agents import workspace
 def checkpoint_workspace(monkeypatch, tmp_path):
     root = tmp_path / "agent-workspaces"
     monkeypatch.setattr(workspace, "AGENT_WORKSPACE_ROOT", root)
-    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MIN_FREE_BYTES", 1)
     return root
 
 
@@ -127,6 +125,50 @@ def test_empty_checkpoint_restores_an_empty_private_runtime(checkpoint_workspace
     assert runtime.is_dir()
     assert list(runtime.iterdir()) == []
     assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
+
+
+def test_checkpoint_treats_missing_runtime_as_empty(checkpoint_workspace):
+    workspace.ensure_agent_workspace("session")
+
+    usage = runtime_checkpoints.create_agent_runtime_checkpoint(
+        "session",
+        "missing-runtime",
+    )
+
+    assert usage == workspace.AgentWorkspaceUsage(0, 0, 0)
+    assert (_checkpoint(checkpoint_workspace, "missing-runtime") / "runtime").is_dir()
+
+
+def test_checkpoint_preserves_runtime_hardlinks(checkpoint_workspace):
+    public = workspace.ensure_agent_workspace("session")
+    runtime = public / ".runtime"
+    runtime.mkdir()
+    original = runtime / "package-cache"
+    linked = runtime / "package-copy"
+    original.write_bytes(b"shared package")
+    os.link(original, linked)
+
+    usage = runtime_checkpoints.create_agent_runtime_checkpoint(
+        "session",
+        "hardlinks",
+    )
+
+    saved_runtime = _checkpoint(checkpoint_workspace, "hardlinks") / "runtime"
+    assert usage == workspace.AgentWorkspaceUsage(
+        total_bytes=len(b"shared package"),
+        file_count=2,
+        entry_count=2,
+    )
+    assert saved_runtime.joinpath("package-cache").stat().st_ino == (
+        saved_runtime / "package-copy"
+    ).stat().st_ino
+
+    original.unlink()
+    linked.write_bytes(b"changed")
+    runtime_checkpoints.restore_agent_runtime_checkpoint("session", "hardlinks")
+
+    assert original.read_bytes() == b"shared package"
+    assert original.stat().st_ino == linked.stat().st_ino
 
 
 def test_checkpoint_is_immutable_and_never_overwritten(checkpoint_workspace):
@@ -308,65 +350,23 @@ def test_checkpoint_ignores_fifos_without_modifying_source(checkpoint_workspace)
     assert not checkpoint_fifo.exists()
 
 
-@pytest.mark.parametrize(
-    ("limit_name", "limit", "builder", "message"),
-    [
-        (
-            "AGENT_WORKSPACE_MAX_BYTES",
-            3,
-            lambda runtime: (runtime / "large").write_bytes(b"1234"),
-            "总大小",
-        ),
-        (
-            "AGENT_WORKSPACE_MAX_FILES",
-            1,
-            lambda runtime: [
-                (runtime / "one").write_bytes(b"1"),
-                (runtime / "two").write_bytes(b"2"),
-            ],
-            "普通文件数",
-        ),
-        (
-            "AGENT_WORKSPACE_MAX_ENTRIES",
-            1,
-            lambda runtime: (
-                (runtime / "dir").mkdir(),
-                (runtime / "dir" / "file").write_bytes(b"1"),
-            ),
-            "entry",
-        ),
-        (
-            "AGENT_WORKSPACE_MAX_DEPTH",
-            1,
-            lambda runtime: (
-                (runtime / "dir").mkdir(),
-                (runtime / "dir" / "file").write_bytes(b"1"),
-            ),
-            "目录深度",
-        ),
-    ],
-)
-def test_checkpoint_creation_enforces_workspace_limits(
+def test_checkpoint_creation_enforces_only_total_bytes(
     checkpoint_workspace,
     monkeypatch,
-    limit_name,
-    limit,
-    builder,
-    message,
 ):
     public = workspace.ensure_agent_workspace("session")
     runtime = public / ".runtime"
     runtime.mkdir()
-    builder(runtime)
-    monkeypatch.setattr(workspace, limit_name, limit)
+    (runtime / "large").write_bytes(b"1234")
+    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MAX_BYTES", 3)
 
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match=message):
+    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="总大小"):
         runtime_checkpoints.create_agent_runtime_checkpoint("session", "limited")
 
     assert not _checkpoint(checkpoint_workspace, "limited").exists()
 
 
-def test_restore_checks_disk_reserve_before_touching_runtime(
+def test_restore_does_not_depend_on_free_space_preflight(
     checkpoint_workspace,
     monkeypatch,
 ):
@@ -380,14 +380,12 @@ def test_restore_checks_disk_reserve_before_touching_runtime(
     monkeypatch.setattr(
         workspace.os,
         "fstatvfs",
-        lambda _fd: SimpleNamespace(f_frsize=1, f_bsize=1, f_bavail=4),
+        lambda _fd: (_ for _ in ()).throw(OSError("must not be called")),
     )
-    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MIN_FREE_BYTES", 1)
 
-    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="可用空间不足"):
-        runtime_checkpoints.restore_agent_runtime_checkpoint("session", "saved")
+    runtime_checkpoints.restore_agent_runtime_checkpoint("session", "saved")
 
-    assert (runtime / "state").read_text() == "current"
+    assert (runtime / "state").read_text() == "checkpoint"
 
 
 def test_restore_copy_failure_keeps_previous_runtime_and_cleans_stage(

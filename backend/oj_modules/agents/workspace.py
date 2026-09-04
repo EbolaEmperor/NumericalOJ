@@ -1,4 +1,4 @@
-"""通用 Agent 持久工作区的安全文件系统边界。
+"""通用 Agent 持久工作区文件操作。
 
 工作区中的内容由不可信 Agent 进程产生。所有读取都逐级使用 ``dir_fd`` 与
 ``O_NOFOLLOW`` 固定 inode；附件先写入会话私有暂存区，再原子发布到公开工作区。
@@ -32,16 +32,10 @@ AGENT_WORKSPACE_ROOT = (
     else PROJECT_ROOT / _CONFIGURED_WORKSPACE_ROOT
 )
 AGENT_WORKSPACE_MAX_BYTES = config.AGENT_WORKSPACE_MAX_BYTES
-AGENT_WORKSPACE_MAX_FILES = config.AGENT_WORKSPACE_MAX_FILES
-AGENT_WORKSPACE_MAX_ENTRIES = config.AGENT_WORKSPACE_MAX_ENTRIES
-AGENT_WORKSPACE_MAX_DEPTH = config.AGENT_WORKSPACE_MAX_DEPTH
-AGENT_WORKSPACE_MIN_FREE_BYTES = config.AGENT_WORKSPACE_MIN_FREE_BYTES
 
 MAX_ATTACHMENT_FILES = 20
 MAX_ATTACHMENT_FILE_BYTES = 32 * 1024 * 1024
 MAX_ATTACHMENT_TOTAL_BYTES = 128 * 1024 * 1024
-MAX_WORKSPACE_TREE_ENTRIES = 5000
-MAX_WORKSPACE_TREE_DEPTH = 20
 MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
 MAX_ENTRY_NAME_BYTES = 255
 MAX_WORKSPACE_PATH_BYTES = 4096
@@ -67,17 +61,6 @@ _PRIVATE_EXACT_NAMES = frozenset(
     }
 )
 _PRIVATE_PREFIXES = (".runtime", ".numoj-agent", ".aj_session_state")
-_RESERVED_DOS_NAMES = frozenset(
-    {
-        "CON",
-        "PRN",
-        "AUX",
-        "NUL",
-        *(f"COM{index}" for index in range(1, 10)),
-        *(f"LPT{index}" for index in range(1, 10)),
-    }
-)
-
 _MARKDOWN_EXTENSIONS = frozenset({".md", ".markdown", ".mdown", ".mkd"})
 _CODE_LANGUAGE_BY_EXTENSION = {
     ".asm": "asm",
@@ -206,7 +189,7 @@ class AgentWorkspacePathError(ValueError):
 
 
 class AgentWorkspaceSecurityError(AgentWorkspaceError):
-    """磁盘内容不满足无链接、普通文件等安全前置条件。"""
+    """受管路径自身无法按预期访问。"""
 
 
 class AgentWorkspaceLimitError(AgentWorkspaceError):
@@ -259,21 +242,15 @@ def _is_private_name(name: str) -> bool:
 def _normalize_entry_name(value, *, attachment: bool = False) -> str:
     if not isinstance(value, str):
         raise AgentWorkspacePathError("文件名必须是字符串")
-    normalized = unicodedata.normalize("NFC", value)
+    normalized = value
     if not normalized or normalized in {".", ".."}:
         raise AgentWorkspacePathError("文件名不能为空，也不能是 . 或 ..")
-    if normalized.rstrip(" .") != normalized:
-        raise AgentWorkspacePathError("文件名不能以空格或点结尾")
-    if "/" in normalized or "\\" in normalized or "\x00" in normalized:
-        raise AgentWorkspacePathError("文件名不能包含路径分隔符或 NUL")
-    if any(unicodedata.category(character).startswith("C") for character in normalized):
-        raise AgentWorkspacePathError("文件名不能包含控制字符或格式控制符")
+    if "/" in normalized or "\x00" in normalized:
+        raise AgentWorkspacePathError("文件名不能包含 / 或 NUL")
     if len(normalized.encode("utf-8")) > MAX_ENTRY_NAME_BYTES:
         raise AgentWorkspacePathError(
             f"单级文件名不能超过 {MAX_ENTRY_NAME_BYTES} 字节"
         )
-    if normalized.split(".", 1)[0].upper() in _RESERVED_DOS_NAMES:
-        raise AgentWorkspacePathError("文件名是系统保留名称")
     if attachment and _is_private_name(normalized):
         raise AgentWorkspacePathError("附件文件名使用了 Agent 私有保留名称")
     return normalized
@@ -283,15 +260,11 @@ def _normalize_relative_path(relative_path, *, public: bool = True) -> str:
     if not isinstance(relative_path, str):
         raise AgentWorkspacePathError("工作区路径必须是字符串")
     raw = relative_path
-    if not raw or raw.startswith("/") or "\\" in raw or "\x00" in raw:
+    if not raw or raw.startswith("/") or "\x00" in raw:
         raise AgentWorkspacePathError("工作区路径必须是非空 POSIX 相对路径")
     raw_parts = raw.split("/")
     if any(part in {"", ".", ".."} for part in raw_parts):
         raise AgentWorkspacePathError("工作区路径不能包含空段、. 或 ..")
-    if len(raw_parts) > MAX_WORKSPACE_TREE_DEPTH:
-        raise AgentWorkspacePathError(
-            f"工作区路径深度不能超过 {MAX_WORKSPACE_TREE_DEPTH} 层"
-        )
     parts = tuple(_normalize_entry_name(part) for part in raw_parts)
     if public and any(_is_private_name(part) for part in parts):
         raise AgentWorkspacePathError("不能访问 Agent 私有运行数据")
@@ -457,83 +430,19 @@ def _nonnegative_projection(value, *, label: str) -> int:
     return int(value)
 
 
-def _quota_limits() -> tuple[int, int, int, int, int]:
-    return (
-        _positive_limit(
-            AGENT_WORKSPACE_MAX_BYTES,
-            name="AGENT_WORKSPACE_MAX_BYTES",
-        ),
-        _positive_limit(
-            AGENT_WORKSPACE_MAX_FILES,
-            name="AGENT_WORKSPACE_MAX_FILES",
-        ),
-        _positive_limit(
-            AGENT_WORKSPACE_MAX_ENTRIES,
-            name="AGENT_WORKSPACE_MAX_ENTRIES",
-        ),
-        _positive_limit(
-            AGENT_WORKSPACE_MAX_DEPTH,
-            name="AGENT_WORKSPACE_MAX_DEPTH",
-        ),
-        _positive_limit(
-            AGENT_WORKSPACE_MIN_FREE_BYTES,
-            name="AGENT_WORKSPACE_MIN_FREE_BYTES",
-        ),
+def _quota_limit() -> int:
+    return _positive_limit(
+        AGENT_WORKSPACE_MAX_BYTES,
+        name="AGENT_WORKSPACE_MAX_BYTES",
     )
-
-
-def _filesystem_free_bytes(directory_fd: int) -> int:
-    try:
-        filesystem = os.fstatvfs(directory_fd)
-        block_size = int(filesystem.f_frsize or filesystem.f_bsize)
-        available_blocks = int(filesystem.f_bavail)
-    except (AttributeError, OSError, TypeError, ValueError) as exc:
-        raise AgentWorkspaceQuotaError(
-            "无法确认 Agent workspace 所在文件系统的可用空间"
-        ) from exc
-    if block_size <= 0 or available_blocks < 0:
-        raise AgentWorkspaceQuotaError(
-            "Agent workspace 所在文件系统返回了无效可用空间"
-        )
-    return block_size * available_blocks
-
-
-def _require_filesystem_reserve(
-    directory_fd: int,
-    *,
-    min_free_bytes: int,
-    reservation_bytes: int = 0,
-) -> int:
-    reservation = _nonnegative_projection(
-        reservation_bytes,
-        label="Agent workspace 磁盘预留字节数",
-    )
-    available = _filesystem_free_bytes(directory_fd)
-    required = min_free_bytes + reservation
-    if available < required:
-        raise AgentWorkspaceQuotaError(
-            "Agent workspace 所在磁盘可用空间不足："
-            f"当前 {available} 字节，至少需保留 {required} 字节"
-        )
-    return available
 
 
 def _scan_workspace_usage_fd(
     workspace_fd: int,
     *,
     max_bytes: int,
-    max_files: int,
-    max_entries: int,
-    max_depth: int,
 ) -> AgentWorkspaceUsage:
-    """逐级 no-follow 统计逻辑字节数、普通文件数与总 entry 数。
-
-    计数只依赖实际 inode 类型，不依赖文件名或后缀。符号链接和特殊
-    文件只按 lstat 得到的 entry 与 inode 大小计数，绝不跟随或打开；
-    跨文件系统目录仍使配额检查 fail closed。
-    显式 DFS 栈最多同时持有 ``max_depth`` 个目录 fd，不依赖
-    Python 递归栈，也不会为宽目录一次打开大量 fd。
-    """
+    """逐级 no-follow 统计数据量，不对文件或目录形态施加策略限制。"""
 
     try:
         root_info = os.fstat(workspace_fd)
@@ -541,25 +450,27 @@ def _scan_workspace_usage_fd(
         raise AgentWorkspaceQuotaError("Agent workspace 用量统计失败") from exc
     if not stat.S_ISDIR(root_info.st_mode):
         raise AgentWorkspaceSecurityError("Agent workspace 必须是真实目录")
-    root_device = int(root_info.st_dev)
     total_bytes = 0
     file_count = 0
     entry_count = 0
+    counted_inodes: set[tuple[int, int]] = set()
     frames: list[list] = []
 
-    def push(directory_fd: int, depth: int, *, owns_fd: bool) -> None:
+    def push(directory_fd: int, *, owns_fd: bool) -> bool:
         try:
             iterator = os.scandir(directory_fd)
-        except OSError as exc:
+        except OSError:
             if owns_fd:
                 os.close(directory_fd)
-            raise AgentWorkspaceQuotaError("Agent workspace 用量统计失败") from exc
-        frames.append([directory_fd, iterator, depth, owns_fd])
+            return False
+        frames.append([directory_fd, iterator, owns_fd])
+        return True
 
-    push(workspace_fd, 0, owns_fd=False)
+    if not push(workspace_fd, owns_fd=False):
+        raise AgentWorkspaceQuotaError("Agent workspace 用量统计失败")
     try:
         while frames:
-            directory_fd, iterator, depth, owns_fd = frames[-1]
+            directory_fd, iterator, owns_fd = frames[-1]
             try:
                 entry = next(iterator)
             except StopIteration:
@@ -579,24 +490,9 @@ def _scan_workspace_usage_fd(
                 # Harness 可以在检查期间原子替换或删除文件；
                 # 本轮已消失的入口留给下一个周期重新统计。
                 continue
-            except OSError as exc:
-                raise AgentWorkspaceQuotaError(
-                    "Agent workspace 用量统计失败"
-                ) from exc
-            entry_depth = depth + 1
+            except OSError:
+                continue
             entry_count += 1
-            if entry_count > max_entries:
-                raise AgentWorkspaceQuotaError(
-                    f"Agent workspace 总 entry 数不能超过 {max_entries}"
-                )
-            if entry_depth > max_depth:
-                raise AgentWorkspaceQuotaError(
-                    f"Agent workspace 目录深度不能超过 {max_depth}"
-                )
-            if int(info.st_dev) != root_device:
-                raise AgentWorkspaceSecurityError(
-                    "Agent workspace 不允许嵌套其他文件系统"
-                )
             if stat.S_ISDIR(info.st_mode):
                 try:
                     child_fd = _open_existing_directory_at(
@@ -604,43 +500,24 @@ def _scan_workspace_usage_fd(
                         raw_name,
                         label="Agent workspace 子目录",
                     )
-                except FileNotFoundError:
+                except (FileNotFoundError, AgentWorkspaceError):
                     continue
-                child_info = os.fstat(child_fd)
-                if int(child_info.st_dev) != root_device:
-                    os.close(child_fd)
-                    raise AgentWorkspaceSecurityError(
-                        "Agent workspace 不允许嵌套其他文件系统"
-                    )
-                push(child_fd, entry_depth, owns_fd=True)
+                push(child_fd, owns_fd=True)
                 continue
-            # venv、npm 等正常工具会在 workspace 内创建符号链接，部分
-            # 工具也会短暂创建 FIFO/socket。配额扫描只看 lstat 元数据，
-            # 不打开也不跟随这些入口，因此可以安全地把它们计入总 entry
-            # 和逻辑字节数，而不让常见开发工作流被误判为越界。
-            if not stat.S_ISREG(info.st_mode):
-                total_bytes += max(0, int(info.st_size))
-                if total_bytes > max_bytes:
-                    raise AgentWorkspaceQuotaError(
-                        f"Agent workspace 总大小不能超过 {max_bytes} 字节"
-                    )
+            inode_key = (int(info.st_dev), int(info.st_ino))
+            if stat.S_ISREG(info.st_mode):
+                file_count += 1
+            if inode_key in counted_inodes:
                 continue
-            # 硬链接按每个目录入口重复计算完整逻辑大小，宁可保守高估，
-            # 也不因 pnpm/cp -al 等正常工作流中止 Agent。只读文件服务仍
-            # 拒绝打开多链接 inode，防止借链接暴露私有运行文件。
-            file_count += 1
-            total_bytes += int(info.st_size)
-            if file_count > max_files:
-                raise AgentWorkspaceQuotaError(
-                    f"Agent workspace 普通文件数不能超过 {max_files}"
-                )
+            counted_inodes.add(inode_key)
+            total_bytes += max(0, int(info.st_size))
             if total_bytes > max_bytes:
                 raise AgentWorkspaceQuotaError(
                     f"Agent workspace 总大小不能超过 {max_bytes} 字节"
                 )
     finally:
         while frames:
-            directory_fd, iterator, _depth, owns_fd = frames.pop()
+            directory_fd, iterator, owns_fd = frames.pop()
             iterator.close()
             if owns_fd:
                 os.close(directory_fd)
@@ -655,78 +532,17 @@ def _check_workspace_quota_fd(
     workspace_fd: int,
     *,
     additional_bytes: int = 0,
-    additional_files: int = 0,
-    additional_entries: int = 0,
-    removed_bytes: int = 0,
-    removed_files: int = 0,
-    removed_entries: int = 0,
-    free_reservation_bytes: int | None = None,
 ) -> AgentWorkspaceUsage:
-    (
-        max_bytes,
-        max_files,
-        max_entries,
-        max_depth,
-        min_free_bytes,
-    ) = _quota_limits()
+    max_bytes = _quota_limit()
     added_bytes = _nonnegative_projection(additional_bytes, label="新增字节数")
-    added_files = _nonnegative_projection(additional_files, label="新增文件数")
-    added_entries = _nonnegative_projection(
-        additional_entries,
-        label="新增目录 entry 数",
-    )
-    subtracted_bytes = _nonnegative_projection(removed_bytes, label="替换字节数")
-    subtracted_files = _nonnegative_projection(removed_files, label="替换文件数")
-    subtracted_entries = _nonnegative_projection(
-        removed_entries,
-        label="删除目录 entry 数",
-    )
-    reservation = (
-        added_bytes
-        if free_reservation_bytes is None
-        else _nonnegative_projection(
-            free_reservation_bytes,
-            label="Agent workspace 磁盘预留字节数",
-        )
-    )
-    _require_filesystem_reserve(
-        workspace_fd,
-        min_free_bytes=min_free_bytes,
-        reservation_bytes=reservation,
-    )
     usage = _scan_workspace_usage_fd(
         workspace_fd,
         max_bytes=max_bytes,
-        max_files=max_files,
-        max_entries=max_entries,
-        max_depth=max_depth,
     )
-    if (
-        subtracted_bytes > usage.total_bytes
-        or subtracted_files > usage.file_count
-        or subtracted_files + subtracted_entries > usage.entry_count
-    ):
-        raise AgentWorkspaceQuotaError("Agent workspace 替换用量超过当前用量")
-    projected_bytes = usage.total_bytes - subtracted_bytes + added_bytes
-    projected_files = usage.file_count - subtracted_files + added_files
-    projected_entries = (
-        usage.entry_count
-        - subtracted_files
-        - subtracted_entries
-        + added_files
-        + added_entries
-    )
+    projected_bytes = usage.total_bytes + added_bytes
     if projected_bytes > max_bytes:
         raise AgentWorkspaceQuotaError(
             f"Agent workspace 总大小不能超过 {max_bytes} 字节"
-        )
-    if projected_files > max_files:
-        raise AgentWorkspaceQuotaError(
-            f"Agent workspace 普通文件数不能超过 {max_files}"
-        )
-    if projected_entries > max_entries:
-        raise AgentWorkspaceQuotaError(
-            f"Agent workspace 总 entry 数不能超过 {max_entries}"
         )
     return usage
 
@@ -735,10 +551,8 @@ def check_agent_workspace_quota(
     session_id,
     *,
     additional_bytes: int = 0,
-    additional_files: int = 0,
-    additional_entries: int = 0,
 ) -> AgentWorkspaceUsage:
-    """校验会话配额与宿主磁盘保留空间，任何不可确认状态都拒绝继续。"""
+    """仅校验会话总数据量。"""
 
     with _open_existing_session_directories(session_id) as (
         _safe_id,
@@ -748,13 +562,11 @@ def check_agent_workspace_quota(
         return _check_workspace_quota_fd(
             workspace_fd,
             additional_bytes=additional_bytes,
-            additional_files=additional_files,
-            additional_entries=additional_entries,
         )
 
 
 def get_agent_workspace_usage(session_id) -> AgentWorkspaceUsage:
-    """返回已经完整安全校验的当前会话用量。"""
+    """返回当前会话用量。"""
 
     return check_agent_workspace_quota(session_id)
 
@@ -822,10 +634,9 @@ def _harden_redaction_history_file(fd: int, *, label: str) -> None:
     info = os.fstat(fd)
     if (
         not stat.S_ISREG(info.st_mode)
-        or info.st_nlink != 1
         or int(info.st_uid) != os.geteuid()
     ):
-        raise AgentWorkspaceSecurityError(f"{label} 必须是服务用户拥有的单链接普通文件")
+        raise AgentWorkspaceSecurityError(f"{label} 必须是服务用户拥有的普通文件")
     if stat.S_IMODE(info.st_mode) != 0o600:
         try:
             os.fchmod(fd, 0o600)
@@ -1057,8 +868,6 @@ def _open_regular_file_fd(workspace_fd: int, parts: tuple[str, ...]):
             info = os.fstat(file_fd)
             if not stat.S_ISREG(info.st_mode):
                 raise AgentWorkspaceSecurityError("工作区目标不是普通文件")
-            if int(info.st_nlink) != 1:
-                raise AgentWorkspaceSecurityError("工作区文件必须是单链接普通文件")
             return file_fd, info
         except Exception:
             os.close(file_fd)
@@ -1130,23 +939,10 @@ def open_agent_workspace_file(session_id, path) -> tuple[BinaryIO, dict]:
         raise
 
 
-def _tree_entry_name(raw_name: str) -> str:
-    try:
-        normalized = _normalize_entry_name(raw_name)
-    except AgentWorkspacePathError as exc:
-        raise AgentWorkspaceSecurityError("工作区包含不安全的文件名") from exc
-    if normalized != raw_name:
-        raise AgentWorkspaceSecurityError("工作区文件名必须使用 Unicode NFC 规范形式")
-    return normalized
-
-
 def build_agent_workspace_tree(session_id) -> list:
-    """返回公开工作区目录树；跳过不可安全预览的入口。"""
+    """返回公开工作区目录树；链接和运行期特殊节点不会使列表失败。"""
 
-    counter = 0
-
-    def walk(directory_fd: int, parent_path: str, depth: int):
-        nonlocal counter
+    def walk(directory_fd: int, parent_path: str):
         try:
             raw_names = os.listdir(directory_fd)
         except OSError as exc:
@@ -1155,27 +951,15 @@ def build_agent_workspace_tree(session_id) -> list:
         for raw_name in sorted(raw_names, key=lambda item: item.casefold()):
             if _is_private_name(raw_name):
                 continue
-            name = _tree_entry_name(raw_name)
-            entry_depth = depth + 1
-            if entry_depth > MAX_WORKSPACE_TREE_DEPTH:
-                raise AgentWorkspaceLimitError(
-                    f"工作区目录深度不能超过 {MAX_WORKSPACE_TREE_DEPTH} 层"
-                )
+            name = raw_name
             relative_path = f"{parent_path}/{name}" if parent_path else name
-            if len(relative_path.encode("utf-8")) > MAX_WORKSPACE_PATH_BYTES:
-                raise AgentWorkspaceLimitError("工作区路径过长")
             try:
                 info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
             except FileNotFoundError:
                 # Agent 工作时目录会实时变化；已消失的条目留到下一次刷新。
                 continue
-            except OSError as exc:
-                raise AgentWorkspaceSecurityError("无法安全检查工作区目录项") from exc
-            counter += 1
-            if counter > MAX_WORKSPACE_TREE_ENTRIES:
-                raise AgentWorkspaceLimitError(
-                    f"工作区目录树最多展示 {MAX_WORKSPACE_TREE_ENTRIES} 项"
-                )
+            except OSError:
+                continue
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
@@ -1183,10 +967,10 @@ def build_agent_workspace_tree(session_id) -> list:
                     child_fd = _open_existing_directory_at(
                         directory_fd, name, label="工作区子目录"
                     )
-                except FileNotFoundError:
+                except (FileNotFoundError, AgentWorkspaceError):
                     continue
                 try:
-                    children = walk(child_fd, relative_path, entry_depth)
+                    children = walk(child_fd, relative_path)
                 finally:
                     os.close(child_fd)
                 nodes.append(
@@ -1198,7 +982,7 @@ def build_agent_workspace_tree(session_id) -> list:
                     }
                 )
                 continue
-            if not stat.S_ISREG(info.st_mode) or int(info.st_nlink) != 1:
+            if not stat.S_ISREG(info.st_mode):
                 continue
             nodes.append(
                 {
@@ -1211,7 +995,7 @@ def build_agent_workspace_tree(session_id) -> list:
         return nodes
 
     with _open_session_directories(session_id) as (_safe_id, _session_fd, workspace_fd):
-        return walk(workspace_fd, "", 0)
+        return walk(workspace_fd, "")
 
 
 def _text_has_disallowed_controls(text: str) -> bool:
@@ -1362,34 +1146,7 @@ def _workspace_target_parent_fd(
         raise
 
 
-def _workspace_missing_parent_count(
-    workspace_fd: int,
-    parts: tuple[str, ...],
-) -> int:
-    """在不创建目录的情况下统计宿主写入需新增的父目录 entry。"""
-
-    opened: list[int] = []
-    current_fd = workspace_fd
-    parents = parts[:-1]
-    try:
-        for index, part in enumerate(parents):
-            try:
-                next_fd = _open_existing_directory_at(
-                    current_fd,
-                    part,
-                    label="Agent workspace 宿主写入目录",
-                )
-            except FileNotFoundError:
-                return len(parents) - index
-            opened.append(next_fd)
-            current_fd = next_fd
-        return 0
-    finally:
-        for fd in reversed(opened):
-            os.close(fd)
-
-
-def _regular_target_info(directory_fd: int, name: str):
+def _replaceable_target_info(directory_fd: int, name: str):
     try:
         info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -1398,10 +1155,8 @@ def _regular_target_info(directory_fd: int, name: str):
         raise AgentWorkspaceSecurityError(
             "无法安全检查 Agent workspace 宿主写入目标"
         ) from exc
-    if not stat.S_ISREG(info.st_mode) or int(info.st_nlink) != 1:
-        raise AgentWorkspaceSecurityError(
-            "Agent workspace 宿主写入目标必须是单链接普通文件"
-        )
+    if stat.S_ISDIR(info.st_mode):
+        raise AgentWorkspaceError("Agent workspace 宿主写入目标是目录")
     return info
 
 
@@ -1414,8 +1169,8 @@ def write_agent_workspace_file(
 ) -> Path:
     """通过会话目录外的暂存 inode 原子发布一个宿主注入文件。
 
-    发布前使用替换后的净字节数/文件数做配额投影；失败时会恢复
-    原文件，不留下部分写入。该入口也允许受管的私有运行路径。
+    发布后按实际数据量校验；失败时会恢复原文件，不留下部分写入。
+    该入口也允许受管的私有运行路径。
     """
 
     normalized = _normalize_relative_path(path, public=False)
@@ -1442,24 +1197,7 @@ def write_agent_workspace_file(
         session_fd,
         workspace_fd,
     ):
-        _max_bytes, _max_files, _max_entries, _max_depth, min_free_bytes = (
-            _quota_limits()
-        )
         _check_workspace_quota_fd(workspace_fd)
-        _require_filesystem_reserve(
-            session_fd,
-            min_free_bytes=min_free_bytes,
-            reservation_bytes=len(payload),
-        )
-        missing_parent_count = _workspace_missing_parent_count(
-            workspace_fd,
-            parts,
-        )
-        _check_workspace_quota_fd(
-            workspace_fd,
-            additional_entries=missing_parent_count,
-            free_reservation_bytes=0,
-        )
         parent_fd, opened_parents = _workspace_target_parent_fd(
             workspace_fd,
             parts,
@@ -1475,18 +1213,6 @@ def write_agent_workspace_file(
         backup_present = False
         published = False
         try:
-            old_info = _regular_target_info(parent_fd, parts[-1])
-            old_size = int(old_info.st_size) if old_info is not None else 0
-            old_files = 1 if old_info is not None else 0
-            _check_workspace_quota_fd(
-                workspace_fd,
-                additional_bytes=len(payload),
-                additional_files=1,
-                removed_bytes=old_size,
-                removed_files=old_files,
-                # 暂存文件的真实磁盘空间已在上方独立预留。
-                free_reservation_bytes=0,
-            )
             try:
                 file_fd = os.open(
                     stage_name,
@@ -1517,7 +1243,6 @@ def write_agent_workspace_file(
                 staged_info = os.fstat(file_fd)
                 if (
                     not stat.S_ISREG(staged_info.st_mode)
-                    or int(staged_info.st_nlink) != 1
                     or int(staged_info.st_size) != len(payload)
                 ):
                     raise AgentWorkspaceSecurityError(
@@ -1526,24 +1251,9 @@ def write_agent_workspace_file(
             finally:
                 os.close(file_fd)
 
-            current_info = _regular_target_info(parent_fd, parts[-1])
-            if old_info is None:
-                if current_info is not None:
-                    raise AgentWorkspaceSecurityError(
-                        "Agent workspace 宿主写入目标在发布前发生变化"
-                    )
-            elif (
-                current_info is None
-                or int(current_info.st_dev) != int(old_info.st_dev)
-                or int(current_info.st_ino) != int(old_info.st_ino)
-            ):
-                raise AgentWorkspaceSecurityError(
-                    "Agent workspace 宿主写入目标在发布前发生变化"
-                )
-
-            # 先把原文件移到会话私有暂存目录，使新文件发布后
+            # 先把发布时实际存在的旧入口移到会话私有暂存目录，使新文件发布后
             # 仍能在任何后置校验失败时无损恢复。
-            if old_info is not None:
+            if _replaceable_target_info(parent_fd, parts[-1]) is not None:
                 os.rename(
                     parts[-1],
                     backup_name,
@@ -1562,7 +1272,6 @@ def write_agent_workspace_file(
             os.fsync(parent_fd)
             _check_workspace_quota_fd(
                 workspace_fd,
-                free_reservation_bytes=0,
             )
             if backup_present:
                 _unlink_regular_file(
@@ -1621,8 +1330,8 @@ def _unlink_regular_file(directory_fd: int, name: str, *, missing_ok: bool) -> b
         if missing_ok:
             return False
         raise
-    if not stat.S_ISREG(info.st_mode) or int(info.st_nlink) != 1:
-        raise AgentWorkspaceSecurityError("清理目标不是单链接普通文件")
+    if stat.S_ISDIR(info.st_mode):
+        raise AgentWorkspaceError("清理目标是目录")
     os.unlink(name, dir_fd=directory_fd)
     return True
 
@@ -1662,24 +1371,7 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
     )
 
     with _open_session_directories(session_id) as (_safe_id, session_fd, workspace_fd):
-        (
-            _max_bytes,
-            _max_files,
-            _max_entries,
-            _max_depth,
-            min_free_bytes,
-        ) = _quota_limits()
-        # 文件数在读取 multipart 流之前就可以严格投影，
-        # 避免明知无法发布时仍消耗带宽和磁盘。
-        _check_workspace_quota_fd(
-            workspace_fd,
-            additional_files=len(prepared),
-            additional_entries=_workspace_missing_parent_count(
-                workspace_fd,
-                ("attachments", attachment_generation_id, "attachment"),
-            ),
-            free_reservation_bytes=0,
-        )
+        _check_workspace_quota_fd(workspace_fd)
         staging_root_fd = _open_managed_child_directory(
             session_fd,
             ".attachment-staging",
@@ -1733,16 +1425,7 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
                             raise AgentAttachmentError(
                                 f"单轮附件总大小不能超过 {MAX_ATTACHMENT_TOTAL_BYTES // (1024 * 1024)} MiB"
                             )
-                        _require_filesystem_reserve(
-                            staging_root_fd,
-                            min_free_bytes=min_free_bytes,
-                            reservation_bytes=len(payload),
-                        )
                         _write_all(file_fd, payload)
-                        _require_filesystem_reserve(
-                            staging_root_fd,
-                            min_free_bytes=min_free_bytes,
-                        )
                         digest.update(payload)
                         file_size += len(payload)
                         total_size += len(payload)
@@ -1750,7 +1433,6 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
                     info = os.fstat(file_fd)
                     if (
                         not stat.S_ISREG(info.st_mode)
-                        or int(info.st_nlink) != 1
                         or int(info.st_size) != file_size
                         or stat.S_IMODE(info.st_mode) != 0o600
                     ):
@@ -1772,8 +1454,6 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
             _check_workspace_quota_fd(
                 workspace_fd,
                 additional_bytes=total_size,
-                additional_files=len(metadata),
-                free_reservation_bytes=0,
             )
 
             attachments_fd = _open_managed_child_directory(
@@ -1811,7 +1491,6 @@ def save_agent_attachments(session_id, task_id, uploads: Iterable) -> list[dict]
             os.fsync(attachments_fd)
             _check_workspace_quota_fd(
                 workspace_fd,
-                free_reservation_bytes=0,
             )
             completed = True
             return metadata
@@ -1957,15 +1636,9 @@ def clear_agent_session_state_file(session_id) -> bool:
 __all__ = [
     "AGENT_WORKSPACE_ROOT",
     "AGENT_WORKSPACE_MAX_BYTES",
-    "AGENT_WORKSPACE_MAX_FILES",
-    "AGENT_WORKSPACE_MAX_ENTRIES",
-    "AGENT_WORKSPACE_MAX_DEPTH",
-    "AGENT_WORKSPACE_MIN_FREE_BYTES",
     "MAX_ATTACHMENT_FILES",
     "MAX_ATTACHMENT_FILE_BYTES",
     "MAX_ATTACHMENT_TOTAL_BYTES",
-    "MAX_WORKSPACE_TREE_ENTRIES",
-    "MAX_WORKSPACE_TREE_DEPTH",
     "MAX_TEXT_PREVIEW_BYTES",
     "AgentWorkspaceError",
     "AgentWorkspacePathError",

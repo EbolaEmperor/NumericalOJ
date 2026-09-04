@@ -88,21 +88,13 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `AGENT_REPOSITORY_KNN_SCORE_THRESHOLD` | float | `0.08` |
 | `AGENT_WORKSPACE_ROOT` | string | `tmp/agent_workspaces` |
 | `AGENT_WORKSPACE_MAX_BYTES` | int | `4294967296` |
-| `AGENT_WORKSPACE_MAX_FILES` | int | `20000` |
-| `AGENT_WORKSPACE_MAX_ENTRIES` | int | `25000` |
-| `AGENT_WORKSPACE_MAX_DEPTH` | int | `64` |
-| `AGENT_WORKSPACE_MIN_FREE_BYTES` | int | `2147483648` |
 | `AGENT_WORKSPACE_QUOTA_CHECK_INTERVAL_SECONDS` | float | `2.0` |
 | `AGENT_CONTAINER_SITE_URL` | string | `http://host.docker.internal:2025` |
 | `MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS` | int | `90` |
 
-每个持久 Agent workspace 同时受总字节数、普通文件数、目录在内的总 entry 数和目录深度限制；任何一项超限都会
-阻止启动或终止正在运行的 Harness。附件与宿主注入文件也经过同一配额边界，
-并且所在文件系统始终保留 `AGENT_WORKSPACE_MIN_FREE_BYTES` 可用空间。无法安全统计
-工作区或无法确认可用空间时会拒绝继续，不会降级为无限额模式。符号链接、FIFO 与
-socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每个入口重复计算完整
-逻辑大小。扫描与只读文件服务不会跟随链接，无法安全预览的入口不会出现在 workspace
-文件树中。
+每个持久 Agent workspace 只受总数据量限制；不会因为文件数量、目录数量、目录深度、
+文件名、硬链接、符号链接或运行期特殊节点而阻止或终止 Harness。总量统计不跟随符号链接，
+硬链接共享的 inode 只计一次；socket、FIFO 等运行期节点不会阻止 checkpoint。
 
 默认总字节数为 4 GiB。因旧版 512 MiB 上限而失败、且已经建立原生 Harness 会话的任务会保留原 Workspace、
 私有 Runtime 和原生会话恢复点；新版本部署并重启 Worker 后，可以在原会话直接发送下一条消息继续。直接续聊

@@ -1,8 +1,8 @@
 """通用 Agent 原生运行态的私有、不可变 checkpoint。
 
-checkpoint 位于会话目录内、容器只挂载的 ``workspace/`` 之外。所有来自
-``workspace/.runtime`` 的内容都视为不可信；扫描、复制、恢复和删除均使用
-``dir_fd`` + ``O_NOFOLLOW`` 固定 inode，不跟随符号链接。
+checkpoint 位于会话目录内、容器只挂载的 ``workspace/`` 之外。
+``workspace/.runtime`` 中的目录、文件和链接按原样复制；socket、FIFO 与设备节点
+属于瞬时运行态，不写入 checkpoint。
 """
 
 from __future__ import annotations
@@ -31,23 +31,12 @@ _COPY_CHUNK_BYTES = 64 * 1024
 @dataclass(slots=True)
 class _UsageCounter:
     max_bytes: int
-    max_files: int
-    max_entries: int
-    max_depth: int
     total_bytes: int = 0
     file_count: int = 0
     entry_count: int = 0
 
-    def add_entry(self, *, depth: int, size: int = 0, regular: bool = False) -> None:
+    def add_entry(self, *, size: int = 0, regular: bool = False) -> None:
         self.entry_count += 1
-        if self.entry_count > self.max_entries:
-            raise workspace_store.AgentWorkspaceQuotaError(
-                f"Agent runtime checkpoint 总 entry 数不能超过 {self.max_entries}"
-            )
-        if depth > self.max_depth:
-            raise workspace_store.AgentWorkspaceQuotaError(
-                f"Agent runtime checkpoint 目录深度不能超过 {self.max_depth}"
-            )
         self.total_bytes += max(0, int(size))
         if self.total_bytes > self.max_bytes:
             raise workspace_store.AgentWorkspaceQuotaError(
@@ -55,10 +44,6 @@ class _UsageCounter:
             )
         if regular:
             self.file_count += 1
-            if self.file_count > self.max_files:
-                raise workspace_store.AgentWorkspaceQuotaError(
-                    f"Agent runtime checkpoint 普通文件数不能超过 {self.max_files}"
-                )
 
     def usage(self) -> workspace_store.AgentWorkspaceUsage:
         return workspace_store.AgentWorkspaceUsage(
@@ -68,9 +53,8 @@ class _UsageCounter:
         )
 
 
-def _limits() -> tuple[int, int, int, int, int]:
-    # 配额与 workspace 使用同一事实源；测试和运行期配置修改也应同步生效。
-    return workspace_store._quota_limits()
+def _limit() -> int:
+    return workspace_store._quota_limit()
 
 
 def _safe_mode(info, *, directory: bool) -> int:
@@ -81,46 +65,8 @@ def _safe_mode(info, *, directory: bool) -> int:
     return 0o600 | (mode & 0o155)
 
 
-def _entry_name(raw_name: str) -> str:
-    try:
-        normalized = workspace_store._normalize_entry_name(raw_name)
-    except (UnicodeError, ValueError) as exc:
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "Agent runtime 包含不安全的文件名"
-        ) from exc
-    if normalized != raw_name:
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "Agent runtime 文件名必须使用 Unicode NFC 规范形式"
-        )
-    return normalized
-
-
-def _same_inode(before, after) -> bool:
-    return (
-        int(before.st_dev) == int(after.st_dev)
-        and int(before.st_ino) == int(after.st_ino)
-        and stat.S_IFMT(before.st_mode) == stat.S_IFMT(after.st_mode)
-    )
-
-
-def _stable_signature(info) -> tuple[int, int, int, int, int, int]:
-    return (
-        int(info.st_dev),
-        int(info.st_ino),
-        int(info.st_size),
-        int(info.st_mtime_ns),
-        int(info.st_ctime_ns),
-        stat.S_IFMT(info.st_mode),
-    )
-
-
 def _new_counter() -> _UsageCounter:
-    max_bytes, max_files, max_entries, max_depth, _min_free = _limits()
-    return _UsageCounter(max_bytes, max_files, max_entries, max_depth)
-
-
-def _is_ignored_runtime_ipc(mode: int) -> bool:
-    return stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode)
+    return _UsageCounter(_limit())
 
 
 def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, int]:
@@ -129,11 +75,10 @@ def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, in
         raise workspace_store.AgentWorkspaceSecurityError(
             "Agent runtime checkpoint 根必须是真实目录"
         )
-    root_device = int(root_before.st_dev)
     counter = _new_counter()
+    counted_inodes: set[tuple[int, int]] = set()
 
-    def walk(directory_fd: int, parent_parts: tuple[str, ...], depth: int) -> None:
-        directory_before = os.fstat(directory_fd)
+    def walk(directory_fd: int) -> None:
         try:
             raw_names = os.listdir(directory_fd)
         except OSError as exc:
@@ -141,85 +86,42 @@ def _scan_tree_fd(root_fd: int) -> tuple[workspace_store.AgentWorkspaceUsage, in
                 "无法安全扫描 Agent runtime"
             ) from exc
         for raw_name in raw_names:
-            name = _entry_name(raw_name)
+            name = raw_name
             try:
                 before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise workspace_store.AgentWorkspaceSecurityError(
-                    "无法安全检查 Agent runtime 目录项"
-                ) from exc
-            if int(before.st_dev) != root_device:
-                raise workspace_store.AgentWorkspaceSecurityError(
-                    "Agent runtime 不允许嵌套其他文件系统"
-                )
-            entry_depth = depth + 1
+            except OSError:
+                continue
             if stat.S_ISDIR(before.st_mode):
-                counter.add_entry(depth=entry_depth)
+                counter.add_entry()
                 try:
                     child_fd = workspace_store._open_existing_directory_at(
                         directory_fd,
                         name,
                         label="Agent runtime 子目录",
                     )
-                except FileNotFoundError as exc:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime 扫描期间发生变化"
-                    ) from exc
+                except OSError:
+                    continue
                 try:
-                    opened = os.fstat(child_fd)
-                    if not _same_inode(before, opened):
-                        raise workspace_store.AgentWorkspaceSecurityError(
-                            "Agent runtime 子目录扫描期间发生变化"
-                        )
-                    walk(child_fd, (*parent_parts, name), entry_depth)
-                    if _stable_signature(opened) != _stable_signature(os.fstat(child_fd)):
-                        raise workspace_store.AgentWorkspaceSecurityError(
-                            "Agent runtime 子目录扫描期间发生变化"
-                        )
+                    walk(child_fd)
                 finally:
                     os.close(child_fd)
                 continue
             if stat.S_ISREG(before.st_mode):
-                if int(before.st_nlink) != 1:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime 普通文件必须只有一个硬链接"
-                    )
+                inode_key = (int(before.st_dev), int(before.st_ino))
                 counter.add_entry(
-                    depth=entry_depth,
-                    size=int(before.st_size),
+                    size=(0 if inode_key in counted_inodes else int(before.st_size)),
                     regular=True,
                 )
+                counted_inodes.add(inode_key)
                 continue
             if stat.S_ISLNK(before.st_mode):
-                try:
-                    target = os.readlink(name, dir_fd=directory_fd)
-                    after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                except OSError as exc:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "无法安全读取 Agent runtime 符号链接"
-                    ) from exc
-                if not _same_inode(before, after):
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime 符号链接扫描期间发生变化"
-                    )
-                counter.add_entry(depth=entry_depth, size=int(before.st_size))
+                counter.add_entry(size=int(before.st_size))
                 continue
-            if _is_ignored_runtime_ipc(before.st_mode):
-                continue
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 只允许目录、普通文件和内部相对符号链接"
-            )
-        if _stable_signature(directory_before) != _stable_signature(os.fstat(directory_fd)):
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 目录扫描期间发生变化"
-            )
+            # socket、FIFO、设备节点等瞬时运行期入口不参与 checkpoint，
+            # 也不会成为拒绝继续会话的理由。
+            continue
 
-    walk(root_fd, (), 0)
-    root_after = os.fstat(root_fd)
-    if _stable_signature(root_before) != _stable_signature(root_after):
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "Agent runtime 扫描期间发生变化"
-        )
+    walk(root_fd)
     return counter.usage(), _safe_mode(root_before, directory=True)
 
 
@@ -238,8 +140,9 @@ def _copy_regular_file(
     source_directory_fd: int,
     destination_directory_fd: int,
     name: str,
-    before,
-) -> None:
+    *,
+    max_bytes: int,
+) -> int | None:
     source_flags = (
         os.O_RDONLY
         | getattr(os, "O_NONBLOCK", 0)
@@ -255,21 +158,15 @@ def _copy_regular_file(
     )
     try:
         source_fd = os.open(name, source_flags, dir_fd=source_directory_fd)
-    except OSError as exc:
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "无法安全打开 Agent runtime 文件"
-        ) from exc
+    except OSError:
+        return None
     destination_fd = -1
+    destination_created = False
+    completed = False
     try:
         opened = os.fstat(source_fd)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or int(opened.st_nlink) != 1
-            or not _same_inode(before, opened)
-        ):
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 文件打开时发生变化"
-            )
+        if not stat.S_ISREG(opened.st_mode):
+            return None
         try:
             destination_fd = os.open(
                 name,
@@ -281,31 +178,34 @@ def _copy_regular_file(
             raise workspace_store.AgentWorkspaceError(
                 "无法创建 Agent runtime checkpoint 文件"
             ) from exc
+        destination_created = True
         copied = 0
         while True:
-            payload = os.read(source_fd, _COPY_CHUNK_BYTES)
+            try:
+                payload = os.read(source_fd, _COPY_CHUNK_BYTES)
+            except OSError:
+                return None
             if not payload:
                 break
             copied += len(payload)
-            if copied > int(opened.st_size):
-                raise workspace_store.AgentWorkspaceSecurityError(
-                    "Agent runtime 文件复制期间增长"
+            if copied > max_bytes:
+                raise workspace_store.AgentWorkspaceQuotaError(
+                    f"Agent runtime checkpoint 总大小不能超过 {_limit()} 字节"
                 )
             _write_all(destination_fd, payload)
-        if copied != int(opened.st_size):
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 文件复制期间大小发生变化"
-            )
-        if _stable_signature(opened) != _stable_signature(os.fstat(source_fd)):
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 文件复制期间发生变化"
-            )
         os.fchmod(destination_fd, _safe_mode(opened, directory=False))
         os.fsync(destination_fd)
+        completed = True
+        return copied
     finally:
         if destination_fd >= 0:
             os.close(destination_fd)
         os.close(source_fd)
+        if destination_created and not completed:
+            try:
+                os.unlink(name, dir_fd=destination_directory_fd)
+            except OSError:
+                pass
 
 
 def _copy_tree_fd(
@@ -317,71 +217,53 @@ def _copy_tree_fd(
         raise workspace_store.AgentWorkspaceSecurityError(
             "Agent runtime checkpoint 源必须是真实目录"
         )
-    source_device = int(source_root_before.st_dev)
     counter = _new_counter()
+    copied_inodes: dict[tuple[int, int], tuple[str, ...]] = {}
 
     def copy_directory(
         source_fd: int,
         destination_fd: int,
         parent_parts: tuple[str, ...],
-        depth: int,
     ) -> None:
-        source_before = os.fstat(source_fd)
         try:
             raw_names = os.listdir(source_fd)
-        except OSError as exc:
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "无法读取 Agent runtime checkpoint 源目录"
-            ) from exc
+        except OSError:
+            return
         for raw_name in raw_names:
-            name = _entry_name(raw_name)
+            name = raw_name
             try:
                 before = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise workspace_store.AgentWorkspaceSecurityError(
-                    "无法检查 Agent runtime checkpoint 源目录项"
-                ) from exc
-            if int(before.st_dev) != source_device:
-                raise workspace_store.AgentWorkspaceSecurityError(
-                    "Agent runtime 不允许嵌套其他文件系统"
-                )
-            entry_depth = depth + 1
+            except OSError:
+                continue
             if stat.S_ISDIR(before.st_mode):
-                counter.add_entry(depth=entry_depth)
                 try:
-                    os.mkdir(name, mode=0o700, dir_fd=destination_fd)
                     source_child_fd = workspace_store._open_existing_directory_at(
                         source_fd,
                         name,
                         label="Agent runtime checkpoint 源子目录",
                     )
+                except OSError:
+                    continue
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=destination_fd)
                     destination_child_fd = workspace_store._open_existing_directory_at(
                         destination_fd,
                         name,
                         label="Agent runtime checkpoint 目标子目录",
                     )
                 except OSError as exc:
+                    os.close(source_child_fd)
                     raise workspace_store.AgentWorkspaceError(
                         "无法创建 Agent runtime checkpoint 子目录"
                     ) from exc
+                counter.add_entry()
                 try:
                     opened = os.fstat(source_child_fd)
-                    if not _same_inode(before, opened):
-                        raise workspace_store.AgentWorkspaceSecurityError(
-                            "Agent runtime 子目录复制期间发生变化"
-                        )
                     copy_directory(
                         source_child_fd,
                         destination_child_fd,
                         (*parent_parts, name),
-                        entry_depth,
                     )
-                    if _stable_signature(opened) != _stable_signature(
-                        os.fstat(source_child_fd)
-                    ):
-                        raise workspace_store.AgentWorkspaceSecurityError(
-                            "Agent runtime 子目录复制期间发生变化"
-                        )
                     os.fchmod(
                         destination_child_fd,
                         _safe_mode(opened, directory=True),
@@ -392,30 +274,51 @@ def _copy_tree_fd(
                     os.close(source_child_fd)
                 continue
             if stat.S_ISREG(before.st_mode):
-                if int(before.st_nlink) != 1:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime 普通文件必须只有一个硬链接"
+                inode_key = (int(before.st_dev), int(before.st_ino))
+                current_parts = (*parent_parts, name)
+                first_parts = copied_inodes.get(inode_key)
+                copied_size = int(before.st_size)
+                if first_parts is None:
+                    copied_size = _copy_regular_file(
+                        source_fd,
+                        destination_fd,
+                        name,
+                        max_bytes=counter.max_bytes - counter.total_bytes,
                     )
+                    if copied_size is None:
+                        continue
+                    copied_inodes[inode_key] = current_parts
+                else:
+                    try:
+                        os.link(
+                            "/".join(first_parts),
+                            "/".join(current_parts),
+                            src_dir_fd=destination_root_fd,
+                            dst_dir_fd=destination_root_fd,
+                            follow_symlinks=False,
+                        )
+                        copied_size = 0
+                    except OSError:
+                        # 目标文件系统不支持硬链接时退化为普通复制，不影响续聊。
+                        copied_size = _copy_regular_file(
+                            source_fd,
+                            destination_fd,
+                            name,
+                            max_bytes=counter.max_bytes - counter.total_bytes,
+                        )
+                        if copied_size is None:
+                            continue
                 counter.add_entry(
-                    depth=entry_depth,
-                    size=int(before.st_size),
+                    size=copied_size,
                     regular=True,
                 )
-                _copy_regular_file(source_fd, destination_fd, name, before)
                 continue
             if stat.S_ISLNK(before.st_mode):
                 try:
                     target = os.readlink(name, dir_fd=source_fd)
-                    after = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
-                except OSError as exc:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "无法安全读取 Agent runtime 符号链接"
-                    ) from exc
-                if not _same_inode(before, after):
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime 符号链接复制期间发生变化"
-                    )
-                counter.add_entry(depth=entry_depth, size=int(before.st_size))
+                except OSError:
+                    continue
+                counter.add_entry(size=int(before.st_size))
                 try:
                     os.symlink(target, name, dir_fd=destination_fd)
                 except OSError as exc:
@@ -423,24 +326,10 @@ def _copy_tree_fd(
                         "无法创建 Agent runtime checkpoint 符号链接"
                     ) from exc
                 continue
-            if _is_ignored_runtime_ipc(before.st_mode):
-                continue
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 只允许目录、普通文件和内部相对符号链接"
-            )
-        if _stable_signature(source_before) != _stable_signature(os.fstat(source_fd)):
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime 目录复制期间发生变化"
-            )
+            continue
         os.fsync(destination_fd)
 
-    copy_directory(source_root_fd, destination_root_fd, (), 0)
-    if _stable_signature(source_root_before) != _stable_signature(
-        os.fstat(source_root_fd)
-    ):
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "Agent runtime 根目录复制期间发生变化"
-        )
+    copy_directory(source_root_fd, destination_root_fd, ())
     os.fchmod(destination_root_fd, _safe_mode(source_root_before, directory=True))
     os.fsync(destination_root_fd)
     return counter.usage()
@@ -505,13 +394,11 @@ def _read_manifest(checkpoint_fd: int) -> workspace_store.AgentWorkspaceUsage:
         info = os.fstat(fd)
         if (
             not stat.S_ISREG(info.st_mode)
-            or int(info.st_nlink) != 1
             or int(info.st_size) > _MAX_MANIFEST_BYTES
         ):
             raise workspace_store.AgentWorkspaceSecurityError(
                 "Agent runtime checkpoint 清单属性无效"
             )
-        before_signature = _stable_signature(info)
         payload = bytearray()
         while len(payload) <= _MAX_MANIFEST_BYTES:
             chunk = os.read(fd, min(4096, _MAX_MANIFEST_BYTES + 1 - len(payload)))
@@ -521,10 +408,6 @@ def _read_manifest(checkpoint_fd: int) -> workspace_store.AgentWorkspaceUsage:
         if len(payload) > _MAX_MANIFEST_BYTES:
             raise workspace_store.AgentWorkspaceSecurityError(
                 "Agent runtime checkpoint 清单过大"
-            )
-        if before_signature != _stable_signature(os.fstat(fd)):
-            raise workspace_store.AgentWorkspaceSecurityError(
-                "Agent runtime checkpoint 清单读取期间发生变化"
             )
     finally:
         os.close(fd)
@@ -555,10 +438,9 @@ def _read_manifest(checkpoint_fd: int) -> workspace_store.AgentWorkspaceUsage:
 
 def _remove_tree_contents_fd(
     directory_fd: int,
-    parent_parts: tuple[str, ...] = (),
 ) -> None:
     for raw_name in os.listdir(directory_fd):
-        name = _entry_name(raw_name)
+        name = raw_name
         info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         if stat.S_ISDIR(info.st_mode):
             child_fd = workspace_store._open_existing_directory_at(
@@ -568,24 +450,12 @@ def _remove_tree_contents_fd(
             )
             try:
                 os.fchmod(child_fd, 0o700)
-                _remove_tree_contents_fd(child_fd, (*parent_parts, name))
+                _remove_tree_contents_fd(child_fd)
             finally:
                 os.close(child_fd)
             os.rmdir(name, dir_fd=directory_fd)
             continue
-        if stat.S_ISREG(info.st_mode):
-            if int(info.st_nlink) != 1:
-                raise workspace_store.AgentWorkspaceSecurityError(
-                    "Agent runtime checkpoint 清理文件必须是单链接普通文件"
-                )
-            os.unlink(name, dir_fd=directory_fd)
-            continue
-        if stat.S_ISLNK(info.st_mode):
-            os.unlink(name, dir_fd=directory_fd)
-            continue
-        raise workspace_store.AgentWorkspaceSecurityError(
-            "Agent runtime checkpoint 清理目标包含特殊文件"
-        )
+        os.unlink(name, dir_fd=directory_fd)
     os.fsync(directory_fd)
 
 
@@ -601,6 +471,15 @@ def _remove_directory_at(parent_fd: int, name: str) -> None:
     finally:
         os.close(directory_fd)
     os.rmdir(name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+
+
+def _remove_entry_at(parent_fd: int, name: str) -> None:
+    info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if stat.S_ISDIR(info.st_mode):
+        _remove_directory_at(parent_fd, name)
+        return
+    os.unlink(name, dir_fd=parent_fd)
     os.fsync(parent_fd)
 
 
@@ -622,7 +501,6 @@ def _checkpoint_lock(session_fd: int):
         info = os.fstat(fd)
         if (
             not stat.S_ISREG(info.st_mode)
-            or int(info.st_nlink) != 1
             or int(info.st_uid) != os.geteuid()
         ):
             raise workspace_store.AgentWorkspaceSecurityError(
@@ -695,29 +573,15 @@ def _create_checkpoint(
                     raise workspace_store.AgentWorkspaceError(
                         "Agent runtime checkpoint 已存在，拒绝覆盖"
                     )
-                if empty:
-                    expected_usage = workspace_store.AgentWorkspaceUsage(0, 0, 0)
-                else:
+                if not empty:
                     try:
                         source_runtime_fd = workspace_store._open_existing_directory_at(
                             workspace_fd,
                             ".runtime",
                             label="Agent runtime 目录",
                         )
-                    except FileNotFoundError as exc:
-                        raise workspace_store.AgentWorkspaceSecurityError(
-                            "Agent runtime 目录不存在；空基线必须显式创建"
-                        ) from exc
-                    expected_usage, _root_mode = _scan_tree_fd(source_runtime_fd)
-
-                _max_bytes, _max_files, _max_entries, _max_depth, min_free = _limits()
-                workspace_store._require_filesystem_reserve(
-                    session_fd,
-                    min_free_bytes=min_free,
-                    reservation_bytes=(
-                        expected_usage.total_bytes + _MAX_MANIFEST_BYTES
-                    ),
-                )
+                    except OSError:
+                        source_runtime_fd = None
                 os.mkdir(stage_name, mode=0o700, dir_fd=staging_fd)
                 stage_fd = workspace_store._open_existing_directory_at(
                     staging_fd,
@@ -736,20 +600,12 @@ def _create_checkpoint(
                 )
                 copied_usage = (
                     workspace_store.AgentWorkspaceUsage(0, 0, 0)
-                    if empty
+                    if empty or source_runtime_fd is None
                     else _copy_tree_fd(source_runtime_fd, stage_runtime_fd)
                 )
-                if copied_usage != expected_usage:
-                    raise workspace_store.AgentWorkspaceSecurityError(
-                        "Agent runtime 在 checkpoint 创建期间发生变化"
-                    )
                 os.fsync(stage_runtime_fd)
                 _write_manifest(stage_fd, copied_usage)
                 os.fsync(stage_fd)
-                workspace_store._require_filesystem_reserve(
-                    session_fd,
-                    min_free_bytes=min_free,
-                )
 
                 # 先以 mkdir 原子占名，保证永不覆盖既有 checkpoint；若进程在
                 # 下一步前崩溃，缺少 manifest/runtime 的空目录会被恢复入口拒绝。
@@ -940,14 +796,6 @@ def restore_agent_runtime_checkpoint(
                     checkpoints_fd,
                     safe_checkpoint_id,
                 ) as (checkpoint_runtime_fd, expected_usage):
-                    _max_bytes, _max_files, _max_entries, _max_depth, min_free = (
-                        _limits()
-                    )
-                    workspace_store._require_filesystem_reserve(
-                        session_fd,
-                        min_free_bytes=min_free,
-                        reservation_bytes=expected_usage.total_bytes,
-                    )
                     os.mkdir(stage_name, mode=0o700, dir_fd=session_fd)
                     stage_present = True
                     stage_fd = workspace_store._open_existing_directory_at(
@@ -964,10 +812,6 @@ def restore_agent_runtime_checkpoint(
                             "Agent runtime checkpoint 恢复复制不完整"
                         )
                     os.fsync(stage_fd)
-                    workspace_store._require_filesystem_reserve(
-                        session_fd,
-                        min_free_bytes=min_free,
-                    )
 
                 try:
                     runtime_info = os.stat(
@@ -978,25 +822,7 @@ def restore_agent_runtime_checkpoint(
                 except FileNotFoundError:
                     runtime_info = None
                 if runtime_info is not None:
-                    if not stat.S_ISDIR(runtime_info.st_mode):
-                        raise workspace_store.AgentWorkspaceSecurityError(
-                            "现有 Agent runtime 不是可安全替换的真实目录"
-                        )
-                    runtime_fd = workspace_store._open_existing_directory_at(
-                        workspace_fd,
-                        ".runtime",
-                        label="现有 Agent runtime",
-                    )
                     try:
-                        opened_runtime = os.fstat(runtime_fd)
-                        if (
-                            not _same_inode(runtime_info, opened_runtime)
-                            or int(runtime_info.st_dev)
-                            != int(os.fstat(workspace_fd).st_dev)
-                        ):
-                            raise workspace_store.AgentWorkspaceSecurityError(
-                                "现有 Agent runtime 在恢复前发生变化"
-                            )
                         os.rename(
                             ".runtime",
                             backup_name,
@@ -1004,18 +830,6 @@ def restore_agent_runtime_checkpoint(
                             dst_dir_fd=session_fd,
                         )
                         backup_present = True
-                        backup_fd = workspace_store._open_existing_directory_at(
-                            session_fd,
-                            backup_name,
-                            label="Agent runtime 恢复备份",
-                        )
-                        try:
-                            if not _same_inode(opened_runtime, os.fstat(backup_fd)):
-                                raise workspace_store.AgentWorkspaceSecurityError(
-                                    "现有 Agent runtime 在原子换位时发生变化"
-                                )
-                        finally:
-                            os.close(backup_fd)
                     except Exception:
                         if backup_present:
                             os.rename(
@@ -1026,8 +840,6 @@ def restore_agent_runtime_checkpoint(
                             )
                             backup_present = False
                         raise
-                    finally:
-                        os.close(runtime_fd)
 
                 try:
                     os.rename(
@@ -1057,7 +869,7 @@ def restore_agent_runtime_checkpoint(
 
                 if backup_present:
                     try:
-                        _remove_directory_at(session_fd, backup_name)
+                        _remove_entry_at(session_fd, backup_name)
                         backup_present = False
                     except Exception:
                         # 新 runtime 已原子发布；此时旧目录可能已被部分清理，

@@ -73,8 +73,6 @@ _NATIVE_SESSION_ID_RE = re.compile(
 _SESSION_STATE_RELATIVE_PATH = ".aj_session_state.json"
 _SESSION_STATE_MAX_BYTES = 64 * 1024
 _SKILL_WORKSPACE_RESERVATION_BYTES = 10 * 1024 * 1024
-_SKILL_WORKSPACE_RESERVATION_FILES = 513
-_SKILL_WORKSPACE_RESERVATION_DIRECTORIES = 512
 _CONTAINER_REMOVAL_CONFIRM_TIMEOUT_SECONDS = 20.0
 _CONTAINER_REMOVAL_CONFIRM_POLL_SECONDS = 0.25
 
@@ -1708,8 +1706,6 @@ def run_agent_harness(
             check_agent_workspace_quota(
                 normalized_session_id,
                 additional_bytes=_SKILL_WORKSPACE_RESERVATION_BYTES,
-                additional_files=_SKILL_WORKSPACE_RESERVATION_FILES,
-                additional_entries=_SKILL_WORKSPACE_RESERVATION_DIRECTORIES,
             )
             materialized_skill = materialize_skill(
                 workspace,
