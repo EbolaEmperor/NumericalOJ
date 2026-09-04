@@ -88,4 +88,13 @@ describe('共享 Agent 执行轨迹', () => {
     expect(document.querySelector('.agent-subagent-loader')).toBeNull()
     expect(document.querySelector('.agent-subagent-completed-dot')).toBeTruthy()
   })
+
+  it('为运行中的 subagent 使用更连续的高密度数学曲线', () => {
+    renderTrace({
+      status: 'running',
+      subagents: [{subagent_id: 'worker-running', name: '正在检查', status: 'running'}],
+    })
+
+    expect(document.querySelectorAll('.agent-subagent-loader circle')).toHaveLength(42)
+  })
 })

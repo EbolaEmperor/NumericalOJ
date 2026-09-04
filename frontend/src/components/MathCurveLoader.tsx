@@ -52,11 +52,11 @@ function buildPath(config: Curve, scale: number) {
   return commands.join(' ')
 }
 
-export function MathCurveLoader({label = '正在处理…', size = 'sm', iconOnly = false, className = '', colorA = '#111111', colorB = '#000000', strokeScale = 1, hidden = false, ariaLabel}: {label?: string; size?: 'xs' | 'sm' | 'md' | 'lg'; iconOnly?: boolean; className?: string; colorA?: string; colorB?: string; strokeScale?: number; hidden?: boolean; ariaLabel?: string}) {
+export function MathCurveLoader({label = '正在处理…', size = 'sm', iconOnly = false, className = '', colorA = '#111111', colorB = '#000000', strokeScale = 1, particleCount: particleCountOverride, hidden = false, ariaLabel}: {label?: string; size?: 'xs' | 'sm' | 'md' | 'lg'; iconOnly?: boolean; className?: string; colorA?: string; colorB?: string; strokeScale?: number; particleCount?: number; hidden?: boolean; ariaLabel?: string}) {
   const serial = useId().replace(/[^a-z0-9_-]/gi, '')
   const seed = useMemo(() => [...serial].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16_777_619) >>> 0, 2_166_136_261), [serial])
   const curve = curves[seed % curves.length]
-  const particleCount = {xs: 24, sm: 36, md: 52, lg: curve.particleCount}[size]
+  const particleCount = Math.max(1, Math.round(particleCountOverride ?? {xs: 24, sm: 36, md: 52, lg: curve.particleCount}[size]))
   const rootRef = useRef<HTMLSpanElement>(null)
   const groupRef = useRef<SVGGElement>(null)
   const pathRef = useRef<SVGPathElement>(null)
