@@ -28,8 +28,6 @@ def _load_run_harness():
 def _materialized_skill(runtime_root, harness):
     relative = {
         "claude_code": Path("home/.claude/skills/numoj-user"),
-        "codex": Path("home/.agents/skills/numoj-user"),
-        "opencode": Path("opencode/config/opencode/skills/numoj-user"),
         "pi": Path("pi/skills/numoj-user"),
     }[harness]
     skill_dir = runtime_root / relative
@@ -94,69 +92,8 @@ def test_prompt_environment_remains_legacy_default(monkeypatch):
     assert module._prompt_from_env() == "from-env"
 
 
-def test_codex_uses_workspace_runtime_as_codex_home(monkeypatch, tmp_path):
-    module = _load_run_harness()
-    runtime_root, _skill_file = _enable_runtime(
-        monkeypatch, tmp_path, "codex",
-    )
-    calls = []
-    configs = []
-    _set_endpoint(monkeypatch)
-
-    class FakeRelay:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def start(self):
-            return "http://127.0.0.1:43123"
-
-        def stop(self):
-            pass
-
-    monkeypatch.setattr(module, "_CodexEndpointRelay", FakeRelay)
-    monkeypatch.setattr(
-        module, "_write_codex_config",
-        lambda home, *_args, **_kwargs: configs.append(home),
-    )
-    monkeypatch.setattr(
-        module, "_run",
-        lambda args, env=None, **kwargs: (
-            calls.append((list(args), dict(env or {}), kwargs))
-            or SimpleNamespace(returncode=0, stdout="", stderr="")
-        ),
-    )
-    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
-
-    assert module._run_codex("solve") == 0
-    assert configs == [str(runtime_root / "codex")]
-    assert calls[0][1]["CODEX_HOME"] == str(runtime_root / "codex")
-    assert calls[0][2]["input_text"] == "solve"
 
 
-def test_opencode_uses_workspace_runtime_home_and_xdg(monkeypatch, tmp_path):
-    module = _load_run_harness()
-    runtime_root, _skill_file = _enable_runtime(
-        monkeypatch, tmp_path, "opencode",
-    )
-    calls = []
-    _set_endpoint(monkeypatch)
-    monkeypatch.setattr(
-        module, "_run",
-        lambda args, env=None, **_kwargs: (
-            calls.append((list(args), dict(env or {})))
-            or SimpleNamespace(returncode=0, stdout="", stderr="")
-        ),
-    )
-    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
-
-    assert module._run_opencode("solve") == 0
-    args, env = calls[0]
-    assert args[args.index("--format") + 1] == "json"
-    assert env["HOME"] == str(runtime_root / "opencode/home")
-    assert env["XDG_CONFIG_HOME"] == str(runtime_root / "opencode/config")
-    assert env["XDG_DATA_HOME"] == str(runtime_root / "opencode/data")
-    assert env["XDG_STATE_HOME"] == str(runtime_root / "opencode/state")
-    assert env["XDG_CACHE_HOME"] == str(runtime_root / "opencode/cache")
 
 
 def test_pi_explicitly_loads_only_materialized_skill(monkeypatch, tmp_path):

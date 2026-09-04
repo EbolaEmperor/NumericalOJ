@@ -64,8 +64,6 @@ _REASONING_EFFORT_OPTIONS_BY_HARNESS = {
 
 _HARNESS_LABELS = {
     "claude_code": "Claude Code",
-    "codex": "Codex",
-    "opencode": "OpenCode",
     "pi": "Pi",
 }
 _TASK_SKILLS = {

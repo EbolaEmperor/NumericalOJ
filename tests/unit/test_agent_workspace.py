@@ -51,7 +51,6 @@ def test_ensure_agent_workspace_uses_private_fixed_layout(workspace_root):
     ("harness", "access_role", "filename"),
     [
         ("claude_code", "user", "CLAUDE.md"),
-        ("codex", "user", "AGENTS.md"),
         ("pi", "admin", "AGENTS.md"),
     ],
 )

@@ -250,7 +250,7 @@ def test_finished_snapshot_is_sticky_against_late_worker_upsert(terminal_status)
         'status': 'Failed' if terminal_status != 'Failed' else 'Running',
         'message': '迟到的冲突状态',
         'problem_title': '不应覆盖',
-        'harness': 'codex',
+        'harness': 'claude_code',
         'endpoint_id': 22,
     })
 

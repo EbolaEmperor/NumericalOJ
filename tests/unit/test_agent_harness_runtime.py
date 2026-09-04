@@ -83,7 +83,7 @@ def test_extract_harness_failure_detail_prefers_sanitized_stderr_and_bounds_it()
 
 
 def test_docker_args_make_workspace_the_only_writable_filesystem(tmp_path):
-    env = _runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "pi", "solve")
     args = runtime._docker_args(
         container_name="numoj-agent-test",
         workspace=tmp_path,
@@ -107,9 +107,9 @@ def test_docker_args_make_workspace_the_only_writable_filesystem(tmp_path):
 def test_docker_args_mount_materialized_skill_read_only_inside_workspace(
     tmp_path,
 ):
-    skill = tmp_path / ".runtime/home/.agents/skills/numoj-user"
+    skill = tmp_path / ".runtime/pi/skills/numoj-user"
     skill.mkdir(parents=True)
-    env = _runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "pi", "solve")
 
     args = runtime._docker_args(
         container_name="numoj-agent-test",
@@ -127,7 +127,7 @@ def test_docker_args_mount_materialized_skill_read_only_inside_workspace(
         f"{tmp_path.resolve()}:/workspace:rw",
         (
             f"{skill.resolve()}:"
-            "/workspace/.runtime/home/.agents/skills/numoj-user:ro"
+            "/workspace/.runtime/pi/skills/numoj-user:ro"
         ),
     ]
 
@@ -136,7 +136,7 @@ def test_docker_args_use_colima_compatible_user_only_on_darwin(
     monkeypatch,
     tmp_path,
 ):
-    env = _runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "pi", "solve")
 
     monkeypatch.setattr(runtime.platform, "system", lambda: "Darwin")
     darwin_args = runtime._docker_args(
@@ -196,7 +196,7 @@ def test_docker_exec_has_no_agent_wall_clock_timeout_wrapper():
 
 
 def test_runtime_env_keeps_harness_state_and_numoj_config_in_workspace():
-    env = _runtime_env(_endpoint(), "codex", "solve")
+    env = _runtime_env(_endpoint(), "pi", "solve")
 
     assert env["HOME"].startswith("/workspace/")
     assert env["TMPDIR"] == "/workspace/.runtime/tmp"
@@ -255,7 +255,7 @@ def test_custom_admin_runtime_uses_admin_skill_and_native_resume():
     native_id = "22222222-2222-2222-2222-222222222222"
     env = _runtime_env(
         _endpoint(),
-        "codex",
+        "pi",
         "custom",
         access_role="admin",
         resume_session_id=native_id,
@@ -267,43 +267,15 @@ def test_custom_admin_runtime_uses_admin_skill_and_native_resume():
     assert env["AJ_FORK_SESSION"] == "0"
 
 
-def test_opencode_native_session_id_is_opaque_and_preserves_case(tmp_path):
-    native_id = "ses_MixedCase_19-Z"
-    env = _runtime_env(
-        _endpoint(),
-        "opencode",
-        "custom",
-        access_role="user",
-        resume_session_id=native_id,
-    )
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / ".aj_session_state.json").write_text(
-        json.dumps({"harness": "opencode", "session_id": native_id}),
-        encoding="utf-8",
-    )
-
-    assert env["AJ_RESUME_SESSION_ID"] == native_id
-    assert runtime.normalize_native_session_id(native_id, "opencode") == native_id
-    assert runtime._read_native_session_id(workspace, "opencode") == native_id
-    with pytest.raises(ValueError, match="session_id"):
-        runtime.normalize_native_session_id(native_id, "codex")
 
 
-@pytest.mark.parametrize(
-    "native_id",
-    ["ses_", "ses_has.dot", "SES_wrong_prefix", "ses_" + "a" * 121],
-)
-def test_opencode_native_session_id_rejects_invalid_values(native_id):
-    with pytest.raises(ValueError, match="session_id"):
-        runtime.normalize_native_session_id(native_id, "opencode")
 
 
 def test_native_session_state_is_read_without_following_symlinks(tmp_path):
     outside = tmp_path / "outside.json"
     outside.write_text(
         json.dumps({
-            "harness": "codex",
+            "harness": "pi",
             "session_id": "33333333-3333-3333-3333-333333333333",
         }),
         encoding="utf-8",
@@ -313,7 +285,7 @@ def test_native_session_state_is_read_without_following_symlinks(tmp_path):
     (workspace / ".aj_session_state.json").symlink_to(outside)
 
     with pytest.raises(ValueError, match="安全的普通文件"):
-        runtime._read_native_session_id(workspace, "codex")
+        runtime._read_native_session_id(workspace, "pi")
 
 
 def test_identity_cleanup_never_traverses_workspace_parent_symlink(tmp_path):
@@ -386,7 +358,7 @@ def test_runtime_env_injects_relayed_web_search_mcp_without_secret_in_args(
         tmp_path):
     env = _runtime_env(
         _endpoint(),
-        "codex",
+        "pi",
         "solve",
         web_search_settings={
             "base_url": "http://localhost:4123/mcp",
@@ -514,7 +486,7 @@ def test_run_exits_before_workspace_creation_when_already_canceled(
         task_kind="solve",
         problem_id=17,
         requested_by="admin",
-        harness="codex",
+        harness="pi",
         endpoint=_endpoint(),
         session_cookie="session-cookie",
         prompt="prompt",
@@ -570,7 +542,7 @@ def test_retry_restores_runtime_before_checking_workspace_quota(
             access_role="admin",
             problem_id=None,
             requested_by="admin",
-            harness="codex",
+            harness="pi",
             endpoint=_endpoint(),
             session_cookie="session-cookie",
             prompt="重试",
@@ -1453,27 +1425,6 @@ def test_interactive_runner_does_not_force_kill_after_interrupt_is_rejected(
     assert callbacks == [("stop-1", "rejected", "idle")]
 
 
-def test_read_agent_steer_capability_marks_legacy_opencode_only(
-        monkeypatch, tmp_path):
-    workspace_root = tmp_path / "agent-workspaces"
-    monkeypatch.setattr(agent_workspace, "AGENT_WORKSPACE_ROOT", workspace_root)
-    workspace = workspace_root / "sessions/s-1/workspace"
-    workspace.mkdir(parents=True)
-    (workspace / ".aj_session_state.json").write_text(json.dumps({
-        "harness": "opencode",
-        "session_id": "ses_legacy",
-    }), encoding="utf-8")
-
-    supported, reason = runtime.read_agent_steer_capability("s-1", "opencode")
-    assert supported is False
-    assert "兼容探测" in reason
-
-    (workspace / ".aj_session_state.json").write_text(json.dumps({
-        "harness": "opencode",
-        "session_id": "ses_current",
-        "interactive_supported": True,
-    }), encoding="utf-8")
-    assert runtime.read_agent_steer_capability("s-1", "opencode") == (True, "")
 
 
 def test_read_agent_steer_capability_does_not_scan_workspace_quota(
@@ -1483,7 +1434,7 @@ def test_read_agent_steer_capability_does_not_scan_workspace_quota(
     workspace = workspace_root / "sessions/s-1/workspace"
     workspace.mkdir(parents=True)
     (workspace / ".aj_session_state.json").write_text(json.dumps({
-        "harness": "codex",
+        "harness": "pi",
         "session_id": "00000000-0000-0000-0000-000000000001",
         "interactive_supported": True,
     }), encoding="utf-8")
@@ -1493,7 +1444,7 @@ def test_read_agent_steer_capability_does_not_scan_workspace_quota(
         lambda *_args, **_kwargs: pytest.fail("读取插话能力不应扫描 workspace 配额"),
     )
 
-    assert runtime.read_agent_steer_capability("s-1", "codex") == (True, "")
+    assert runtime.read_agent_steer_capability("s-1", "pi") == (True, "")
 
 
 def test_canonical_journal_precedes_legacy_and_keeps_usage_incremental(tmp_path):

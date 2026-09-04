@@ -18,13 +18,9 @@ from backend.oj_modules.ranking.reverse_judge.traces import (
 _aj_tables_ready = False
 
 HARNESS_CLAUDE_CODE = 'claude_code'
-HARNESS_CODEX = 'codex'
-HARNESS_OPENCODE = 'opencode'
 HARNESS_PI = 'pi'
 ALLOWED_AGENT_HARNESSES = (
     HARNESS_CLAUDE_CODE,
-    HARNESS_CODEX,
-    HARNESS_OPENCODE,
     HARNESS_PI,
 )
 ENDPOINT_PROTOCOL_OPENAI = 'openai'
@@ -73,8 +69,6 @@ def allowed_agent_endpoint_protocols(harness):
     harness = normalize_agent_harness(harness)
     if harness == HARNESS_CLAUDE_CODE:
         return (ENDPOINT_PROTOCOL_ANTHROPIC,)
-    if harness in (HARNESS_CODEX, HARNESS_OPENCODE):
-        return (ENDPOINT_PROTOCOL_OPENAI,)
     return ALLOWED_ENDPOINT_PROTOCOLS
 
 
@@ -87,7 +81,7 @@ def infer_agent_endpoint_protocol(harness, protocol=None):
     harness = normalize_agent_harness(harness)
     if harness == HARNESS_CLAUDE_CODE:
         return ENDPOINT_PROTOCOL_ANTHROPIC
-    # Codex、opencode 以及历史 Pi 都一直走 OpenAI 兼容链路。
+    # 历史 Pi 端点没有 protocol 字段时一直走 OpenAI 兼容链路。
     return ENDPOINT_PROTOCOL_OPENAI
 
 
@@ -374,7 +368,8 @@ def _list_endpoints(competition_id, pool_kind, enabled_only=False):
                    " context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,"
                    " concurrency_limit, enabled, status, ordering "
                    "FROM ranking_agent_judge_endpoints "
-                   "WHERE competition_id = %s AND pool_kind = %s")
+                   "WHERE competition_id = %s AND pool_kind = %s "
+                   "AND harness IN ('claude_code', 'pi')")
             if enabled_only:
                 sql += " AND status = 'enabled'"
             sql += " ORDER BY ordering ASC, id ASC"
@@ -415,6 +410,7 @@ def list_paused_agent_judge_endpoints():
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE status = 'paused'
+                  AND harness IN ('claude_code', 'pi')
                 ORDER BY id ASC
                 """
             )
@@ -489,6 +485,11 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
     for idx, it in enumerate(items):
         if not isinstance(it, dict):
             raise ValueError('端点格式非法')
+        raw_harness = str(it.get('harness') or '').strip().lower().replace('-', '_')
+        if raw_harness == 'pi_agent':
+            raw_harness = HARNESS_PI
+        if raw_harness not in ALLOWED_AGENT_HARNESSES:
+            raise ValueError('Agent harness 仅支持 claude_code 或 pi')
         harness = normalize_agent_harness(it.get('harness'))
         eid = it.get('id')
         try:

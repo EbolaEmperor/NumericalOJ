@@ -820,7 +820,7 @@ CREATE TABLE `agent_launch_preferences` (
   KEY `idx_agent_launch_preferences_endpoint` (`endpoint_id`),
   CONSTRAINT `fk_agent_launch_preferences_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `chk_agent_launch_preferences_endpoint_source` CHECK (`endpoint_source` IN ('global','user')),
-  CONSTRAINT `chk_agent_launch_preferences_harness` CHECK (`harness` IN ('claude_code','codex','opencode','pi'))
+  CONSTRAINT `chk_agent_launch_preferences_harness` CHECK (`harness` IN ('claude_code','pi'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

@@ -72,7 +72,7 @@ def test_reverse_endpoint_proxy_rewrites_credentials_and_pins_upstream():
         codex_incoming, temporary_token,
     ) is True
     assert reverse_tasks._reverse_proxy_upstream_headers(
-        codex_incoming, real_key, reverse_tasks.HARNESS_CODEX,
+        codex_incoming, real_key, reverse_tasks.HARNESS_PI,
     ) == {
         "Accept": "text/event-stream",
         "Authorization": f"Bearer {real_key}",

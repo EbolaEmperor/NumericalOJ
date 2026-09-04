@@ -57,7 +57,7 @@ def _docker_subcmds(calls):
 def test_resolve_endpoints_preserves_model_capabilities(monkeypatch):
     monkeypatch.setattr(m, "list_agent_judge_endpoints", lambda *_args, **_kwargs: [{
         "id": 9,
-        "harness": m.HARNESS_CODEX,
+        "harness": m.HARNESS_PI,
         "protocol": "openai",
         "base_url": "https://model.example/v1",
         "api_key": "temporary-token",
@@ -71,7 +71,7 @@ def test_resolve_endpoints_preserves_model_capabilities(monkeypatch):
 
     assert m._resolve_endpoints(7) == [{
         "id": 9,
-        "harness": m.HARNESS_CODEX,
+        "harness": m.HARNESS_PI,
         "protocol": "openai",
         "base_url": "https://model.example/v1",
         "api_key": "temporary-token",
@@ -87,7 +87,7 @@ def test_resolve_endpoints_preserves_model_capabilities(monkeypatch):
 @pytest.mark.parametrize(
     ("orchestration_mode", "harness", "expected_protocol", "runner_name"),
     [
-        ("single", m.HARNESS_CODEX, "openai", "_run_container_and_tail"),
+        ("single", m.HARNESS_PI, "openai", "_run_container_and_tail"),
         (
             m.aj.ORCH_TOPOLOGICAL,
             m.HARNESS_CLAUDE_CODE,
@@ -218,7 +218,7 @@ def _run(monkeypatch, running_seq, timeout_s, endpoint=None):
     os.makedirs(os.path.join(ws, "submission"), exist_ok=True)
     competition = {"title": "t", "description": "d"}
     endpoint = endpoint or {
-        "harness": "codex",
+        "harness": "pi",
         "protocol": "openai",
         "base_url": "https://model.example/v1",
         "api_key": "temporary-token",
@@ -246,7 +246,7 @@ def test_run_args_have_no_rm_and_prerun_cleanup(monkeypatch):
 def test_normal_agent_container_receives_selected_endpoint_capabilities(monkeypatch):
     endpoint = {
         "id": 9,
-        "harness": m.HARNESS_CODEX,
+        "harness": m.HARNESS_PI,
         "base_url": "https://model.example/v1",
         "api_key": "temporary-token",
         "model": "generic-model",
@@ -285,32 +285,8 @@ def test_timeout_path_kills_without_copying_raw_state(monkeypatch):
     assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
-def test_run_does_not_copy_raw_codex_state(monkeypatch):
-    endpoint = {
-        "harness": m.HARNESS_CODEX,
-        "base_url": "http://openai-compatible",
-        "api_key": "k",
-        "model": "m",
-    }
-    fake, ws, timed_out, ok = _run(monkeypatch, ["false"], timeout_s=600, endpoint=endpoint)
-    assert ok is True and timed_out is False
-    assert not any(len(c) > 1 and c[1] == "cp" for c in fake.calls)
-    assert not os.path.isdir(os.path.join(ws, "submission", ".codex"))
-    assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
-def test_run_does_not_copy_raw_opencode_state(monkeypatch):
-    endpoint = {
-        "harness": m.HARNESS_OPENCODE,
-        "base_url": "",
-        "api_key": "k",
-        "model": "",
-    }
-    fake, ws, timed_out, ok = _run(monkeypatch, ["false"], timeout_s=600, endpoint=endpoint)
-    assert ok is True and timed_out is False
-    assert not any(len(c) > 1 and c[1] == "cp" for c in fake.calls)
-    assert not os.path.isdir(os.path.join(ws, "submission", ".opencode"))
-    assert not os.path.isdir(os.path.join(ws, "submission", ".claude"))
 
 
 def test_exec_harness_phase_streams_prompt_without_workspace_file(monkeypatch):
@@ -512,7 +488,7 @@ def test_topological_claude_trace_syncs_before_long_phase_finishes(monkeypatch):
 
 def test_hello_probe_request_requires_configured_values():
     req, err = m._hello_probe_request({
-        "harness": m.HARNESS_CODEX,
+        "harness": m.HARNESS_PI,
         "base_url": "https://openai-compatible/v1",
         "api_key": "k",
         "model": "",
@@ -523,7 +499,7 @@ def test_hello_probe_request_requires_configured_values():
 
 def test_hello_probe_request_uses_exact_endpoint_config():
     req, err = m._hello_probe_request({
-        "harness": m.HARNESS_CODEX,
+        "harness": m.HARNESS_PI,
         "base_url": "https://openai-compatible/v1",
         "api_key": "k",
         "model": "configured-model",
@@ -543,7 +519,7 @@ def test_hello_probe_request_uses_exact_endpoint_config():
     assert json.loads(req.data.decode("utf-8"))["model"] == "configured-claude"
 
 
-def test_opencode_probe_uses_configured_url_and_model(monkeypatch):
+def test_pi_probe_uses_configured_url_and_model(monkeypatch):
     requests = []
 
     class Response:
@@ -564,7 +540,7 @@ def test_opencode_probe_uses_configured_url_and_model(monkeypatch):
 
     monkeypatch.setattr(m.urllib.request, "urlopen", fake_urlopen)
     ok, msg = m._probe_endpoint_once({
-        "harness": m.HARNESS_OPENCODE,
+        "harness": m.HARNESS_PI,
         "base_url": "https://gate.example/custom/v1",
         "api_key": "gate-key",
         "model": "configured-gate-model",
@@ -579,7 +555,7 @@ def test_opencode_probe_uses_configured_url_and_model(monkeypatch):
     assert timeout == m.JUDGE_HELLO_TIMEOUT_SECONDS
 
 
-def test_paused_opencode_recovery_reuses_configured_endpoint(monkeypatch):
+def test_paused_pi_recovery_reuses_configured_endpoint(monkeypatch):
     requested_urls = []
     requested_models = []
 
@@ -605,7 +581,7 @@ def test_paused_opencode_recovery_reuses_configured_endpoint(monkeypatch):
     endpoint = {
         "id": 41,
         "pool_kind": "quality_gate",
-        "harness": m.HARNESS_OPENCODE,
+        "harness": m.HARNESS_PI,
         "base_url": "https://recovery.example/api/v1",
         "api_key": "recovery-key",
         "model": "recovery-model",
@@ -622,11 +598,11 @@ def test_paused_opencode_recovery_reuses_configured_endpoint(monkeypatch):
     assert requested_models == ["recovery-model"] * m.PAUSED_PROBE_ATTEMPTS
 
 
-def test_probe_opencode_missing_key_fails_without_request(monkeypatch):
+def test_probe_pi_missing_key_fails_without_request(monkeypatch):
     called = []
     monkeypatch.setattr(m.urllib.request, "urlopen", lambda *_a, **_k: called.append(True))
     ok, msg = m._probe_endpoint_once({
-        "harness": m.HARNESS_OPENCODE,
+        "harness": m.HARNESS_PI,
         "base_url": "",
         "api_key": "",
         "model": "",
@@ -679,9 +655,9 @@ class _FakeTaskSelf:
 
 
 def test_agent_judge_switches_endpoint_after_failed_hello(monkeypatch):
-    bad = {"id": 1, "harness": m.HARNESS_CODEX, "base_url": "https://bad/v1",
+    bad = {"id": 1, "harness": m.HARNESS_PI, "base_url": "https://bad/v1",
            "api_key": "k1", "model": "m1", "concurrency_limit": 1}
-    good = {"id": 2, "harness": m.HARNESS_CODEX, "base_url": "https://good/v1",
+    good = {"id": 2, "harness": m.HARNESS_PI, "base_url": "https://good/v1",
             "api_key": "k2", "model": "m2", "concurrency_limit": 1}
     disabled = []
     judged = []
@@ -813,7 +789,7 @@ def test_agent_judge_requeues_when_every_endpoint_slot_is_busy(monkeypatch):
             return False
 
     statuses = []
-    endpoint = {"id": 1, "harness": m.HARNESS_CODEX, "base_url": "https://busy/v1",
+    endpoint = {"id": 1, "harness": m.HARNESS_PI, "base_url": "https://busy/v1",
                 "api_key": "k", "model": "m", "concurrency_limit": 1}
 
     monkeypatch.setattr(m, "_ensure_judge_redis", lambda: BusyRedis())

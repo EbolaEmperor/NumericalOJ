@@ -205,7 +205,7 @@ def aggregate_agent_session_token_usage(task_usages):
     历史 Pi 与 Claude Code 轨迹在续聊轮次中会再次包含父会话历史，因此未
     显式标记口径的 ``token_usage`` 仍按累计快照处理：同一来源取各计数器
     最大值。规范 journal 会用 ``incremental=true`` 明确表示当前任务增量，
-    四种 harness 都按唯一 ``task_id`` 相加。先按 ``task_id`` 去重可避免同一
+    两种 harness 都按唯一 ``task_id`` 相加。先按 ``task_id`` 去重可避免同一
     实时快照被历史与 current overlay 重复加入。
 
     只有每个存在 token usage 的任务都带有合法 ``cost_rmb`` 时才返回总成本；

@@ -105,8 +105,8 @@ socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每�
 文件树中。
 
 通用 Agent 任务（包括解题与造数据兼容入口）启动时会读取全站 WebSearch MCP 的 URL 和 Authorization，
-并注入管理员在弹窗中选择的 Harness。Codex、Claude Code 和 OpenCode 使用各自的
-远程 MCP 配置；Pi 通过镜像内受信任扩展注册同一个 `web_search` 工具。模型 API Key
+并注入管理员在弹窗中选择的 Harness。Claude Code 使用远程 MCP 配置；Pi 通过镜像内
+受信任扩展注册同一个 `web_search` 工具。模型 API Key
 与 WebSearch Authorization 只保存在本轮宿主 relay 的内存中；容器环境只获得相互
 隔离、随 relay 关闭立即失效的临时凭据，生成到任务工作区的配置文件仅引用变量名。
 

@@ -782,8 +782,6 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   const [editorError, setEditorError] = useState('')
   const harnessOptions: AjeChoiceOption[] = [
     {value: 'claude_code', label: 'Claude Code', icon: harnessIconClass('claude_code')},
-    {value: 'codex', label: 'Codex', icon: harnessIconClass('codex')},
-    {value: 'opencode', label: 'opencode', icon: harnessIconClass('opencode')},
     {value: 'pi', label: 'Pi', icon: harnessIconClass('pi')},
   ]
   const sourceOptions: AjeChoiceOption[] = [{value: 'custom', label: '自定义', icon: 'fa-pen'}, {value: 'global', label: '从全局端点复制', icon: 'fa-project-diagram'}]
@@ -846,7 +844,7 @@ function AgentJudgeSettings({data, reverse}: {data: Response; reverse: boolean})
   const editorProtocol = String(editor?.value.protocol || (editorHarness === 'claude_code' ? 'anthropic' : 'openai'))
   const editorCandidates = data.agent_global_endpoint_candidates?.[editorHarness] || []
   const updateEditorValue = (patch: JsonRecord) => {setEditorError(''); setEditor((current) => current ? {...current, value: {...current.value, ...patch}} : current)}
-  const changeEditorHarness = (harness: string) => updateEditorValue({harness, protocol: harness === 'claude_code' ? 'anthropic' : harness === 'codex' || harness === 'opencode' ? 'openai' : editorProtocol, global_endpoint_id: ''})
+  const changeEditorHarness = (harness: string) => updateEditorValue({harness, protocol: harness === 'claude_code' ? 'anthropic' : editorProtocol, global_endpoint_id: ''})
   const changeGlobalCandidate = (candidateId: string) => {
     const candidate = editorCandidates.find((item) => String(item.id) === candidateId)
     updateEditorValue(candidate ? {global_endpoint_id: candidateId, base_url: candidate.base_url || '', model: candidate.model || '', protocol: candidate.protocol || 'openai', thinking_compatibility: Boolean(candidate.thinking_enabled)} : {global_endpoint_id: ''})

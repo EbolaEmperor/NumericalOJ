@@ -653,48 +653,6 @@ def test_claude_resume_sync_appends_new_sessions_without_rewriting(monkeypatch, 
     assert not any(session_id in serialized for session_id, _phase, _text in sessions)
 
 
-def test_single_codex_and_opencode_live_sync_append_stably(monkeypatch, tmp_path):
-    stamp_a = b"2026-07-11T00:00:00.000000001Z "
-    stamp_b = b"2026-07-11T00:00:00.000000002Z "
-    codex_a = json.dumps({"type": "agent_message", "message": "A"}).encode()
-    codex_b = json.dumps({"type": "agent_message", "message": "B"}).encode()
-    outputs = [
-        SimpleNamespace(returncode=0, stdout=stamp_a + codex_a + b"\n", stderr=b""),
-        SimpleNamespace(
-            returncode=0,
-            stdout=stamp_a + codex_a + b"\n" + stamp_b + codex_b + b"\n",
-            stderr=b"",
-        ),
-        SimpleNamespace(returncode=0, stdout=stamp_a + b"A\n", stderr=b""),
-        SimpleNamespace(
-            returncode=0,
-            stdout=stamp_a + b"A\n" + stamp_b + b"B\n",
-            stderr=b"",
-        ),
-    ]
-    monkeypatch.setattr(
-        tasks, "_capture_process_output_limited", lambda *_args, **_kwargs: outputs.pop(0),
-    )
-    ws = tmp_path / "ws"
-    ws.mkdir()
-
-    codex_trace = tmp_path / "codex"
-    tasks._sync_live_execution_trace(
-        "c", str(ws), str(codex_trace), tasks.HARNESS_CODEX,
-    )
-    tasks._sync_live_execution_trace(
-        "c", str(ws), str(codex_trace), tasks.HARNESS_CODEX,
-    )
-    assert [m["text"] for m in reverse_db.collect_agent_trace_messages(str(codex_trace))] == ["A", "B"]
-
-    opencode_trace = tmp_path / "opencode"
-    tasks._sync_live_execution_trace(
-        "o", str(ws), str(opencode_trace), tasks.HARNESS_OPENCODE,
-    )
-    tasks._sync_live_execution_trace(
-        "o", str(ws), str(opencode_trace), tasks.HARNESS_OPENCODE,
-    )
-    assert [m["text"] for m in reverse_db.collect_agent_trace_messages(str(opencode_trace))] == ["A", "B"]
 
 
 def test_route_container_scan_includes_attempt_scoped_agent_names(monkeypatch):

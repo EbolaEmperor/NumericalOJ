@@ -62,7 +62,6 @@ from backend.oj_modules.ranking.reverse_judge.service import build_reverse_judge
 from backend.oj_modules.ranking.reverse_judge.trace_sync import (
     sync_claude_project_jsonl as _shared_sync_claude_project_jsonl,
     sync_pi_agent_sessions as _shared_sync_pi_agent_sessions,
-    sync_stdout_jsonl,
 )
 from backend.oj_modules.tasks.ranking.agent_judge import (
     HARNESS_CLAUDE_CODE,
@@ -84,8 +83,7 @@ from backend.oj_modules.tasks.ranking.agent_judge import (
     _release_slot,
 )
 from backend.oj_modules.ranking.agent_judge.db import (
-    HARNESS_CODEX,
-    HARNESS_OPENCODE,
+    ALLOWED_AGENT_HARNESSES,
     HARNESS_PI,
     infer_agent_endpoint_protocol,
     list_agent_judge_endpoints,
@@ -865,8 +863,11 @@ def _run_judge_script(submission_id, package_root, answer_dir, timeout_s):
 
 def _resolve_harness_config(endpoint):
     ep = endpoint or {}
+    harness = ep.get('harness') or HARNESS_CLAUDE_CODE
+    if harness not in ALLOWED_AGENT_HARNESSES:
+        raise ValueError('Agent harness 仅支持 claude_code 或 pi')
     return (
-        ep.get('harness') or HARNESS_CLAUDE_CODE,
+        harness,
         ep.get('base_url') or '',
         ep.get('api_key') or '',
         ep.get('model') or '',
@@ -1519,23 +1520,8 @@ def _sync_claude_project_jsonl(container_name, trace_dir, secrets=()):
     )
 
 
-def _sync_codex_stdout_trace(template_dir, trace_dir, secrets=()):
-    # 宿主侧捕获文件已改写到 trace_dir（见 _exec_reverse_harness_phase），
-    # 因此 codex 的 stdout.jsonl 也从 trace_dir 取。保留 template_dir 仅作
-    # 兼容回退：旧 attempt 仍可能在容器挂载点留有同名文件。
-    src = os.path.join(trace_dir, '.aj_reverse_solve.stdout.tmp')
-    if not os.path.isfile(src):
-        src = os.path.join(template_dir, '.aj_reverse_solve.stdout.tmp')
-    if not os.path.isfile(src):
-        return False
-    return sync_stdout_jsonl(
-        src, trace_dir, 'codex_reverse_solve.jsonl', secrets=secrets,
-    )
-
-
 def _pi_trace_session_root(trace_dir):
     return os.path.join(trace_dir, '.pi', 'agent', 'sessions')
-
 
 
 def _sync_pi_agent_sessions(
@@ -1553,29 +1539,13 @@ def _dump_harness_trace(
         runtime_user='node', secrets=()):
     os.makedirs(trace_dir, exist_ok=True)
     harness = str(harness or HARNESS_CLAUDE_CODE).strip().lower()
-    if harness == HARNESS_CODEX:
-        sources = [('/workspace/.codex', '.codex'), ('/root/.codex', '.codex'),
-                   ('/tmp/aj_codex_home', '.codex')]
-        dest_name = '.codex'
-    elif harness == HARNESS_OPENCODE:
-        sources = [('/workspace/.opencode', '.opencode'),
-                   ('/root/.local/share/opencode', '.opencode'),
-                   ('/tmp/aj_opencode_home/.local/share/opencode', '.opencode')]
-        dest_name = '.opencode'
-    elif harness == HARNESS_PI:
+    if harness == HARNESS_PI:
         _sync_pi_agent_sessions(
             container_name, trace_dir, runtime_user=runtime_user,
             secrets=secrets,
         )
-        sources = []
-        dest_name = ''
-    else:
+    elif harness == HARNESS_CLAUDE_CODE:
         _sync_claude_project_jsonl(container_name, trace_dir, secrets)
-        sources = []
-        dest_name = ''
-    for src, _expected in sources:
-        if dest_name and _copy_tree_from_container(container_name, src, os.path.join(trace_dir, dest_name)):
-            break
     for name in ('.aj_harness.log', '.aj_session_state.json', '.aj_session_state.jsonl'):
         src = os.path.join(template_dir, name)
         if os.path.isfile(src):
@@ -1583,7 +1553,6 @@ def _dump_harness_trace(
                 shutil.copy2(src, os.path.join(trace_dir, name))
             except Exception:
                 pass
-
 
 def _prepare_agent_workspace_for_node(container_name):
     """准备 Agent HOME，并返回执行 harness 时使用的 Docker 用户。
@@ -2182,10 +2151,6 @@ def _run_agent(submission_id, attempt_id, package_root, endpoint, timeout_s, fin
                 _sync_claude_project_jsonl(
                     container_name, trace_dir, trace_secrets,
                 )
-            elif harness == HARNESS_CODEX:
-                _sync_codex_stdout_trace(
-                    template_dir, trace_dir, trace_secrets,
-                )
             elif harness == HARNESS_PI:
                 _sync_pi_agent_sessions(
                     container_name, trace_dir, runtime_user=runtime_user,
@@ -2749,10 +2714,6 @@ def _quality_gate_harness_result_text(stdout, harness):
             if str(text_value or '').strip():
                 candidates.append(str(text_value).strip())
         text = candidates[-1] if candidates else ''
-        # 兼容旧版 OpenCode 的纯文本 non-TTY 输出。这个回退仍会
-        # 经过严格质量门禁 JSON schema 校验，不接受工具日志。
-        if not text and harness == HARNESS_OPENCODE:
-            text = raw
         if not text:
             raise ValueError('质量门禁 Agent 输出缺少最终结论')
 

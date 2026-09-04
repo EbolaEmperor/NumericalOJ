@@ -58,7 +58,7 @@ def _endpoint_row(endpoint_id, pool_kind):
         'id': endpoint_id,
         'competition_id': 17,
         'pool_kind': pool_kind,
-        'harness': 'codex',
+        'harness': 'pi',
         'base_url': f'https://{pool_kind}.example/v1',
         'api_key': f'{pool_kind}-key',
         'model': 'generic-model',
@@ -180,7 +180,7 @@ def test_save_primary_pool_scopes_key_inheritance_delete_and_update(monkeypatch)
 
     saved = endpoint_db.save_agent_judge_endpoints(17, [{
         'id': 7,
-        'harness': 'codex',
+        'harness': 'pi',
         'base_url': 'https://primary.example/v1',
         'api_key': '',
         'model': 'gpt-test',
@@ -279,7 +279,8 @@ def test_save_quality_gate_pool_scopes_delete_and_insert(monkeypatch):
     monkeypatch.setattr(endpoint_db, 'get_db_connection', lambda: conn)
 
     saved = endpoint_db.save_quality_gate_endpoints(17, [{
-        'harness': 'codex',
+        'harness': 'pi',
+        'protocol': 'openai',
         'base_url': 'https://quality.example/v1',
         'api_key': 'quality-secret',
         'model': 'gpt-test',
@@ -369,7 +370,7 @@ def test_endpoint_max_output_cannot_exceed_context_window():
         })
 
 
-@pytest.mark.parametrize('harness', ['claude_code', 'codex', 'pi', 'opencode'])
+@pytest.mark.parametrize('harness', ['claude_code', 'pi'])
 def test_endpoint_pool_rejects_context_above_global_harness_contract(harness):
     with pytest.raises(ValueError, match='1000000'):
         endpoint_db._normalize_endpoint_items(
@@ -393,7 +394,7 @@ def test_existing_endpoint_omitted_capabilities_survive_normalization():
         endpoint_db.ENDPOINT_POOL_PRIMARY,
         [{
             'id': 7,
-            'harness': 'codex',
+            'harness': 'pi',
             'base_url': 'https://primary.example/v1',
             'api_key': '',
             'model': 'gpt-test',
@@ -423,7 +424,7 @@ def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
         prompt='不得隐藏私有协议',
         endpoints=[{
             'id': 7,
-            'harness': 'opencode',
+            'harness': 'pi',
             'base_url': 'https://quality.example/v1',
             'api_key': '',
             'model': 'gate-model',
@@ -509,8 +510,6 @@ def test_new_pi_endpoint_requires_explicit_protocol():
     'harness, expected',
     [
         ('claude_code', ('anthropic',)),
-        ('codex', ('openai',)),
-        ('opencode', ('openai',)),
         ('pi', ('openai', 'anthropic')),
     ],
 )
@@ -522,8 +521,6 @@ def test_harness_protocol_matrix(harness, expected):
     'harness, expected',
     [
         ('claude_code', 'anthropic'),
-        ('codex', 'openai'),
-        ('opencode', 'openai'),
         ('pi', 'openai'),
     ],
 )
@@ -557,14 +554,14 @@ def test_existing_explicit_protocol_cannot_be_reused_by_incompatible_harness():
     existing = endpoint_db._endpoint_row({
         **_endpoint_row(7, endpoint_db.ENDPOINT_POOL_PRIMARY),
         'harness': 'pi',
-        'protocol': 'anthropic',
+        'protocol': 'openai',
     })
-    with pytest.raises(ValueError, match='codex 不支持 anthropic'):
+    with pytest.raises(ValueError, match='claude_code 不支持 openai'):
         endpoint_db._normalize_endpoint_items(
             endpoint_db.ENDPOINT_POOL_PRIMARY,
             [{
                 'id': 7,
-                'harness': 'codex',
+                'harness': 'claude_code',
                 'base_url': 'https://primary.example/v1',
                 'api_key': '',
                 'model': 'model',
@@ -592,7 +589,7 @@ def test_global_endpoint_copy_uses_server_secret_and_protocol(monkeypatch):
     normalized = endpoint_db._normalize_endpoint_items(
         endpoint_db.ENDPOINT_POOL_PRIMARY,
         [{
-            'harness': 'pi',
+            'harness': 'claude_code',
             'global_endpoint_id': 23,
             'concurrency_limit': 2,
         }],
@@ -608,7 +605,7 @@ def test_global_endpoint_copy_uses_server_secret_and_protocol(monkeypatch):
     assert 'global_endpoint_id' not in normalized[0]
 
 
-def test_opencode_copies_the_same_global_openai_endpoint_contract(monkeypatch):
+def test_pi_copies_the_same_global_openai_endpoint_contract(monkeypatch):
     monkeypatch.setattr(
         endpoint_db,
         '_get_global_endpoint_for_copy',
@@ -627,7 +624,7 @@ def test_opencode_copies_the_same_global_openai_endpoint_contract(monkeypatch):
     normalized = endpoint_db._normalize_endpoint_items(
         endpoint_db.ENDPOINT_POOL_PRIMARY,
         [{
-            'harness': 'opencode',
+            'harness': 'pi',
             'global_endpoint_id': 24,
             'base_url': 'https://forged.example/v1',
             'api_key': 'forged-key',
@@ -754,17 +751,17 @@ def test_global_endpoint_copy_rejects_incompatible_harness(monkeypatch):
         lambda _endpoint_id: {
             'id': 23,
             'category': 'text',
-            'protocol': 'anthropic',
-            'base_url': 'https://global.example/anthropic',
+            'protocol': 'openai',
+            'base_url': 'https://global.example/v1',
             'api_key': 'secret',
             'model': 'model',
         },
     )
 
-    with pytest.raises(ValueError, match='codex 不支持'):
+    with pytest.raises(ValueError, match='claude_code 不支持'):
         endpoint_db._normalize_endpoint_items(
             endpoint_db.ENDPOINT_POOL_PRIMARY,
-            [{'harness': 'codex', 'global_endpoint_id': 23}],
+            [{'harness': 'claude_code', 'global_endpoint_id': 23}],
             [],
         )
 
@@ -789,14 +786,12 @@ def test_global_endpoint_candidates_filter_protocol_category_and_secrets():
     ]
 
     pi = endpoint_db.list_global_endpoints_for_agent_harness('pi', endpoints=endpoints)
-    codex = endpoint_db.list_global_endpoints_for_agent_harness('codex', endpoints=endpoints)
-    opencode = endpoint_db.list_global_endpoints_for_agent_harness('opencode', endpoints=endpoints)
+    claude = endpoint_db.list_global_endpoints_for_agent_harness('claude_code', endpoints=endpoints)
 
     assert [item['id'] for item in pi] == [1, 2]
-    assert [item['id'] for item in codex] == [2]
-    assert [item['id'] for item in opencode] == [2]
-    assert all('api_key' not in item for item in pi + codex + opencode)
-    assert all('name' not in item for item in pi + codex + opencode)
+    assert [item['id'] for item in claude] == [1]
+    assert all('api_key' not in item for item in pi + claude)
+    assert all('name' not in item for item in pi + claude)
 
 
 @pytest.mark.parametrize("value", [None, "", "unknown-agent"])
@@ -812,7 +807,8 @@ def test_endpoint_api_key_rejects_header_control_characters():
         endpoint_db._normalize_endpoint_items(
             endpoint_db.ENDPOINT_POOL_QUALITY_GATE,
             [{
-                "harness": "codex",
+                "harness": "pi",
+                "protocol": "openai",
                 "base_url": "https://quality.example/v1",
                 "api_key": "secret\r\nX-Injected: yes",
                 "model": "gate-model",
@@ -844,7 +840,8 @@ def test_quality_gate_atomic_save_rolls_back_endpoint_writes_when_config_fails(m
             enabled=True,
             prompt='审核标准',
             endpoints=[{
-                'harness': 'codex',
+                'harness': 'pi',
+                'protocol': 'openai',
                 'base_url': 'https://quality.example/v1',
                 'api_key': 'secret',
                 'model': 'gate-model',
@@ -869,7 +866,8 @@ def test_save_primary_pool_cannot_inherit_key_from_another_pool(monkeypatch):
     with pytest.raises(ValueError, match='新端点必须填写 API Key'):
         endpoint_db.save_agent_judge_endpoints(17, [{
             'id': 88,
-            'harness': 'codex',
+            'harness': 'pi',
+            'protocol': 'openai',
             'base_url': 'https://primary.example/v1',
             'api_key': '',
             'model': 'gpt-test',

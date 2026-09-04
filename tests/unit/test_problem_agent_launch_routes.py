@@ -91,9 +91,7 @@ def test_launch_options_return_unified_user_preference_for_each_task_kind(
     )
     endpoints = {
         "claude_code": [],
-        "codex": [{"id": 12, "model": "m", "protocol": "openai", "category": "text"}],
-        "opencode": [],
-        "pi": [],
+        "pi": [{"id": 12, "model": "m", "protocol": "openai", "category": "text"}],
     }
     monkeypatch.setattr(routes, "list_launch_endpoints_by_harness", lambda: endpoints)
     monkeypatch.setattr(
@@ -101,7 +99,7 @@ def test_launch_options_return_unified_user_preference_for_each_task_kind(
         "get_agent_launch_preference",
         lambda user_id: {
             "user_id": user_id,
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": 12,
         },
     )
@@ -113,8 +111,8 @@ def test_launch_options_return_unified_user_preference_for_each_task_kind(
     payload = response.get_json()
     assert payload["success"] is True
     assert payload["task_kind"] == "testdata"
-    assert payload["preference"] == {"harness": "codex", "endpoint_id": 12}
-    assert payload["endpoints_by_harness"]["codex"][0]["id"] == 12
+    assert payload["preference"] == {"harness": "pi", "endpoint_id": 12}
+    assert payload["endpoints_by_harness"]["pi"][0]["id"] == 12
     assert response.headers["Cache-Control"] == "private, no-store"
 
 
@@ -126,22 +124,20 @@ def test_launch_options_fall_back_when_remembered_endpoint_disappeared(monkeypat
     )
     endpoints = {
         "claude_code": [],
-        "codex": [{"id": 22, "model": "new", "protocol": "openai", "category": "text"}],
-        "opencode": [],
-        "pi": [],
+        "pi": [{"id": 22, "model": "new", "protocol": "openai", "category": "text"}],
     }
     monkeypatch.setattr(routes, "list_launch_endpoints_by_harness", lambda: endpoints)
     monkeypatch.setattr(
         routes,
         "get_agent_launch_preference",
-        lambda *_args: {"harness": "codex", "endpoint_id": 12},
+        lambda *_args: {"harness": "pi", "endpoint_id": 12},
     )
 
     app = _app()
     with app.test_request_context("/admin/agent_launch_options?task_kind=solve"):
         payload = routes.admin_agent_launch_options().get_json()
 
-    assert payload["preference"] == {"harness": "codex", "endpoint_id": 22}
+    assert payload["preference"] == {"harness": "pi", "endpoint_id": 22}
 
 
 def test_custom_launch_options_include_current_users_personal_endpoints(monkeypatch):
@@ -239,7 +235,7 @@ def test_solve_launch_persists_outbox_and_wakes_dispatcher(
     with app.test_request_context(
         "/agent/problems/9/solve",
         method="POST",
-        json={"harness": "codex", "endpoint_id": 12},
+        json={"harness": "pi", "endpoint_id": 12},
         environ_overrides={"HTTP_COOKIE": "numoj_session=signed-session-value"},
     ):
         response = routes.agent_solve_problem(9)
@@ -251,12 +247,12 @@ def test_solve_launch_persists_outbox_and_wakes_dispatcher(
         "problem_core.agent_task_detail",
         {"session_id": payload["task_id"]},
     )
-    assert saved == [(7, "codex", 12)]
+    assert saved == [(7, "pi", 12)]
     assert sessions == [{
         "session_id": payload["task_id"],
         "task_id": payload["task_id"],
         "requested_by": "admin",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 12,
         "endpoint_revision": 6,
         "endpoint_model": "selected-model",
@@ -276,7 +272,7 @@ def test_solve_launch_persists_outbox_and_wakes_dispatcher(
         "args": (payload["task_id"],),
         "task_id": None,
     }]
-    assert snapshots[0]["harness"] == "codex"
+    assert snapshots[0]["harness"] == "pi"
     assert "token_pricing" not in snapshots[0]
     assert "signed-session-value" not in str(snapshots)
 

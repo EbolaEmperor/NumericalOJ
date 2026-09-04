@@ -70,9 +70,6 @@ _NATIVE_SESSION_ID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z",
 )
-_OPENCODE_NATIVE_SESSION_ID_RE = re.compile(
-    r"ses_[A-Za-z0-9_-]{1,120}\Z",
-)
 _SESSION_STATE_RELATIVE_PATH = ".aj_session_state.json"
 _SESSION_STATE_MAX_BYTES = 64 * 1024
 _SKILL_WORKSPACE_RESERVATION_BYTES = 10 * 1024 * 1024
@@ -277,16 +274,11 @@ def _read_workspace_artifacts(workspace, artifact_files):
 
 
 def normalize_native_session_id(value, harness):
-    """按 harness 校验不透明原生 ID；OpenCode 的大小写必须原样保留。"""
+    """校验 Claude Code/Pi 使用的 UUID 原生会话 ID。"""
 
     normalized = str(value or "").strip()
     if not normalized:
         return ""
-    normalized_harness = str(harness or "").strip().lower().replace("-", "_")
-    if normalized_harness == "opencode":
-        if not _OPENCODE_NATIVE_SESSION_ID_RE.fullmatch(normalized):
-            raise ValueError("Agent 原生 session_id 无效")
-        return normalized
     if not _NATIVE_SESSION_ID_RE.fullmatch(normalized):
         raise ValueError("Agent 原生 session_id 无效")
     return normalized.lower()
@@ -471,8 +463,6 @@ def read_agent_steer_capability(session_id, harness):
         return supported, "" if supported else (
             reason or "当前原生会话不能使用中途插话"
         )
-    if normalized_harness == "opencode" and state:
-        return False, "旧 OpenCode 会话需要在下一轮完成兼容探测后才能使用中途插话"
     return True, ""
 
 

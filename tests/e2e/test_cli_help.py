@@ -290,7 +290,7 @@ def test_admin_problem_agent_help_only_exposes_current_launch_contract():
         help_by_command[command] = completed.stdout
 
     for help_text in help_by_command.values():
-        assert "--harness {claude_code,codex,opencode,pi}" in help_text
+        assert "--harness {claude_code,pi}" in help_text
         assert "--endpoint-id" in help_text
         assert "--extra-prompt" not in help_text
         assert "--standard-code" not in help_text
@@ -380,7 +380,7 @@ def test_admin_problem_agent_commands_send_current_launch_contract(tmp_path):
             "agent-solve",
             "19",
             "--harness",
-            "codex",
+            "pi",
             "--endpoint-id",
             "41",
         )
@@ -412,7 +412,7 @@ def test_admin_problem_agent_commands_send_current_launch_contract(tmp_path):
     assert solve_request["path"] == "/api/problems/19/agent/solve"
     assert solve_request["content_type"].startswith("application/json")
     assert json.loads(solve_request["body"]) == {
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 41,
     }
 

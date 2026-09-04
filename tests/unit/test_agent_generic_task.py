@@ -185,7 +185,7 @@ def test_generic_outer_boundary_recovers_workspace_native_snapshot(monkeypatch):
         "read_agent_native_session_id",
         lambda session_id, harness: (
             native_session_id
-            if (session_id, harness) == ("snapshot-session", "codex")
+            if (session_id, harness) == ("snapshot-session", "pi")
             else ""
         ),
     )
@@ -201,7 +201,7 @@ def test_generic_outer_boundary_recovers_workspace_native_snapshot(monkeypatch):
         "snapshot-session",
         "admin",
         "admin",
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "执行任务",
@@ -445,7 +445,7 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
         "problem_id": None,
         "problem_title": None,
         "access_role": "admin",
-        "harness": "opencode",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 4,
         "native_session_id": "",
@@ -462,7 +462,7 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
         lambda harness, endpoint_id, **kwargs: (
             endpoint
             if (harness, endpoint_id, kwargs) == (
-                "opencode", 8, {"include_secret": True},
+                "pi", 8, {"include_secret": True},
             )
             else pytest.fail("端点解析参数不一致")
         ),
@@ -490,7 +490,7 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
                 False,
                 "",
                 "",
-                native_session_id="ses_MixedCase_19-Z",
+                native_session_id="19191919-1919-4919-8919-191919191919",
             )
         ),
     )
@@ -501,7 +501,7 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
         "custom-session",
         "admin",
         "admin",
-        "opencode",
+        "pi",
         8,
         "session-cookie",
         "请整理附件",
@@ -516,7 +516,7 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
         "task_id": task_id,
         "session_id": "custom-session",
         "title": "整理附件",
-        "native_session_id": "ses_MixedCase_19-Z",
+        "native_session_id": "19191919-1919-4919-8919-191919191919",
         "conclusion": "附件已经整理完成。",
     }
     assert len(title_calls) == 1
@@ -528,7 +528,7 @@ def test_generic_first_turn_generates_title_on_frozen_endpoint_and_records_sessi
     assert harness_calls[0]["access_role"] == "admin"
     assert harness_calls[0]["resume_session_id"] == ""
     assert snapshots[-1]["status"] == "Completed"
-    assert snapshots[-1]["native_session_id"] == "ses_MixedCase_19-Z"
+    assert snapshots[-1]["native_session_id"] == "19191919-1919-4919-8919-191919191919"
 
 
 def test_generic_nonzero_exit_shows_provider_error_not_protocol_frames(monkeypatch):
@@ -600,7 +600,7 @@ def test_generic_resume_preserves_problem_task_scope_and_normalizes_uuid(
         "problem_id": 17,
         "problem_title": "矩阵题",
         "access_role": "user",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 4,
         "native_session_id": frozen_native_id,
@@ -645,7 +645,7 @@ def test_generic_resume_preserves_problem_task_scope_and_normalizes_uuid(
         "solve-session",
         "admin",
         "user",
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "继续优化",
@@ -671,7 +671,7 @@ def test_generic_resume_rejects_session_without_native_restore_point(monkeypatch
         "task_kind": "custom",
         "problem_id": None,
         "access_role": "user",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 4,
         "native_session_id": "",
@@ -691,7 +691,7 @@ def test_generic_resume_rejects_session_without_native_restore_point(monkeypatch
         "failed-session",
         "admin",
         "user",
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "继续",
@@ -784,7 +784,7 @@ def test_generic_rejects_legacy_fresh_continue_without_native_session(
         "problem_id": None,
         "problem_title": None,
         "access_role": "admin",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 3,
         "native_session_id": "",
@@ -806,7 +806,7 @@ def test_generic_rejects_legacy_fresh_continue_without_native_session(
         "fresh-native-session",
         "admin",
         "admin",
-        "codex",
+        "pi",
         8,
         "",
         "继续处理 workspace 中的文件",
@@ -832,7 +832,7 @@ def test_generic_persists_native_snapshot_before_harness_failure(monkeypatch):
         "problem_id": None,
         "problem_title": None,
         "access_role": "admin",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 4,
         "native_session_id": "",
@@ -859,7 +859,7 @@ def test_generic_persists_native_snapshot_before_harness_failure(monkeypatch):
         "snapshot-session",
         "admin",
         "admin",
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "执行任务",
@@ -880,7 +880,7 @@ def test_generic_cleanup_failure_stays_nonterminal(monkeypatch):
         "task_kind": "custom",
         "problem_id": None,
         "access_role": "user",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 4,
         "native_session_id": "",
@@ -910,7 +910,7 @@ def test_generic_cleanup_failure_stays_nonterminal(monkeypatch):
         "cleanup-session",
         "admin",
         "user",
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "执行任务",
@@ -930,7 +930,7 @@ def test_generic_uses_current_endpoint_after_session_revision_changes(monkeypatc
         "task_kind": "custom",
         "problem_id": None,
         "access_role": "user",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 3,
         "native_session_id": "",
@@ -962,7 +962,7 @@ def test_generic_uses_current_endpoint_after_session_revision_changes(monkeypatc
         "revision-session",
         "admin",
         "user",
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "执行任务",

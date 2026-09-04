@@ -10,13 +10,11 @@ from backend.oj_modules.tasks.agent import skill_runtime
 
 _TARGETS = {
     "claude_code": Path(".runtime/home/.claude/skills"),
-    "codex": Path(".runtime/home/.agents/skills"),
-    "opencode": Path(".runtime/opencode/config/opencode/skills"),
     "pi": Path(".runtime/pi/skills"),
 }
 
 
-@pytest.mark.parametrize("harness", ["claude_code", "codex", "opencode", "pi"])
+@pytest.mark.parametrize("harness", ["claude_code", "pi"])
 def test_materialize_numoj_user_skill_for_each_harness(tmp_path, harness):
     target = skill_runtime.materialize_skill(tmp_path, harness, "numoj-user")
 
@@ -38,7 +36,7 @@ def test_materialize_numoj_user_skill_for_each_harness(tmp_path, harness):
 
 
 def test_numoj_user_skill_documents_lean4_agent_workflow(tmp_path):
-    target = skill_runtime.materialize_skill(tmp_path, "codex", "numoj-user")
+    target = skill_runtime.materialize_skill(tmp_path, "pi", "numoj-user")
     rendered = (target / "SKILL.md").read_text(encoding="utf-8")
     reference_path = target / "references" / "lean4-problems.md"
     reference = reference_path.read_text(encoding="utf-8")
@@ -81,7 +79,7 @@ def test_materialize_rereads_current_source_instead_of_using_a_copy(
     workspace.mkdir()
     monkeypatch.setattr(skill_runtime, "_SKILLS_ROOT", skills_root)
 
-    target = skill_runtime.materialize_skill(workspace, "codex", "numoj-user")
+    target = skill_runtime.materialize_skill(workspace, "pi", "numoj-user")
     assert "first version" in (target / "SKILL.md").read_text(encoding="utf-8")
 
     (source / "SKILL.md").write_text(
@@ -89,7 +87,7 @@ def test_materialize_rereads_current_source_instead_of_using_a_copy(
         encoding="utf-8",
     )
     rematerialized = skill_runtime.materialize_skill(
-        workspace, "codex", "numoj-user",
+        workspace, "pi", "numoj-user",
     )
 
     assert rematerialized == target
@@ -109,8 +107,6 @@ def test_materialize_rereads_current_source_instead_of_using_a_copy(
     ),
     [
         ("claude_code", True, True, False, False),
-        ("codex", True, False, False, True),
-        ("opencode", False, False, True, True),
         ("pi", True, False, True, True),
     ],
 )
@@ -156,7 +152,7 @@ def test_materialize_rejects_unknown_harness(tmp_path, harness):
 @pytest.mark.parametrize("source_skill", ["", "../numoj-user", "other"])
 def test_materialize_rejects_untrusted_source_name(tmp_path, source_skill):
     with pytest.raises(ValueError, match="source skill"):
-        skill_runtime.materialize_skill(tmp_path, "codex", source_skill)
+        skill_runtime.materialize_skill(tmp_path, "pi", source_skill)
 
 
 def test_materialize_rejects_symlinked_source_root(monkeypatch, tmp_path):
@@ -173,7 +169,7 @@ def test_materialize_rejects_symlinked_source_root(monkeypatch, tmp_path):
     monkeypatch.setattr(skill_runtime, "_SKILLS_ROOT", skills_root)
 
     with pytest.raises(ValueError, match="不安全"):
-        skill_runtime.materialize_skill(workspace, "codex", "numoj-user")
+        skill_runtime.materialize_skill(workspace, "pi", "numoj-user")
 
 
 def test_materialize_rejects_symlink_inside_source(monkeypatch, tmp_path):
@@ -187,7 +183,7 @@ def test_materialize_rejects_symlink_inside_source(monkeypatch, tmp_path):
     monkeypatch.setattr(skill_runtime, "_SKILLS_ROOT", skills_root)
 
     with pytest.raises(ValueError, match="普通文件"):
-        skill_runtime.materialize_skill(workspace, "codex", "numoj-user")
+        skill_runtime.materialize_skill(workspace, "pi", "numoj-user")
 
 
 def test_materialize_rejects_malformed_or_mismatched_frontmatter(
@@ -201,10 +197,10 @@ def test_materialize_rejects_malformed_or_mismatched_frontmatter(
     monkeypatch.setattr(skill_runtime, "_SKILLS_ROOT", skills_root)
 
     with pytest.raises(ValueError, match="name"):
-        skill_runtime.materialize_skill(workspace, "codex", "numoj-user")
+        skill_runtime.materialize_skill(workspace, "pi", "numoj-user")
 
     (source / "SKILL.md").write_text(
         "name: numoj-user\ndescription: no delimiter\n", encoding="utf-8",
     )
     with pytest.raises(ValueError, match="frontmatter"):
-        skill_runtime.materialize_skill(workspace, "codex", "numoj-user")
+        skill_runtime.materialize_skill(workspace, "pi", "numoj-user")

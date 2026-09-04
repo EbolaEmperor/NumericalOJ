@@ -48,7 +48,7 @@ def _session(*, task_kind="custom", access_role="admin", status="Completed"):
         "problem_title": "数值积分" if task_kind != "custom" else None,
         "requested_by": "admin",
         "access_role": access_role,
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 12,
         "endpoint_revision": 3,
         "endpoint_model": "gpt-test",
@@ -432,7 +432,7 @@ def test_custom_creation_removes_published_attachments_when_db_create_fails(
         method="POST",
         data={
             "message": "读取附件",
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": "12",
             "access_role": "user",
             "attachments": (io.BytesIO(b"data"), "input.dat"),
@@ -529,7 +529,7 @@ def test_same_client_message_creation_conflict_keeps_winner_checkpoint(
             data={
                 "message": "创建并发会话",
                 "message_id": "same-message",
-                "harness": "codex",
+                "harness": "pi",
                 "endpoint_id": "12",
                 "access_role": "admin",
             },
@@ -598,7 +598,7 @@ def test_all_session_kinds_resume_through_the_same_fixed_runtime_contract(
                 "turn_index": 2,
                 "task_kind": task_kind,
                 "access_role": access_role,
-                "harness": "codex",
+                "harness": "pi",
                 "endpoint_id": 12,
                 "native_session_id": "native-session-authoritative",
                 "previous_base_runtime_checkpoint_id": "turn-1-base",
@@ -724,7 +724,7 @@ def test_same_client_resume_conflict_keeps_winner_checkpoint(monkeypatch):
             "turn_index": 2,
             "task_kind": "custom",
             "access_role": "admin",
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": 12,
             "native_session_id": "native-session-1",
             "previous_base_runtime_checkpoint_id": "",
@@ -783,7 +783,7 @@ def test_resume_accepts_changed_endpoint_before_claiming_turn(monkeypatch):
                 "turn_index": 2,
                 "task_kind": "custom",
                 "access_role": "admin",
-                "harness": "codex",
+                "harness": "pi",
                 "endpoint_id": 12,
                 "native_session_id": "native-session-1",
             }
@@ -802,7 +802,7 @@ def test_resume_accepts_changed_endpoint_before_claiming_turn(monkeypatch):
     payload = response.get_json()
     assert payload["success"] is True
     assert payload["task_id"] == "turn-2"
-    assert endpoint_calls == [("codex", 12, False)]
+    assert endpoint_calls == [("pi", 12, False)]
     assert begin_calls[0][0] == "session-1"
 
 
@@ -873,7 +873,7 @@ def test_resume_no_longer_depends_on_direct_generic_broker_publish(monkeypatch):
             "turn_index": 2,
             "task_kind": "custom",
             "access_role": "admin",
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": 12,
             "native_session_id": "native-session-1",
         },
@@ -1028,7 +1028,7 @@ def test_retry_first_turn_reuses_message_and_restores_empty_runtime(
                 "turn_index": 2,
                 "task_kind": task_kind,
                 "access_role": access_role,
-                "harness": "codex",
+                "harness": "pi",
                 "endpoint_id": 12,
                 "endpoint_revision": 3,
                 "endpoint_model": "gpt-test",
@@ -1108,7 +1108,7 @@ def test_retry_runtime_restore_failure_blocks_dispatch_and_future_resume(
             "turn_index": 2,
             "task_kind": "custom",
             "access_role": "admin",
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": 12,
             "endpoint_revision": 3,
             "endpoint_model": "gpt-test",
@@ -1271,7 +1271,7 @@ def test_solve_button_creates_a_resumable_generic_user_session(monkeypatch):
     with app.test_request_context(
         "/admin/agent_solve_problem/9",
         method="POST",
-        json={"harness": "codex", "endpoint_id": 12},
+        json={"harness": "pi", "endpoint_id": 12},
         environ_overrides={"HTTP_COOKIE": "session=signed-cookie"},
     ):
         response = routes.admin_agent_solve_problem(9)
@@ -1334,7 +1334,7 @@ def test_testdata_button_creates_a_resumable_generic_admin_session(
         "/admin/agent_generate_testdata/9",
         method="POST",
         data={
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": "12",
             "test_point_count": "4",
             "data_requirement": "覆盖病态输入",
@@ -1563,7 +1563,8 @@ def test_superseded_retry_source_remains_in_session_usage(monkeypatch):
     """重试只替换消息历史；实际发生过的模型用量继续累计。"""
 
     retry_usage = {
-        "source": "codex",
+        "source": "pi",
+        "incremental": True,
         "request_count": 1,
         "input_uncached_tokens": 20,
         "input_cached_tokens": 0,
@@ -1623,7 +1624,7 @@ def test_session_usage_cost_prefers_frozen_quota_ledger_amount():
         "task_id": "turn-1",
         "session_charged_amount_rmb": "1.25",
         "execution_trace": {"token_usage": {
-            "source": "codex",
+            "source": "pi",
             "request_count": 1,
             "input_uncached_tokens": 10,
             "input_cached_tokens": 0,
@@ -1665,7 +1666,7 @@ def test_each_turn_defers_its_public_timeline_until_expand(monkeypatch):
 def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
     current_state = {
         "task_id": "turn-current",
-        "harness": "codex",
+        "harness": "pi",
         "status": "Completed",
         "conclusion": "已完成",
         "execution_trace": {"trace_messages": [{
@@ -1688,7 +1689,7 @@ def test_decorate_turns_reuses_predecorated_current_state(monkeypatch):
     turn = routes._decorate_agent_turns(
         [{
             "task_id": "turn-current",
-            "harness": "codex",
+            "harness": "pi",
             "status": "Completed",
             "user_message": "继续",
         }],
@@ -1782,7 +1783,7 @@ def test_agent_turn_conclusion_uses_persisted_conclude(
     turn = routes._decorate_agent_turns([{
         "task_id": "turn-conclusion",
         "turn_index": 1,
-        "harness": "codex",
+        "harness": "pi",
         "status": status,
         "user_message": "完成任务",
         "conclusion": stored,

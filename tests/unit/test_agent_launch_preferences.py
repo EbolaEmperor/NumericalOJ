@@ -72,7 +72,7 @@ def test_get_agent_launch_preference_is_scoped_by_user(monkeypatch):
     connection = _FakeConnection(
         {
             "user_id": 7,
-            "harness": "codex",
+            "harness": "pi",
             "endpoint_id": 23,
             "created_at": created_at,
             "updated_at": updated_at,
@@ -88,7 +88,7 @@ def test_get_agent_launch_preference_is_scoped_by_user(monkeypatch):
 
     assert preference == {
         "user_id": 7,
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_source": "global",
         "endpoint_ref": "global:23",
         "endpoint_id": 23,
@@ -153,11 +153,11 @@ def test_save_agent_launch_preference_upserts_and_returns_latest_row(monkeypatch
 @pytest.mark.parametrize(
     ("args", "message"),
     (
-        ((0, "codex", 1), "用户 ID 无效"),
+        ((0, "pi", 1), "用户 ID 无效"),
         ((1, "unknown", 1), "Agent harness 无效"),
-        ((1, "codex", 0), "LLM 节点 ID 无效"),
-        ((1, "codex", True), "LLM 节点 ID 无效"),
-        ((1, "codex", 1.5), "LLM 节点 ID 无效"),
+        ((1, "pi", 0), "LLM 节点 ID 无效"),
+        ((1, "pi", True), "LLM 节点 ID 无效"),
+        ((1, "pi", 1.5), "LLM 节点 ID 无效"),
     ),
 )
 def test_save_agent_launch_preference_rejects_invalid_values_before_db(
@@ -188,7 +188,7 @@ def test_save_agent_launch_preference_rolls_back_when_row_cannot_be_read(
     with pytest.raises(RuntimeError, match="保存后无法读取"):
         agent_preferences.save_agent_launch_preference(
             7,
-            "codex",
+            "pi",
             23,
         )
 
@@ -224,6 +224,18 @@ def test_agent_launch_preferences_schema_is_declared():
     ) in compact
     assert "agent_launch_preferences_task_kind" not in compact
     assert (
-        "check (`harness` in ('claude_code','codex','opencode','pi'))"
+        "check (`harness` in ('claude_code','pi'))"
         in compact
     )
+
+
+def test_removed_harness_preference_is_ignored(monkeypatch):
+    connection = _FakeConnection({
+        "user_id": 7,
+        "harness": "codex",
+        "endpoint_source": "global",
+        "endpoint_id": 23,
+    })
+    monkeypatch.setattr(agent_preferences, "get_db_connection", lambda: connection)
+
+    assert agent_preferences.get_agent_launch_preference(7) is None

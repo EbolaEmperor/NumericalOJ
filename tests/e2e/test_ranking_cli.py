@@ -323,7 +323,7 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
         json.dumps(
             [
                 {
-                    "harness": "codex",
+                    "harness": "pi",
                     "protocol": "openai",
                     "base_url": "http://127.0.0.1:9",
                     "api_key": "local-only",
@@ -334,7 +334,7 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
                     "enabled": True,
                 },
                 {
-                    "harness": "codex",
+                    "harness": "pi",
                     "protocol": "openai",
                     "base_url": "http://127.0.0.1:10",
                     "api_key": "paused-local-only",
@@ -345,7 +345,7 @@ def test_ranking_agent_judge_git_check_submit_and_batch_admin(cli, unique_suffix
                     "status": "paused",
                 },
                 {
-                    "harness": "codex",
+                    "harness": "pi",
                     "protocol": "openai",
                     "base_url": "http://127.0.0.1:11",
                     "api_key": "disabled-local-only",
@@ -501,7 +501,8 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
 
     answer_pool = [
         {
-            "harness": "codex",
+            "harness": "pi",
+            "protocol": "openai",
             "base_url": "http://127.0.0.1:19001",
             "api_key": "answer-pool-secret",
             "model": "fake-answer-model",
@@ -509,7 +510,8 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
             "status": "enabled",
         },
         {
-            "harness": "codex",
+            "harness": "pi",
+            "protocol": "openai",
             "base_url": "http://127.0.0.1:19002",
             "api_key": "disabled-answer-secret",
             "model": "fake-answer-disabled",
@@ -677,7 +679,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     assert user_detail["can_submit"] is True
     assert len(user_detail["answer_endpoints"]) == 1
     assert set(user_detail["answer_endpoints"][0]) == {"id", "harness", "model", "label"}
-    assert user_detail["answer_endpoints"][0]["harness"] == "codex"
+    assert user_detail["answer_endpoints"][0]["harness"] == "pi"
     assert user_detail["answer_endpoints"][0]["model"] == "fake-answer-model"
     answer_endpoint_id = int(user_detail["answer_endpoints"][0]["id"])
     assert answer_endpoint_id != quality_endpoint_id

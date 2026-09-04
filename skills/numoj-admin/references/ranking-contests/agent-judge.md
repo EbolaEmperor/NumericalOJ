@@ -18,7 +18,7 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking edit <competiti
 
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking save-rules <competition_id> @rules.json
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking save-endpoint <competition_id> \
-  --harness codex \
+  --harness claude_code \
   --protocol openai \
   --agent-base-url https://llm.example.com/v1 \
   --api-key-env NUMOJ_AGENT_API_KEY \

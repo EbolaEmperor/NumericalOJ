@@ -1322,7 +1322,7 @@ def test_quality_endpoint_payloads_uses_independent_enabled_pool_and_exclusions(
     calls = []
     endpoints = [
         _quality_endpoint(1, concurrency_limit=0),
-        _quality_endpoint(2, harness=rj.HARNESS_CODEX, concurrency_limit=3),
+        _quality_endpoint(2, harness=rj.HARNESS_PI, concurrency_limit=3),
     ]
     monkeypatch.setattr(
         rj,
@@ -1537,7 +1537,7 @@ def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
 
     args = rj._quality_gate_container_args(
         "gate-container", "/srv/audit", proxy,
-        rj.HARNESS_CODEX, "generic-model",
+        rj.HARNESS_PI, "generic-model",
         endpoint={
             "context_window_tokens": 131_072,
             "max_output_tokens": 16_384,
@@ -1575,16 +1575,6 @@ def test_quality_gate_harness_result_extracts_structured_final_reply():
         rj.HARNESS_CLAUDE_CODE: json.dumps({
             "type": "result", "result": verdict,
         }, ensure_ascii=False),
-        rj.HARNESS_CODEX: "\n".join([
-            json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
-            json.dumps({
-                "type": "item.completed",
-                "item": {"type": "agent_message", "text": verdict},
-            }, ensure_ascii=False),
-        ]),
-        rj.HARNESS_OPENCODE: json.dumps({
-            "type": "text", "part": {"type": "text", "text": verdict},
-        }, ensure_ascii=False),
         rj.HARNESS_PI: "\n".join([
             json.dumps({
                 "type": "message_end",
@@ -1611,11 +1601,6 @@ def test_quality_gate_harness_result_extracts_structured_final_reply():
     (rj.HARNESS_CLAUDE_CODE, "not-json", "Claude Code 输出不是合法 JSON"),
     (rj.HARNESS_CLAUDE_CODE, '{"type":"result"}', "缺少最终结论"),
     (
-        rj.HARNESS_CODEX,
-        '{"type":"item.completed","item":{"type":"command_execution"}}',
-        "缺少最终结论",
-    ),
-    (
         rj.HARNESS_PI,
         '{"type":"message_end","message":{"role":"toolResult","content":[]}}',
         "缺少最终结论",
@@ -1629,17 +1614,6 @@ def test_quality_gate_harness_result_rejects_malformed_structured_output(
 
 @pytest.mark.parametrize("harness,stdout", [
     (rj.HARNESS_CLAUDE_CODE, json.dumps({"result": "123456789"})),
-    (
-        rj.HARNESS_CODEX,
-        json.dumps({
-            "type": "item.completed",
-            "item": {"type": "agent_message", "text": "123456789"},
-        }),
-    ),
-    (
-        rj.HARNESS_OPENCODE,
-        json.dumps({"type": "text", "part": {"type": "text", "text": "123456789"}}),
-    ),
     (
         rj.HARNESS_PI,
         json.dumps({
@@ -1801,14 +1775,9 @@ def test_run_quality_gate_agent_executes_harness_parses_json_and_cleans_up(
 @pytest.mark.parametrize("harness,stdout,error_fragment", [
     (rj.HARNESS_CLAUDE_CODE, "not-json", "Claude Code 输出不是合法 JSON"),
     (
-        rj.HARNESS_CODEX,
-        '{"type":"item.completed","item":{"type":"command_execution"}}',
+        rj.HARNESS_PI,
+        '{"type":"message_end","message":{"role":"toolResult","content":[]}}',
         "缺少最终结论",
-    ),
-    (
-        rj.HARNESS_OPENCODE,
-        '{"type":"text","part":{"type":"text","text":"not-json"}}',
-        "未返回合法 JSON",
     ),
 ])
 def test_run_quality_gate_agent_fails_closed_on_malformed_structured_stdout(

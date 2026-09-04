@@ -17,7 +17,7 @@ from backend.oj_modules.project_paths import PROJECT_ROOT
 
 _SKILLS_ROOT = PROJECT_ROOT / "skills"
 _ALLOWED_SOURCE_SKILLS = frozenset({"numoj-user", "numoj-admin"})
-_ALLOWED_HARNESSES = frozenset({"claude_code", "codex", "opencode", "pi"})
+_ALLOWED_HARNESSES = frozenset({"claude_code", "pi"})
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER_KEY_RE = re.compile(
     r"^([A-Za-z][A-Za-z0-9_-]*):(?:[ \t]*(.*?))?\r?\n?$"
@@ -30,7 +30,7 @@ _IGNORED_DIRECTORY_NAMES = frozenset({"__pycache__"})
 _IGNORED_FILE_NAMES = frozenset({".DS_Store"})
 _IGNORED_FILE_SUFFIXES = frozenset({".pyc", ".pyo"})
 
-# 四个 CLI 对 Agent Skills 标准的可选字段支持并不相同。这里按镜像中
+# 两个 CLI 对 Agent Skills 标准的可选字段支持并不相同。这里按镜像中
 # 的 harness 格式分别列出可识别字段，未知字段不投影，避免某个
 # harness 的私有字段被另一个 harness 误解释。
 _CORE_FRONTMATTER_FIELDS = frozenset({"name", "description"})
@@ -54,10 +54,6 @@ _FRONTMATTER_FIELDS_BY_HARNESS = {
             "when_to_use",
         }
     ),
-    "codex": _CORE_FRONTMATTER_FIELDS
-    | frozenset({"license", "allowed-tools", "metadata"}),
-    "opencode": _CORE_FRONTMATTER_FIELDS
-    | frozenset({"license", "compatibility", "metadata"}),
     "pi": _CORE_FRONTMATTER_FIELDS
     | frozenset(
         {
@@ -187,12 +183,6 @@ def _render_skill(source_text, harness, expected_name):
 def _target_relative_path(harness, source_skill):
     if harness == "claude_code":
         return Path(".runtime/home/.claude/skills") / source_skill
-    if harness == "codex":
-        # Codex 按 Agent Skills 约定从 $HOME/.agents/skills 发现用户级 skill；
-        # CODEX_HOME 只承载 CLI 配置与会话，不把 skill 绑到其私有目录。
-        return Path(".runtime/home/.agents/skills") / source_skill
-    if harness == "opencode":
-        return Path(".runtime/opencode/config/opencode/skills") / source_skill
     return Path(".runtime/pi/skills") / source_skill
 
 

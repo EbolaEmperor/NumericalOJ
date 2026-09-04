@@ -16,7 +16,7 @@
   },
   {
     "id": 67,
-    "harness": "opencode",
+    "harness": "pi",
     "protocol": null,
     "effective_protocol": "openai",
     "model": "deepseek-v4-flash",

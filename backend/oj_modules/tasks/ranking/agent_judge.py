@@ -28,6 +28,9 @@ except Exception:  # pragma: no cover
 from backend.oj_modules import config as _cfg
 from backend.oj_modules.shared.archive import ZipExtractionPolicy, extract_zip
 from backend.oj_modules.ranking.agent_judge import rules as aj
+from backend.oj_modules.ranking.reverse_judge.trace_sync import (
+    sync_pi_agent_sessions as _shared_sync_pi_agent_sessions,
+)
 from backend.oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
@@ -39,8 +42,9 @@ from backend.oj_modules.ranking.db import (
     submission_dir, update_submission_result_for_attempt,
 )
 from backend.oj_modules.ranking.agent_judge.db import (
+    ALLOWED_AGENT_HARNESSES,
     ENDPOINT_STATUS_PAUSED,
-    HARNESS_CLAUDE_CODE, HARNESS_CODEX, HARNESS_OPENCODE, HARNESS_PI,
+    HARNESS_CLAUDE_CODE, HARNESS_PI,
     agent_judge_trace_dir, agent_judge_trace_id,
     build_judge_snapshot, clear_judge_results_for_attempt,
     list_agent_judge_endpoints, list_competition_rules, list_judge_results,
@@ -793,6 +797,8 @@ def _prepare_workspace(submission, competition, rules, attempt_id=None):
 def _resolve_harness_config(endpoint):
     ep = endpoint or {}
     harness = ep.get('harness') or HARNESS_CLAUDE_CODE
+    if harness not in ALLOWED_AGENT_HARNESSES:
+        raise ValueError('Agent harness 仅支持 claude_code 或 pi')
     base_url = ep.get('base_url') or ''
     api_key = ep.get('api_key') or ''
     model = ep.get('model') or ''
@@ -1551,50 +1557,6 @@ def _sync_claude_execution_trace(container_name, ws, trace_dir, *, api_key='',
     return changed
 
 
-def _append_phase_execution_trace(trace_dir, harness, phase, proc, *, api_key='',
-                                  extra_secrets=()):
-    stdout = _sanitize_trace_payload(
-        getattr(proc, 'stdout', b''), api_key=api_key, extra_secrets=extra_secrets,
-    )
-    stderr = _trace_text(_sanitize_trace_payload(
-        getattr(proc, 'stderr', b''), api_key=api_key,
-        extra_secrets=extra_secrets,
-    ))
-    if harness == HARNESS_CODEX:
-        annotated = []
-        for raw in stdout.splitlines():
-            try:
-                event = json.loads(raw.decode('utf-8', 'replace'))
-            except Exception:
-                continue
-            if not isinstance(event, dict):
-                continue
-            event['_trace_source'] = 'codex'
-            event['_trace_phase'] = phase
-            annotated.append(json.dumps(event, ensure_ascii=False).encode('utf-8'))
-        payload = b'\n'.join(annotated)
-    elif harness == HARNESS_OPENCODE:
-        visible = _trace_text(stdout).strip()
-        if stderr:
-            visible = (visible + '\n' + stderr).strip()
-        if not visible:
-            return False
-        payload = json.dumps({
-            'type': 'assistant_message',
-            'message': f'[{phase}]\n{visible}',
-            'model': 'opencode',
-            '_trace_source': 'opencode',
-            '_trace_phase': phase,
-        }, ensure_ascii=False).encode('utf-8')
-    else:
-        return False
-    if not payload:
-        return False
-    name = 'codex_agent_judge.jsonl' if harness == HARNESS_CODEX else 'opencode_agent_judge.jsonl'
-    path = os.path.join(trace_dir, name)
-    return _append_bounded_trace_journal(path, payload.rstrip(b'\n') + b'\n')
-
-
 def _sync_live_execution_trace(container_name, ws, trace_dir, harness, *, api_key='',
                                extra_secrets=()):
     if harness == HARNESS_CLAUDE_CODE:
@@ -1602,70 +1564,14 @@ def _sync_live_execution_trace(container_name, ws, trace_dir, harness, *, api_ke
             container_name, ws, trace_dir,
             api_key=api_key, extra_secrets=extra_secrets,
         )
-    try:
-        logs = _capture_process_output_limited(
-            ['docker', 'logs', '--timestamps', '--tail', '2000', container_name], timeout=8,
+    if harness == HARNESS_PI:
+        return _shared_sync_pi_agent_sessions(
+            container_name,
+            trace_dir,
+            runtime_user='node',
+            secrets=(api_key, *extra_secrets),
         )
-    except Exception:
-        return False
-    stdout = _sanitize_trace_payload(
-        getattr(logs, 'stdout', b''), api_key=api_key, extra_secrets=extra_secrets,
-    )
-    if harness == HARNESS_CODEX:
-        encoded_events = []
-        for raw in stdout.splitlines():
-            log_offset, content = _split_docker_log_line(raw)
-            try:
-                event = json.loads(content.decode('utf-8', 'replace'))
-            except Exception:
-                continue
-            if not isinstance(event, dict):
-                continue
-            event['_trace_source'] = 'codex-logs'
-            event['_trace_offset'] = log_offset
-            encoded_events.append(json.dumps(event, ensure_ascii=False).encode('utf-8'))
-        payload = b'\n'.join(encoded_events) + (b'\n' if encoded_events else b'')
-        stderr = _sanitize_trace_payload(
-            getattr(logs, 'stderr', b''), api_key=api_key,
-            extra_secrets=extra_secrets,
-        )
-        if stderr.strip():
-            stderr_text = _trace_text(stderr).strip()[-4000:]
-            payload += json.dumps({
-                'type': 'error',
-                'message': stderr_text,
-                '_trace_source': 'codex-stderr',
-                '_trace_offset': int(hashlib.sha256(
-                    stderr_text.encode('utf-8'),
-                ).hexdigest()[:15], 16),
-            }, ensure_ascii=False).encode('utf-8') + b'\n'
-        path = os.path.join(trace_dir, 'codex_agent_judge.jsonl')
-    else:
-        visible_lines = []
-        for raw_line in stdout.splitlines():
-            log_offset, content = _split_docker_log_line(raw_line)
-            line = _trace_text(content).strip()
-            if line:
-                visible_lines.append((log_offset, line))
-        stderr = _sanitize_trace_payload(
-            getattr(logs, 'stderr', b''), api_key=api_key,
-            extra_secrets=extra_secrets,
-        )
-        for raw_line in stderr.splitlines():
-            log_offset, content = _split_docker_log_line(raw_line)
-            line = _trace_text(content).strip()
-            if line:
-                visible_lines.append((log_offset, '[stderr] ' + line))
-        payload_parts = []
-        for log_offset, line in visible_lines:
-            payload_parts.append(json.dumps({
-                'type': 'assistant_message', 'message': line, 'model': 'opencode',
-                '_trace_source': 'opencode-logs',
-                '_trace_offset': log_offset,
-            }, ensure_ascii=False).encode('utf-8') + b'\n')
-        payload = b''.join(payload_parts)
-        path = os.path.join(trace_dir, 'opencode_agent_judge.jsonl')
-    return _atomic_write_trace(path, payload) if payload else False
+    return False
 
 
 def _prepare_agent_trace_attempt(submission_id, attempt_id):
@@ -1920,12 +1826,12 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
                     default_phase=phase,
                 )
             else:
-                changed = False
-                if proc is not None:
-                    changed = _append_phase_execution_trace(
-                        trace_dir, harness, phase, proc,
-                        api_key=api_key, extra_secrets=secrets_to_redact,
-                    )
+                changed = _shared_sync_pi_agent_sessions(
+                    container_name,
+                    trace_dir,
+                    runtime_user='node',
+                    secrets=(api_key, *secrets_to_redact),
+                )
             if changed:
                 _publish_snapshot(submission_id)
             return changed
@@ -1934,7 +1840,7 @@ def _run_container_topological(submission_id, ws, result_name, competition, rule
         while not trace_monitor_stop.wait(JUDGE_TRACE_SYNC_INTERVAL):
             _record_trace(current_trace_phase['value'])
 
-    if harness == HARNESS_CLAUDE_CODE:
+    if harness in ALLOWED_AGENT_HARNESSES:
         trace_monitor_thread = threading.Thread(
             target=_monitor_trace,
             name=f'agent-judge-trace-{submission_id}',

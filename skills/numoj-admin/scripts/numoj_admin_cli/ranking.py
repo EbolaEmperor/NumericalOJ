@@ -588,8 +588,6 @@ def _endpoint_protocol_from_args(args: argparse.Namespace) -> str:
     protocol = str(getattr(args, "protocol", None) or "").strip().lower()
     allowed = {
         "claude_code": {"anthropic"},
-        "codex": {"openai"},
-        "opencode": {"openai"},
         "pi": {"openai", "anthropic"},
     }
     if not protocol:
@@ -1140,7 +1138,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=ranking_endpoints)
     pa = add_cli_parser(rs, "save-endpoint", "Replace the AI-judge endpoint pool with one endpoint.")
     pa.add_argument("competition_id", type=int, help="Competition ID to configure.")
-    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode", "pi"], default="claude_code", help="Agent harness used by the endpoint.")
+    pa.add_argument("--harness", choices=["claude_code", "pi"], default="claude_code", help="Agent harness used by the endpoint.")
     pa.add_argument("--protocol", choices=["openai", "anthropic"], help="Upstream endpoint protocol; required for Pi.")
     pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the AI-judge model API.")
     key_group = pa.add_mutually_exclusive_group(required=True)
@@ -1198,7 +1196,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "Replace the reverse-judge quality-gate pool with one endpoint.",
     )
     pa.add_argument("competition_id", type=int, help="Reverse-judge competition ID to configure.")
-    pa.add_argument("--harness", choices=["claude_code", "codex", "opencode", "pi"], default="claude_code", help="Agent harness used by the quality endpoint.")
+    pa.add_argument("--harness", choices=["claude_code", "pi"], default="claude_code", help="Agent harness used by the quality endpoint.")
     pa.add_argument("--protocol", choices=["openai", "anthropic"], help="Upstream endpoint protocol; required for Pi.")
     pa.add_argument("--agent-base-url", dest="base_url_value", required=True, help="Base URL for the quality-review model API.")
     key_group = pa.add_mutually_exclusive_group(required=True)

@@ -47,10 +47,12 @@ def test_supported_harness_defaults_to_high_for_new_web_sessions(harness):
 
 
 @pytest.mark.parametrize("harness", ["codex", "opencode"])
-def test_unsupported_harness_only_accepts_native_default(harness):
-    assert default_reasoning_effort_for_harness(harness) == "default"
-    assert normalize_agent_reasoning_effort(None, harness) == "default"
-    with pytest.raises(AgentLaunchValidationError, match="不支持该思考深度"):
+def test_removed_harness_is_rejected(harness):
+    with pytest.raises(AgentLaunchValidationError, match="harness"):
+        default_reasoning_effort_for_harness(harness)
+    with pytest.raises(AgentLaunchValidationError, match="harness"):
+        normalize_agent_reasoning_effort(None, harness)
+    with pytest.raises(AgentLaunchValidationError, match="harness"):
         normalize_agent_reasoning_effort("high", harness)
 
 

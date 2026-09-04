@@ -292,7 +292,7 @@ def test_problem_agent_generate_data_uploads_standard_solution_as_multipart(
 
     cli.problem_agent_generate_data(Namespace(
         problem_id=9,
-        harness="codex",
+        harness="pi",
         endpoint_id=12,
         count=4,
         standard_solution=str(source),
@@ -305,7 +305,7 @@ def test_problem_agent_generate_data_uploads_standard_solution_as_multipart(
         "/api/problems/9/agent/generate-testdata",
     )
     assert kwargs["data"] == {
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 12,
         "test_point_count": 4,
         "data_requirement": "覆盖边界",
@@ -324,9 +324,9 @@ def test_problem_agent_commands_require_new_harness_contract_and_reject_old_flag
 
     solve = parser.parse_args([
         "problem", "agent-solve", "9",
-        "--harness", "opencode", "--endpoint-id", "12",
+        "--harness", "pi", "--endpoint-id", "12",
     ])
-    assert solve.harness == "opencode"
+    assert solve.harness == "pi"
     assert solve.endpoint_id == 12
     assert not hasattr(solve, "extra_prompt")
 
@@ -344,12 +344,12 @@ def test_problem_agent_commands_require_new_harness_contract_and_reject_old_flag
     old_commands = (
         [
             "problem", "agent-solve", "9",
-            "--harness", "codex", "--endpoint-id", "12",
+            "--harness", "pi", "--endpoint-id", "12",
             "--extra-prompt", "旧补充提示",
         ],
         [
             "problem", "agent-generate-data", "9",
-            "--harness", "codex", "--endpoint-id", "12", "--count", "4",
+            "--harness", "pi", "--endpoint-id", "12", "--count", "4",
             "--standard-solution", "answer.py",
             "--standard-code", "print(1)",
         ],
@@ -972,7 +972,7 @@ def test_admin_ranking_detail_projects_quality_gate_configuration(monkeypatch, c
         "quality_gate_endpoints": [
             {
                 "id": 8,
-                "harness": "codex",
+                "harness": "pi",
                 "base_url": "http://quality.local",
                 "model": "quality-model",
                 "status": "enabled",
@@ -1098,7 +1098,7 @@ def test_admin_quality_gate_commands_reuse_file_and_env_secret_inputs(monkeypatc
     env_path.write_text("QUALITY_GATE_KEY=secret-from-env\n", encoding="utf-8")
     endpoints_path = tmp_path / "quality-endpoints.json"
     endpoints_path.write_text(
-        '[{"harness":"codex","base_url":"http://quality.local",'
+        '[{"harness":"pi","protocol":"openai","base_url":"http://quality.local",'
         '"api_key_env":"QUALITY_GATE_KEY","model":"quality-model",'
         '"concurrency_limit":2,"status":"enabled"}]',
         encoding="utf-8",
@@ -1171,8 +1171,8 @@ def test_admin_quality_gate_endpoint_commands_require_explicit_http_url(monkeypa
         monkeypatch.setitem(func.__globals__, "client_from_args", lambda _args: fake_client)
 
     invalid_lists = (
-        '[{"harness":"opencode","api_key":"secret","model":"gate-model"}]',
-        '[{"harness":"opencode","base_url":"ftp://quality.local",'
+        '[{"harness":"pi","protocol":"openai","api_key":"secret","model":"gate-model"}]',
+        '[{"harness":"pi","protocol":"openai","base_url":"ftp://quality.local",'
         '"api_key":"secret","model":"gate-model"}]',
     )
     for endpoints in invalid_lists:
@@ -1190,7 +1190,8 @@ def test_admin_quality_gate_endpoint_commands_require_explicit_http_url(monkeypa
     try:
         cli.ranking_save_quality_gate_endpoint(Namespace(
             competition_id=3,
-            harness="opencode",
+            harness="pi",
+            protocol="openai",
             base_url_value="",
             api_key="secret",
             api_key_env=None,
@@ -2108,11 +2109,11 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["problem", "agent-run-stream", "task-1"],
         ["problem", "agent-tasks"],
         [
-            "problem", "agent-solve", "1", "--harness", "codex",
+            "problem", "agent-solve", "1", "--harness", "pi",
             "--endpoint-id", "1",
         ],
         [
-            "problem", "agent-generate-data", "1", "--harness", "codex",
+            "problem", "agent-generate-data", "1", "--harness", "pi",
             "--endpoint-id", "1", "--count", "1", "--standard-solution",
             str(fixture_file),
         ],

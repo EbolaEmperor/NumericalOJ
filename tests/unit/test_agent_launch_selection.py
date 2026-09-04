@@ -22,7 +22,7 @@ def _endpoint(endpoint_id, *, protocol, category="text"):
     }
 
 
-def test_launch_endpoint_matrix_includes_opencode_global_nodes_without_secrets(
+def test_launch_endpoint_matrix_includes_supported_global_nodes_without_secrets(
     monkeypatch,
 ):
     endpoints = [
@@ -40,11 +40,10 @@ def test_launch_endpoint_matrix_includes_opencode_global_nodes_without_secrets(
     result = agent_launch.list_launch_endpoints_by_harness()
 
     assert [item["id"] for item in result["claude_code"]] == [2]
-    assert [item["id"] for item in result["codex"]] == [1]
-    assert [item["id"] for item in result["opencode"]] == [1]
+    assert set(result) == {"claude_code", "pi"}
     assert [item["id"] for item in result["pi"]] == [1, 2]
-    assert result["codex"][0]["ref"] == "global:1"
-    assert result["codex"][0]["metered"] is True
+    assert result["pi"][0]["ref"] == "global:1"
+    assert result["pi"][0]["metered"] is True
     assert all(
         "api_key" not in item and "base_url" not in item
         for items in result.values()
@@ -66,8 +65,7 @@ def test_launch_endpoint_matrix_excludes_nodes_without_configured_api_key(
 
     result = agent_launch.list_launch_endpoints_by_harness()
 
-    assert [item["id"] for item in result["codex"]] == [1]
-    assert [item["id"] for item in result["opencode"]] == [1]
+    assert [item["id"] for item in result["pi"]] == [1]
 
 
 def test_resolve_launch_endpoint_fails_closed_for_unknown_harness(monkeypatch):
@@ -85,14 +83,14 @@ def test_resolve_launch_endpoint_checks_selected_protocol(monkeypatch):
     monkeypatch.setattr(
         agent_launch,
         "get_llm_endpoint",
-        lambda *_args, **_kwargs: _endpoint(2, protocol="anthropic"),
+        lambda *_args, **_kwargs: _endpoint(2, protocol="openai"),
     )
 
     with pytest.raises(agent_launch.AgentLaunchValidationError, match="不兼容"):
-        agent_launch.resolve_launch_endpoint("codex", 2, include_secret=True)
+        agent_launch.resolve_launch_endpoint("claude_code", 2, include_secret=True)
 
     resolved = agent_launch.resolve_launch_endpoint(
-        "claude_code", 2, include_secret=True,
+        "pi", 2, include_secret=True,
     )
     assert resolved["api_key"] == "secret"
 
@@ -113,7 +111,7 @@ def test_resolve_launch_endpoint_rejects_non_strict_positive_ids(
 
     with pytest.raises(agent_launch.AgentLaunchValidationError, match="有效"):
         agent_launch.resolve_launch_endpoint(
-            "codex", endpoint_id, include_secret=False,
+            "pi", endpoint_id, include_secret=False,
         )
 
 
@@ -129,7 +127,7 @@ def test_resolve_public_launch_endpoint_requires_configured_api_key(monkeypatch)
 
     with pytest.raises(agent_launch.AgentLaunchValidationError, match="API Key"):
         agent_launch.resolve_launch_endpoint(
-            "codex", 3, include_secret=False,
+            "pi", 3, include_secret=False,
         )
 
 
@@ -157,11 +155,11 @@ def test_launch_endpoint_matrix_includes_only_current_users_personal_nodes(
 
     result = agent_launch.list_launch_endpoints_by_harness(user_id=7)
 
-    assert [item["ref"] for item in result["codex"]] == [
+    assert [item["ref"] for item in result["pi"]] == [
         "user:9",
         "global:1",
     ]
-    assert result["codex"][0]["metered"] is False
+    assert result["pi"][0]["metered"] is False
 
 
 def test_resolve_personal_endpoint_is_scoped_to_current_user(monkeypatch):
@@ -174,7 +172,7 @@ def test_resolve_personal_endpoint_is_scoped_to_current_user(monkeypatch):
     monkeypatch.setattr(agent_launch, "get_user_agent_endpoint", get_personal)
 
     resolved = agent_launch.resolve_launch_endpoint(
-        "codex",
+        "pi",
         "user:9",
         include_secret=True,
         user_id=7,
@@ -189,7 +187,7 @@ def test_resolve_personal_endpoint_is_scoped_to_current_user(monkeypatch):
         match="不属于当前用户",
     ):
         agent_launch.resolve_launch_endpoint(
-            "codex",
+            "pi",
             "user:9",
             include_secret=True,
         )

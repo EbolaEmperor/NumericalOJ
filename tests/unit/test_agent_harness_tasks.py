@@ -189,7 +189,7 @@ def _invoke_task(*, point_count=2, standard_filename="official answer.py"):
         "print(1)",
         "覆盖零和最大值",
         standard_filename,
-        "codex",
+        "pi",
         8,
         "session-cookie",
         "numoj_session",
@@ -626,7 +626,7 @@ def test_solution_redelivery_exits_before_creating_workspace(monkeypatch):
     task = solve_task.register_agent_solve_problem_task(_FakeCelery())
 
     result = task(
-        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        _FakeTaskSelf(), 5, "admin", "pi", 31, "session-cookie",
     )
 
     assert result["success"] is False
@@ -643,7 +643,7 @@ def test_solution_unhandled_worker_error_projects_failed_session(monkeypatch):
     task = solve_task.register_agent_solve_problem_task(_FakeCelery())
 
     result = task(
-        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        _FakeTaskSelf(), 5, "admin", "pi", 31, "session-cookie",
     )
 
     assert result["success"] is False
@@ -684,13 +684,13 @@ def test_solution_task_uses_selected_endpoint(monkeypatch):
 
     task = solve_task.register_agent_solve_problem_task(_FakeCelery())
     result = task(
-        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        _FakeTaskSelf(), 5, "admin", "pi", 31, "session-cookie",
         "numoj_session",
     )
 
     assert result["success"] is False
-    assert resolutions == [("codex", 31, {"include_secret": True})]
-    assert runs[0]["harness"] == "codex"
+    assert resolutions == [("pi", 31, {"include_secret": True})]
+    assert runs[0]["harness"] == "pi"
     assert runs[0]["session_id"] == "testdata-harness-task"
     assert runs[0]["access_role"] == "user"
     assert runs[0]["problem_id"] == 5
@@ -722,7 +722,7 @@ def test_solution_task_rejects_unavailable_selected_endpoint(monkeypatch):
 
     task = solve_task.register_agent_solve_problem_task(_FakeCelery())
     result = task(
-        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        _FakeTaskSelf(), 5, "admin", "pi", 31, "session-cookie",
     )
 
     assert result["success"] is False
@@ -764,7 +764,7 @@ def test_solution_task_succeeds_only_for_relay_created_accepted_submission(
 
     task = solve_task.register_agent_solve_problem_task(_FakeCelery())
     result = task(
-        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        _FakeTaskSelf(), 5, "admin", "pi", 31, "session-cookie",
     )
 
     assert result["success"] is True
@@ -795,7 +795,7 @@ def test_solution_task_cannot_complete_without_native_session(monkeypatch):
 
     task = solve_task.register_agent_solve_problem_task(_FakeCelery())
     result = task(
-        _FakeTaskSelf(), 5, "admin", "codex", 31, "session-cookie",
+        _FakeTaskSelf(), 5, "admin", "pi", 31, "session-cookie",
     )
 
     assert result["success"] is False
