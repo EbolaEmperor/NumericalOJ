@@ -21,17 +21,17 @@ function polarRose(petals: number, particleCount: number, trailSpan: number, dur
 }
 
 const curves: Curve[] = [
-  customRose(7, 64, .38, 4_600, 4_200, 28_000),
-  customRose(5, 62, .38, 4_600, 4_200, 28_000),
-  customRose(9, 68, .39, 4_700, 4_200, 30_000),
-  {particleCount: 72, trailSpan: .42, durationMs: 5_200, pulseDurationMs: 4_600, rotationDurationMs: 28_000, strokeWidth: 5.2, point(progress, detailScale) {
+  customRose(7, 80, .38, 4_600, 4_200, 28_000),
+  customRose(5, 78, .38, 4_600, 4_200, 28_000),
+  customRose(9, 85, .39, 4_700, 4_200, 30_000),
+  {particleCount: 90, trailSpan: .42, durationMs: 5_200, pulseDurationMs: 4_600, rotationDurationMs: 28_000, strokeWidth: 5.2, point(progress, detailScale) {
     const t = progress * Math.PI * 2
     const radius = 7 - 2.7 * detailScale * Math.cos(7 * t)
     return {x: 50 + Math.cos(t) * radius * 3.9, y: 50 + Math.sin(t) * radius * 3.9}
   }},
-  polarRose(2, 74, .3, 5_200, 4_300, 4.6),
-  polarRose(3, 76, .31, 5_300, 4_400, 4.6),
-  {particleCount: 86, trailSpan: .28, durationMs: 7_800, pulseDurationMs: 6_800, rotationDurationMs: 44_000, strokeWidth: 4.3, rotate: false, point(progress, detailScale) {
+  polarRose(2, 92, .3, 5_200, 4_300, 4.6),
+  polarRose(3, 95, .31, 5_300, 4_400, 4.6),
+  {particleCount: 108, trailSpan: .28, durationMs: 7_800, pulseDurationMs: 6_800, rotationDurationMs: 44_000, strokeWidth: 4.3, rotate: false, point(progress, detailScale) {
     const t = progress * Math.PI * 2
     const angle = t * 4
     const radius = 8 + (1 - Math.cos(t)) * (8.5 + detailScale * 2.4)
@@ -56,7 +56,7 @@ export function MathCurveLoader({label = '正在处理…', size = 'sm', iconOnl
   const serial = useId().replace(/[^a-z0-9_-]/gi, '')
   const seed = useMemo(() => [...serial].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16_777_619) >>> 0, 2_166_136_261), [serial])
   const curve = curves[seed % curves.length]
-  const particleCount = Math.max(1, Math.round(particleCountOverride ?? {xs: 24, sm: 36, md: 52, lg: curve.particleCount}[size]))
+  const particleCount = Math.max(1, Math.round(particleCountOverride ?? {xs: 42, sm: 52, md: 68, lg: curve.particleCount}[size]))
   const rootRef = useRef<HTMLSpanElement>(null)
   const groupRef = useRef<SVGGElement>(null)
   const pathRef = useRef<SVGPathElement>(null)

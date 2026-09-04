@@ -61,3 +61,20 @@ test('组件加载曲线只渲染在指定组件中', async () => {
   end()
   dom.window.close()
 })
+
+test('各尺寸加载曲线使用提高后的默认粒子密度', () => {
+  const dom = createPage()
+  const expectedCounts = {xs: 42, sm: 52, md: 68, lg: 80}
+
+  for (const [size, expected] of Object.entries(expectedCounts)) {
+    const loader = dom.window.document.createElement('span')
+    loader.dataset.mathCurveLoader = ''
+    loader.dataset.size = size
+    loader.dataset.curve = '0'
+    dom.window.document.body.appendChild(loader)
+    dom.window.MathCurveLoader.mount(loader)
+    assert.equal(loader.querySelectorAll('circle').length, expected)
+  }
+
+  dom.window.close()
+})

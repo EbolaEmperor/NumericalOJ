@@ -17,11 +17,11 @@
   // 从画廊前 8 个动画中排除 Rose Curve 与 Rose Four：
   // 保留三个重花环、Rose Orbit、Rose Two、Rose Three，并加入 Spiral Search。
   const CURVES = [
-    customRose(7, 64, 0.38, 4600, 4200, 28000),
-    customRose(5, 62, 0.38, 4600, 4200, 28000),
-    customRose(9, 68, 0.39, 4700, 4200, 30000),
+    customRose(7, 80, 0.38, 4600, 4200, 28000),
+    customRose(5, 78, 0.38, 4600, 4200, 28000),
+    customRose(9, 85, 0.39, 4700, 4200, 30000),
     {
-      particleCount: 72,
+      particleCount: 90,
       trailSpan: 0.42,
       durationMs: 5200,
       pulseDurationMs: 4600,
@@ -33,8 +33,8 @@
         return { x: 50 + Math.cos(t) * r * 3.9, y: 50 + Math.sin(t) * r * 3.9 };
       }
     },
-    polarRose(2, 74, 0.30, 5200, 4300, 4.6),
-    polarRose(3, 76, 0.31, 5300, 4400, 4.6),
+    polarRose(2, 92, 0.30, 5200, 4300, 4.6),
+    polarRose(3, 95, 0.31, 5300, 4400, 4.6),
     spiralSearch()
   ];
 
@@ -82,7 +82,7 @@
 
   function spiralSearch() {
     return {
-      particleCount: 86,
+      particleCount: 108,
       trailSpan: 0.28,
       durationMs: 7800,
       pulseDurationMs: 6800,
@@ -215,7 +215,7 @@
       element,
       config: CURVES[curveIndex],
       strokeScale,
-      particleCount: ({xs: 24, sm: 36, md: 52, lg: CURVES[curveIndex].particleCount})[element.dataset.size] || 36,
+      particleCount: ({xs: 42, sm: 52, md: 68, lg: CURVES[curveIndex].particleCount})[element.dataset.size] || 52,
       startTime: performance.now(),
       phaseOffset: Math.random(),
       lastPathAt: 0
