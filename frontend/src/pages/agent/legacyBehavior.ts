@@ -4,6 +4,19 @@ import {browserUuid} from '../../lib/browserUuid'
 export type AgentDeliveryMode = 'turn' | 'queue' | 'steer'
 export type AgentComposerEnterAction = 'send' | 'steer' | null
 
+export function agentComposerDeliveryMode({
+  intent,
+  running,
+  queuedCount,
+}: {
+  intent: 'send' | 'steer'
+  running: boolean
+  queuedCount: number
+}): AgentDeliveryMode {
+  if (intent === 'steer') return 'steer'
+  return running || queuedCount > 0 ? 'queue' : 'turn'
+}
+
 export function agentComposerEnterAction({
   key,
   keyCode,

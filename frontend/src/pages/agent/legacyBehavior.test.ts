@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it, vi} from 'vitest'
 
 import {
+  agentComposerDeliveryMode,
   agentComposerEnterAction,
   agentSessionUrl,
   cachedFallbackMessage,
@@ -48,6 +49,29 @@ describe('Agent 旧版浏览器行为兼容', () => {
     expect(action({composing: true})).toBeNull()
     expect(action({keyCode: 229})).toBeNull()
     expect(action({running: false, ctrlKey: true})).toBe('send')
+  })
+
+  it('失败轮次没有真实排队消息时直接续聊而不是进入暂停队列', () => {
+    expect(agentComposerDeliveryMode({
+      intent: 'send',
+      running: false,
+      queuedCount: 0,
+    })).toBe('turn')
+    expect(agentComposerDeliveryMode({
+      intent: 'send',
+      running: false,
+      queuedCount: 1,
+    })).toBe('queue')
+    expect(agentComposerDeliveryMode({
+      intent: 'send',
+      running: true,
+      queuedCount: 0,
+    })).toBe('queue')
+    expect(agentComposerDeliveryMode({
+      intent: 'steer',
+      running: true,
+      queuedCount: 0,
+    })).toBe('steer')
   })
 
   it('只使用旧版会话用量字段计算 INPUT、CACHED、OUTPUT 与 COST', () => {

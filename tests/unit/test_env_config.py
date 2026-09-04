@@ -107,6 +107,16 @@ def test_config_imports_code_defaults_without_private_env(tmp_path):
     assert result.stdout.strip() == "('oj', False, 'int', False)"
 
 
+def test_agent_workspace_default_quota_is_four_gib(tmp_path):
+    result = _run_config_import(
+        tmp_path,
+        expression="config.AGENT_WORKSPACE_MAX_BYTES",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(4 * 1024 * 1024 * 1024)
+
+
 def test_development_vibehub_defaults_remain_local_daemon_compatible(tmp_path):
     result = _run_config_import(
         tmp_path,

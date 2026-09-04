@@ -87,7 +87,7 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `AGENT_REPOSITORY_KNN_TOP_K` | int | `5` |
 | `AGENT_REPOSITORY_KNN_SCORE_THRESHOLD` | float | `0.08` |
 | `AGENT_WORKSPACE_ROOT` | string | `tmp/agent_workspaces` |
-| `AGENT_WORKSPACE_MAX_BYTES` | int | `536870912` |
+| `AGENT_WORKSPACE_MAX_BYTES` | int | `4294967296` |
 | `AGENT_WORKSPACE_MAX_FILES` | int | `20000` |
 | `AGENT_WORKSPACE_MAX_ENTRIES` | int | `25000` |
 | `AGENT_WORKSPACE_MAX_DEPTH` | int | `64` |
@@ -103,6 +103,10 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 socket 只按 `lstat` 的 entry 和 inode 大小计入配额；硬链接按每个入口重复计算完整
 逻辑大小。扫描与只读文件服务不会跟随链接，无法安全预览的入口不会出现在 workspace
 文件树中。
+
+默认总字节数为 4 GiB。因旧版 512 MiB 上限而失败、且已经建立原生 Harness 会话的任务会保留原 Workspace、
+私有 Runtime 和原生会话恢复点；新版本部署并重启 Worker 后，可以在原会话直接发送下一条消息继续。直接续聊
+不会回滚 Runtime，也不会重新执行上一条消息；新轮次会先按 4 GiB 配额校验保留下来的 Workspace。
 
 通用 Agent 任务（包括解题与造数据兼容入口）启动时会读取全站 WebSearch MCP 的 URL 和 Authorization，
 并注入管理员在弹窗中选择的 Harness。Claude Code 使用远程 MCP 配置；Pi 通过镜像内

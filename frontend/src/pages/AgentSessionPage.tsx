@@ -38,6 +38,7 @@ import {
   workBlockQueryKey,
 } from './agent/runEvents'
 import {
+  agentComposerDeliveryMode,
   agentComposerEnterAction,
   agentSessionUrl,
   cachedFallbackMessage,
@@ -246,12 +247,14 @@ export default function AgentSessionPage() {
   const quotaHasAccount = quota.has_account !== false
   const accessBlocked = !isAdmin && (!publicEnabled || (!personalEndpoint && !quotaCanContinue))
   const queue = queuedMessages(messageState)
-  const queuePaused = messageState.queue_paused === true
+  const queuePaused = messageState.queue_paused === true && queue.length > 0
   const canResume = result.data?.can_resume === true
   const legacy = session.is_legacy === true
   const nativeSessionId = String(messageState.native_session_id || currentState.native_session_id || session.native_session_id || '').trim()
   const hardBlocked = !canResume || legacy || isBlockedStatus(status) || accessBlocked
-  const queueMode = running || queuePaused || queue.length > 0
+  // 失败轮次会暂停既有队列，但没有真实排队消息时，普通发送必须直接以
+  // 新轮次续接原生会话；不能被一个孤立的 queue_paused 标志降级为 queue。
+  const queueMode = running || queue.length > 0
   const blocked = hardBlocked || (!running && !nativeSessionId && !queueMode)
   const steerSupported = messageState.steer_supported !== false
   const steerUnavailableReason = String(messageState.steer_unavailable_reason || session.steer_unavailable_reason || '').trim()
@@ -307,7 +310,7 @@ export default function AgentSessionPage() {
 
   const sendMessage = (intent: 'send' | 'steer' = 'send') => {
     if (blocked || dispatch.isPending || !message.trim()) return
-    const computedMode: AgentDeliveryMode = intent === 'steer' ? 'steer' : queueMode ? 'queue' : 'turn'
+    const computedMode = agentComposerDeliveryMode({intent, running, queuedCount: queue.length})
     if (computedMode === 'steer' && (!running || !currentTaskId)) {reportFeedback('当前任务已经结束，无法插话。'); return}
     if (computedMode === 'steer' && !steerSupported) {reportFeedback(steerUnavailableReason || '当前 Harness 暂不支持中途插话。'); return}
     const copy = message.trim(); const files = [...attachments]

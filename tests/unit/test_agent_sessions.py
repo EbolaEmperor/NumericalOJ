@@ -205,6 +205,42 @@ def test_continuation_freezes_runtime_base_and_locked_native_session(
     )
 
 
+def test_failed_turn_continues_directly_from_current_native_session(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{
+        "status": "Failed",
+        "turn_count": 1,
+        "task_kind": "custom",
+        "requested_by": "admin",
+        "access_role": "admin",
+        "harness": "claude_code",
+        "endpoint_source": "global",
+        "endpoint_id": 7,
+        "native_session_id": "native-after-quota-stop",
+        "previous_base_runtime_checkpoint_id": "checkpoint-before-failed-turn",
+        "has_pending_queue": 0,
+    }])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    claim = sessions.begin_agent_session_turn(
+        "session-quota-stopped",
+        task_id="turn-after-quota-stop",
+        user_message="继续处理剩余工作",
+        base_runtime_checkpoint_id="checkpoint-at-direct-continuation",
+        base_native_session_id="native-after-quota-stop",
+    )
+
+    assert claim["native_session_id"] == "native-after-quota-stop"
+    assert claim["base_native_session_id"] == "native-after-quota-stop"
+    assert claim["retry_of_task_id"] == ""
+    update_query = next(
+        query
+        for query, _params in connection.cursor_instance.calls
+        if "UPDATE agent_sessions" in query
+    )
+    assert "queue_paused=0" in update_query
+    assert connection.commits == 1
+
+
 def test_continuation_rejects_a_stale_native_session_base(monkeypatch):
     connection = _ScriptedConnection(one_values=[{
         "status": "Completed",
