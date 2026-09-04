@@ -8,6 +8,8 @@ from backend.oj_modules.tasks.agent.shared import (
     get_agent_run_snapshot,
     init_agent_queue_dispatcher,
     init_agent_progress_cache,
+    publish_agent_billing_revision,
+    subscribe_agent_billing_events,
     subscribe_agent_run_events,
 )
 from backend.oj_modules.tasks.agent.control import build_agent_run_terminator
@@ -40,6 +42,8 @@ __all__ = [
     "init_agent_queue_dispatcher",
     "install_agent_concurrency_control",
     "get_agent_run_snapshot",
+    "publish_agent_billing_revision",
+    "subscribe_agent_billing_events",
     "subscribe_agent_run_events",
     "build_agent_run_terminator",
     "read_agent_steer_capability",

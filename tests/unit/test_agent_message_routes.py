@@ -31,7 +31,7 @@ def _session(status="Running"):
         "current_task_id": "task-1",
         "requested_by": "admin",
         "access_role": "admin",
-        "harness": "codex",
+        "harness": "pi",
         "endpoint_id": 8,
         "endpoint_revision": 3,
         "endpoint_model": "gpt-test",
@@ -48,6 +48,17 @@ def _patch_common(monkeypatch, status="Running"):
     monkeypatch.setattr(routes, "current_user", lambda: dict(ADMIN))
     monkeypatch.setattr(routes, "get_agent_session", lambda _sid: dict(session))
     monkeypatch.setattr(routes, "_agent_run_turn_task", object())
+    monkeypatch.setattr(
+        routes,
+        "_get_agent_run_state",
+        lambda task_id, **_kwargs: {"task_id": task_id, "status": status},
+    )
+    monkeypatch.setattr(
+        routes,
+        "_agent_state_with_loaded_session_token_usage",
+        lambda state: state,
+    )
+    monkeypatch.setattr(routes, "_subscribe_agent_billing_events", None)
     monkeypatch.setattr(
         routes,
         "_agent_session_message_snapshot",
@@ -703,6 +714,84 @@ def test_message_stream_uses_slower_polling_and_quota_refresh(monkeypatch):
     assert Clock.sleeps[0] == 2.0
     assert quota_calls == [100.0, 110.0]
     assert routes._AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS == 10.0
+
+
+def test_message_stream_wakes_immediately_for_subagent_billing_revision(
+    monkeypatch,
+):
+    _patch_common(monkeypatch)
+    projections = iter((
+        {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "billing_revision": 51,
+            "session_token_usage": {"billing_revision": 51, "cost_rmb": "0.1"},
+        },
+        {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "billing_revision": 52,
+            "session_token_usage": {"billing_revision": 52, "cost_rmb": "0.2"},
+        },
+    ))
+    monkeypatch.setattr(
+        routes,
+        "_agent_state_with_loaded_session_token_usage",
+        lambda _state: next(projections),
+    )
+
+    class BillingPubSub:
+        closed = False
+
+        def get_message(self, *, timeout):
+            assert timeout == routes._AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
+            return {
+                "type": "message",
+                "data": '{"billing_revision":52}',
+            }
+
+        def close(self):
+            self.closed = True
+
+    pubsub = BillingPubSub()
+    monkeypatch.setattr(
+        routes,
+        "_subscribe_agent_billing_events",
+        lambda session_id: pubsub if session_id == "session-1" else None,
+    )
+
+    def snapshot(_session, current_state=None):
+        current_state = current_state or {}
+        return {
+            "current_task_id": "task-1",
+            "status": "Running",
+            "running": True,
+            "messages": [],
+            "billing_revision": current_state.get("billing_revision"),
+            "session_token_usage": current_state.get("session_token_usage"),
+        }
+
+    monkeypatch.setattr(routes, "_agent_session_message_snapshot", snapshot)
+    monkeypatch.setattr(
+        routes,
+        "get_agent_runtime_quota_summary",
+        lambda *_args, **_kwargs: {"remaining_amount": "9.8"},
+    )
+
+    app = _app()
+    with app.test_request_context(
+        "/admin/agent_tasks/session-1/stream",
+        method="GET",
+    ):
+        response = routes.admin_agent_task_message_stream("session-1")
+        initial = next(response.response)
+        updated = next(response.response)
+        response.response.close()
+
+    assert '"billing_revision": 51' in initial
+    assert '"billing_revision": 52' in updated
+    assert '"cost_rmb": "0.2"' in updated
+    assert pubsub.closed is True
 
 
 def test_message_stream_checks_initial_snapshot_before_sending_200(monkeypatch):

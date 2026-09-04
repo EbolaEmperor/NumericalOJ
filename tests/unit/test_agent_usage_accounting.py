@@ -113,6 +113,53 @@ def test_idempotent_existing_ledger_record_acknowledges_and_clears_outbox():
     assert _outbox_files() == []
 
 
+def test_committed_usage_publishes_durable_session_billing_revision(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        usage_accounting,
+        "publish_agent_billing_revision",
+        lambda *args: published.append(args) or True,
+    )
+    accountant = _accountant(
+        lambda **_kwargs: {
+            "id": 41,
+            "applied": True,
+            "charged_amount": "0.25",
+            "remaining_amount": "9.75",
+            "hard_stop": False,
+        }
+    )
+
+    result = accountant(_event())
+
+    assert result["billing_revision"] == 41
+    assert published == [("session-1", "task-1", 41)]
+
+
+def test_billing_revision_publish_failure_never_reopens_settlement(monkeypatch):
+    monkeypatch.setattr(
+        usage_accounting,
+        "publish_agent_billing_revision",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("redis unavailable")),
+    )
+    accountant = _accountant(
+        lambda **_kwargs: {
+            "id": 42,
+            "applied": True,
+            "charged_amount": "0.25",
+            "remaining_amount": "9.75",
+            "hard_stop": False,
+        }
+    )
+
+    result = accountant(_event())
+
+    assert result["acknowledged"] is True
+    assert result["billing_revision"] == 42
+    assert "deferred" not in result
+    assert _outbox_files() == []
+
+
 def test_disk_and_database_failure_keep_in_memory_copy_for_later_retry(
     monkeypatch,
 ):

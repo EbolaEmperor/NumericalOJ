@@ -468,7 +468,7 @@ def get_agent_session_token_usage(session_id):
             if rows:
                 cursor.execute(
                     """
-                    SELECT task_id, input_uncached_tokens,
+                    SELECT id, task_id, input_uncached_tokens,
                            input_cached_tokens, input_cache_write_tokens,
                            output_tokens
                     FROM agent_usage_ledger
@@ -526,6 +526,7 @@ def get_agent_session_token_usage(session_id):
         + usage["input_cache_write_tokens"]
     )
     if latest_context:
+        usage["billing_revision"] = int(latest_context.get("id") or 0)
         latest_task_id = str(latest_context.get("task_id") or "").strip()
         usage["_latest_context_task_id"] = latest_task_id
         usage["_latest_context_tokens"] = sum(

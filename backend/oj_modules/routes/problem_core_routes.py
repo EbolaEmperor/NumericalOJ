@@ -153,6 +153,7 @@ _agent_run_turn_task = None
 _agent_queue_dispatch_task = None
 _get_agent_run_snapshot = None
 _subscribe_agent_run_events = None
+_subscribe_agent_billing_events = None
 _terminate_agent_run = None
 read_agent_steer_capability = lambda _session_id, _harness: (
     False,
@@ -207,6 +208,7 @@ def _read_agent_standard_solution(upload):
 _AGENT_MESSAGE_MAX_CHARS = 100_000
 _AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS = 2.0
 _AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS = 10.0
+_AGENT_MESSAGE_STREAM_BILLING_REFRESH_INTERVAL_SECONDS = 10.0
 _AGENT_MESSAGE_STREAM_OVERLOAD_RETRY_SECONDS = 5.0
 
 
@@ -726,6 +728,12 @@ def _agent_state_with_session_token_usage(
         return state
     projected = dict(state)
     ledger_usage = dict(ledger_usage) if isinstance(ledger_usage, dict) else None
+    try:
+        ledger_billing_revision = int(
+            (ledger_usage or {}).pop('billing_revision', 0) or 0
+        )
+    except (TypeError, ValueError):
+        ledger_billing_revision = 0
     current_task_id = str(projected.get('task_id') or '').strip()
     ledger_context_task_id = str(
         (ledger_usage or {}).pop('_latest_context_task_id', '') or ''
@@ -781,6 +789,17 @@ def _agent_state_with_session_token_usage(
         session_usage['cost_rmb'] = str(ledger_cost)
         session_usage['cost_complete'] = True
     projected['session_token_usage'] = session_usage
+    try:
+        state_billing_revision = int(
+            projected.get('billing_revision') or 0
+        )
+    except (TypeError, ValueError):
+        state_billing_revision = 0
+    billing_revision = max(state_billing_revision, ledger_billing_revision)
+    if billing_revision > 0:
+        projected['billing_revision'] = billing_revision
+        if isinstance(session_usage, dict):
+            session_usage['billing_revision'] = billing_revision
 
     current_context_tokens = _agent_last_context_tokens(current_usage)
     current_request_count = int((current_usage or {}).get('request_count') or 0)
@@ -946,6 +965,10 @@ def _agent_session_message_snapshot(agent_session, current_state=None):
         snapshot['session_token_usage'] = current_state.get(
             'session_token_usage'
         )
+        snapshot['context_usage'] = current_state.get('context_usage')
+        snapshot['billing_revision'] = current_state.get(
+            'billing_revision'
+        )
     return snapshot
 
 
@@ -1073,6 +1096,7 @@ def init_problem_core_module(
     agent_run_turn_task=None,
     get_agent_run_snapshot=None,
     subscribe_agent_run_events=None,
+    subscribe_agent_billing_events=None,
     terminate_agent_run=None,
     agent_queue_dispatch_task=None,
     agent_steer_capability_reader=None,
@@ -1082,6 +1106,7 @@ def init_problem_core_module(
     global _agent_solve_problem_task, _agent_generate_testdata_task
     global _agent_run_turn_task, _agent_queue_dispatch_task
     global _get_agent_run_snapshot, _subscribe_agent_run_events
+    global _subscribe_agent_billing_events
     global _terminate_agent_run
     global read_agent_steer_capability
     _evaluate_submission_task = evaluate_submission_task
@@ -1093,6 +1118,7 @@ def init_problem_core_module(
     _agent_queue_dispatch_task = agent_queue_dispatch_task
     _get_agent_run_snapshot = get_agent_run_snapshot
     _subscribe_agent_run_events = subscribe_agent_run_events
+    _subscribe_agent_billing_events = subscribe_agent_billing_events
     _terminate_agent_run = terminate_agent_run
     if agent_steer_capability_reader is not None:
         read_agent_steer_capability = agent_steer_capability_reader
@@ -2051,11 +2077,13 @@ def agent_run_stream(task_id):
             usage.get("input_cached_tokens"),
             usage.get("output_tokens"),
             usage.get("cost_rmb"),
+            snapshot.get("billing_revision"),
             session_usage.get("request_count"),
             session_usage.get("input_total_tokens"),
             session_usage.get("input_cached_tokens"),
             session_usage.get("output_tokens"),
             session_usage.get("cost_rmb"),
+            session_usage.get("billing_revision"),
             tuple(
                 (item.get("path"), item.get("size"))
                 for item in files if isinstance(item, dict)
@@ -2084,6 +2112,7 @@ def agent_run_stream(task_id):
             usage.get("output_tokens"),
             usage.get("cost_rmb"),
             snapshot.get("session_charged_amount_rmb"),
+            snapshot.get("billing_revision"),
             tuple(
                 (item.get("path"), item.get("size"))
                 for item in files if isinstance(item, dict)
@@ -2131,11 +2160,15 @@ def agent_run_stream(task_id):
             ledger_usage = None
             if (
                 session_id
-                and snapshot.get('session_charged_amount_rmb') is not None
+                and (
+                    snapshot.get('session_charged_amount_rmb') is not None
+                    or snapshot.get('billing_revision') is not None
+                )
             ):
                 next_ledger_key = (
                     session_id,
                     str(snapshot.get('session_charged_amount_rmb')),
+                    str(snapshot.get('billing_revision') or ''),
                 )
                 if (
                     next_ledger_key != ledger_cache_key
@@ -3726,8 +3759,44 @@ def agent_task_message_stream(session_id):
     if lease is None:
         return sse_capacity_response()
 
+    billing_pubsub = (
+        _subscribe_agent_billing_events(session_id)
+        if _subscribe_agent_billing_events is not None
+        else None
+    )
+
+    def close_billing_pubsub():
+        nonlocal billing_pubsub
+        if billing_pubsub is None:
+            return
+        try:
+            billing_pubsub.close()
+        except Exception:
+            pass
+        billing_pubsub = None
+
+    def current_usage_projection(agent_session):
+        task_id = str(agent_session.get('current_task_id') or '').strip()
+        current_state = (
+            _get_agent_run_state(
+                task_id,
+                decorate_markdown=False,
+                include_trace=False,
+            )
+            if task_id
+            else {}
+        ) or {}
+        current_state = dict(current_state)
+        current_state.setdefault('task_id', task_id)
+        current_state['session_id'] = session_id
+        return _agent_state_with_loaded_session_token_usage(current_state)
+
     try:
-        initial_state = _agent_session_message_snapshot(initial_session)
+        initial_current_state = current_usage_projection(initial_session)
+        initial_state = _agent_session_message_snapshot(
+            initial_session,
+            current_state=initial_current_state,
+        )
         initial_quota_summary = get_agent_runtime_quota_summary(
             user['id'],
             is_admin=int(user.get('is_admin') or 0) == 1,
@@ -3741,9 +3810,11 @@ def agent_task_message_stream(session_id):
     except MySQLPoolExhausted:
         # 首帧所需的数据在发送 200 前完成；池已饱和时由全局处理器明确
         # 返回 503，避免建立一个随即断开的 EventSource。
+        close_billing_pubsub()
         lease.release()
         raise
     except Exception as exc:
+        close_billing_pubsub()
         lease.release()
         return _agent_message_mutation_error(exc)
 
@@ -3752,64 +3823,120 @@ def agent_task_message_stream(session_id):
         previous_payload = initial_payload
         heartbeat_at = time.monotonic()
         quota_refreshed_at = heartbeat_at
+        billing_refreshed_at = heartbeat_at
         quota_summary = initial_quota_summary
+        cached_usage = initial_state.get('session_token_usage')
+        cached_context = initial_state.get('context_usage')
+        cached_revision = int(initial_state.get('billing_revision') or 0)
+        cached_task_id = str(initial_state.get('current_task_id') or '')
         next_poll_delay = _AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
-        yield f"event: session\ndata: {initial_payload}\n\n"
-        while True:
-            time.sleep(next_poll_delay)
-            next_poll_delay = _AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
-            try:
-                current_session = get_agent_session(session_id)
-                if not current_session or current_session.get('is_legacy'):
-                    break
-                state = _agent_session_message_snapshot(current_session)
-                now = time.monotonic()
-                if (
-                    now - quota_refreshed_at
-                    >= _AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS
-                ):
-                    quota_summary = get_agent_runtime_quota_summary(
-                        user['id'],
-                        is_admin=int(user.get('is_admin') or 0) == 1,
+        try:
+            yield f"event: session\ndata: {initial_payload}\n\n"
+            while True:
+                billing_event = False
+                if billing_pubsub is not None:
+                    try:
+                        event = billing_pubsub.get_message(
+                            timeout=next_poll_delay
+                        )
+                        billing_event = bool(
+                            isinstance(event, dict)
+                            and event.get('type') == 'message'
+                        )
+                    except Exception:
+                        close_billing_pubsub()
+                else:
+                    time.sleep(next_poll_delay)
+                next_poll_delay = _AGENT_MESSAGE_STREAM_POLL_INTERVAL_SECONDS
+                try:
+                    current_session = get_agent_session(session_id)
+                    if not current_session or current_session.get('is_legacy'):
+                        break
+                    now = time.monotonic()
+                    current_task_id = str(
+                        current_session.get('current_task_id') or ''
                     )
-                    quota_refreshed_at = now
-                state['quota_summary'] = quota_summary
-                payload = json.dumps(state, ensure_ascii=False, sort_keys=True)
-            except GeneratorExit:
-                break
-            except MySQLPoolExhausted:
-                # 已发出 200 后无法改写 HTTP 状态。保持连接并降低轮询频率，
-                # 同时给 EventSource 写入重连退避，避免数据库过载时形成重连风暴。
-                retry_seconds = _AGENT_MESSAGE_STREAM_OVERLOAD_RETRY_SECONDS
-                retry_ms = int(retry_seconds * 1000)
-                overloaded = json.dumps({
-                    'code': 'mysql_pool_exhausted',
-                    'message': '服务器繁忙，实时消息将在稍后继续同步',
-                    'retry_after_ms': retry_ms,
-                }, ensure_ascii=False)
-                yield (
-                    f"retry: {retry_ms}\n"
-                    f"event: overloaded\n"
-                    f"data: {overloaded}\n\n"
-                )
-                previous_payload = None
-                heartbeat_at = time.monotonic()
-                next_poll_delay = retry_seconds
-                continue
-            except Exception:
-                logger.warning(
-                    'Agent 会话消息流读取失败',
-                    extra={'session_id': session_id},
-                    exc_info=True,
-                )
-                break
-            if payload != previous_payload:
-                yield f"event: session\ndata: {payload}\n\n"
-                previous_payload = payload
-                heartbeat_at = time.monotonic()
-            elif time.monotonic() - heartbeat_at >= 15:
-                yield ': keep-alive\n\n'
-                heartbeat_at = time.monotonic()
+                    refresh_billing = bool(
+                        billing_event
+                        or current_task_id != cached_task_id
+                        or now - billing_refreshed_at
+                        >= _AGENT_MESSAGE_STREAM_BILLING_REFRESH_INTERVAL_SECONDS
+                    )
+                    if refresh_billing:
+                        current_state = current_usage_projection(current_session)
+                        cached_usage = current_state.get('session_token_usage')
+                        cached_context = current_state.get('context_usage')
+                        cached_revision = max(
+                            cached_revision,
+                            int(current_state.get('billing_revision') or 0),
+                        )
+                        cached_task_id = current_task_id
+                        billing_refreshed_at = now
+                    else:
+                        current_state = {
+                            'task_id': current_task_id,
+                            'session_id': session_id,
+                            'session_token_usage': cached_usage,
+                            'context_usage': cached_context,
+                            'billing_revision': cached_revision or None,
+                        }
+                    state = _agent_session_message_snapshot(
+                        current_session,
+                        current_state=current_state,
+                    )
+                    if (
+                        billing_event
+                        or now - quota_refreshed_at
+                        >= _AGENT_MESSAGE_STREAM_QUOTA_REFRESH_INTERVAL_SECONDS
+                    ):
+                        quota_summary = get_agent_runtime_quota_summary(
+                            user['id'],
+                            is_admin=int(user.get('is_admin') or 0) == 1,
+                        )
+                        quota_refreshed_at = now
+                    state['quota_summary'] = quota_summary
+                    payload = json.dumps(
+                        state,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                except GeneratorExit:
+                    break
+                except MySQLPoolExhausted:
+                    # 已发出 200 后无法改写 HTTP 状态。保持连接并降低轮询频率，
+                    # 同时给 EventSource 写入重连退避，避免数据库过载时形成重连风暴。
+                    retry_seconds = _AGENT_MESSAGE_STREAM_OVERLOAD_RETRY_SECONDS
+                    retry_ms = int(retry_seconds * 1000)
+                    overloaded = json.dumps({
+                        'code': 'mysql_pool_exhausted',
+                        'message': '服务器繁忙，实时消息将在稍后继续同步',
+                        'retry_after_ms': retry_ms,
+                    }, ensure_ascii=False)
+                    yield (
+                        f"retry: {retry_ms}\n"
+                        f"event: overloaded\n"
+                        f"data: {overloaded}\n\n"
+                    )
+                    previous_payload = None
+                    heartbeat_at = time.monotonic()
+                    next_poll_delay = retry_seconds
+                    continue
+                except Exception:
+                    logger.warning(
+                        'Agent 会话消息流读取失败',
+                        extra={'session_id': session_id},
+                        exc_info=True,
+                    )
+                    break
+                if payload != previous_payload:
+                    yield f"event: session\ndata: {payload}\n\n"
+                    previous_payload = payload
+                    heartbeat_at = time.monotonic()
+                elif time.monotonic() - heartbeat_at >= 15:
+                    yield ': keep-alive\n\n'
+                    heartbeat_at = time.monotonic()
+        finally:
+            close_billing_pubsub()
 
     response = Response(
         guard_sse_stream(generate(), lease),

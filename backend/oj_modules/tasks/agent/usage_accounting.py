@@ -26,6 +26,7 @@ from backend.oj_modules.site_config.services import (
     DynamicConfigNotFoundError,
     get_llm_endpoint,
 )
+from backend.oj_modules.tasks.agent.shared import publish_agent_billing_revision
 
 
 logger = logging.getLogger(__name__)
@@ -337,11 +338,36 @@ def _settle_envelope(envelope, *, charge_usage):
     # applied=False 是已经由相同幂等键完成结算，不是失败。
     if result.get("applied") not in {True, False}:
         raise AgentUsageOutboxError("计费服务没有确认幂等结算状态")
-    return {
+    settled = {
         **result,
         "acknowledged": True,
         "remaining_rmb": result.get("remaining_amount"),
     }
+    try:
+        billing_revision = int(result.get("id") or 0)
+    except (TypeError, ValueError):
+        billing_revision = 0
+    if billing_revision > 0:
+        settled["billing_revision"] = billing_revision
+        # MySQL commit 已完成后才会走到这里。通知是低延迟提示，失败时前端
+        # 仍会用账本 revision 周期收敛，绝不能把 Redis 异常算作结算失败。
+        try:
+            publish_agent_billing_revision(
+                envelope.get("session_id"),
+                envelope.get("task_id"),
+                billing_revision,
+            )
+        except Exception:
+            logger.warning(
+                "发布 Agent 会话计费 revision 失败；账本结算已经完成",
+                extra={
+                    "session_id": envelope.get("session_id"),
+                    "task_id": envelope.get("task_id"),
+                    "billing_revision": billing_revision,
+                },
+                exc_info=True,
+            )
+    return settled
 
 
 def reconcile_agent_usage_outbox(

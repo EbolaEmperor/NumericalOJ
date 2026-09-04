@@ -6,6 +6,7 @@ import pytest
 from celery.exceptions import Retry
 
 from backend.oj_modules.tasks.agent import generic
+from backend.oj_modules.tasks.agent import usage_accounting
 from backend.oj_modules.tasks.agent.harness_runtime import (
     AgentHarnessCleanupError,
     HarnessRunResult,
@@ -52,6 +53,7 @@ def _patch_generic(monkeypatch, session):
     )
     monkeypatch.setattr(generic, "prepare_agent_trace_dir", lambda _task_id: None)
     monkeypatch.setattr(generic, "_publish_agent_trace", lambda _state: None)
+    monkeypatch.setattr(generic, "publish_agent_run_snapshot", lambda _state: None)
     monkeypatch.setattr(generic, "agent_run_is_canceled", lambda _task_id: False)
     monkeypatch.setattr(
         generic,
@@ -1103,7 +1105,7 @@ def test_committed_usage_charge_survives_quota_summary_refresh_failure(monkeypat
     assert snapshots[-1]["session_charged_amount_rmb"] == "1.5"
 
 
-def test_admin_usage_is_recorded_for_the_next_trace_snapshot(monkeypatch):
+def test_admin_usage_settlement_immediately_publishes_realtime_cost(monkeypatch):
     task_id = "admin-realtime-cost"
     session = {
         "session_id": "admin-cost-session",
@@ -1123,7 +1125,18 @@ def test_admin_usage_is_recorded_for_the_next_trace_snapshot(monkeypatch):
         "is_legacy": False,
     }
     snapshots = _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(
+        usage_accounting,
+        "publish_agent_billing_revision",
+        lambda *_args: True,
+    )
     trace_publications = []
+    billing_publications = []
+    monkeypatch.setattr(
+        generic,
+        "publish_agent_run_snapshot",
+        lambda state: billing_publications.append(deepcopy(state)),
+    )
     monkeypatch.setattr(
         generic,
         "_publish_agent_trace",
@@ -1151,6 +1164,7 @@ def test_admin_usage_is_recorded_for_the_next_trace_snapshot(monkeypatch):
         generic,
         "charge_agent_usage",
         lambda **kwargs: charged.append(kwargs) or {
+            "id": 51,
             "applied": True,
             "charged_amount": "0.125",
             "remaining_amount": None,
@@ -1177,7 +1191,9 @@ def test_admin_usage_is_recorded_for_the_next_trace_snapshot(monkeypatch):
                 "reasoning_output_tokens": 0,
             },
         })
-        assert trace_publications == []
+        assert len(billing_publications) == 1
+        assert billing_publications[0]["billing_revision"] == 51
+        assert billing_publications[0]["session_charged_amount_rmb"] == "0.125"
         kwargs["trace_callback"]()
         return HarnessRunResult(
             0,
@@ -1205,5 +1221,5 @@ def test_admin_usage_is_recorded_for_the_next_trace_snapshot(monkeypatch):
     assert charged[0]["is_admin"] is True
     assert charged[0]["endpoint_revision"] == 5
     assert len(trace_publications) == 1
-    assert trace_publications[0]["session_charged_amount_rmb"] == "0.125"
+    assert len(billing_publications) == 1
     assert snapshots[-1]["session_charged_amount_rmb"] == "0.125"

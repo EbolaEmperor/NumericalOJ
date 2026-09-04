@@ -132,6 +132,10 @@ def _agent_progress_channel(task_id):
     return f"agent_run_events:{task_id}"
 
 
+def _agent_billing_channel(session_id):
+    return f"agent_session_billing:{session_id}"
+
+
 def _agent_cancel_key(task_id):
     return f"agent_run_cancel:{task_id}"
 
@@ -166,11 +170,61 @@ def subscribe_agent_run_events(task_id):
         return None
 
 
+def publish_agent_billing_revision(session_id, task_id, billing_revision):
+    """结算提交后发布会话级 revision；Redis 失败不反向影响账本。"""
+
+    normalized_session_id = str(session_id or "").strip()
+    normalized_task_id = str(task_id or "").strip()
+    try:
+        revision = int(billing_revision)
+    except (TypeError, ValueError):
+        return False
+    if (
+        not normalized_session_id
+        or len(normalized_session_id) > 64
+        or not normalized_task_id
+        or len(normalized_task_id) > 64
+        or revision <= 0
+    ):
+        return False
+    client = _ensure_agent_progress_redis()
+    if client is None:
+        return False
+    payload = json.dumps({
+        "version": 1,
+        "session_id": normalized_session_id,
+        "task_id": normalized_task_id,
+        "billing_revision": revision,
+    }, ensure_ascii=False, sort_keys=True)
+    try:
+        client.publish(_agent_billing_channel(normalized_session_id), payload)
+        return True
+    except Exception:
+        return False
+
+
+def subscribe_agent_billing_events(session_id):
+    """订阅会话结算通知；账本 revision 才是断线后的持久事实来源。"""
+
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id or len(normalized_session_id) > 64:
+        return None
+    client = _ensure_agent_progress_blocking_redis()
+    if client is None:
+        return None
+    try:
+        pubsub = client.pubsub(ignore_subscribe_messages=True)
+        pubsub.subscribe(_agent_billing_channel(normalized_session_id))
+        return pubsub
+    except Exception:
+        return None
+
+
 def _format_local_time(ts=None):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts or time.time()))
 
 
-def _publish_agent_snapshot(state):
+def _publish_agent_snapshot(state, *, hydrate_trace=True):
     """把磁盘上的规范 JSONL 实时投影进 Redis/SSE 快照。"""
 
     if not isinstance(state, dict):
@@ -181,7 +235,11 @@ def _publish_agent_snapshot(state):
     client = _ensure_agent_progress_redis()
     if client is None:
         return
-    snapshot = hydrate_agent_run_snapshot(state)
+    snapshot = (
+        hydrate_agent_run_snapshot(state)
+        if hydrate_trace
+        else dict(state)
+    )
     payload = json.dumps(snapshot, ensure_ascii=False)
     try:
         eval_command = getattr(client, "eval", None)
@@ -204,6 +262,12 @@ def _publish_agent_snapshot(state):
             client.publish(_agent_progress_channel(task_id), payload)
     except Exception:
         pass
+
+
+def publish_agent_run_snapshot(state):
+    """发布已有状态，不触发轨迹重扫；供请求级计费投影低延迟使用。"""
+
+    _publish_agent_snapshot(state, hydrate_trace=False)
 
 
 def _publish_canceled_agent_snapshot(state):
@@ -531,6 +595,9 @@ __all__ = [
     "init_agent_progress_cache",
     "init_agent_queue_dispatcher",
     "get_agent_run_snapshot",
+    "publish_agent_billing_revision",
+    "publish_agent_run_snapshot",
+    "subscribe_agent_billing_events",
     "subscribe_agent_run_events",
     "agent_run_is_canceled",
     "canceled_agent_task_result",

@@ -594,6 +594,7 @@ def test_session_usage_cost_uses_ledger_sum_and_distinguishes_no_records(
             "reasoning_output_tokens": 3,
             "charged_amount": Decimal("0.05000000000000"),
         }], {
+            "id": 42,
             "task_id": "turn-2",
             "input_uncached_tokens": 17,
             "input_cached_tokens": 19,
@@ -611,6 +612,7 @@ def test_session_usage_cost_uses_ledger_sum_and_distinguishes_no_records(
             "reasoning_output_tokens": 8,
             "cost_rmb": "0.125",
             "cost_complete": True,
+            "billing_revision": 42,
             "_task_ids": ["turn-1", "turn-2"],
             "_latest_context_task_id": "turn-2",
             "_latest_context_tokens": 46,

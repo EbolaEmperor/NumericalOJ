@@ -19,6 +19,32 @@ class _FakeRedis:
         self.messages.append((channel, payload))
 
 
+def test_billing_revision_is_published_on_session_channel(monkeypatch):
+    redis = _FakeRedis()
+    monkeypatch.setattr(shared, "_agent_progress_rds", redis)
+
+    assert shared.publish_agent_billing_revision("session-1", "turn-2", 37)
+
+    channel, raw = redis.messages[0]
+    assert channel == "agent_session_billing:session-1"
+    assert json.loads(raw) == {
+        "version": 1,
+        "session_id": "session-1",
+        "task_id": "turn-2",
+        "billing_revision": 37,
+    }
+
+
+def test_billing_revision_publish_is_fail_open(monkeypatch):
+    class BrokenRedis:
+        def publish(self, *_args):
+            raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(shared, "_agent_progress_rds", BrokenRedis())
+
+    assert shared.publish_agent_billing_revision("session-1", "turn-2", 38) is False
+
+
 def test_persisted_agent_run_restores_model_capacity():
     state = db_services._agent_run_from_row({
         "task_id": "turn-capacity",

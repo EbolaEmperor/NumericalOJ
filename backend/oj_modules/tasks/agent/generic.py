@@ -55,6 +55,7 @@ from backend.oj_modules.tasks.agent.shared import (
     agent_run_is_canceled,
     canceled_agent_task_result,
     existing_agent_terminal_result,
+    publish_agent_run_snapshot,
 )
 from backend.oj_modules.tasks.agent.titles import generate_initial_agent_session_title
 from backend.oj_modules.tasks.agent.traces import prepare_agent_trace_dir
@@ -618,7 +619,18 @@ def register_agent_run_turn_task(celery_app):
                     "pricing": current_pricing,
                 }
 
-            def refresh_usage_projection(_result):
+            def refresh_usage_projection(result):
+                try:
+                    billing_revision = int(
+                        (result or {}).get("billing_revision") or 0
+                    )
+                except (TypeError, ValueError):
+                    billing_revision = 0
+                if billing_revision > 0:
+                    state["billing_revision"] = max(
+                        int(state.get("billing_revision") or 0),
+                        billing_revision,
+                    )
                 try:
                     state["session_charged_amount_rmb"] = (
                         get_agent_session_usage_cost(normalized_session_id)
@@ -631,10 +643,11 @@ def register_agent_run_turn_task(celery_app):
                     # 把已扣费的正常请求误判成记账失败并杀掉任务；后续状态读取
                     # 会直接从额度账户恢复最新余额。
                     pass
-                # 不在 relay 的 usage 回调里提前发布。adapter 只有拿到完整响应
-                # 后才会写入规范 trace；紧随其后的 trace tick 会把轨迹、用量和
-                # 额度作为同一份 SSE 快照发布，避免一次 LLM 请求产生两个视觉
-                # 更新，也不会退化为 token 级流式渲染。
+                # 每个 Claude 主请求和 subagent 请求都独立经过 relay 结算。
+                # 结算成功即发布一次 run 快照，让 COST/余额立即更新；规范轨迹
+                # 随后的 tick 再补齐 token 与工作块，两者都保持请求级而非
+                # token 级更新。发布异常由共享层按缓存旁路语义吞掉。
+                publish_agent_run_snapshot(state)
 
             usage_accountant = ResilientAgentUsageAccountant(
                 user_id=user["id"],

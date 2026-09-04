@@ -22,6 +22,7 @@ from backend.oj_modules.tasks.agent.registry import (
     register_agent_queue_tasks,
     register_agent_solve_problem_task,
     read_agent_steer_capability,
+    subscribe_agent_billing_events,
     subscribe_agent_run_events,
 )
 from backend.oj_modules.tasks.repository_index_tasks import register_repository_index_build_task
@@ -108,6 +109,7 @@ __all__ = [
     "init_agent_queue_dispatcher",
     "install_agent_concurrency_control",
     "get_agent_run_snapshot",
+    "subscribe_agent_billing_events",
     "subscribe_agent_run_events",
     "build_agent_run_terminator",
     "read_agent_steer_capability",

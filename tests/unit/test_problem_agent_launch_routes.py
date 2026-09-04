@@ -1177,7 +1177,7 @@ def test_agent_run_stream_emits_live_usage_and_cost_updates(monkeypatch):
 
 @pytest.mark.parametrize(
     ("initial_cost", "updated_cost", "expected_ledger_calls"),
-    [("0.10", "0.25", 2), ("0", "0", 3)],
+    [("0.10", "0.25", 2), ("0.10", "0.10", 2), ("0", "0", 3)],
 )
 def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
     monkeypatch,
@@ -1191,6 +1191,7 @@ def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
         "harness": "pi",
         "status": "Running",
         "session_charged_amount_rmb": initial_cost,
+        "billing_revision": 51,
         "execution_trace": {
             "status": "running",
             "trace_id": "trace-ledger-live",
@@ -1202,6 +1203,7 @@ def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
     updated = {
         **initial,
         "session_charged_amount_rmb": updated_cost,
+        "billing_revision": 52,
         "execution_trace": {
             **initial["execution_trace"],
             "trace_messages": [
@@ -1230,6 +1232,7 @@ def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
         "reasoning_output_tokens": 0,
         "cost_rmb": initial_cost,
         "cost_complete": True,
+        "billing_revision": 51,
     }
     usage_after = {
         **usage_before,
@@ -1239,6 +1242,7 @@ def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
         "input_total_tokens": 200,
         "output_tokens": 40,
         "cost_rmb": updated_cost,
+        "billing_revision": 52,
     }
 
     class PubSub:
@@ -1296,7 +1300,7 @@ def test_agent_run_stream_uses_live_ledger_when_trace_has_no_usage(
     assert states[1]["session_token_usage"]["input_cached_tokens"] == 60
     assert states[1]["session_token_usage"]["output_tokens"] == 40
     assert states[-1]["session_token_usage"]["cost_rmb"] == (
-        "0.25" if updated_cost == "0.25" else "0"
+        {"0.25": "0.25", "0.10": "0.1"}.get(updated_cost, "0")
     )
     assert ledger_calls == ["session-ledger-live"] * expected_ledger_calls
 

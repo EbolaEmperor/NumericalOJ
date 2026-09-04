@@ -19,6 +19,7 @@ __all__ = [
     "register_agent_run_turn_task",
     "register_agent_queue_tasks",
     "register_agent_solve_problem_task",
+    "subscribe_agent_billing_events",
     "subscribe_agent_run_events",
 ]
 
@@ -38,6 +39,7 @@ _REGISTRY_EXPORTS = {
     "register_agent_run_turn_task": "register_agent_run_turn_task",
     "register_agent_queue_tasks": "register_agent_queue_tasks",
     "register_agent_solve_problem_task": "register_agent_solve_problem_task",
+    "subscribe_agent_billing_events": "subscribe_agent_billing_events",
     "subscribe_agent_run_events": "subscribe_agent_run_events",
 }
 
