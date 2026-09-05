@@ -128,18 +128,16 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 仓库结构化、检索摘要和 Embedding 模型均由全站功能绑定决定。上述维度、批量和超时值
 只控制本地索引格式与资源上限。
 
-## 普通判题与 Agent-as-Judge 容器
+## 普通判题与通用 Agent 容器
 
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
 | `AGENT_JUDGE_DOCKER_IMAGE` | string | `numericaloj-agent-judge:latest` |
-| `AGENT_JUDGE_WORKSPACE_ROOT` | string | `ranking_uploads/judge_workspace` |
-| `AGENT_JUDGE_CONCURRENCY` | int | `2` |
+| `AGENT_JUDGE_WORKSPACE_ROOT`（仅历史迁移） | string | `ranking_uploads/judge_workspace` |
 | `AGENT_JUDGE_DEFAULT_TIMEOUT` | int | `1800` |
 | `AGENT_JUDGE_MEM_LIMIT` | string | `4g` |
 | `AGENT_JUDGE_CPU_LIMIT` | string | `2` |
 | `AGENT_JUDGE_PIDS_LIMIT` | string | `512` |
-| `AGENT_JUDGE_RESULT_POLL_INTERVAL` | float | `1.5` |
 | `AGENT_JUDGE_PROGRESS_TTL` | int | `21600` |
 | `ELO_ISOLATED_WORKER_NETWORK` | string | `none` |
 | `ELO_ISOLATED_JUDGE_NETWORK` | string | `bridge` |
@@ -248,11 +246,12 @@ stable tag 一起切换 `current`，失败时两者一并恢复，成功后保�
 创建或更新构建仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
 完整作品接口见 `docs/vibehub-developer-guide.md`。
 
-Agent-as-Judge 高级通信和压缩包边界：
+Judge 的模型轮次通过唯一 `agent` 队列执行，使用通用 `AGENT_WORKSPACE_ROOT`。比赛侧短编排和端点池探活使用 `celery` 队列，已投递的轮次在排队期间仍保留池名额。`REVERSE_JUDGE_WORKSPACE_ROOT` 只保存标准答案自检、脚本评分及导出结果的业务副本。
+
+Judge 业务编排、端点池和压缩包边界：
 
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
-| `AGENT_JUDGE_TRACE_SYNC_INTERVAL_SECONDS` | float | `5.0` |
 | `AGENT_JUDGE_QUEUE_RETRY_SECONDS` | int | `8` |
 | `AGENT_JUDGE_MAX_QUEUE_RETRIES` | int | `2000` |
 | `AGENT_JUDGE_SLOT_TTL_BUFFER` | int | `600` |
@@ -287,7 +286,6 @@ Agent-as-Judge 高级通信和压缩包边界：
 | `REVERSE_JUDGE_PROGRESS_TTL` | int | `21600` |
 | `REVERSE_JUDGE_WORKSPACE_ROOT` | string | `ranking_uploads/reverse_judge_workspace` |
 | `REVERSE_JUDGE_SCRIPT_TIMEOUT` | int | `300` |
-| `REVERSE_JUDGE_TRACE_SYNC_INTERVAL` | float | `2.0` |
 | `REVERSE_JUDGE_STREAM_TIMEOUT_BUFFER_SECONDS` | int | `1200` |
 | `REVERSE_QUALITY_GATE_TIMEOUT_SECONDS` | int | `300` |
 | `REVERSE_QUALITY_GATE_MAX_PROMPT_CHARS` | int | `20000` |
@@ -299,12 +297,6 @@ Agent-as-Judge 高级通信和压缩包边界：
 | `REVERSE_ANSWER_MAX_FILES` | int | `4096` |
 | `REVERSE_ANSWER_MAX_FILE_BYTES` | int | `268435456` |
 | `REVERSE_ANSWER_MAX_TOTAL_BYTES` | int | `536870912` |
-| `REVERSE_ENDPOINT_PROXY_MAX_REQUEST_BYTES` | int | `8388608` |
-| `REVERSE_ENDPOINT_PROXY_MAX_CONNECTIONS` | int | `2` |
-| `REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS` | int | `30` |
-| `REVERSE_ENDPOINT_PROXY_TIMEOUT_SECONDS` | int | `600` |
-| `REVERSE_ENDPOINT_PROXY_BIND_HOST` | string | `0.0.0.0` |
-| `REVERSE_ENDPOINT_PROXY_CONTAINER_HOST` | string | `host.docker.internal` |
 | `REVERSE_TRACE_RETENTION_SECONDS` | int | `1209600` |
 | `REVERSE_TRACE_MAX_ATTEMPTS` | int | `8` |
 | `REVERSE_TRACE_MIN_DELETE_AGE_SECONDS` | int | `21600` |

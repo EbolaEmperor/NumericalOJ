@@ -629,7 +629,7 @@ def test_deploy_requires_exact_supervisor_namespecs_and_successful_status_comman
     assert "if status=\"$(" in script
     assert 'supervisorctl_status=$?' in script
     assert '"$supervisorctl_status" -eq 0' in script
-    assert "celery:celery_judge celery:celery_agent celery:celery_agent_judge" in script
+    assert "celery:celery_judge celery:celery_agent" in script
     assert 'wait_for_programs "$WEB_CONFIG" 120 web' in script
     assert 'wait_for_programs "$OBSERVABILITY_CONFIG" 15 log_collector' in script
     assert '"${#seen_names[@]}" -eq "${#expected_names[@]}"' in script
@@ -678,7 +678,7 @@ def test_supervisor_config_keeps_the_expected_process_topology(tmp_path):
 
     assert groups == {
         "web": {"web"},
-        "celery": {"celery_judge", "celery_agent", "celery_agent_judge"},
+        "celery": {"celery_judge", "celery_agent"},
         "log_collector": {"log_collector"},
     }
 
@@ -693,12 +693,12 @@ def test_production_supervisors_use_the_project_local_deploy_venv_only():
     assert '"%(here)s/../../.deploy/current-venv/bin/python3" -m gunicorn' in web
     assert celery.count(
         '"%(here)s/../../.deploy/current-venv/bin/python3" -m celery'
-    ) == 3
+    ) == 2
     assert (
         '"%(here)s/../../.deploy/current-venv/bin/python3" '
         '-B scripts/log_admin.py serve'
     ) in observability
-    assert celery.count("startsecs=10") == 3
+    assert celery.count("startsecs=10") == 2
     assert "/home/" not in web
     assert "/home/" not in celery
     assert "/home/" not in observability
@@ -720,3 +720,15 @@ def test_obsolete_remote_release_helpers_are_removed():
     )
 
     assert not any((ROOT / path).exists() for path in obsolete)
+
+
+def test_judge_history_migration_runs_after_backup_and_schema_before_recovery():
+    script = _read('deploy.sh')
+    backup = script.index('"$CANDIDATE_PYTHON" -B deploy/backup_database.py backup')
+    schema = script.index('"$CANDIDATE_PYTHON" scripts/init_db_schema.py')
+    migration = script.index('"$CANDIDATE_PYTHON" scripts/migrate_judge_agent_sessions.py')
+    recovery = script.index('"$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py')
+    assert backup < schema < migration < recovery
+    assert '--confirm-writers-stopped --backup-manifest "$backup_manifest" --backup-plan "$backup_plan"' in script
+    assert 'celery_agent_judge' not in _read('deploy/supervisor/celery.conf')
+    assert ' -Q judge ' not in _read('deploy/supervisor/local-dev.conf')

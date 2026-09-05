@@ -775,13 +775,11 @@ def test_business_processes_preserve_container_readable_file_modes():
         'celery.conf': (
             'program:celery_judge',
             'program:celery_agent',
-            'program:celery_agent_judge',
         ),
         'local-dev.conf': (
             'program:web',
             'program:celery_judge',
             'program:celery_agent',
-            'program:celery_agent_judge',
         ),
     }
 

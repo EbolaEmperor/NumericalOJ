@@ -462,9 +462,9 @@ celery.conf.task_routes = {
     'oj.agent.run_turn': {'queue': 'agent'},
     'oj.agent.dispatch_session_queue': {'queue': 'agent'},
     'oj.promptly.generate_submission': {'queue': 'agent'},
-    'oj.ranking_agent_judge': {'queue': 'judge'},
-    'oj.ranking_agent_judge_paused_probe': {'queue': 'judge'},
-    'oj.ranking_reverse_judge': {'queue': 'judge'},
+    'oj.ranking_agent_judge': {'queue': 'celery'},
+    'oj.ranking_agent_judge_paused_probe': {'queue': 'celery'},
+    'oj.ranking_reverse_judge': {'queue': 'celery'},
 }
 # Redis broker 默认只会保留 late-ack 消息一小时。Agent 长任务超过该窗口时，
 # 同一 task_id 会被第二个 worker 重投并与原容器并发。该设置作用于共享 Redis
@@ -576,6 +576,7 @@ init_ranking_module(
     evaluate_ranking_submission, ranking_elo_initial_burst, evaluate_ranking_agent_judge,
     reverse_judge_task=evaluate_ranking_reverse_judge,
     redis_client=rds,
+    agent_run_terminator=terminate_agent_run,
     batch_probe_task=ranking_batch_probe, batch_run_task=ranking_batch_run,
     bulk_rejudge_task=ranking_bulk_rejudge,
     judge_progress_reader=get_judge_progress_snapshot,

@@ -18,9 +18,10 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和
 
 系统由 Flask Web、Celery worker、MySQL、Redis 和 Docker 组成。Celery 队列职责固定为：
 
-- `celery`：普通判题、作业、检测和索引等常规任务；
-- `agent`：通用 Agent 等长任务，单 worker 按全站设置动态伸缩（默认 8，最高 100）；
-- `judge`：打榜赛 Agent-as-Judge 和反向评测。
+- `celery`：普通判题、作业、检测、索引和比赛评测的短流程编排；
+- `agent`：所有通用 Agent（含 Agent Judge、反向评测审核与作答），单 worker 按全站设置动态伸缩（默认 8，最高 100）。
+
+比赛端点池放行后才发送通用 Agent；排队中的轮次仍保留池名额，确认结束后释放。Judge 会话仅允许内部续聊，人工入口一律只读。
 
 普通判题调用链为
 `backend/oj_modules/tasks/evaluate_tasks.py -> backend/oj_modules/judging/core.py -> backend/oj_modules/judging/sandbox.py -> Docker`。

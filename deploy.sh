@@ -348,7 +348,6 @@ docker_source_digest() {
       context='docker'
       inputs=(
         agent_judge/Dockerfile
-        agent_judge/report
         agent_judge/run_harness
         agent_judge/pi_web_search_mcp.ts
         agent_judge/lean
@@ -930,6 +929,11 @@ rm -f -- "$ARC_RESULT_FILE"
 
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 
+phase='迁移并核验历史 Judge 会话'
+"$CANDIDATE_PYTHON" scripts/migrate_judge_agent_sessions.py \
+  --confirm-writers-stopped --backup-manifest "$backup_manifest" --backup-plan "$backup_plan" \
+  --report "$ROOT_DIR/.deploy/judge-agent-migration.json"
+
 phase='种入 VibeHub 示例作品'
 "$CANDIDATE_PYTHON" -B deploy/seed_vibehub_examples.py \
   --repository-root "$ROOT_DIR" \
@@ -1028,7 +1032,7 @@ fi
 phase='启动 Celery 服务'
 "$CANDIDATE_SUPERVISORD" -c "$CELERY_CONFIG" 9>&-
 wait_for_programs "$CELERY_CONFIG" 120 \
-  celery:celery_judge celery:celery_agent celery:celery_agent_judge
+  celery:celery_judge celery:celery_agent
 
 phase='启动 Web 服务'
 "$CANDIDATE_SUPERVISORD" -c "$WEB_CONFIG" 9>&-
@@ -1036,7 +1040,7 @@ wait_for_programs "$WEB_CONFIG" 120 web
 
 phase='确认全部服务状态'
 wait_for_programs "$CELERY_CONFIG" 120 \
-  celery:celery_judge celery:celery_agent celery:celery_agent_judge
+  celery:celery_judge celery:celery_agent
 wait_for_programs "$WEB_CONFIG" 120 web
 
 phase='确认数据库回滚点状态'
