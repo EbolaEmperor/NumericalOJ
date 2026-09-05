@@ -1166,6 +1166,21 @@ def _event_queue(*events):
     return result
 
 
+def _claude_event_queue(*events):
+    """常规 Claude fixture 在最后的 result 后发出原生 idle。"""
+    events = list(events)
+    last_result = max(
+        (index for index, event in enumerate(events)
+         if isinstance(event, dict) and event.get("type") == "result"),
+        default=-1,
+    )
+    if last_result >= 0:
+        events.insert(last_result + 1, {
+            "type": "system", "subtype": "session_state_changed", "state": "idle",
+        })
+    return _event_queue(*events)
+
+
 def test_pi_rpc_adapter_maps_steer_and_abort_with_real_ack(monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["pi"])
@@ -1486,7 +1501,7 @@ def test_claude_stream_json_adapter_acks_steer_only_after_user_replay(monkeypatc
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
     steer_uuid = module._stable_control_uuid("steer-1", "")
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init"},
         {
             "type": "user",
@@ -1530,12 +1545,12 @@ def test_claude_stream_json_adapter_acks_steer_only_after_user_replay(monkeypatc
     ] == ["__start__", "steer-1"]
 
 
-def test_claude_stream_json_waits_for_background_subagents_and_parent_result(
+def test_claude_stream_json_waits_for_native_idle_after_background_result(
         monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
     session_id = "22222222-2222-2222-2222-222222222222"
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init", "session_id": session_id},
         {"type": "result", "session_id": session_id},
         {
@@ -1569,7 +1584,7 @@ def test_claude_stream_json_waits_for_background_subagents_and_parent_result(
     monkeypatch.setattr(
         module,
         "_claude_subagent_snapshot",
-        lambda _env, found_session_id: (
+        lambda _env, found_session_id, **_kwargs: (
             next(snapshots) if found_session_id == session_id else []
         ),
     )
@@ -1602,12 +1617,12 @@ def test_claude_stream_json_waits_for_background_subagents_and_parent_result(
     )
 
 
-def test_claude_stream_json_does_not_finish_before_background_journal_exists(
+def test_claude_stream_json_waits_for_native_idle_without_background_journal(
         monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
     session_id = "22222222-2222-2222-2222-222222222222"
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init", "session_id": session_id},
         {
             "type": "assistant",
@@ -1643,7 +1658,7 @@ def test_claude_stream_json_does_not_finish_before_background_journal_exists(
         module, "_start_json_process", lambda *_args, **_kwargs: (proc, events),
     )
     monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "_claude_subagent_snapshot", lambda *_args: [])
+    monkeypatch.setattr(module, "_claude_subagent_snapshot", lambda *_args, **_kwargs: [])
     emitted = []
     monkeypatch.setattr(module, "_emit_numoj", lambda item: emitted.append(item))
 
@@ -1714,12 +1729,277 @@ def test_claude_subagent_snapshot_reads_workflow_journal_and_names(
     ]
 
 
+@pytest.fixture
+def claude_resumed_workspace(tmp_path):
+    session_id = "22222222-2222-2222-2222-222222222222"
+    root = (
+        tmp_path / ".claude" / "projects" / "-workspace" / session_id
+        / "subagents"
+    )
+    workflow = root / "workflows" / "wf-resumed"
+    workflow.mkdir(parents=True)
+    journal = workflow / "journal.jsonl"
+    journal.write_text(json.dumps({
+        "type": "started", "key": "old-key", "agentId": "old-worker",
+    }) + "\n", encoding="utf-8")
+    # 旧 workflow 和旧直接 Task 都可能在工具调用途中被配额保护杀掉。
+    for path in (workflow / "agent-old-worker.jsonl", root / "agent-old-task.jsonl"):
+        path.write_text(json.dumps({
+            "type": "assistant", "message": {"content": [{
+                "type": "tool_use", "name": "WebSearch", "input": {},
+            }]},
+        }) + "\n", encoding="utf-8")
+    return {"HOME": str(tmp_path)}, session_id, journal
+
+
+def test_claude_resume_ignores_unchanged_history_but_tracks_restarted_agent(
+        claude_resumed_workspace):
+    module = _load_run_harness()
+    env, session_id, journal = claude_resumed_workspace
+    baseline = module._claude_subagent_baseline(env, session_id)
+    assert len(module._claude_subagent_snapshot(env, session_id)) == 2
+    assert module._claude_subagent_snapshot(env, session_id, baseline=baseline) == []
+
+    # 同一 journal、同一 agent ID 被本轮重新启动，也必须被跟踪。
+    with journal.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "type": "started", "key": "old-key", "agentId": "old-worker",
+        }) + "\n")
+    snapshot = module._claude_subagent_snapshot(env, session_id, baseline=baseline)
+    assert [(item["subagent_id"], item["status"]) for item in snapshot] == [
+        ("old-worker", "running"),
+    ]
+    with journal.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "type": "result", "key": "old-key", "agentId": "old-worker",
+        }) + "\n")
+    assert module._claude_subagent_snapshot(
+        env, session_id, baseline=baseline,
+    )[0]["status"] == "completed"
+
+
+def test_claude_resume_tracks_continued_direct_transcript(claude_resumed_workspace):
+    module = _load_run_harness()
+    env, session_id, journal = claude_resumed_workspace
+    baseline = module._claude_subagent_baseline(env, session_id)
+    transcript = journal.parents[2] / "agent-old-task.jsonl"
+    with transcript.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "type": "user", "message": {"content": "继续检查"},
+        }) + "\n")
+    snapshot = module._claude_subagent_snapshot(env, session_id, baseline=baseline)
+    assert [(item["subagent_id"], item["status"]) for item in snapshot] == [
+        ("old-task", "running"),
+    ]
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_claude_resume_reads_rewritten_journal(claude_resumed_workspace, replace):
+    module = _load_run_harness()
+    env, session_id, journal = claude_resumed_workspace
+    baseline = module._claude_subagent_baseline(env, session_id)
+    if replace:
+        journal.unlink()
+    journal.write_text(json.dumps({
+        "type": "started", "agentId": "new",
+    }) + "\n", encoding="utf-8")
+    snapshot = module._claude_subagent_snapshot(env, session_id, baseline=baseline)
+    assert [(item["subagent_id"], item["status"]) for item in snapshot] == [
+        ("new", "running"),
+    ]
+
+
+@pytest.mark.parametrize("start_worker", [False, True])
+def test_claude_resume_finishes_only_after_current_workers(
+        monkeypatch, claude_resumed_workspace, start_worker):
+    module = _load_run_harness()
+    env, session_id, journal = claude_resumed_workspace
+    proc = _InteractiveProcess(["claude"])
+    received = []
+
+    class Events:
+        def get(self, timeout=None):
+            received.append(len(received))
+            index = len(received)
+            if index == 1:
+                return {"type": "system", "subtype": "init", "session_id": session_id}
+            if index == 2:
+                return {"type": "result"}
+            if index == 3 and not start_worker:
+                return {"type": "system", "subtype": "session_state_changed", "state": "idle"}
+            if index == 3:
+                with journal.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({
+                        "type": "result", "key": "new-key", "agentId": "new-worker",
+                    }) + "\n")
+                # 部分协议帧没有 session_id，不能因此丢失本轮会话。
+                return {"type": "assistant", "message": {
+                    "role": "assistant", "content": [{"type": "text", "text": "汇总完成"}],
+                }}
+            if index == 4:
+                return {"type": "result"}
+            if index == 5:
+                return {"type": "system", "subtype": "session_state_changed", "state": "idle"}
+            # 旧实现即使收到最终 result 也会继续等，EOF 使测试明确失败。
+            return None
+
+    def start(*_args, **_kwargs):
+        if start_worker:
+            with journal.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({
+                    "type": "started", "key": "new-key", "agentId": "new-worker",
+                }) + "\n")
+        return proc, Events()
+
+    monkeypatch.setattr(module, "_start_json_process", start)
+    monkeypatch.setattr(module, "_record_live_session", lambda *_args, **_kwargs: None)
+    emitted = []
+    monkeypatch.setattr(module, "_emit_numoj", emitted.append)
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"],
+        env, "继续", _Commands(), session_id,
+    )
+    assert completed.returncode == 0
+    assert completed.aj_session_id == session_id
+    assert len(received) == (5 if start_worker else 3)
+    assert len(proc.stdin.frames) == 1
+    statuses = [
+        json.loads(item["event"]["text"])
+        for item in emitted if item.get("type") == "numoj_trace"
+        and item["event"].get("meta") == module._CLAUDE_SUBAGENT_STATUS_META
+    ]
+    assert [(item["subagent_id"], item["status"]) for item in statuses] == (
+        [("new-worker", "running"), ("new-worker", "completed")]
+        if start_worker else []
+    )
+
+
+def test_claude_interrupt_result_ends_even_with_running_subagents(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    events = _claude_event_queue(
+        {"type": "system", "subtype": "init"},
+        {"type": "control_response", "response": {
+            "request_id": "numoj-stop-1", "subtype": "success",
+        }},
+        {"type": "result"},
+        None,
+    )
+    monkeypatch.setattr(module, "_start_json_process", lambda *_a: (proc, events))
+    monkeypatch.setattr(module, "_claude_subagent_snapshot", lambda *_a, **_kw: [{
+        "subagent_id": "worker", "name": "未落盘结束记录", "status": "running",
+    }])
+    monkeypatch.setattr(module, "_emit_numoj", lambda _item: None)
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"], {}, "开始",
+        _Commands([{"type": "interrupt", "id": "stop-1"}]), "",
+    )
+    assert completed.returncode == 130
+    assert [frame["type"] for frame in proc.stdin.frames] == ["user", "control_request"]
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_claude_does_not_continue_background_work_after_stop(monkeypatch, accepted):
+    import queue
+
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    session_id = "22222222-2222-2222-2222-222222222222"
+    steps = iter([
+        {"type": "system", "subtype": "init", "session_id": session_id},
+        {"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "name": "Workflow", "input": {},
+        }]}},
+        {"type": "result", "session_id": session_id},
+        *([{"type": "control_response", "response": {
+            "request_id": "numoj-stop-1", "subtype": "success",
+        }}] if accepted else []),
+        queue.Empty, queue.Empty, queue.Empty, None,
+    ])
+
+    class Events:
+        def get(self, timeout=None):
+            step = next(steps)
+            if step is queue.Empty:
+                raise queue.Empty
+            return step
+
+    monkeypatch.setattr(module, "_start_json_process", lambda *_a: (proc, Events()))
+    monkeypatch.setattr(module, "_record_live_session", lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "_emit_numoj", lambda _item: None)
+    module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"], {}, "开始",
+        _Commands([], [], [], [{"type": "interrupt", "id": "stop-1"}]), "",
+    )
+    assert [frame["type"] for frame in proc.stdin.frames] == ["user", "control_request"]
+
+
+def test_claude_native_idle_overrides_stale_running_display(monkeypatch):
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    events = _claude_event_queue(
+        {"type": "system", "subtype": "init"},
+        {"type": "result"},
+        None,
+    )
+
+    def start(_args, env):
+        assert env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] == "1"
+        assert env["CLAUDE_CODE_BG_TASKS_REPORT_RUNNING"] == "1"
+        return proc, events
+
+    monkeypatch.setattr(module, "_start_json_process", start)
+    monkeypatch.setattr(module, "_claude_subagent_snapshot", lambda *_a, **_kw: [{
+        "subagent_id": "stale-worker", "name": "缺少结束记录", "status": "running",
+    }])
+    monkeypatch.setattr(module, "_emit_numoj", lambda _item: None)
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"], {}, "继续", _Commands(), "",
+    )
+    assert completed.returncode == 0
+    assert len(proc.stdin.frames) == 1
+
+
+@pytest.mark.parametrize("end_with_idle", [False, True])
+def test_claude_waits_for_native_turn_end_without_injecting_continuation(
+        monkeypatch, end_with_idle):
+    import queue
+
+    module = _load_run_harness()
+    proc = _InteractiveProcess(["claude"])
+    steps = iter([
+        {"type": "system", "subtype": "init"},
+        # 启动 idle 不能结束尚未收到结果的用户轮次。
+        {"type": "system", "subtype": "session_state_changed", "state": "idle"},
+        {"type": "result"},
+        queue.Empty, queue.Empty, queue.Empty,
+        # 没有后台 journal，也不能按 result、空列表或静默时长结束。
+        ({"type": "system", "subtype": "session_state_changed", "state": "idle"}
+         if end_with_idle else None),
+    ])
+
+    class Events:
+        def get(self, timeout=None):
+            event = next(steps)
+            if event is queue.Empty:
+                raise queue.Empty
+            return event
+
+    monkeypatch.setattr(module, "_start_json_process", lambda *_a: (proc, Events()))
+    monkeypatch.setattr(module, "_emit_numoj", lambda _item: None)
+    completed = module._run_claude_interactive(
+        ["claude", "--output-format", "json", "-p"], {}, "开始", _Commands(), "",
+    )
+    assert completed.returncode == (0 if end_with_idle else 2)
+    assert len(proc.stdin.frames) == 1
+
+
 def test_claude_stream_json_does_not_ack_steer_for_tool_result_user_event(
         monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
     steer_uuid = module._stable_control_uuid("steer-1", "")
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init"},
         {
             "type": "user",
@@ -1763,7 +2043,7 @@ def test_claude_stream_json_does_not_ack_steer_for_tool_result_user_event(
 def test_claude_stream_json_accepted_interrupt_returns_130(monkeypatch):
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init"},
         {
             "type": "result",
@@ -1816,7 +2096,7 @@ def test_claude_failed_result_projects_error_and_stderr_summary(
     module = _load_run_harness()
     proc = _InteractiveProcess(["claude"])
     session_id = "22222222-2222-2222-2222-222222222222"
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init", "session_id": session_id},
         {
             "type": "result",
@@ -1873,7 +2153,7 @@ def test_claude_stream_json_emits_incremental_usage_per_assistant_message(
             },
         },
     }
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init"},
         first,
         {
@@ -1926,7 +2206,7 @@ def test_claude_result_usage_fallback_has_unique_id_per_result(monkeypatch):
     proc = _InteractiveProcess(["claude"])
     steer_uuid = module._stable_control_uuid("steer-1", "")
     session_id = "22222222-2222-2222-2222-222222222222"
-    events = _event_queue(
+    events = _claude_event_queue(
         {"type": "system", "subtype": "init"},
         {
             "type": "result",

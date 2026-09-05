@@ -45,8 +45,8 @@ _NUMOJ_OUTPUT_LOCK = threading.Lock()
 CONTROL_ACK_DRAIN_SECONDS = 2.0
 
 # Claude Code 的后台 subagent / Workflow 可能在父模型先产出一次 result 后继续
-# 工作。是否结束 NumOJ turn 只能由下面的 stream-json 生命周期状态机结合原生
-# workflow journal 和 subagent transcript 判定，不能委托给模型提示词。
+# 工作。NumOJ 只接受原生 session_state_changed: idle 作为正常轮次结束信号；
+# journal / transcript 仅用于展示，不得推断存活或触发额外模型调用。
 _TRACE_EVENT_ID_MAX_CHARS = 512
 _TRACE_DETAIL_MAX_CHARS = 1200
 _TRACE_ASSISTANT_MAX_CHARS = 2 * 1024 * 1024
@@ -56,8 +56,6 @@ _EMPTY_ASSISTANT_CONTENT_ERROR = (
 )
 _CLAUDE_SUBAGENT_STATUS_META = "numoj-subagent-status-v1"
 _CLAUDE_SUBAGENT_SCAN_INTERVAL_SECONDS = 0.5
-_CLAUDE_BACKGROUND_DISCOVERY_GRACE_SECONDS = 5.0
-_CLAUDE_BACKGROUND_RESUME_DELAY_SECONDS = 1.5
 _CLAUDE_NATIVE_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
@@ -252,16 +250,19 @@ def _read_first_jsonl_record(path, max_bytes=256 * 1024):
     return value if isinstance(value, dict) else None
 
 
-def _read_last_jsonl_records(path, max_bytes=1024 * 1024):
+def _read_last_jsonl_records(path, max_bytes=1024 * 1024, *, min_offset=0):
     """读取 JSONL 的有限尾部；进行中的最后半行会被自然忽略。"""
 
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
-            offset = max(0, size - max_bytes)
-            stream.seek(offset)
+            offset = max(0, min_offset, size - max_bytes)
             if offset:
-                stream.readline()
+                stream.seek(offset - 1)
+                if stream.read(1) != b"\n":
+                    stream.readline()
+            else:
+                stream.seek(0)
             raw_lines = stream.readlines()
     except OSError:
         return []
@@ -329,9 +330,7 @@ def _claude_direct_subagent_completed(transcript_path):
     return False
 
 
-def _claude_subagent_snapshot(env, session_id):
-    """从 Claude 原生 session 投影本轮 subagent 名称与运行状态。"""
-
+def _claude_subagent_roots(env, session_id):
     normalized_session_id = str(session_id or "").strip()
     if not _CLAUDE_NATIVE_SESSION_ID_RE.fullmatch(normalized_session_id):
         return []
@@ -339,22 +338,60 @@ def _claude_subagent_snapshot(env, session_id):
     if not home_value:
         return []
     home = os.path.abspath(home_value)
-    session_roots = glob.glob(os.path.join(
+    return sorted(glob.glob(os.path.join(
         home,
         ".claude",
         "projects",
         "*",
         normalized_session_id,
         "subagents",
-    ))
+    )))
+
+
+def _claude_file_version(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+def _claude_subagent_baseline(env, session_id):
+    """在启动 CLI 前冻结历史文件边界，不能把旧 started 当作存活证明。"""
+
+    baseline = {}
+    for root in _claude_subagent_roots(env, session_id):
+        for path in glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True):
+            version = _claude_file_version(path)
+            if version is not None:
+                baseline[path] = version
+    return baseline
+
+
+def _claude_subagent_snapshot(env, session_id, *, baseline=None):
+    """仅投影本轮子任务的展示状态；不参与原生会话终止判断。"""
+
+    baseline = baseline or {}
+    session_roots = _claude_subagent_roots(env, session_id)
     workflow_status = {}
     workflow_order = []
     for root in sorted(session_roots):
         for journal_path in sorted(glob.glob(os.path.join(
             root, "workflows", "*", "journal.jsonl",
         ))):
+            previous = baseline.get(journal_path)
+            current = _claude_file_version(journal_path)
+            if current is None or current == previous:
+                continue
+            # 同一文件追加时只看本轮新增记录；替换或截短后从头读取。
+            min_offset = (
+                previous[2]
+                if previous and current[:2] == previous[:2]
+                and current[2] > previous[2] else 0
+            )
             for record in _read_last_jsonl_records(
                 journal_path, max_bytes=4 * 1024 * 1024,
+                min_offset=min_offset,
             ):
                 agent_id = str(record.get("agentId") or "").strip()
                 if not agent_id:
@@ -379,6 +416,11 @@ def _claude_subagent_snapshot(env, session_id):
     for root in sorted(session_roots):
         pattern = os.path.join(root, "**", "agent-*.jsonl")
         for transcript_path in sorted(glob.glob(pattern, recursive=True)):
+            if (
+                transcript_path in baseline
+                and _claude_file_version(transcript_path) == baseline[transcript_path]
+            ):
+                continue
             filename = os.path.basename(transcript_path)
             agent_id = filename[len("agent-"):-len(".jsonl")]
             if agent_id:
@@ -447,33 +489,6 @@ def _content_blocks(message):
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     return content if isinstance(content, list) else []
-
-
-def _claude_starts_background_subagent(event):
-    """识别先于 journal 落盘出现的后台 Agent/Task 工具调用。"""
-
-    if not isinstance(event, dict) or str(event.get("type") or "") != "assistant":
-        return False
-    message = event.get("message") if isinstance(event.get("message"), dict) else {}
-    for block in _content_blocks(message):
-        if not isinstance(block, dict) or str(block.get("type") or "") != "tool_use":
-            continue
-        name = str(block.get("name") or "").strip().lower()
-        arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
-        background = (
-            arguments.get("run_in_background")
-            if "run_in_background" in arguments
-            else arguments.get("runInBackground", arguments.get("background"))
-        )
-        if name == "workflow" or (
-            name in {"agent", "task"}
-            and (
-                background is True
-                or str(background or "").strip().lower() in {"1", "true", "yes", "on", "background"}
-            )
-        ):
-            return True
-    return False
 
 
 def _token_count(value):
@@ -1930,7 +1945,15 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
         "--replay-user-messages",
         "--verbose",
     ])
-    proc, events = _start_json_process(stream_args, env)
+    subagent_baseline = _claude_subagent_baseline(env, resume_session_id)
+    # 2.1.205 默认在等待后台任务时也会报告前台 idle；让 CLI 自身将后台
+    # 循环计入 running，再订阅其原生轮次结束通知，保留双向控制通道。
+    process_env = dict(
+        env,
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS="1",
+        CLAUDE_CODE_BG_TASKS_REPORT_RUNNING="1",
+    )
+    proc, events = _start_json_process(stream_args, process_env)
     task_id = str(env.get("AJ_TASK_ID") or "").strip()
     start_uuid = _stable_control_uuid("__start__", task_id)
     waiting_user_acks = {start_uuid: "__start__"}
@@ -1943,14 +1966,9 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
     terminal_failed_while_waiting = False
     control_drain_deadline = None
     failure_detail = ""
-    session_id = ""
+    session_id = resume_session_id or ""
     subagents = []
     last_subagent_scan_at = 0.0
-    waiting_for_background_result = False
-    background_launch_observed = False
-    background_discovery_deadline = None
-    background_idle_since = None
-    background_resume_sent = False
 
     def refresh_subagents(*, force=False):
         nonlocal subagents, last_subagent_scan_at
@@ -1960,12 +1978,13 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             and now - last_subagent_scan_at
             < _CLAUDE_SUBAGENT_SCAN_INTERVAL_SECONDS
         ):
-            return any(item.get("status") == "running" for item in subagents)
+            return
         last_subagent_scan_at = now
-        current = _claude_subagent_snapshot(env, session_id)
+        current = _claude_subagent_snapshot(
+            env, session_id, baseline=subagent_baseline,
+        )
         _emit_claude_subagent_changes(subagents, current)
         subagents = current
-        return any(item.get("status") == "running" for item in subagents)
 
     try:
         _write_json(proc, _claude_user_frame(prompt, "__start__", task_id))
@@ -2015,69 +2034,23 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             except queue.Empty:
                 if control_drain_deadline is not None:
                     continue
-                if waiting_for_background_result:
-                    active_subagents = refresh_subagents()
-                    if active_subagents:
-                        background_idle_since = None
-                        background_resume_sent = False
-                    elif (
-                        background_launch_observed
-                        and not subagents
-                        and background_discovery_deadline is not None
-                        and time.monotonic() < background_discovery_deadline
-                    ):
-                        # Agent 工具调用事件可能先于 Claude journal/transcript
-                        # 落盘；在发现窗口内绝不能把第一条 result 当作终态。
-                        continue
-                    elif background_idle_since is None:
-                        background_idle_since = time.monotonic()
-                    elif (
-                        not background_resume_sent
-                        and time.monotonic() - background_idle_since
-                        >= _CLAUDE_BACKGROUND_RESUME_DELAY_SECONDS
-                    ):
-                        # 新版 Claude Code 会主动用 task-notification 续跑；
-                        # 旧版或兼容实现若只落盘结果却不触发模型，则补一条
-                        # 不进入 NumOJ 用户时间线的内部 continuation，避免 turn
-                        # 在全部 subagent 已结束后永久悬挂。
-                        _write_json(
-                            proc,
-                            _claude_user_frame(
-                                "All background subagents for this turn have finished. "
-                                "Collect their results, finish the requested work, and "
-                                "return the final answer now.",
-                                f"__background_complete_{result_sequence}__",
-                                task_id,
-                            ),
-                        )
-                        background_resume_sent = True
                 if proc.poll() is not None:
                     raise RuntimeError("Claude Code stream-json 意外退出")
                 continue
             if event is None:
-                if terminal_waiting_for_control:
+                if terminal_waiting_for_control or terminal_status == "failed":
                     done = True
                     continue
-                raise RuntimeError("Claude Code stream-json 意外退出")
-            session_id = _walk_json_session_id(event, "claude_code")
-            if session_id:
+                raise RuntimeError("Claude Code stream-json 意外退出（未收到原生 idle）")
+            observed_session_id = _walk_json_session_id(event, "claude_code")
+            if observed_session_id:
+                session_id = observed_session_id
                 _record_live_session(session_id, env=env)
             event_type = str(event.get("type") or "")
             message = (
                 event.get("message")
                 if isinstance(event.get("message"), dict) else {}
             )
-            if waiting_for_background_result and event_type == "assistant":
-                # 后台完成通知已经重新唤起父模型；这次 assistant 后的 result
-                # 才有资格成为终态，除非它又启动了新的后台工作。
-                background_launch_observed = False
-                background_discovery_deadline = None
-            if _claude_starts_background_subagent(event):
-                background_launch_observed = True
-                background_discovery_deadline = (
-                    time.monotonic()
-                    + _CLAUDE_BACKGROUND_DISCOVERY_GRACE_SECONDS
-                )
             if (
                 event_type == "assistant"
                 and isinstance(message.get("usage"), dict)
@@ -2148,21 +2121,21 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
             normalized_done = _normalize_stream_event("claude_code", event)
             if normalized_done:
                 assistant_usage_since_result = False
-                active_subagents = refresh_subagents(force=True)
-                background_pending = active_subagents or background_launch_observed
-                if background_pending:
-                    # Claude 的 Workflow / 后台 Task 会先结束当前模型调用，
-                    # 再通过仍然存活的 stream-json 会话投递完成通知。这里不能
-                    # 把第一次 result 当作整个 NumOJ turn 的终态。
-                    waiting_for_background_result = True
-                    background_idle_since = None
-                    background_resume_sent = False
+                terminal_failed_while_waiting = current_terminal == "failed"
+                refresh_subagents(force=True)
+            native_idle = (
+                event_type == "system"
+                and event.get("subtype") == "session_state_changed"
+                and event.get("state") == "idle"
+            )
+            # result 可能只结束父模型的一次调用；原生 idle 才表示后台循环也已
+            # 退出。启动阶段的 idle 没有对应 result，不能吞掉首条用户消息。
+            if native_idle and result_sequence:
                 pending_followup_ack = any(
                     command_id != "__start__"
                     for command_id in waiting_user_acks.values()
                 )
-                if current_terminal == "failed":
-                    terminal_failed_while_waiting = True
+                if terminal_failed_while_waiting:
                     if pending_followup_ack or pending_interrupts:
                         terminal_waiting_for_control = True
                         control_drain_deadline = (
@@ -2181,13 +2154,7 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
                     control_drain_deadline = (
                         time.monotonic() + CONTROL_ACK_DRAIN_SECONDS
                     )
-                elif background_pending:
-                    terminal_waiting_for_control = False
-                    control_drain_deadline = None
                 else:
-                    waiting_for_background_result = False
-                    background_idle_since = None
-                    background_resume_sent = False
                     done = True
         returncode = (
             2 if terminal_status == "failed"
