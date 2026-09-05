@@ -2071,3 +2071,14 @@ def test_container_cleanup_confirms_another_removal_has_finished(monkeypatch):
         ["docker", "container", "inspect", "numoj-agent-task-1"],
         ["docker", "container", "inspect", "numoj-agent-task-1"],
     ]
+
+
+def test_generic_runtime_applies_optional_turn_deadline():
+    import sys
+
+    result = runtime._run_with_bounded_output(
+        [sys.executable, "-c", "import sys,time; sys.stdin.read(); time.sleep(30)"],
+        "执行测试", timeout_seconds=0.05,
+    )
+    assert result.timed_out is True
+    assert result.returncode != 0

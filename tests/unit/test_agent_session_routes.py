@@ -482,6 +482,7 @@ def test_same_client_message_creation_conflict_keeps_winner_checkpoint(
     monkeypatch.setattr(routes, "save_agent_attachments", lambda *_args: [])
     # 模拟两个请求都在胜者提交前完成了幂等预读。
     monkeypatch.setattr(routes, "get_agent_session_message", lambda _mid: None)
+    monkeypatch.setattr(routes, "get_agent_session", lambda _sid: None)
     create_calls = []
 
     def create_session(**kwargs):

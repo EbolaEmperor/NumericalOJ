@@ -525,3 +525,16 @@ def test_control_bridge_keeps_steer_queued_when_runtime_access_is_blocked(
 
     assert source() == ()
     assert claimed == []
+
+
+def test_historical_judge_outbox_is_never_sent_to_generic_worker(monkeypatch):
+    from backend.oj_modules.agents import sessions
+
+    monkeypatch.setattr(queue, "claim_next_agent_session_message", lambda *_a, **_k: {
+        **_claim(), "task_kind": "judge",
+    })
+    monkeypatch.setattr(sessions, "get_agent_session_runtime_config", lambda _: {"historical_import": True})
+    run = _RecordedTask()
+    dispatch, _ = queue.register_agent_queue_tasks(_FakeCelery(), run)
+    assert dispatch(SimpleNamespace(), "session-1")["dispatched"] is False
+    assert run.calls == []

@@ -150,3 +150,20 @@ def test_judge_endpoint_uses_private_pool_and_its_explicit_price(monkeypatch):
     assert price["pricing"]["output_price_per_million"] == "9"
     assert endpoint["api_key"] == "secret"
     assert "secret" not in str(price)
+
+
+@pytest.mark.parametrize("message_id", ["jd-protected", "JD-protected"])
+def test_public_creation_cannot_overwrite_judge_workspace_with_chosen_message_id(monkeypatch, message_id):
+    monkeypatch.setattr(routes, "current_user", lambda: {"id": 1, "username": "admin", "is_admin": 1})
+    monkeypatch.setattr(routes, "_agent_run_turn_task", object())
+    monkeypatch.setattr(routes, "_agent_queue_dispatch_task", object())
+    monkeypatch.setattr(routes, "_resolve_agent_endpoint_for_user", lambda *_a, **_k: {"id": 8, "source": "global"})
+    monkeypatch.setattr(routes, "_agent_quota_gate", lambda *_a, **_k: None)
+    monkeypatch.setattr(routes, "_agent_session_cookie", lambda: ("session", "cookie"))
+    monkeypatch.setattr(routes, "initialize_agent_task_workspace", lambda *_a, **_k: pytest.fail("不得改写 Judge workspace"))
+    app = Flask(__name__)
+    app.register_blueprint(routes.problem_core_bp)
+    response = app.test_client().post("/api/agent/sessions", data={
+        "message_id": message_id, "message": "覆盖文件", "harness": "pi", "endpoint_id": "8", "access_role": "user",
+    }, content_type="multipart/form-data")
+    assert response.status_code == 403

@@ -7,7 +7,9 @@ import logging
 
 from celery import current_app
 
-from backend.oj_modules.agents.runtime_checkpoints import create_empty_agent_runtime_checkpoint
+from backend.oj_modules.agents.runtime_checkpoints import (
+    create_empty_agent_runtime_checkpoint, create_agent_runtime_checkpoint,
+)
 from backend.oj_modules.agents.sessions import (
     begin_agent_session_turn,
     create_agent_session,
@@ -152,9 +154,11 @@ def submit_judge_turn(
                     else:
                         if files:
                             raise ValueError("续聊复用已有 workspace，不能重新注入首轮材料")
+                        create_agent_runtime_checkpoint(session_id, task_id)
                         begin_agent_session_turn(
                             session_id, task_id=task_id, user_message=prompt,
-                            internal_judge=True, dispatch_payload={"timeout_seconds": runtime["timeout_seconds"]},
+                            internal_judge=True, base_runtime_checkpoint_id=task_id,
+                            dispatch_payload={"timeout_seconds": runtime["timeout_seconds"]},
                         )
                         session = get_agent_session(session_id)
                 else:

@@ -715,11 +715,13 @@ def cancel_agent_run_snapshot(task_id, message="任务已被手动终止"):
                            s.requested_by, s.harness, s.endpoint_id,
                            s.endpoint_model,
                            CASE
+                               WHEN je.id IS NOT NULL THEN je.context_window_tokens
                                WHEN s.endpoint_source='user'
                                THEN ue.context_window_tokens
                                ELSE ge.context_window_tokens
                            END AS context_window_tokens,
                            CASE
+                               WHEN je.id IS NOT NULL THEN je.max_output_tokens
                                WHEN s.endpoint_source='user'
                                THEN ue.max_output_tokens
                                ELSE ge.max_output_tokens
@@ -728,8 +730,13 @@ def cancel_agent_run_snapshot(task_id, message="任务已被手动终止"):
                     JOIN agent_session_turns AS t
                       ON t.session_id=s.session_id
                      AND t.task_id=s.current_task_id
+                    LEFT JOIN ranking_agent_judge_endpoints AS je
+                      ON s.task_kind='judge'
+                     AND JSON_UNQUOTE(JSON_EXTRACT(s.runtime_config_json, '$.endpoint_source'))='competition'
+                     AND je.competition_id=s.competition_id AND je.id=s.endpoint_id
                     LEFT JOIN llm_endpoints AS ge
                       ON s.endpoint_source='global'
+                     AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(s.runtime_config_json, '$.endpoint_source')), '')<>'competition'
                      AND ge.id=s.endpoint_id
                      AND ge.revision=s.endpoint_revision
                     LEFT JOIN agent_user_endpoints AS ue

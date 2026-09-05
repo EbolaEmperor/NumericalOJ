@@ -2710,6 +2710,8 @@ def agent_tasks():
             _agent_quota_gate(user, endpoint_source=endpoint_source)
             cookie_name, session_cookie = _agent_session_cookie()
             session_id = _agent_client_message_id()
+            if session_id.lower().startswith('jd-'):
+                return jsonify(success=False, message='Judge 会话只能由评测流程创建'), 403
         except AgentQuotaError as exc:
             return _agent_quota_error_response(exc)
         except (AgentLaunchValidationError, ValueError) as exc:
@@ -2724,8 +2726,18 @@ def agent_tasks():
         except Exception:
             logger.exception('读取通用 Agent 首轮幂等键失败')
             return jsonify(success=False, message='无法确认 Agent 会话状态'), 500
+        if existing_message is None and str(request.form.get('message_id') or '').strip():
+            try:
+                existing_session = get_agent_session(session_id)
+            except Exception:
+                logger.exception('创建前检查 Agent 会话标识失败')
+                return jsonify(success=False, message='无法确认 Agent 会话状态'), 500
+            if existing_session:
+                return jsonify(success=False, message='该 Agent 会话标识已被使用'), 409
         if existing_message is not None:
             existing_session = get_agent_session(session_id)
+            if agent_session_is_judge(existing_session):
+                return jsonify(success=False, message='Judge 会话只能由评测流程管理'), 403
             if not existing_session or not (
                 str(existing_message.get('session_id') or '') == session_id
                 and str(existing_message.get('created_by') or '')
