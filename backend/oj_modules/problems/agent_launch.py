@@ -27,10 +27,12 @@ from backend.oj_modules.agents.user_endpoints import (
 AGENT_TASK_SOLVE = "solve"
 AGENT_TASK_TESTDATA = "testdata"
 AGENT_TASK_CUSTOM = "custom"
+AGENT_TASK_JUDGE = "judge"
 ALLOWED_AGENT_TASK_KINDS = (
     AGENT_TASK_SOLVE,
     AGENT_TASK_TESTDATA,
     AGENT_TASK_CUSTOM,
+    AGENT_TASK_JUDGE,
 )
 
 AGENT_ACCESS_ROLE_USER = "user"

@@ -226,7 +226,7 @@ def enqueue_agent_session_message(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT current_task_id, status
+                SELECT current_task_id, status, task_kind
                 FROM agent_sessions
                 WHERE session_id=%s
                 LIMIT 1
@@ -237,6 +237,8 @@ def enqueue_agent_session_message(
             session = cursor.fetchone()
             if not session:
                 raise AgentSessionMessageNotFoundError("Agent 会话不存在")
+            if session.get("task_kind") == "judge":
+                raise PermissionError("Judge 会话禁止人工排队消息和插话")
             cursor.execute(
                 """
                 SELECT message_id, session_id, created_by, user_message,
@@ -1093,7 +1095,7 @@ def claim_next_agent_session_message(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT s.current_task_id, s.status, s.turn_count, s.queue_paused,
+                SELECT s.session_id, s.current_task_id, s.status, s.turn_count, s.queue_paused,
                        s.fresh_native_session_pending,
                        s.task_kind, s.problem_id, s.requested_by, s.access_role,
                        s.harness, s.reasoning_effort,

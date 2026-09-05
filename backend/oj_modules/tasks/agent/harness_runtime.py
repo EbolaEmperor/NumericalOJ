@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 import json
 import logging
@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
+from types import SimpleNamespace
 
 from backend.oj_modules.config import (
     AGENT_CONTAINER_SITE_URL,
@@ -932,7 +933,10 @@ def _run_with_bounded_output(
     interrupt_grace_seconds=10.0,
     canonical_journal_path=None,
     canonical_journal_secrets=(),
+    timeout_seconds=None,
 ):
+    started_at = time.monotonic()
+    timed_out = False
     final_tick_error = None
     interactive = callable(control_source)
     stdout_mirror = (
@@ -1043,6 +1047,15 @@ def _run_with_bounded_output(
                 break
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
+                if timeout_seconds and now - started_at >= float(timeout_seconds):
+                    timed_out = True
+                    proc.terminate()
+                    try:
+                        returncode = proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        returncode = proc.wait()
+                    break
                 if interactive:
                     for raw_command in _iter_control_commands(control_source):
                         try:
@@ -1208,7 +1221,7 @@ def _run_with_bounded_output(
         raise final_tick_error
     return HarnessRunResult(
         returncode=int(returncode),
-        timed_out=False,
+        timed_out=timed_out,
         stdout=b"".join(stdout_chunks).decode("utf-8", "replace"),
         stderr=b"".join(stderr_chunks).decode("utf-8", "replace"),
     )
@@ -1546,6 +1559,8 @@ def run_agent_harness(
     usage_callback=None,
     native_session_callback=None,
     reasoning_effort="default",
+    timeout_seconds=None,
+    enable_site_identity=True,
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
 
@@ -1663,7 +1678,7 @@ def run_agent_harness(
         )
     _clear_current_session_state(workspace)
     try:
-        with _identity_relay_context(
+        identity_context = _identity_relay_context(
             task_kind,
             problem_id,
             AGENT_CONTAINER_SITE_URL,
@@ -1673,7 +1688,10 @@ def run_agent_harness(
             access_role=access_role,
             session_id=normalized_session_id,
             task_id=str(task_id or ""),
-        ) as identity_relay:
+        ) if enable_site_identity else nullcontext(SimpleNamespace(
+            base_url="", created_submission_ids=(), temporary_secrets=(),
+        ))
+        with identity_context as identity_relay:
             agent_task = {
                 "task_id": str(task_id or ""),
                 "session_id": normalized_session_id,
@@ -1689,11 +1707,14 @@ def run_agent_harness(
                 "cookies": {"session": "relay-placeholder"},
                 "agent_task": agent_task,
             }
-            _write_workspace_file(
-                normalized_session_id,
-                ".numoj-agent/identity.json",
-                json.dumps(identity_config, ensure_ascii=False, indent=2),
-            )
+            if enable_site_identity:
+                _write_workspace_file(
+                    normalized_session_id,
+                    ".numoj-agent/identity.json",
+                    json.dumps(identity_config, ensure_ascii=False, indent=2),
+                )
+            else:
+                _remove_identity_config(workspace, identity_relative_path)
             for relative_path, content in (workspace_files or {}).items():
                 _write_workspace_file(
                     normalized_session_id,
@@ -1841,6 +1862,8 @@ def run_agent_harness(
                         "quota_check": enforce_workspace_quota,
                         "quota_check_interval": quota_check_interval,
                     }
+                    if timeout_seconds is not None:
+                        run_kwargs["timeout_seconds"] = timeout_seconds
                     if callable(control_source):
                         run_kwargs.update({
                             "control_source": control_source,

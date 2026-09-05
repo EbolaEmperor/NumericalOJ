@@ -1633,7 +1633,96 @@ def clear_agent_session_state_file(session_id) -> bool:
         return True
 
 
+
+def inject_agent_workspace_files(session_id, files):
+    """向通用 workspace 注入独立副本；路径来自内部编排而非浏览器。"""
+    for relative_path, source in (files or {}).items():
+        relative_path = _normalize_relative_path(relative_path, public=True)
+        if isinstance(source, Path):
+            absolute = source.absolute()
+            root_fd = os.open(absolute.anchor, _DIRECTORY_OPEN_FLAGS)
+            try:
+                fd, info = _open_regular_file_fd(root_fd, absolute.parts[1:])
+            finally:
+                os.close(root_fd)
+            with os.fdopen(fd, "rb") as stream:
+                if info.st_nlink != 1 or info.st_size > _quota_limit():
+                    raise AgentWorkspaceSecurityError("注入源必须是限额内的独立普通文件")
+                content = stream.read(_quota_limit() + 1)
+                if len(content) > _quota_limit():
+                    raise AgentWorkspaceQuotaError("注入文件超过工作区限额")
+        elif isinstance(source, (str, bytes, bytearray, memoryview)):
+            content = source
+        else:
+            raise AgentWorkspacePathError("注入内容必须是文本、字节或 Path")
+        write_agent_workspace_file(session_id, relative_path, content)
+
+
+def export_agent_workspace_file(session_id, path, destination):
+    """导出指定结果副本；拒绝链接，目标必须位于宿主私有输出目录。"""
+    stream, metadata = open_agent_workspace_file(session_id, path)
+    destination = Path(destination)
+    with stream:
+        if os.fstat(stream.fileno()).st_nlink != 1:
+            raise AgentWorkspaceSecurityError("结果文件不能是硬链接")
+        if metadata["size"] > _quota_limit():
+            raise AgentWorkspaceQuotaError("导出文件超过工作区限额")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                remaining = _quota_limit()
+                while chunk := stream.read(min(1024 * 1024, remaining + 1)):
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        raise AgentWorkspaceQuotaError("导出文件超过工作区限额")
+                    output.write(chunk)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+    return destination
+
+
+def export_agent_workspace_directory(session_id, path, destination):
+    """导出通用 workspace 子树，遍历和文件打开都不跟随链接。"""
+    normalized = _normalize_relative_path(path, public=True)
+    destination = Path(destination)
+    if destination.exists():
+        raise FileExistsError("导出目标必须是新的私有目录")
+    check_agent_workspace_quota(session_id)
+    with _open_session_directories(session_id) as (_, _session_fd, workspace_fd):
+        opened = []
+        current_fd = workspace_fd
+        try:
+            for part in PurePosixPath(normalized).parts:
+                current_fd = _open_existing_directory_at(current_fd, part, label="导出目录")
+                opened.append(current_fd)
+            def walk(directory_fd, relative, target):
+                target.mkdir(mode=0o700, parents=True, exist_ok=False)
+                for name in os.listdir(directory_fd):
+                    _normalize_entry_name(name, attachment=True)
+                    info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if stat.S_ISDIR(info.st_mode):
+                        child_fd = _open_existing_directory_at(directory_fd, name, label="导出子目录")
+                        try:
+                            walk(child_fd, f"{relative}/{name}", target / name)
+                        finally:
+                            os.close(child_fd)
+                    elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                        export_agent_workspace_file(session_id, f"{relative}/{name}", target / name)
+                    else:
+                        raise AgentWorkspaceSecurityError("导出结果包含链接或特殊文件")
+            walk(current_fd, normalized, destination)
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+    return destination
+
+
 __all__ = [
+    "inject_agent_workspace_files",
+    "export_agent_workspace_file",
+    "export_agent_workspace_directory",
     "AGENT_WORKSPACE_ROOT",
     "AGENT_WORKSPACE_MAX_BYTES",
     "MAX_ATTACHMENT_FILES",

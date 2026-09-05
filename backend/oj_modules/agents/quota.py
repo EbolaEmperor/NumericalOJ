@@ -1191,6 +1191,7 @@ def charge_agent_usage(
     usage,
     pricing,
     is_admin=False,
+    site_funded=False,
     uses_personal_endpoint=False,
 ):
     """幂等、原子地记录一条全站 LLM usage。
@@ -1243,10 +1244,23 @@ def charge_agent_usage(
     try:
         with conn.cursor() as cursor:
             account = None
-            if is_admin:
+            if site_funded:
+                # 全站代付只能用于数据库已关联的正式 Judge 轮次，不能靠传参免扣额度。
+                cursor.execute(
+                    "SELECT s.session_id FROM agent_sessions s "
+                    "JOIN agent_session_turns t ON t.session_id=s.session_id "
+                    "JOIN users u ON u.username=s.requested_by "
+                    "WHERE s.session_id=%s AND t.task_id=%s AND u.id=%s "
+                    "AND s.task_kind='judge' AND s.judge_kind IN "
+                    "('agent_judge','reverse_quality','reverse_answer') LIMIT 1",
+                    (session_id, task_id, user_id),
+                )
+                if not cursor.fetchone():
+                    raise AgentQuotaValidationError("全站代付仅限正式 Judge 会话")
+            if is_admin or site_funded:
                 # 管理员没有额度账户。仍锁定用户行，保证同一个 usage 事件
                 # 并发重放时可以可靠地走账本幂等分支。
-                _require_user(cursor, user_id, admin=True, for_update=True)
+                _require_user(cursor, user_id, admin=bool(is_admin), for_update=True)
             else:
                 cursor.execute(
                     "SELECT * FROM agent_quota_accounts WHERE user_id=%s FOR UPDATE",
@@ -1289,7 +1303,7 @@ def charge_agent_usage(
                     )
                 result = _ledger_from_row(existing, applied=False)
             else:
-                if is_admin:
+                if is_admin or site_funded:
                     # remaining_after 仍为 NOT NULL，管理员账本以 0 作为
                     # 不适用的稳定占位；对外结果会恢复为 None。
                     remaining = Decimal("0")
@@ -1358,7 +1372,7 @@ def charge_agent_usage(
         raise
     finally:
         conn.close()
-    if is_admin:
+    if is_admin or site_funded:
         # 管理员账本用于成本展示而非配额治理，保持调用方原有的余额语义。
         return {
             **result,

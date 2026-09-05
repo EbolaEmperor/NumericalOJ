@@ -1223,3 +1223,42 @@ def test_admin_usage_settlement_immediately_publishes_realtime_cost(monkeypatch)
     assert len(trace_publications) == 1
     assert len(billing_publications) == 1
     assert snapshots[-1]["session_charged_amount_rmb"] == "0.125"
+
+
+def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monkeypatch):
+    session = {
+        "session_id": "judge-session", "current_task_id": "judge-turn",
+        "task_kind": "judge", "judge_kind": "reverse_answer", "title": "反向评测作答",
+        "access_role": "user", "harness": "pi", "endpoint_id": 8,
+        "endpoint_revision": 1, "native_session_id": "", "turn_count": 1,
+    }
+    _patch_generic(monkeypatch, session)
+    monkeypatch.setattr(generic, "get_user_by_username", lambda _: {"id": 9, "is_admin": 0})
+    monkeypatch.setattr(generic, "get_agent_session_runtime_config", lambda *_: {"timeout_seconds": 30})
+    monkeypatch.setattr(generic, "resolve_judge_endpoint", lambda _: _endpoint())
+    monkeypatch.setattr(generic, "judge_endpoint_pricing", lambda _: {
+        "endpoint_id": None, "endpoint_revision": 1, "endpoint_model": "model-a",
+        "pricing": {"input_price_per_million": "1", "cached_input_price_per_million": "0", "output_price_per_million": "2"},
+    })
+    gates = []
+    monkeypatch.setattr(generic, "require_agent_start_eligibility", lambda *a, **kw: gates.append(kw) or {"allowed": True})
+    monkeypatch.setattr(generic, "get_agent_session_usage_cost", lambda _: "0")
+    monkeypatch.setattr(generic, "build_agent_control_bridge", lambda *_a, **_kw: (None, None))
+    accountants = []
+    monkeypatch.setattr(generic, "ResilientAgentUsageAccountant", lambda **kw: accountants.append(kw) or SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _: "已写入答案")
+    runs = []
+    monkeypatch.setattr(generic, "run_agent_harness", lambda **kw: runs.append(kw) or HarnessRunResult(
+        0, False, "", "", native_session_id="19191919-1919-4919-8919-191919191919",
+    ))
+    task = generic.register_agent_run_turn_task(_FakeCelery())
+    result = task(_task_self("judge-turn"), "judge-session", "owner", "user", "pi", 8, "", "请作答")
+    assert result["success"]
+    assert runs[0]["task_kind"] == "judge"
+    assert runs[0]["enable_site_identity"] is False
+    assert runs[0]["timeout_seconds"] == 30
+    assert runs[0]["access_role"] == "user"
+    assert all(gate["is_admin"] for gate in gates)
+    assert accountants[0]["site_funded"] is True
+    assert accountants[0]["is_admin"] is False
+    assert accountants[0]["endpoint_snapshot"]["endpoint_id"] is None

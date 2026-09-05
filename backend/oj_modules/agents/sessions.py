@@ -34,6 +34,7 @@ from backend.oj_modules.agents.messages import (
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.problems.agent_launch import (
     normalize_agent_reasoning_effort,
+    normalize_agent_task_kind,
     normalize_launch_harness,
 )
 
@@ -131,6 +132,11 @@ def _session_from_row(row):
         "current_task_id": row.get("current_task_id"),
         "title": str(row.get("title") or "").strip(),
         "task_kind": str(row.get("task_kind") or "custom"),
+        "category": "judge" if row.get("task_kind") == "judge" else "agent",
+        "judge_kind": row.get("judge_kind"),
+        "submission_id": row.get("submission_id"),
+        "attempt_id": row.get("attempt_id"),
+        "competition_id": row.get("competition_id"),
         "problem_id": row.get("problem_id"),
         "problem_title": row.get("problem_title"),
         "requested_by": row.get("requested_by"),
@@ -236,10 +242,16 @@ def create_agent_session(
     problem_id=None,
     problem_title=None,
     title="",
+    judge_kind=None,
+    submission_id=None,
+    attempt_id=None,
+    competition_id=None,
+    runtime_config=None,
 ):
     session_id = normalize_agent_session_id(session_id)
     task_id = normalize_agent_session_id(task_id)
     access_role = normalize_agent_access_role(access_role)
+    task_kind = normalize_agent_task_kind(task_kind)
     harness = normalize_launch_harness(harness)
     reasoning_effort = normalize_agent_reasoning_effort(
         reasoning_effort,
@@ -271,11 +283,27 @@ def create_agent_session(
         label="Agent 原生会话基线",
     )
 
+    if task_kind == "judge":
+        if judge_kind not in {"agent_judge", "reverse_quality", "reverse_answer"}:
+            raise ValueError("Judge 会话类别无效")
+        if access_role != "user":
+            raise ValueError("Judge 会话只能使用 user 身份")
+        historical = isinstance(runtime_config, dict) and runtime_config.get("historical_import") is True
+        if not submission_id or not competition_id or (not historical and not str(attempt_id or "").strip()):
+            raise ValueError("Judge 会话必须关联评测提交和轮次")
+    elif judge_kind or submission_id or attempt_id or competition_id or runtime_config:
+        raise ValueError("普通 Agent 会话不能指定 Judge 参数")
+
     session = {
         "session_id": session_id,
         "current_task_id": task_id,
         "title": str(title or "").strip()[:64],
         "task_kind": str(task_kind or "custom").strip().lower()[:32],
+        "category": "judge" if task_kind == "judge" else "agent",
+        "judge_kind": judge_kind,
+        "submission_id": submission_id,
+        "attempt_id": attempt_id,
+        "competition_id": competition_id,
         "problem_id": problem_id,
         "problem_title": (
             str(problem_title or "")[:255]
@@ -313,12 +341,14 @@ def create_agent_session(
                     problem_id, problem_title, requested_by, access_role,
                     harness, reasoning_effort, endpoint_source, endpoint_id,
                     endpoint_revision, endpoint_model,
+                    judge_kind, submission_id, attempt_id, competition_id, runtime_config_json,
                     status, message,
                     turn_count
                 ) VALUES (
                     %s, %s, %s, %s,
                     %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, 'Pending', '任务排队中',
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, 'Pending', '任务排队中',
                     1
                 )
                 """,
@@ -337,6 +367,8 @@ def create_agent_session(
                     endpoint_id,
                     session["endpoint_revision"],
                     session["endpoint_model"],
+                    judge_kind, submission_id, attempt_id, competition_id,
+                    _json_text(runtime_config, {}) if runtime_config else None,
                 ),
             )
             cursor.execute(
@@ -386,6 +418,8 @@ def begin_agent_session_turn(
     attachments=None,
     base_runtime_checkpoint_id="",
     base_native_session_id="",
+    internal_judge=False,
+    dispatch_payload=None,
 ):
     session_id = normalize_agent_session_id(session_id)
     task_id = normalize_agent_session_id(task_id)
@@ -437,6 +471,8 @@ def begin_agent_session_turn(
             row = cursor.fetchone()
             if not row:
                 raise AgentSessionNotFoundError("Agent 会话不存在")
+            if row.get("task_kind") == "judge" and not internal_judge:
+                raise PermissionError("Judge 会话仅允许评测流程内部续聊")
             if not agent_status_is_terminal(row.get("status")):
                 raise AgentSessionBusyError("上一轮 Agent 任务尚未结束")
             if bool(row.get("has_pending_queue")):
@@ -481,6 +517,7 @@ def begin_agent_session_turn(
                 created_by=row.get("requested_by"),
                 user_message=message,
                 attachments=attachments,
+                dispatch_payload=dispatch_payload,
             )
             cursor.execute(
                 """
@@ -580,6 +617,8 @@ def begin_agent_session_retry(
             row = cursor.fetchone()
             if not row:
                 raise AgentSessionNotFoundError("Agent 会话不存在")
+            if agent_session_is_judge(row):
+                raise PermissionError("Judge 会话禁止人工重试")
             status = str(row.get("status") or "").strip().lower()
             if status in {"cleanupfailed", "cleanup_failed"}:
                 raise AgentSessionBusyError(
@@ -1147,6 +1186,7 @@ def get_agent_session(session_id):
             cursor.execute(
                 """
                 SELECT session_id, current_task_id, title, task_kind,
+                       judge_kind, submission_id, attempt_id, competition_id,
                        problem_id, problem_title, requested_by, access_role,
                        harness, reasoning_effort, endpoint_source, endpoint_id,
                        endpoint_revision, endpoint_model,
@@ -1196,6 +1236,7 @@ def get_agent_session_by_task_id(task_id):
             cursor.execute(
                 """
                 SELECT s.session_id, s.current_task_id, s.title, s.task_kind,
+                       s.judge_kind, s.submission_id, s.attempt_id, s.competition_id,
                        s.problem_id, s.problem_title, s.requested_by,
                        s.access_role, s.harness, s.reasoning_effort,
                        s.endpoint_source,
@@ -1290,16 +1331,20 @@ def get_agent_session_turns(session_id, include_superseded=False):
     }]
 
 
-def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
+def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None, *, judge_only=False):
     page = max(1, int(page))
     per_page = max(1, min(100, int(per_page)))
     owner = str(requested_by or "").strip() or None
-    session_filter = "WHERE s.requested_by=%s" if owner else ""
+    session_filter = "WHERE s.task_kind='judge'" if judge_only else "WHERE s.task_kind<>'judge'"
+    if owner:
+        session_filter += " AND s.requested_by=%s"
     legacy_filter = (
         "WHERE r.requested_by=%s AND NOT EXISTS"
         if owner
         else "WHERE NOT EXISTS"
     )
+    if judge_only:
+        legacy_filter = legacy_filter.replace("WHERE ", "WHERE 1=0 AND ")
     count_params = (owner, owner) if owner else ()
     conn = get_db_connection()
     try:
@@ -1333,6 +1378,7 @@ def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
                 FROM (
                     SELECT s.id AS source_id, s.session_id,
                            s.current_task_id, s.title, s.task_kind,
+                           s.judge_kind, s.submission_id, s.attempt_id, s.competition_id,
                            s.problem_id, s.problem_title, s.requested_by,
                            s.access_role, s.harness, s.reasoning_effort,
                            s.endpoint_source,
@@ -1350,6 +1396,8 @@ def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
                     SELECT r.id AS source_id, r.task_id AS session_id,
                            r.task_id AS current_task_id,
                            r.problem_title AS title, 'legacy' AS task_kind,
+                           NULL AS judge_kind, NULL AS submission_id,
+                           NULL AS attempt_id, NULL AS competition_id,
                            r.problem_id, r.problem_title, r.requested_by,
                            'user' AS access_role, r.harness,
                            'default' AS reasoning_effort,
@@ -1378,7 +1426,62 @@ def get_agent_sessions_paginated(page=1, per_page=20, requested_by=None):
     return [_session_from_row(row) for row in rows], page, total_pages
 
 
+
+def agent_session_is_judge(session):
+    return bool(session and session.get("task_kind") == "judge")
+
+
+def can_view_agent_session(session, *, username, is_admin=False):
+    """网页、轨迹和 workspace 共用的会话查看边界。"""
+    if not session:
+        return False
+    if is_admin:
+        return True
+    if str(session.get("requested_by") or "") != str(username or ""):
+        return False
+    return not agent_session_is_judge(session) or session.get("judge_kind") == "reverse_answer"
+
+
+def get_judge_session_for_attempt(submission_id, attempt_id, judge_kind):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT session_id FROM agent_sessions WHERE task_kind='judge' "
+                "AND submission_id=%s AND COALESCE(attempt_id, '')=%s AND judge_kind=%s "
+                "ORDER BY (session_id LIKE '%%-history') ASC, id DESC LIMIT 1",
+                (submission_id, str(attempt_id or ""), judge_kind),
+            )
+            row = cursor.fetchone()
+    finally:
+        conn.close()
+    return get_agent_session(row["session_id"]) if row else None
+
+
+def get_agent_session_runtime_config(session_id, task_id=None):
+    """内部运行配置永不包含在公开会话序列化结果中。"""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT runtime_config_json FROM agent_sessions WHERE session_id=%s", (normalize_agent_session_id(session_id),))
+            row = cursor.fetchone() or {}
+            result = _json_value(row.get("runtime_config_json"), {})
+            result = result if isinstance(result, dict) else {}
+            if task_id:
+                cursor.execute("SELECT dispatch_payload_json FROM agent_session_messages WHERE session_id=%s AND final_task_id=%s LIMIT 1", (session_id, task_id))
+                payload = _json_value((cursor.fetchone() or {}).get("dispatch_payload_json"), {})
+                if isinstance(payload, dict) and "timeout_seconds" in payload:
+                    result["timeout_seconds"] = payload["timeout_seconds"]
+            return result
+    finally:
+        conn.close()
+
+
 __all__ = [
+    "agent_session_is_judge",
+    "can_view_agent_session",
+    "get_judge_session_for_attempt",
+    "get_agent_session_runtime_config",
     "AgentSessionMessageConflictError",
     "AgentSessionMessageError",
     "AgentSessionMessageNotFoundError",

@@ -12,8 +12,10 @@ from celery.exceptions import Retry
 from backend.oj_modules.agents.sessions import (
     AGENT_EMPTY_CONCLUSION_MESSAGE,
     get_agent_session,
+    get_agent_session_runtime_config,
     normalize_agent_session_id,
 )
+from backend.oj_modules.agents.judge import resolve_judge_endpoint, judge_endpoint_pricing
 from backend.oj_modules.agents.quota import (
     AgentQuotaAccessDeniedError,
     charge_agent_usage,
@@ -459,6 +461,13 @@ def register_agent_run_turn_task(celery_app):
             )
         except Exception as exc:
             return _generic_failure(state, str(exc) or "Agent 会话状态无效")
+        site_funded = session_task_kind == "judge"
+        runtime_config = (
+            get_agent_session_runtime_config(normalized_session_id, task_id)
+            if site_funded else {}
+        )
+        if runtime_config.get("historical_import"):
+            return _generic_failure(state, "历史迁入会话不可执行")
         state["native_session_id"] = normalized_resume_session_id
         state["reasoning_effort"] = normalized_reasoning_effort
 
@@ -471,7 +480,7 @@ def register_agent_run_turn_task(celery_app):
         try:
             require_agent_start_eligibility(
                 user["id"],
-                is_admin=requester_is_admin,
+                is_admin=requester_is_admin or site_funded,
                 uses_personal_endpoint=uses_personal_endpoint,
             )
         except AgentQuotaAccessDeniedError as exc:
@@ -497,10 +506,9 @@ def register_agent_run_turn_task(celery_app):
             resolve_kwargs = {"include_secret": True}
             if uses_personal_endpoint:
                 resolve_kwargs["user_id"] = user["id"]
-            endpoint = resolve_launch_endpoint(
-                normalized_harness,
-                endpoint_ref,
-                **resolve_kwargs,
+            endpoint = (
+                resolve_judge_endpoint(session) if site_funded else
+                resolve_launch_endpoint(normalized_harness, endpoint_ref, **resolve_kwargs)
             )
         except Exception as exc:
             return _generic_failure(
@@ -520,7 +528,7 @@ def register_agent_run_turn_task(celery_app):
         try:
             require_agent_start_eligibility(
                 user["id"],
-                is_admin=requester_is_admin,
+                is_admin=requester_is_admin or site_funded,
                 uses_personal_endpoint=uses_personal_endpoint,
             )
         except AgentQuotaAccessDeniedError as exc:
@@ -576,14 +584,15 @@ def register_agent_run_turn_task(celery_app):
             task_id,
             eligibility_check=lambda: require_agent_start_eligibility(
                 user["id"],
-                is_admin=requester_is_admin,
+                is_admin=requester_is_admin or site_funded,
                 uses_personal_endpoint=uses_personal_endpoint,
             ).get("allowed", False),
         )
         usage_callback = None
         usage_accountant = None
         if not uses_personal_endpoint:
-            pricing = token_pricing_from_endpoint(endpoint)
+            judge_pricing = judge_endpoint_pricing(endpoint) if site_funded else None
+            pricing = judge_pricing["pricing"] if judge_pricing else token_pricing_from_endpoint(endpoint)
             if pricing is None:
                 return _generic_failure(state, "所选全站节点尚未配置完整价格")
             try:
@@ -596,6 +605,8 @@ def register_agent_run_turn_task(celery_app):
                 pass
 
             def current_endpoint_snapshot():
+                if site_funded:
+                    return judge_endpoint_pricing(resolve_judge_endpoint(session))
                 # 每个上游请求都尝试读取当前价格；读取失败时容错计费器会沿用
                 # 上一份完整快照，不能让动态配置服务故障中断正在运行的任务。
                 try:
@@ -654,12 +665,13 @@ def register_agent_run_turn_task(celery_app):
                 session_id=normalized_session_id,
                 task_id=task_id,
                 endpoint_snapshot={
-                    "endpoint_id": endpoint["id"],
-                    "endpoint_revision": endpoint.get("revision"),
+                    "endpoint_id": judge_pricing["endpoint_id"] if judge_pricing else endpoint["id"],
+                    "endpoint_revision": judge_pricing["endpoint_revision"] if judge_pricing else endpoint.get("revision"),
                     "endpoint_model": endpoint.get("model"),
                     "pricing": pricing,
                 },
                 is_admin=requester_is_admin,
+                **({"site_funded": True} if site_funded else {}),
                 endpoint_snapshot_loader=current_endpoint_snapshot,
                 charge_usage=charge_agent_usage,
                 on_settled=refresh_usage_projection,
@@ -718,6 +730,10 @@ def register_agent_run_turn_task(celery_app):
                 usage_callback=usage_callback,
                 native_session_callback=preserve_native_session,
                 reset_trace=False,
+                **({
+                    "timeout_seconds": runtime_config.get("timeout_seconds"),
+                    "enable_site_identity": False,
+                } if site_funded else {}),
             )
         except AgentUsageHardStopError:
             conclusion = extract_agent_conclusion(task_id)

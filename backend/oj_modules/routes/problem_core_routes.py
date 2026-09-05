@@ -42,6 +42,8 @@ from backend.oj_modules.agents.sessions import (
     continue_agent_session_queue,
     enqueue_agent_session_message,
     get_agent_session,
+    can_view_agent_session,
+    agent_session_is_judge,
     get_agent_session_by_task_id,
     get_agent_session_message,
     get_agent_session_turns,
@@ -228,9 +230,8 @@ def _agent_actor(user=None):
 def _agent_actor_can_view_session(actor, agent_session):
     if not actor or not agent_session:
         return False
-    return bool(
-        actor["is_admin"]
-        or str(agent_session.get("requested_by") or "") == actor["username"]
+    return can_view_agent_session(
+        agent_session, username=actor["username"], is_admin=actor["is_admin"],
     )
 
 
@@ -245,14 +246,14 @@ def _agent_session_for_actor(session_id, actor):
         raise AgentSessionMessageNotFoundError("Agent 会话不存在")
     if not _agent_actor_can_view_session(actor, agent_session):
         raise PermissionError("只能查看自己发起的 Agent 会话")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and agent_session_is_judge(agent_session):
+        raise PermissionError("Judge 会话由评测流程管理，禁止人工修改")
     return agent_session
 
 
 def _agent_task_for_actor(task_id, actor, *, allow_unknown_for_admin=False):
     """把单轮 task 映射到所属会话后执行统一所有权校验。"""
 
-    if actor and actor["is_admin"] and allow_unknown_for_admin:
-        return None
     try:
         agent_session = (
             get_agent_session_by_task_id(task_id)
@@ -266,6 +267,8 @@ def _agent_task_for_actor(task_id, actor, *, allow_unknown_for_admin=False):
         raise AgentSessionMessageNotFoundError("Agent 任务不存在")
     if not _agent_actor_can_view_session(actor, agent_session):
         raise PermissionError("只能查看自己发起的 Agent 任务")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and agent_session_is_judge(agent_session):
+        raise PermissionError("Judge 会话由评测流程管理，禁止人工修改")
     return agent_session
 
 
@@ -2855,13 +2858,16 @@ def agent_tasks():
     per_page = 20
     requested_scope = str(request.args.get('scope') or '').strip().lower()
     if actor['is_admin']:
-        scope = requested_scope if requested_scope in {'all', 'mine'} else 'all'
+        scope = requested_scope if requested_scope in {'all', 'mine', 'judge'} else 'all'
     else:
+        if requested_scope == 'judge':
+            return jsonify(success=False, message='仅管理员可查看 Judge 会话列表'), 403
         scope = 'mine'
     sessions, page, total_pages = get_agent_sessions_paginated(
         page=page,
         per_page=per_page,
         requested_by=(actor['username'] if scope == 'mine' else None),
+        **({'judge_only': True} if scope == 'judge' else {}),
     )
 
     page_start = max(1, page - 8)
@@ -2971,6 +2977,8 @@ def agent_task_detail(session_id):
             if agent_session and agent_session.get('is_legacy')
             else None
         )
+        if mapped_session and not _agent_actor_can_view_session(actor, mapped_session):
+            return jsonify(success=False, message='无权查看该 Agent 会话'), 403
         if mapped_session and mapped_session.get('session_id') != session_id:
             canonical_url = url_for(
                 'problem_core.agent_task_detail',
@@ -2995,6 +3003,8 @@ def agent_task_detail(session_id):
         return jsonify(success=False, message='只能管理自己发起的 Agent 会话'), 403
 
     if request.method == 'POST':
+        if agent_session_is_judge(agent_session):
+            return jsonify(success=False, message='Judge 会话仅允许评测流程内部续聊'), 403
         if agent_session.get('is_legacy'):
             return jsonify(
                 success=False,
@@ -3556,7 +3566,8 @@ def agent_task_detail(session_id):
     # Workspace 目录可能在 Agent 运行中持续变化；首屏不同步
     # 遍历它，由前端在页面框架返回后通过 workspace 路由异步加载。
     owns_session = (
-        str(agent_session.get('requested_by') or '')
+        not agent_session_is_judge(agent_session)
+        and str(agent_session.get('requested_by') or '')
         == str(user.get('username') or '')
     )
     latest_turn = raw_turns[-1] if raw_turns else {}

@@ -325,10 +325,10 @@ def _charge_kwargs(envelope):
     }
     if not isinstance(envelope, dict) or not required.issubset(envelope):
         raise AgentUsageOutboxError("计费待办字段不完整")
-    return {
-        field: envelope[field]
-        for field in required
-    }
+    result = {field: envelope[field] for field in required}
+    if envelope.get("site_funded"):
+        result["site_funded"] = True
+    return result
 
 
 def _settle_envelope(envelope, *, charge_usage):
@@ -438,6 +438,7 @@ class ResilientAgentUsageAccountant:
         task_id,
         endpoint_snapshot,
         is_admin=False,
+        site_funded=False,
         endpoint_snapshot_loader: Callable | None = None,
         charge_usage: Callable | None = None,
         on_settled: Callable | None = None,
@@ -447,6 +448,7 @@ class ResilientAgentUsageAccountant:
         self.session_id = str(session_id or "").strip()
         self.task_id = str(task_id or "").strip()
         self.is_admin = bool(is_admin)
+        self.site_funded = bool(site_funded)
         self._snapshot = self._normalize_snapshot(endpoint_snapshot)
         self._snapshot_loader = endpoint_snapshot_loader
         self._charge_usage = charge_usage or charge_agent_usage
@@ -534,6 +536,7 @@ class ResilientAgentUsageAccountant:
             "usage": normalized_usage,
             "pricing": snapshot["pricing"],
             "is_admin": self.is_admin,
+            **({"site_funded": True} if self.site_funded else {}),
         }
 
     def _remember(self, envelope):

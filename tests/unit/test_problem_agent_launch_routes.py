@@ -72,6 +72,7 @@ def _patch_agent_runtime_checkpoint_io(monkeypatch):
     )
     monkeypatch.setattr(routes, "get_last_agent_trace_assistant", lambda _task_id: "")
     monkeypatch.setattr(routes, "get_agent_session_by_task_id", lambda _task_id: None)
+    monkeypatch.setattr(routes, "get_agent_session", lambda _session_id: None)
 
 
 @pytest.fixture(autouse=True)

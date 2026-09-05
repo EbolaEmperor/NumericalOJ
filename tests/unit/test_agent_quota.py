@@ -860,3 +860,42 @@ def test_quota_approval_requires_admin_decided_positive_amount_before_db(
             approved=True,
             approved_amount=amount,
         )
+
+
+def test_judge_usage_records_cost_idempotently_without_any_quota_account(monkeypatch):
+    store = _ChargeStore()
+    store.account = None
+
+    class JudgeCursor(_ChargeCursor):
+        def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("SELECT s.session_id FROM agent_sessions"):
+                assert "t.task_id=%s" in normalized and "u.id=%s" in normalized
+                assert "s.task_kind='judge'" in normalized
+                self.result = {"session_id": "judge-session"}
+            elif normalized.startswith("SELECT id, is_admin FROM users"):
+                self.result = {"id": 7, "is_admin": 0}
+            else:
+                super().execute(sql, params)
+
+    class JudgeConnection(_ChargeConnection):
+        def cursor(self):
+            return JudgeCursor(self)
+
+    monkeypatch.setattr(quota, "get_db_connection", lambda: JudgeConnection(store))
+    kwargs = dict(
+        user_id=7, session_id="judge-session", task_id="judge-turn",
+        source="relay_openai", usage_event_id="judge-request",
+        endpoint_id=None, endpoint_revision=1, endpoint_model="private-model",
+        usage={"input_uncached_tokens": 100, "input_cached_tokens": 0,
+               "input_cache_write_tokens": 0, "output_tokens": 50, "reasoning_output_tokens": 0},
+        pricing={"input_price_per_million": "1", "cached_input_price_per_million": "0",
+                 "output_price_per_million": "2"},
+        site_funded=True,
+    )
+    result = quota.charge_agent_usage(**kwargs)
+    replay = quota.charge_agent_usage(**kwargs)
+    assert result["applied"] is True and replay["applied"] is False
+    assert result["remaining_amount"] is None and result["hard_stop"] is False
+    assert store.ledger["charged_amount"] == Decimal("0.0002")
+    assert store.ledger_inserts == 1 and store.account_updates == 0

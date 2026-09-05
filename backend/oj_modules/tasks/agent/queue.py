@@ -126,6 +126,9 @@ def build_agent_control_bridge(session_id, task_id, *, eligibility_check=None):
 def _session_dispatch_allowed(session):
     """在队首升格为 turn 之前做一次实时额度门禁。"""
 
+    if (session or {}).get("task_kind") == "judge":
+        from backend.oj_modules.agents.sessions import get_agent_session_runtime_config
+        return not get_agent_session_runtime_config(session["session_id"]).get("historical_import")
     requested_by = str((session or {}).get("requested_by") or "").strip()
     user = get_user_by_username(requested_by) if requested_by else None
     if not user:
@@ -214,6 +217,10 @@ def register_agent_queue_tasks(
                 raise self.retry(exc=exc, countdown=5)
             if not claim:
                 return {"success": True, "dispatched": False}
+            if claim.get("task_kind") == "judge":
+                from backend.oj_modules.agents.sessions import get_agent_session_runtime_config
+                if get_agent_session_runtime_config(claim["session_id"]).get("historical_import"):
+                    return {"success": True, "dispatched": False}
             task_id = str(claim["task_id"])
             dispatch_attempt_id = str(
                 claim.get("dispatch_attempt_id") or ""
