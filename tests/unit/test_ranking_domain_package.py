@@ -56,8 +56,9 @@ def test_reverse_judge_modules_follow_one_way_responsibility_dependencies():
     )
     assert {
         "backend.oj_modules.ranking.reverse_judge.db",
-        "backend.oj_modules.ranking.reverse_judge.traces",
+        "backend.oj_modules.agents.sessions",
     }.issubset(imports_by_file["service.py"])
+    assert "backend.oj_modules.ranking.reverse_judge.traces" not in imports_by_file["service.py"]
 
 
 def test_ranking_http_adapters_do_not_import_each_other_or_task_implementations():

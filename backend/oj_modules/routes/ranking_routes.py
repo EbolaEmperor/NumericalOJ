@@ -149,6 +149,7 @@ from backend.oj_modules.ranking.readiness import (
     reverse_quality_gate_ready as _canonical_reverse_quality_gate_ready,
 )
 from backend.oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
+from backend.oj_modules.ranking.judge_control import stopped_judge_submission
 
 
 ranking_bp = Blueprint('ranking', __name__, url_prefix='/ranking')
@@ -485,14 +486,14 @@ def _docker_command(args, timeout=15):
 
 def _docker_container_names_for_submission(submission_id):
     sid = int(submission_id)
-    names = [f'aj_{sid}', f'rj_agent_{sid}']
+    names = []
     proc, error = _docker_command(['ps', '-a', '--format', '{{.Names}}'], timeout=10)
     if error:
         return names, error
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout or '').strip()
         return names, f'Docker 容器列表读取失败：{message[-300:]}'
-    prefixes = (f'aj_{sid}_', f'rj_judge_{sid}_')
+    prefixes = (f'rj_judge_{sid}_',)
     for line in (proc.stdout or '').splitlines():
         name = line.strip()
         if name.startswith(prefixes) and name not in names:
@@ -535,19 +536,6 @@ def _clear_ranking_submission_runtime_keys(submission_id):
         f'ranking_reverse_judge:{sid}',
     }
     try:
-        for pattern in (
-            f'ranking:judge:lock:{sid}:*',
-            f'ranking:reverse_judge:lock:{sid}:*',
-        ):
-            for key in client.scan_iter(match=pattern, count=50):
-                keys.add(key)
-        for key in client.scan_iter(match='aj:ep:*:slot:*', count=200):
-            try:
-                value = client.get(key)
-            except Exception:
-                value = None
-            if str(value or '').startswith(f'{sid}:'):
-                keys.add(key)
         if keys:
             client.delete(*list(keys))
     except Exception as e:
@@ -556,30 +544,34 @@ def _clear_ranking_submission_runtime_keys(submission_id):
 
 
 def _cancel_ranking_submission_runtime(submission, competition):
-    """删除提交前中止仍在运行的后台评测。返回非致命清理告警。"""
+    """先确认通用 Agent 已停止，再清理业务运行态；失败时保留记录供重试。"""
     if not submission:
         return []
     status = str(submission.get('status') or '').strip()
-    if status not in ('Queued', 'Judging'):
+    mode = _competition_scoring_mode(competition)
+    is_judge = mode in {'agent_judge', 'reverse_judge'}
+    if status not in {'Pending', 'Queued', 'Judging'} and not (is_judge and submission.get('judge_attempt_id')):
         return []
-
-    sid = int(submission.get('id'))
-    scoring_mode = _competition_scoring_mode(competition)
-    task_id = str(submission.get('judge_task_id') or '').strip()
-    warnings = []
-
+    sid = int(submission['id'])
     try:
-        invalidate_ranking_submission_attempt(sid)
-    except Exception as e:
-        warnings.append(f'失效评测 attempt 失败：{e}')
-
-    warning = _revoke_ranking_task(task_id, scoring_mode)
-    if warning:
-        warnings.append(warning)
-
-    warnings.extend(_kill_ranking_submission_containers(sid))
-    warnings.extend(_clear_ranking_submission_runtime_keys(sid))
-    return [w for w in warnings if w]
+        with stopped_judge_submission(
+            submission, mode, redis_client=_rds or _redis_client(),
+            terminate_agent=_agent_run_terminator,
+        ):
+            warnings = []
+            # 业务锁禁止新阶段派发；停止脚本评分容器后再使旧 attempt 失效。
+            if mode != 'agent_judge':
+                warnings.extend(_kill_ranking_submission_containers(sid))
+            if warnings:
+                return warnings
+            invalidate_ranking_submission_attempt(sid)
+            warning = _revoke_ranking_task(submission.get('judge_task_id'), mode)
+            if warning:
+                warnings.append(warning)
+            warnings.extend(_clear_ranking_submission_runtime_keys(sid))
+            return warnings
+    except Exception as exc:
+        return [f'停止评测失败：{exc}']
 
 
 def _normalize_dt(raw):
@@ -652,6 +644,7 @@ _reverse_judge_task = None
 _batch_probe_task = None
 _batch_run_task = None
 _bulk_rejudge_task = None
+_agent_run_terminator = None
 
 
 def _no_runtime_value(*_args, **_kwargs):
@@ -685,9 +678,9 @@ def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agen
                         current_judge_snapshot_builder=None,
                         reverse_progress_reader=None, reverse_event_subscriber=None,
                         batch_job_reader=None, bulk_job_reader=None,
-                        bulk_job_writer=None):
+                        bulk_job_writer=None, agent_run_terminator=None):
     global _evaluate_ranking_task, _elo_initial_burst_task, _agent_judge_task, _reverse_judge_task, _rds
-    global _batch_probe_task, _batch_run_task, _bulk_rejudge_task
+    global _batch_probe_task, _batch_run_task, _bulk_rejudge_task, _agent_run_terminator
     global build_current_judge_snapshot, get_judge_progress_snapshot
     global subscribe_judge_run_events, get_reverse_judge_progress_snapshot
     global subscribe_reverse_judge_events, get_probe_job
@@ -699,6 +692,7 @@ def init_ranking_module(evaluate_ranking_task, elo_initial_burst_task=None, agen
     _batch_probe_task = batch_probe_task
     _batch_run_task = batch_run_task
     _bulk_rejudge_task = bulk_rejudge_task
+    _agent_run_terminator = agent_run_terminator
     build_current_judge_snapshot = current_judge_snapshot_builder or build_judge_snapshot
     get_judge_progress_snapshot = judge_progress_reader or build_judge_snapshot
     subscribe_judge_run_events = judge_event_subscriber or _no_runtime_value
@@ -2755,6 +2749,13 @@ def ranking_rejudge_agent(competition_id, submission_id):
         return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
     comp = get_competition(competition_id) or {}
     scoring_mode = _competition_scoring_mode(comp)
+    cleanup_warnings = _cancel_ranking_submission_runtime(sub, comp)
+    if cleanup_warnings:
+        message = '无法重新评测：' + '；'.join(cleanup_warnings[:3])
+        if _wants_json_response():
+            return jsonify(success=False, message=message), 409
+        flash(message, 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
     if scoring_mode == 'reverse_judge':
         task_ref = _reverse_judge_task
         attempt_id = begin_agent_judge_attempt(
@@ -3274,6 +3275,12 @@ def ranking_delete_submission(competition_id, submission_id):
     username = sub.get('username') or ''
     comp = get_competition(competition_id)
     cleanup_warnings = _cancel_ranking_submission_runtime(sub, comp)
+    if cleanup_warnings:
+        message = '无法删除提交：' + '；'.join(cleanup_warnings[:3])
+        if _wants_json_response():
+            return jsonify(success=False, message=message), 409
+        flash(message, 'warning')
+        return redirect(url_for('ranking.ranking_detail', competition_id=competition_id, tab='all_submissions'))
     # 清理磁盘上的答案 + 代码文件
     target_dir = submission_dir(submission_id)
     if os.path.isdir(target_dir):
