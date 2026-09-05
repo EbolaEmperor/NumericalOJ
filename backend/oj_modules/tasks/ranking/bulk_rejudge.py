@@ -2,12 +2,15 @@
 # -*- coding: utf-8 -*-
 """打榜赛「所有提交」批量重测任务。"""
 
+from contextlib import nullcontext
 import json
 import time
 import uuid
 
 from backend.oj_modules import config as _cfg
 from backend.oj_modules.infrastructure.redis import create_optional_redis_client
+from backend.oj_modules.ranking.judge_control import JudgeCancellationError, stopped_judge_submission
+from backend.oj_modules.tasks.agent.control import build_agent_run_terminator
 from backend.oj_modules.ranking.db import (
     activate_elo_submission,
     begin_agent_judge_attempt,
@@ -178,16 +181,23 @@ def register_ranking_bulk_rejudge_task(celery_app, evaluate_ranking_task,
                     raise ValueError(f"ranking submission {requeued_id} not found")
                 if int(source.get('competition_id') or 0) != int(competition_id):
                     raise ValueError("submission does not belong to this competition")
-                attempt_id = _reset_submission_for_rejudge(
-                    comp,
-                    requeued_id,
-                    username=source.get('username'),
+                stopping = (
+                    stopped_judge_submission(
+                        source, mode, redis_client=_ensure_rds(),
+                        terminate_agent=build_agent_run_terminator(celery_app),
+                    ) if mode in {'agent_judge', 'reverse_judge'} else nullcontext()
                 )
-                _enqueue_submission(
-                    comp, requeued_id,
-                    evaluate_ranking_task, agent_judge_task, reverse_judge_task,
-                    elo_initial_burst_task, attempt_id,
-                )
+                with stopping:
+                    attempt_id = _reset_submission_for_rejudge(
+                        comp,
+                        requeued_id,
+                        username=source.get('username'),
+                    )
+                    _enqueue_submission(
+                        comp, requeued_id,
+                        evaluate_ranking_task, agent_judge_task, reverse_judge_task,
+                        elo_initial_burst_task, attempt_id,
+                    )
                 job['requeued'] = int(job.get('requeued') or 0) + 1
                 requeued_ids = job.get('requeued_ids')
                 if not isinstance(requeued_ids, list):
@@ -197,10 +207,11 @@ def register_ranking_bulk_rejudge_task(celery_app, evaluate_ranking_task,
             except Exception as e:
                 job['failed'] = int(job.get('failed') or 0) + 1
                 job['last_error'] = str(e)[:500]
-                try:
-                    update_submission_result(requeued_id, None, 'Error', error_message=str(e)[:1000])
-                except Exception:
-                    pass
+                if not isinstance(e, JudgeCancellationError):
+                    try:
+                        update_submission_result(requeued_id, None, 'Error', error_message=str(e)[:1000])
+                    except Exception:
+                        pass
             finally:
                 job['processed'] = int(job.get('processed') or 0) + 1
                 job['progress'] = int(job['processed'] / max(1, len(source_ids)) * 100)

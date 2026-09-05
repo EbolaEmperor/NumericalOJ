@@ -245,15 +245,14 @@ def test_agent_workspace_does_not_copy_a_policy_rejected_zip(monkeypatch, tmp_pa
         zf.writestr("b.txt", b"b")
 
     workspace_root = tmp_path / "workspaces"
-    monkeypatch.setattr(agent_tasks, "JUDGE_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setattr(agent_tasks, "JUDGE_PACKAGE_MAX_MEMBERS", 1)
 
     with pytest.raises(ArchiveExtractionError) as error:
-        agent_tasks._prepare_workspace(
+        agent_tasks._judge_input_files(
             {"id": 7, "code_path": str(archive)},
             {"id": 3, "description": ""},
             [],
-            attempt_id="attempt-1",
+            staging=workspace_root,
         )
 
     _assert_reason(error, "too_many_members")
@@ -266,20 +265,17 @@ def test_agent_workspace_still_accepts_a_plain_source_file(monkeypatch, tmp_path
     source = tmp_path / "main.py"
     source.write_text("print('ok')\n", encoding="utf-8")
     workspace_root = tmp_path / "workspaces"
-    monkeypatch.setattr(agent_tasks, "JUDGE_WORKSPACE_ROOT", str(workspace_root))
     monkeypatch.setattr(agent_tasks, "list_competition_files", lambda _competition_id: [])
 
-    workspace, result_name = agent_tasks._prepare_workspace(
+    files = agent_tasks._judge_input_files(
         {"id": 8, "code_path": str(source)},
         {"id": 4, "description": "test"},
         [],
-        attempt_id="attempt-2",
+        staging=workspace_root,
     )
 
-    workspace_path = Path(workspace)
-    copied_source = workspace_path / "submission" / source.name
-    assert copied_source.read_text(encoding="utf-8") == "print('ok')\n"
-    assert (workspace_path / result_name).is_file()
+    assert files["submission/main.py"].read_text(encoding="utf-8") == "print('ok')\n"
+    assert files["description.md"] == b"test"
 
 
 def test_agent_workspace_does_not_copy_a_crc_damaged_zip(monkeypatch, tmp_path):
@@ -297,14 +293,13 @@ def test_agent_workspace_does_not_copy_a_crc_damaged_zip(monkeypatch, tmp_path):
     assert zipfile.is_zipfile(archive)
 
     workspace_root = tmp_path / "workspaces"
-    monkeypatch.setattr(agent_tasks, "JUDGE_WORKSPACE_ROOT", str(workspace_root))
 
     with pytest.raises(zipfile.BadZipFile):
-        agent_tasks._prepare_workspace(
+        agent_tasks._judge_input_files(
             {"id": 9, "code_path": str(archive)},
             {"id": 5, "description": ""},
             [],
-            attempt_id="attempt-3",
+            staging=workspace_root,
         )
 
     assert not list(workspace_root.rglob(archive.name))

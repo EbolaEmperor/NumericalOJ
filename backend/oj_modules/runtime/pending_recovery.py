@@ -35,8 +35,6 @@ from backend.oj_modules.ranking.db import (
 )
 from backend.oj_modules.submissions.locks import clear_submission_lock, has_submission_lock
 from backend.oj_modules.tasks.ranking.agent_judge import (
-    clear_all_judge_slots,
-    clear_judge_lock,
     is_completed_agent_judge_submission,
 )
 from backend.oj_modules.submissions.written_artifacts import (
@@ -303,7 +301,7 @@ def _purge_agent_judge_broker_messages(redis_client):
 
 
 def _active_agent_judge_submission_ids(redis_client):
-    """从 Redis 幂等锁和端点槽位里收集仍在运行的 Agent 评测提交。"""
+    """从短编排锁中识别活动调度；持久端点预留不阻止丢失编排的恢复。"""
     if redis_client is None:
         return set()
     active_ids = set()
@@ -323,20 +321,6 @@ def _active_agent_judge_submission_ids(redis_client):
             if len(parts) >= 4:
                 try:
                     active_ids.add(int(parts[3]))
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    try:
-        for key in redis_client.scan_iter(match='aj:ep:*:slot:*', count=200):
-            try:
-                value = redis_client.get(key)
-            except Exception:
-                value = None
-            sid_text = str(value or '').split(':', 1)[0].strip()
-            if sid_text:
-                try:
-                    active_ids.add(int(sid_text))
                 except Exception:
                     pass
     except Exception:
@@ -380,15 +364,16 @@ def _agent_judge_orphaned(row, active_submission_ids, agent_judge_task):
 
 
 def _enqueue_agent_judge_recovery(agent_judge_task, row, *, requeue_index):
-    """在同一条 ranking_submissions 记录上刷新 attempt 并重新投递评测任务。"""
+    """恢复同一 attempt 的短编排任务，通用会话与 workspace 保持连续。"""
     if agent_judge_task is None:
         return False
     sub_id = row.get('id')
     if sub_id is None:
         return False
 
-    attempt_id = begin_agent_judge_attempt(sub_id, status='Queued', reset_result=False)
-    clear_judge_lock(sub_id)
+    attempt_id = row.get('judge_attempt_id')
+    if not attempt_id:
+        attempt_id = begin_agent_judge_attempt(sub_id, status='Queued', reset_result=False)
     async_result = agent_judge_task.apply_async(
         args=[sub_id, attempt_id],
         countdown=_agent_judge_recovery_countdown(requeue_index),
@@ -638,14 +623,6 @@ def _requeue_ranking_submissions(ranking_task, elo_initial_burst_task,
     except Exception as e:
         print(f"[StartupRequeue] 查询未完成打榜赛提交失败：{e}")
         return 0
-
-    # 启动时（约定所有 worker 已死）清掉残留的 agent 评测端点槽位僵尸键，给重排一个干净基线。
-    try:
-        _cleared = clear_all_judge_slots()
-        if _cleared:
-            print(f"[StartupRequeue] 清理残留 agent 评测端点槽位 {_cleared} 个。")
-    except Exception:
-        pass
 
     for row in rows:
         sub_id = row.get('id')

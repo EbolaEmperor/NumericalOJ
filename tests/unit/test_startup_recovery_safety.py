@@ -351,3 +351,14 @@ def test_local_worker_detection_uses_process_listing(monkeypatch):
     assert recover_pending_tasks._local_numoj_celery_processes() == [
         '12 celery -A backend.oj.celery worker -Q celery',
     ]
+
+
+def test_judge_recovery_preserves_existing_attempt_and_workspace(monkeypatch):
+    task = _ResultTask()
+    monkeypatch.setattr(startup_requeue, 'begin_agent_judge_attempt',
+                        lambda *args, **kwargs: pytest.fail('恢复不得旋转已有 attempt'))
+    monkeypatch.setattr(startup_requeue, 'set_agent_judge_task_id', lambda *args: None)
+    assert startup_requeue._enqueue_agent_judge_recovery(
+        task, {'id': 15, 'judge_attempt_id': 'persisted-attempt'}, requeue_index=0,
+    )
+    assert task.calls[0][0] == [15, 'persisted-attempt']

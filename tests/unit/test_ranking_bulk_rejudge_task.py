@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 """打榜赛批量重测任务：必须在原提交记录上重测，不创建新提交。"""
 
+from contextlib import nullcontext
+
+import pytest
 import backend.oj_modules.tasks.ranking.bulk_rejudge as m
+
+
+@pytest.fixture(autouse=True)
+def mock_judge_stop(monkeypatch):
+    monkeypatch.setattr(m, "_ensure_rds", lambda: object())
+    monkeypatch.setattr(m, "stopped_judge_submission", lambda *args, **kwargs: nullcontext())
+
 
 
 class _FakeCelery:
