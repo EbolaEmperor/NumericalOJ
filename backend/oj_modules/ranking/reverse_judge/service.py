@@ -49,11 +49,10 @@ def build_reverse_judge_snapshot(submission_id):
     steps = []
     for row in list_reverse_judge_steps(submission_id):
         result = _parse_result(row.get('result_json'))
-        state = dict((result or {}).get('_agent') or {})
         if result is not None:
             result = {key: value for key, value in result.items() if key != '_agent'}
-        agent_session_id = state.get('session_id')
-        if row.get('step_key') in {STEP_AGENT, STEP_QUALITY_GATE} and not agent_session_id:
+        agent_session_id = None
+        if row.get('step_key') in {STEP_AGENT, STEP_QUALITY_GATE}:
             kind = 'reverse_answer' if row['step_key'] == STEP_AGENT else 'reverse_quality'
             session = get_judge_session_for_attempt(submission_id, submission.get('judge_attempt_id'), kind)
             agent_session_id = (session or {}).get('session_id')

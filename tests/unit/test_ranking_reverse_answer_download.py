@@ -1154,17 +1154,44 @@ def test_reverse_snapshot_links_generic_session_without_internal_dispatch_state(
     monkeypatch.setattr(reverse_service, 'list_reverse_judge_steps', lambda sid: [{
         'step_key': reverse_db.STEP_QUALITY_GATE, 'status': 'passed',
         'result_json': {'passed': True, 'summary': '通过', '_agent': {
-            'session_id': 'generic-quality', 'task_id': 'private-task',
+            'session_id': 'private-unrelated-quality', 'task_id': 'private-task',
             'slot_key': 'private-pool-slot', 'endpoint_id': 11}},
         'trace_dir': '/private/legacy/trace',
     }, {
         'step_key': reverse_db.STEP_AGENT, 'status': 'running',
-        'result_json': {'_agent': {'session_id': 'generic-answer'}},
+        'result_json': {'_agent': {'session_id': 'private-unrelated-answer'}},
     }])
+    lookups = []
+    def get_session(submission_id, attempt_id, kind):
+        lookups.append((submission_id, attempt_id, kind))
+        return {'session_id': {
+            'reverse_quality': 'generic-quality',
+            'reverse_answer': 'generic-answer',
+        }[kind]}
+    monkeypatch.setattr(reverse_service, 'get_judge_session_for_attempt', get_session)
     snapshot = reverse_service.build_reverse_judge_snapshot(7)
     quality, answer = snapshot['steps']
     assert quality['agent_session_id'] == 'generic-quality'
     assert answer['agent_session_id'] == 'generic-answer'
     assert quality['result'] == {'passed': True, 'summary': '通过'}
+    assert lookups == [(7, 'attempt', 'reverse_quality'), (7, 'attempt', 'reverse_answer')]
     assert 'private' not in repr(snapshot)
     assert all('trace_messages' not in step and 'trace_files' not in step for step in snapshot['steps'])
+
+
+@pytest.mark.parametrize('step_key', [reverse_db.STEP_QUALITY_GATE, reverse_db.STEP_AGENT])
+def test_reverse_snapshot_has_no_link_when_dispatch_failed_before_session_creation(monkeypatch, step_key):
+    monkeypatch.setattr(reverse_service, 'get_ranking_submission', lambda sid: {
+        'id': sid, 'judge_attempt_id': 'attempt', 'status': 'Error'})
+    monkeypatch.setattr(reverse_service, 'list_reverse_judge_steps', lambda sid: [{
+        'step_key': step_key, 'status': 'error',
+        'error_message': '通用 Agent 派发失败：材料导入失败',
+        'result_json': {'_agent': {'session_id': 'not-created', 'task_id': 'not-created-run'}},
+    }])
+
+    snapshot = reverse_service.build_reverse_judge_snapshot(7)
+
+    assert snapshot['steps'][0]['agent_session_id'] is None
+    assert snapshot['steps'][0]['status'] == 'error'
+    assert snapshot['steps'][0]['error_message'] == '通用 Agent 派发失败：材料导入失败'
+    assert 'not-created' not in repr(snapshot)
