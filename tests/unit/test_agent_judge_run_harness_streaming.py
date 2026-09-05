@@ -2248,7 +2248,7 @@ def test_claude_result_usage_fallback_has_unique_id_per_result(monkeypatch):
     ]
 
 
-def test_trace_emitter_bounds_large_tool_before_canonical_journal(
+def test_trace_emitter_preserves_large_tool_through_canonical_journal(
         monkeypatch, tmp_path):
     from backend.oj_modules.tasks.agent import harness_runtime as runtime
 
@@ -2280,13 +2280,11 @@ def test_trace_emitter_bounds_large_tool_before_canonical_journal(
     )
 
     tool_text = emitted[0]["event"]["text"]
-    assert len(tool_text) == module._TRACE_DETAIL_MAX_CHARS
-    assert tool_text.endswith("…")
+    assert tool_text == "x" * (32 * 1024)
 
-    # 缩小 journal 容量复现“首条工具结果先占满，最终回复/usage 丢失”。
-    # 经过 adapter 的 UI 上限裁剪后，三条记录都应保留下来。
+    # 工具正文和随后最终回复、用量都应完整进入有界 journal。
     journal = tmp_path / "canonical.jsonl"
-    observer = runtime._CanonicalJournalObserver(journal, max_bytes=8192)
+    observer = runtime._CanonicalJournalObserver(journal, max_bytes=128 * 1024)
     for item in emitted:
         observer.feed(
             (json.dumps(item, ensure_ascii=False) + "\n").encode("utf-8")
@@ -2299,6 +2297,7 @@ def test_trace_emitter_bounds_large_tool_before_canonical_journal(
     assert [item["type"] for item in records] == [
         "numoj_trace", "numoj_trace", "numoj_usage",
     ]
+    assert records[0]["event"]["text"] == tool_text
     assert records[1]["event"]["text"] == "最终完成"
 
 def test_adapter_terminal_statuses_and_pi_settles_only_at_safe_boundary():

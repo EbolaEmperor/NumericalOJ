@@ -389,3 +389,15 @@ def test_token_usage_round_trips_through_v2_sync_state(monkeypatch):
     assert restored["request_count"] == 2
     assert restored["input_total_tokens"] == 150
     assert restored["incremental"] is True
+
+
+def test_tool_result_is_preserved_during_ingestion_and_work_block_read(monkeypatch):
+    text = "工具结果开始\n" + "x" * (32 * 1024) + "\n工具结果末尾"
+    normalized = trace_store._normalize_canonical_record(
+        "task-full-result", _record(1, "tool_result", text),
+    )
+    assert normalized["text"] == text
+    connection = _Connection(lambda _sql, _params: {"all": [normalized]})
+    monkeypatch.setattr(trace_store, "get_db_connection", lambda: connection)
+    block = trace_store.get_agent_trace_work_block("task-full-result", "work-0123456789abcdef")
+    assert block["messages"][0]["text"] == text

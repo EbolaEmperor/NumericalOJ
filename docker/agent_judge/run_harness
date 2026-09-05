@@ -100,7 +100,8 @@ def _emit_trace(
         _TRACE_ASSISTANT_MAX_CHARS
         if kind == "assistant" else _TRACE_DETAIL_MAX_CHARS
     )
-    if len(text) > text_limit:
+    # 工具结果由共享工作详情展示，不能在落盘前裁成 UI 摘要。
+    if kind != "tool_result" and len(text) > text_limit:
         text = text[:max(0, text_limit - 1)] + "…"
     event = {
         "kind": kind,

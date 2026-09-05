@@ -129,7 +129,8 @@ def _normalize_canonical_record(task_id, record):
     if not source_id or len(source_id) > 512:
         return None
     text_limit = _MAX_PUBLIC_TEXT if kind == "assistant" else _MAX_INTERNAL_TEXT
-    text = _truncate_text(event.get("text"), text_limit)
+    text = (str(event.get("text") or "") if kind in {"tool_result", "tool-result"}
+            else _truncate_text(event.get("text"), text_limit))
     if not text:
         return None
     metadata = _truncate_text(event.get("meta"), 255)
