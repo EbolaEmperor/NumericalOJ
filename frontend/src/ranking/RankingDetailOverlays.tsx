@@ -5,7 +5,6 @@ import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {ReactModal} from '../components/ReactModal'
-import {AgentExecutionTrace} from '../pages/agent/AgentExecutionTrace'
 import {useRuleTopology} from './ruleTopology'
 import {useMatchHtmlFrame} from './useMatchHtmlFrame'
 
@@ -229,9 +228,8 @@ type AppealState = ApiEnvelope & {has_appeal?: boolean; status?: string; status_
 export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; canAppeal: boolean; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const streamUrl = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/judge-events` : null
-  const {snapshot, streamError, revision} = useRankingEventSnapshot(streamUrl, open, onTerminal)
-  const [view, setView] = useState<'topo' | 'detail' | 'trace'>('trace')
-  const [manualView, setManualView] = useState(false)
+  const {snapshot, streamError} = useRankingEventSnapshot(streamUrl, open, onTerminal)
+  const [view, setView] = useState<'topo' | 'detail'>('detail')
   const [rulePopup, setRulePopup] = useState<JsonRecord | null>(null)
   const [appealOpen, setAppealOpen] = useState(false)
   const [appeal, setAppeal] = useState<AppealState | null>(null)
@@ -241,16 +239,12 @@ export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onT
   const status = String(snapshot?.status || target?.status || '')
   const rules = Array.isArray(snapshot?.rules) ? snapshot.rules as JsonRecord[] : []
   useEffect(() => {
-    setManualView(false); setRulePopup(null); setAppealOpen(false); setAppeal(null); setAppealReason(''); setAppealError('')
-    setView(['Judging', 'Queued', 'Pending'].includes(String(target?.status || '')) ? 'trace' : 'detail')
+    setView('detail'); setRulePopup(null); setAppealOpen(false); setAppeal(null); setAppealReason(''); setAppealError('')
     if (!target || !canAppeal) return
     let active = true
     void apiFetch<AppealState>(`/api/ranking/competitions/${competitionId}/submissions/${target.id}/appeal`).then((payload) => {if (active) setAppeal(payload)}).catch(() => undefined)
     return () => {active = false}
   }, [canAppeal, competitionId, target])
-  useEffect(() => {
-    if (!manualView && snapshot) setView(['Judging', 'Queued', 'Pending'].includes(status) ? 'trace' : 'detail')
-  }, [manualView, snapshot, status])
   const submitAppeal = async () => {
     const reason = appealReason.trim()
     if (!reason) {setAppealError('请填写申诉意见'); return}
@@ -270,13 +264,16 @@ export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onT
     <div className="modal-content"><div className="modal-header"><div><h5 className="modal-title" id="judgeDetailModalLabel"><i className="fas fa-list-check me-2 text-warning" />评分详情</h5><div className="text-muted small">#{target?.id}{target?.createdAt ? ` · ${target.createdAt}` : ''}</div></div><div className="d-flex align-items-center gap-2">{canAppeal ? <button type="button" className="btn btn-sm btn-outline-warning" onClick={() => setAppealOpen((value) => !value)}><i className="fas fa-gavel me-1" />{appeal?.has_appeal ? '申诉状态' : '我要申诉'}</button> : null}<button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div></div><div className="modal-body">
       <div className="d-flex justify-content-between align-items-center mb-2"><span className="small text-muted d-inline-flex align-items-center gap-1">{status === 'Judging' && !streamError ? <MathCurveLoader iconOnly size="xs" ariaLabel="评测进行中" /> : null}<span>{statusText}</span></span><span className="small text-muted">得分 <span className="fw-semibold">{total}</span> / <span>{max}</span></span></div>
       <div className="progress mb-3" style={{height: 6, background: '#f0f0f2', borderRadius: 999}}><div className="progress-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={max ? Math.round(total / max * 100) : 0} style={{height: 6, borderRadius: 999, background: '#1f7a4d', width: `${max ? Math.max(0, Math.min(100, total / max * 100)) : 0}%`}} /></div>
-      <div className="d-flex justify-content-between align-items-center mb-2"><div className="aj-result-tabs" role="tablist" aria-label="评分结果视图">{([['topo', '拓扑'], ['detail', '详情'], ['trace', '执行轨迹']] as const).map(([value, label]) => <button type="button" className={`aj-result-tab${view === value ? ' active' : ''}`} role="tab" aria-selected={view === value} onClick={() => {setView(value); setManualView(true)}} key={value}>{label}</button>)}</div><span className="small text-muted">{view === 'topo' ? '点击拓扑节点查看规则原文与评分证据' : ''}</span></div>
+      <div className="d-flex justify-content-between align-items-center mb-2"><div className="aj-result-tabs" role="tablist" aria-label="评分结果视图">{([['topo', '拓扑'], ['detail', '详情']] as const).map(([value, label]) => <button type="button" className={`aj-result-tab${view === value ? ' active' : ''}`} role="tab" aria-selected={view === value} onClick={() => setView(value)} key={value}>{label}</button>)}</div><span className="small text-muted">{snapshot?.agent_session_id ? <JudgeSessionLink sessionId={snapshot.agent_session_id} /> : view === 'topo' ? '点击拓扑节点查看规则原文与评分证据' : ''}</span></div>
       {canAppeal && appealOpen ? <div className="border rounded p-3 mb-3">{appeal?.has_appeal ? <div><div className="mb-2"><span className="small text-muted me-1"><i className="fas fa-gavel me-1" />申诉状态：</span><span className="fw-semibold">{appeal.status_label || appeal.status}</span></div><div className="small text-muted mb-1">你的申诉意见：</div><div className="aj-evi small p-2 mb-2">{appeal.reason}</div>{appeal.admin_response ? <><div className="small text-muted mb-1">管理员回复：</div><div className="aj-evi small p-2 mb-0">{appeal.admin_response}</div></> : null}</div> : <div><label className="form-label small text-muted mb-1" htmlFor="appealReason"><i className="fas fa-comment-dots me-2" />申诉意见</label><textarea id="appealReason" className="form-control mb-2" rows={3} maxLength={4000} placeholder="例如：规则 X 我已实现并能正常运行，截图见 …" value={appealReason} onChange={(event) => setAppealReason(event.target.value)} autoFocus /><div className="d-flex align-items-center gap-2"><button type="button" className="btn btn-sm btn-warning" disabled={appealPending} onClick={() => void submitAppeal()}><i className="fas fa-paper-plane me-1" />提交申诉</button><span className={`small${appealError ? ' text-danger' : ''}`}>{appealPending ? '提交中…' : appealError}</span></div></div>}</div> : null}
       <div className="aj-result-view" hidden={view !== 'topo'}>{snapshot ? <JudgeTopology rules={rules} onRule={setRulePopup} /> : <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载评分拓扑…" /></div>}</div>
       <div className="aj-result-view" hidden={view !== 'detail'}>{snapshot ? <JudgeRules rules={rules} /> : <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载评分细则…" /></div>}</div>
-      <div className="aj-result-view" hidden={view !== 'trace'}><AgentExecutionTrace trace={snapshot?.execution_trace as JsonRecord | undefined} traceScope={`judge:${competitionId}:${target?.id || ''}:${String((snapshot?.execution_trace as JsonRecord | undefined)?.trace_id || '')}`} live={['Judging', 'Queued', 'Pending'].includes(status)} liveRevision={revision} emptyLabel="暂无执行记录" /></div>
     </div></div>
   </ReactModal>{rulePopup ? <div className="aj-result-pop" role="presentation" onMouseDown={(event) => {if (event.target === event.currentTarget) setRulePopup(null)}}><div className="aj-result-pop-box" role="dialog" aria-modal="true" aria-labelledby="judgeRuleReadTitle"><div className="aj-result-pop-head"><div><div className="aj-result-pop-title" id="judgeRuleReadTitle">规则 {numberValue(rulePopup.rule_id)} · {String(rulePopup.rule_name || String(rulePopup.rule_text || '').slice(0, 14))}</div><div className="aj-result-pop-meta"><span className="badge me-2" style={{color: (resultBadge[String(rulePopup.effective)] || resultBadge.pending).color, background: (resultBadge[String(rulePopup.effective)] || resultBadge.pending).background, borderRadius: 999}}>{(resultBadge[String(rulePopup.effective)] || resultBadge.pending).label}</span><span>得分 {numberValue(rulePopup.score)} / {numberValue(rulePopup.value)}</span></div></div><button type="button" className="aj-result-pop-close" aria-label="关闭" onClick={() => setRulePopup(null)}><i className="fas fa-times" /></button></div><div className="aj-result-pop-body"><div className="aj-result-pop-section"><div className="aj-result-pop-label">规则原文</div>{htmlOrText(rulePopup, 'rule_html', 'rule_text')}</div><div className="aj-result-pop-section"><div className="aj-result-pop-label">评分证据</div><div className="aj-evi small p-2">{rulePopup.evidence_html || rulePopup.evidence ? htmlOrText(rulePopup, 'evidence_html', 'evidence') : <span className="text-muted">暂无评分证据。</span>}</div></div></div></div></div> : null}</>
+}
+
+function JudgeSessionLink({sessionId}: {sessionId: unknown}) {
+  return sessionId ? <a className="btn btn-sm btn-outline-secondary" href={`/agents/${encodeURIComponent(String(sessionId))}`} target="_blank" rel="noopener noreferrer"><i className="fas fa-arrow-up-right-from-square me-1" />查看 Agent 会话</a> : null
 }
 
 const reverseStepLabels: Record<string, string> = {solution_check: '标准答案', quality_gate: '质量门禁', agent_answer: 'AI 作答', ai_judge: '评测 AI 答案'}
@@ -321,7 +318,7 @@ function QualityGate({step}: {step: JsonRecord}) {
 export function ReverseJudgeDetailModal({competitionId, target, onClose, onTerminal}: {competitionId: number | string; target: RankingSubmissionOverlayTarget | null; onClose: () => void; onTerminal?: () => void}) {
   const open = Boolean(target)
   const url = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/reverse-judge-events` : null
-  const {snapshot, streamError, revision} = useRankingEventSnapshot(url, open, onTerminal, true)
+  const {snapshot, streamError} = useRankingEventSnapshot(url, open, onTerminal, true)
   const steps = useMemo(() => Array.isArray(snapshot?.steps) ? snapshot.steps as JsonRecord[] : [], [snapshot?.steps])
   const [activeStep, setActiveStep] = useState('solution_check')
   const [manual, setManual] = useState(false)
@@ -335,7 +332,8 @@ export function ReverseJudgeDetailModal({competitionId, target, onClose, onTermi
   return <ReactModal open={open} onClose={onClose} id="reverseJudgeDetailModal" labelledBy="reverseJudgeDetailModalLabel" className="ranking-v2-detail" dialogClassName="modal-xl modal-dialog-scrollable">
     <div className="modal-content rj-modal"><div className="modal-header"><div><h5 className="modal-title" id="reverseJudgeDetailModalLabel"><i className="fas fa-list-check me-2 text-warning" />反向评测详情</h5><div className="text-muted small">#{target?.id}{target?.createdAt ? ` · ${target.createdAt}` : ''}</div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="rj-summary"><span>{streamError || `${statusLabels[status] || status || '正在连接评测进度…'}${snapshot?.error_message ? ` · ${snapshot.error_message}` : ''}`}</span><span className="rj-summary-actions">{agentStep?.answer_available && answerDownloadUrl ? <a className="rj-answer-download" href={answerDownloadUrl} download><i className="fas fa-download" />下载 AI 解答</a> : null}<span className="rj-total">学生得分 <strong>{snapshot?.total_score == null ? '—' : numberValue(snapshot.total_score)}</strong><small>/100</small></span></span></div>
       <div className="rj-tabs mb-3" role="tablist" aria-label="反向评测步骤">{steps.filter(stepVisible).map((item) => {const key = String(item.step_key); const itemStatus = String(item.status || 'pending'); return <button type="button" className={`rj-tab${activeStep === key ? ' active' : ''}`} disabled={itemStatus === 'pending'} onClick={() => {setActiveStep(key); setManual(true)}} key={key}>{reverseStepLabels[key] || key} <span className={`rj-dot${itemStatus === 'running' ? ' running' : itemStatus === 'passed' ? ' ok' : ['failed', 'error'].includes(itemStatus) ? ' err' : itemStatus === 'skipped' ? ' skip' : ''}`} /></button>})}</div>
-      {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : String(step.status) === 'running' && activeStep !== 'agent_answer' ? <div className="rj-step-running"><MathCurveLoader iconOnly size="lg" ariaLabel={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <AgentExecutionTrace trace={step} traceScope={`reverse:${competitionId}:${target?.id || ''}:${String(step.started_at || '')}`} live={['running', 'pending'].includes(String(step.status))} liveRevision={revision} emptyLabel="暂无执行记录" /> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
+      {step?.agent_session_id ? <div className="mb-3"><JudgeSessionLink sessionId={step.agent_session_id} /></div> : null}
+      {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : String(step.status) === 'running' ? <div className="rj-step-running"><MathCurveLoader size="lg" label={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <div className="rj-empty">{step.answer_available ? 'AI 作答已完成，可下载 AI 解答。' : ['failed', 'error'].includes(String(step.status)) ? 'AI 作答未完成。' : '暂无 AI 作答结果。'}</div> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
     </div></div>
   </ReactModal>
 }

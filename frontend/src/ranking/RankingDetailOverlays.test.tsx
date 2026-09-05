@@ -85,58 +85,53 @@ describe('打榜赛评测详情实时连接', () => {
     expect(screen.getByText(/实时连接超时，请关闭弹窗后重试/)).toBeTruthy()
   })
 
-  it('Agent Judge 弹窗用共享工作块按需渲染并随 SSE 刷新', async () => {
+  it('Agent Judge 弹窗保留规则并用通用会话链接替换轨迹', () => {
     vi.stubGlobal('EventSource', MockEventSource)
     withQueryClient(<JudgeDetailModal competitionId={7} target={{id: 44, status: 'Judging'}} canAppeal={false} onClose={vi.fn()} />)
-    const source = MockEventSource.instances[0]
-
-    act(() => source.emit('progress', {
-      status: 'Judging', total_score: 0, max_score: 10, rules: [],
-      execution_trace: {
-        trace_id: 'attempt-a', status: 'running',
-        trace_files: [{path: 'private.jsonl', content: 'raw'}],
-        trace_messages: [{kind: 'thinking', text: '检查提交目录'}],
-      },
+    act(() => MockEventSource.instances[0].emit('progress', {
+      status: 'Judging', total_score: 0, max_score: 10,
+      agent_session_id: 'judge-session', rules: [],
+      execution_trace: {trace_messages: [{kind: 'thinking', text: '检查提交目录'}]},
     }))
 
-    expect(screen.getByText('工作中…1 thinking')).toBeTruthy()
+    expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/judge-session')
+    expect(screen.getByRole('tab', {name: '详情'}).getAttribute('aria-selected')).toBe('true')
+    expect(screen.queryByRole('tab', {name: '执行轨迹'})).toBeNull()
     expect(screen.queryByText('检查提交目录')).toBeNull()
-    expect(screen.queryByText(/private\.jsonl/)).toBeNull()
-    fireEvent.click(screen.getByText('工作中…1 thinking'))
-    await waitFor(() => expect(screen.getByText('检查提交目录')).toBeTruthy())
-
-    act(() => source.emit('progress', {
-      status: 'Judging', total_score: 0, max_score: 10, rules: [],
-      execution_trace: {
-        trace_id: 'attempt-a', status: 'running',
-        trace_messages: [
-          {kind: 'thinking', text: '检查提交目录'},
-          {kind: 'tool', text: '运行测试命令'},
-        ],
-      },
-    }))
-    await waitFor(() => expect(screen.getByText('运行测试命令')).toBeTruthy())
   })
 
-  it('反向评测 AI 作答步骤使用同一个分段轨迹组件', async () => {
+  it('普通提交者收到无会话字段的评分快照时不会出现会话链接', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    withQueryClient(<JudgeDetailModal competitionId={7} target={{id: 44}} canAppeal={false} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('done', {status: 'Accepted', rules: []}))
+    expect(screen.queryByRole('link', {name: '查看 Agent 会话'})).toBeNull()
+  })
+
+  it('反向评测仅在对应步骤携带可见会话 ID 时展示链接', async () => {
     vi.stubGlobal('EventSource', MockEventSource)
     withQueryClient(<ReverseJudgeDetailModal competitionId={7} target={{id: 45, status: 'Judging'}} onClose={vi.fn()} />)
-    const source = MockEventSource.instances[0]
-
-    act(() => source.emit('progress', {
+    act(() => MockEventSource.instances[0].emit('progress', {
       status: 'Judging', total_score: 0,
-      steps: [{
-        step_key: 'agent_answer', step_order: 3, title: 'AI 作答', status: 'running',
-        trace_files: [{path: 'answer.jsonl', content: 'raw'}],
-        trace_messages: [{kind: 'tool', text: '读取题目附件'}],
-      }],
+      steps: [
+        {step_key: 'quality_gate', step_order: 2, status: 'passed', result: {passed: true}},
+        {step_key: 'agent_answer', step_order: 3, status: 'running', agent_session_id: 'answer-session', trace_messages: [{kind: 'tool', text: '读取题目附件'}]},
+      ],
     }))
 
-    await waitFor(() => expect(screen.getByText('工作中…1 tool call')).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/answer-session'))
     expect(screen.queryByText('读取题目附件')).toBeNull()
-    expect(screen.queryByText(/answer\.jsonl/)).toBeNull()
-    fireEvent.click(screen.getByText('工作中…1 tool call'))
-    await waitFor(() => expect(screen.getByText('读取题目附件')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', {name: '质量门禁'}))
+    expect(screen.queryByRole('link', {name: '查看 Agent 会话'})).toBeNull()
+    expect(screen.getByText('通过')).toBeTruthy()
+  })
+
+  it('管理员可在质量门禁运行期间进入审核会话', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 45}} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('progress', {
+      status: 'Judging', steps: [{step_key: 'quality_gate', status: 'running', agent_session_id: 'quality-session'}],
+    }))
+    expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/quality-session')
   })
 })
 
