@@ -18,13 +18,9 @@ from typing import Any
 import pytest
 
 from backend.oj_modules.ranking.reverse_judge import traces as reverse_db
-from backend.oj_modules.tasks.ranking import reverse_judge as reverse_tasks
-from tests.e2e.live_ai import (
-    DEEPSEEK_MODEL,
-    DEEPSEEK_OPENAI_BASE_URL,
-    ROOT,
-    read_deepseek_api_key,
-)
+from backend.oj_modules.tasks.agent.harness_runtime import normalize_native_session_id
+from backend.oj_modules.ranking.reverse_judge.trace_sync import sync_pi_agent_sessions
+from tests.e2e.live_ai import ROOT
 
 
 _IMAGE_ENV = "NUMOJ_PI_AGENT_JUDGE_IMAGE"
@@ -447,14 +443,6 @@ def _message_contents(entries: list[dict[str, Any]], role: str) -> list[Any]:
     ]
 
 
-def _session_entries(trace_dir: Path) -> list[dict[str, Any]]:
-    session_path = reverse_db._latest_pi_jsonl(str(trace_dir))
-    assert session_path
-    return [
-        json.loads(line)
-        for line in Path(session_path).read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 def test_pi_lite_image_openai_endpoint_uses_standard_roles(
@@ -668,7 +656,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         session_id = state["session_id"]
         assert state["harness"] == "pi"
         assert state["phase"] == "reverse_solve"
-        assert reverse_tasks._normalize_pi_session_id(session_id) == session_id
+        assert normalize_native_session_id(session_id, "pi") == session_id
         first_stdout_events = [
             json.loads(line)
             for line in first.stdout.splitlines()
@@ -702,10 +690,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         assert second_stdout_events[0]["type"] == "session"
         assert second_stdout_events[0]["id"] == session_id
 
-        assert reverse_tasks._pi_session_exists_in_container(
-            container_name, session_id,
-        )
-        assert reverse_tasks._sync_pi_agent_sessions(
+        assert sync_pi_agent_sessions(
             container_name, str(trace_dir),
         )
         session_path = reverse_db._latest_pi_jsonl(str(trace_dir))
@@ -715,7 +700,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
             for path in (
                 trace_dir / ".pi" / "agent" / "sessions"
             ).rglob("*.jsonl")
-            if path.name != reverse_tasks._PI_COMBINED_TRACE_NAME
+            if path.name != "reverse_solve_combined.jsonl"
         ]
         assert len(native_paths) == 1
         assert session_id in native_paths[0].name
@@ -769,266 +754,3 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
-
-
-def test_pi_reverse_agent_length_auto_finalizes_same_native_session(
-        docker_shared_tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """真实 _run_agent 必须把 rc=0 + length 恢复成可评测交付物。"""
-    if shutil.which("docker") is None:
-        pytest.skip("Docker CLI 不可用")
-    image = os.environ[_IMAGE_ENV]
-    try:
-        _run(["docker", "image", "inspect", image], timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        pytest.skip(f"本地不存在 Agent Judge 镜像 {image}")
-
-    _PiLengthFinalizeHandler.requests = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _PiLengthFinalizeHandler)
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-
-    tmp_path = docker_shared_tmp_path
-    package = tmp_path / "package"
-    template_dir = package / "template"
-    problem_dir = package / "problem"
-    template_dir.mkdir(parents=True)
-    problem_dir.mkdir()
-    answer_path = template_dir / "answer.txt"
-    answer_path.write_text(_TEMPLATE_SENTINEL + "\n", encoding="utf-8")
-    for state_name in (".aj_session_state.json", ".aj_session_state.jsonl"):
-        state_path = template_dir / state_name
-        state_path.touch()
-    (problem_dir / "problem.md").write_text(
-        "把 answer.txt 改为题目要求的最终答案，不得只保留模板。\n",
-        encoding="utf-8",
-    )
-
-    submission_root = tmp_path / "submission"
-    monkeypatch.setattr(reverse_tasks, "JUDGE_IMAGE", image)
-    monkeypatch.setattr(
-        reverse_tasks, "submission_dir", lambda _sid: str(submission_root),
-    )
-    monkeypatch.setattr(
-        reverse_tasks,
-        "update_reverse_judge_step_for_attempt",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(reverse_tasks, "_publish_snapshot", lambda *_args: None)
-    # apt 索引刷新与本回归无关；其余容器、挂载目录 UID:GID 映射、代理、
-    # Pi CLI、session 同步和自动 finalize 都走生产 _run_agent 的真实实现。
-    monkeypatch.setattr(
-        reverse_tasks, "_exec_container_apt_setup", lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(reverse_tasks, "REVERSE_DEFAULT_EFFORT", "high")
-    monkeypatch.setattr(reverse_tasks, "REVERSE_TRACE_SYNC_INTERVAL", 0.1)
-
-    endpoint = {
-        "id": 5619,
-        "harness": reverse_tasks.HARNESS_PI,
-        "base_url": f"http://127.0.0.1:{server.server_address[1]}/v1",
-        "api_key": _API_KEY,
-        "model": _FAKE_MODEL,
-        "concurrency_limit": 1,
-    }
-    attempt_id = f"pi-length-{uuid.uuid4().hex}"
-    try:
-        result = reverse_tasks._run_agent(
-            5619,
-            attempt_id,
-            str(package),
-            endpoint,
-            timeout_s=90,
-            finalize_timeout_s=60,
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        server_thread.join(timeout=5)
-
-    assert result["ok"] is True, json.dumps(
-        {"result": result, "requests": _PiLengthFinalizeHandler.requests},
-        ensure_ascii=False,
-        indent=2,
-    )
-    assert result["error"] == ""
-    assert answer_path.read_text(encoding="utf-8") == _FINALIZED_ANSWER + "\n"
-
-    journal_path = template_dir / ".aj_session_state.jsonl"
-    journal = [
-        json.loads(line)
-        for line in journal_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    # 每个阶段先写 running 恢复点，再在 CLI 退出后追加带 returncode 的终态；
-    # 外部停止发生在两者之间时也能恢复同一个原生 session。
-    assert [entry["phase"] for entry in journal] == [
-        "reverse_solve",
-        "reverse_solve",
-        "reverse_finalize",
-        "reverse_finalize",
-    ]
-    assert [entry.get("running") for entry in journal] == [
-        True,
-        None,
-        True,
-        None,
-    ]
-    completed = [
-        entry for entry in journal
-        if entry.get("returncode") is not None
-    ]
-    session_id = completed[0]["session_id"]
-    assert reverse_tasks._normalize_pi_session_id(session_id) == session_id
-    assert completed[0]["returncode"] == 0
-    assert completed[0]["resume_session_id"] == ""
-    assert completed[1]["session_id"] == session_id
-    assert completed[1]["resume_session_id"] == session_id
-    assert completed[1]["returncode"] == 0
-
-    trace_dir = Path(result["trace_dir"])
-    entries = _session_entries(trace_dir)
-    headers = [entry for entry in entries if entry.get("type") == "session"]
-    assert len(headers) == 1
-    assert headers[0]["id"] == session_id
-    assistant_stop_reasons = [
-        str(entry["message"].get("stopReason") or "").lower()
-        for entry in entries
-        if (
-            entry.get("type") == "message"
-            and isinstance(entry.get("message"), dict)
-            and entry["message"].get("role") == "assistant"
-        )
-    ]
-    assert assistant_stop_reasons[0] == "length"
-    assert "tooluse" in assistant_stop_reasons
-    assert assistant_stop_reasons[-1] == "stop"
-    assert any(
-        _FINALIZED_ANSWER in json.dumps(content, ensure_ascii=False)
-        for content in _message_contents(entries, "toolResult")
-    )
-
-    projected = reverse_db._collect_trace_messages(str(trace_dir))
-    assert any(message["kind"] == "tool" for message in projected)
-    assert any(
-        message["kind"] == "tool_result"
-        and _FINALIZED_ANSWER in message["text"]
-        for message in projected
-    )
-    assert _API_KEY not in json.dumps(projected, ensure_ascii=False)
-
-    requests = _PiLengthFinalizeHandler.requests
-    assert len(requests) == 3
-    assert all(request["max_tokens"] == 384000 for request in requests)
-    assert requests[0].get("thinking") in (None, {"type": "enabled"})
-    assert requests[1].get("thinking") in (None, {"type": "disabled"})
-    assert requests[2].get("thinking") in (None, {"type": "disabled"})
-    assert requests[0]["reasoning_effort"] == "high"
-    assert all(
-        "reasoning_effort" not in request
-        for request in requests[1:]
-    )
-    # Pi 不会把 stopReason=length 的未完成 assistant 重新送入上下文，但会保留
-    # 原始题目请求并追加 finalize 指令；工作区和原生 session 仍沿用同一份。
-    assert sum(
-        message.get("role") == "user"
-        for message in requests[1]["messages"]
-    ) >= 2
-    assert any(
-        message.get("role") == "tool"
-        and _FINALIZED_ANSWER in str(message.get("content"))
-        for message in requests[2]["messages"]
-    )
-
-
-@pytest.mark.live_ai
-def test_pi_reverse_agent_completes_with_real_deepseek_v4_flash(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """使用本地授权 Key 验证真实 DeepSeek、Pi、Docker 和轨迹投影全链路。"""
-    if shutil.which("docker") is None:
-        pytest.skip("Docker CLI 不可用")
-    image = os.environ[_IMAGE_ENV]
-    try:
-        _run(["docker", "image", "inspect", image], timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        pytest.skip(f"本地不存在 Agent Judge 镜像 {image}")
-
-    api_key = read_deepseek_api_key()
-    # Key 只保存在此测试的局部变量中；阻止 Flask/Celery、Docker 和 Agent 子进程
-    # 从环境继承真实凭证。_run_agent 只把它交给宿主的一次性转发代理。
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
-    monkeypatch.setenv("API_KEY", "")
-
-    expected_answer = f"NUMOJ_PI_LIVE_OK_{uuid.uuid4().hex}"
-    template_sentinel = "PI_LIVE_TEMPLATE_MUST_BE_REPLACED"
-    package = tmp_path / "live-package"
-    template_dir = package / "template"
-    problem_dir = package / "problem"
-    template_dir.mkdir(parents=True)
-    problem_dir.mkdir()
-    answer_path = template_dir / "answer.txt"
-    answer_path.write_text(template_sentinel + "\n", encoding="utf-8")
-    for state_name in (".aj_session_state.json", ".aj_session_state.jsonl"):
-        state_path = template_dir / state_name
-        state_path.touch()
-    (problem_dir / "problem.md").write_text(
-        "请使用工具把 /workspace/answer.txt 完全覆盖为下面这一行（末尾保留换行），"
-        "然后再次读取文件确认内容；不要只在回复中复述，也不要创建说明文档：\n\n"
-        f"{expected_answer}\n",
-        encoding="utf-8",
-    )
-
-    submission_root = tmp_path / "live-submission"
-    monkeypatch.setattr(reverse_tasks, "JUDGE_IMAGE", image)
-    monkeypatch.setattr(
-        reverse_tasks, "submission_dir", lambda _sid: str(submission_root),
-    )
-    monkeypatch.setattr(
-        reverse_tasks,
-        "update_reverse_judge_step_for_attempt",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(reverse_tasks, "_publish_snapshot", lambda *_args: None)
-    monkeypatch.setattr(
-        reverse_tasks, "_exec_container_apt_setup", lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(reverse_tasks, "REVERSE_TRACE_SYNC_INTERVAL", 0.25)
-
-    endpoint = {
-        "id": 5619,
-        "harness": reverse_tasks.HARNESS_PI,
-        "base_url": DEEPSEEK_OPENAI_BASE_URL,
-        "api_key": api_key,
-        "model": DEEPSEEK_MODEL,
-        "concurrency_limit": 1,
-    }
-    result = reverse_tasks._run_agent(
-        5619,
-        f"pi-live-{uuid.uuid4().hex}",
-        str(package),
-        endpoint,
-        timeout_s=300,
-        finalize_timeout_s=120,
-    )
-
-    assert result["ok"] is True, result["error"]
-    assert answer_path.read_text(encoding="utf-8") == expected_answer + "\n"
-    trace_dir = Path(result["trace_dir"])
-    entries = _session_entries(trace_dir)
-    session_id = next(
-        entry["id"] for entry in entries if entry.get("type") == "session"
-    )
-    terminal = reverse_tasks._latest_pi_terminal_state(
-        str(trace_dir), session_id,
-    )
-    assert terminal["stop_reason"] == "stop"
-    projected = reverse_db._collect_trace_messages(str(trace_dir))
-    assert any(message["kind"] == "tool" for message in projected)
-    assert any(message["kind"] == "tool_result" for message in projected)
-    assert template_sentinel not in answer_path.read_text(encoding="utf-8")
-
-    secret = api_key.encode("utf-8")
-    leaked_paths = []
-    for trace_path in trace_dir.rglob("*"):
-        if trace_path.is_file() and secret in trace_path.read_bytes():
-            leaked_paths.append(str(trace_path.relative_to(trace_dir)))
-    assert not leaked_paths, f"真实 API Key 出现在轨迹文件中：{leaked_paths}"

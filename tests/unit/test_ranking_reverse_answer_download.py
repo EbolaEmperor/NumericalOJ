@@ -32,324 +32,6 @@ def _patch_submission_root(monkeypatch, tmp_path):
     return root
 
 
-def test_reverse_endpoint_proxy_rewrites_credentials_and_pins_upstream():
-    temporary_token = "attempt-only-token"
-    real_key = "sk-real-worker-only-key"
-    incoming = {
-        "Content-Type": "application/json",
-        "x-api-key": temporary_token,
-        "Host": "attacker.example",
-        "Connection": "keep-alive",
-    }
-
-    assert reverse_tasks._reverse_proxy_token_valid(incoming, temporary_token) is True
-    assert reverse_tasks._reverse_proxy_token_valid(incoming, real_key) is False
-    forwarded = reverse_tasks._reverse_proxy_upstream_headers(
-        incoming, real_key, reverse_tasks.HARNESS_CLAUDE_CODE,
-    )
-    assert forwarded == {
-        "Content-Type": "application/json",
-        "x-api-key": real_key,
-    }
-    assert temporary_token not in repr(forwarded)
-
-    upstream = urlsplit("https://real-endpoint.example/compatible?tenant=oj")
-    assert reverse_tasks._reverse_proxy_target_url(
-        upstream, "POST", "http://attacker.example/v1/messages?stream=1",
-    ) == (
-        "https://real-endpoint.example/compatible/v1/messages"
-        "?tenant=oj&stream=1"
-    )
-    assert reverse_tasks._reverse_proxy_target_url(
-        upstream, "POST", "/v1/account",
-    ) == ""
-
-    bearer_incoming = {
-        "Authorization": f"Bearer {temporary_token}",
-        "Accept": "text/event-stream",
-    }
-    assert reverse_tasks._reverse_proxy_token_valid(
-        bearer_incoming, temporary_token,
-    ) is True
-    assert reverse_tasks._reverse_proxy_upstream_headers(
-        bearer_incoming, real_key, reverse_tasks.HARNESS_PI,
-    ) == {
-        "Accept": "text/event-stream",
-        "Authorization": f"Bearer {real_key}",
-    }
-    assert reverse_tasks._reverse_proxy_upstream_headers(
-        bearer_incoming,
-        real_key,
-        reverse_tasks.HARNESS_PI,
-        protocol="anthropic",
-    ) == {
-        "Accept": "text/event-stream",
-        "x-api-key": real_key,
-    }
-    assert reverse_tasks._reverse_proxy_target_url(
-        upstream, "POST", "/v1/responses",
-    ) == "https://real-endpoint.example/compatible/v1/responses?tenant=oj"
-    assert reverse_tasks._ReverseProxyNoRedirect().redirect_request(
-        None, None, 302, "Found", {}, "https://attacker.example/steal",
-    ) is None
-
-
-def test_reverse_proxy_server_bounds_connections_and_sets_read_timeout(monkeypatch):
-    class FakeSocket:
-        def __init__(self):
-            self.timeout = None
-            self.sent = b""
-            self.shutdown_calls = []
-            self.closed = False
-
-        def settimeout(self, value):
-            self.timeout = value
-
-        def sendall(self, value):
-            self.sent += value
-
-        def shutdown(self, how):
-            self.shutdown_calls.append(how)
-
-        def close(self):
-            self.closed = True
-
-    class FakeResponse:
-        def __init__(self):
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    server = object.__new__(reverse_tasks._BoundedReverseProxyServer)
-    server._connection_slots = threading.BoundedSemaphore(1)
-    server._active_lock = threading.Lock()
-    server._active_clients = set()
-    server._active_upstreams = set()
-    server._closing = False
-    closed = []
-    started = []
-    server.shutdown_request = lambda request: closed.append(request)
-    monkeypatch.setattr(
-        http.server.ThreadingHTTPServer,
-        "process_request",
-        lambda _server, request, _address: started.append(request),
-    )
-    first = FakeSocket()
-    second = FakeSocket()
-
-    server.process_request(first, ("127.0.0.1", 1))
-    server.process_request(second, ("127.0.0.1", 2))
-
-    assert started == [first]
-    assert first.timeout == reverse_tasks.REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS
-    assert second.timeout == reverse_tasks.REVERSE_ENDPOINT_PROXY_CLIENT_TIMEOUT_SECONDS
-    assert b"503 Service Unavailable" in second.sent
-    assert closed == [second]
-    upstream = FakeResponse()
-    assert server.register_upstream(upstream) is True
-    server.close_active_requests()
-    assert first.shutdown_calls == [reverse_tasks.socket.SHUT_RDWR]
-    assert first.closed is True
-    assert upstream.closed is True
-    assert server._closing is True
-    server._connection_slots.release()
-
-
-def test_reverse_proxy_stream_reader_prefers_non_buffering_read1():
-    class ChunkedResponse:
-        def __init__(self):
-            self.calls = []
-
-        def read1(self, size):
-            self.calls.append(("read1", size))
-            return b"data: first\n\n"
-
-        def read(self, _size):
-            raise AssertionError("chunked/SSE 不得优先调用聚合式 read")
-
-    response = ChunkedResponse()
-    assert reverse_tasks._reverse_proxy_read_chunk(response, 1024) == b"data: first\n\n"
-    assert response.calls == [("read1", 1024)]
-
-
-def test_reverse_endpoint_proxy_uses_real_key_only_upstream_and_expires():
-    seen = []
-    redirect_seen = []
-    redirect_target = None
-    stream_first_sent = threading.Event()
-    stream_release = threading.Event()
-    stream_client_received = threading.Event()
-    stream_lines = []
-
-    class RedirectTargetHandler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, _format, *_args):
-            return
-
-        def do_POST(self):
-            redirect_seen.append(dict(self.headers))
-            self.send_response(204)
-            self.end_headers()
-
-    class UpstreamHandler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, _format, *_args):
-            return
-
-        def do_POST(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            seen.append({
-                "path": self.path,
-                "api_key": self.headers.get("x-api-key"),
-                "authorization": self.headers.get("Authorization"),
-                "body": body,
-            })
-            if body == b'stream':
-                payload = b'data: first\n\n'
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Transfer-Encoding", "chunked")
-                self.end_headers()
-                self.wfile.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n")
-                self.wfile.flush()
-                stream_first_sent.set()
-                stream_release.wait(timeout=3)
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
-                return
-            if body == b'redirect':
-                self.send_response(302)
-                self.send_header(
-                    "Location",
-                    f"http://127.0.0.1:{redirect_target.server_address[1]}/steal",
-                )
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            payload = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-    try:
-        upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
-    except PermissionError:
-        pytest.skip("当前测试沙箱禁止绑定 loopback 端口")
-    try:
-        redirect_target = http.server.ThreadingHTTPServer(
-            ("127.0.0.1", 0), RedirectTargetHandler,
-        )
-    except PermissionError:
-        upstream.server_close()
-        pytest.skip("当前测试沙箱禁止绑定 loopback 端口")
-    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    redirect_thread = threading.Thread(
-        target=redirect_target.serve_forever, daemon=True,
-    )
-    upstream_thread.start()
-    redirect_thread.start()
-    real_key = "sk-real-worker-only-key"
-    proxy = reverse_tasks._start_reverse_endpoint_proxy(
-        f"http://127.0.0.1:{upstream.server_address[1]}/compatible",
-        real_key,
-        reverse_tasks.HARNESS_CLAUDE_CODE,
-    )
-    proxy_url = proxy.local_base_url + "/v1/messages"
-    try:
-        request = urllib.request.Request(
-            proxy_url,
-            data=b'{"messages":[]}',
-            headers={"Content-Type": "application/json", "x-api-key": proxy.token},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=3) as response:
-            assert response.read() == b'{"ok":true}'
-
-        assert seen == [{
-            "path": "/compatible/v1/messages",
-            "api_key": real_key,
-            "authorization": None,
-            "body": b'{"messages":[]}',
-        }]
-        assert proxy.token != real_key
-
-        wrong = urllib.request.Request(
-            proxy_url,
-            data=b'{}',
-            headers={"x-api-key": real_key},
-            method="POST",
-        )
-        with pytest.raises(urllib.error.HTTPError) as wrong_error:
-            urllib.request.urlopen(wrong, timeout=3)
-        assert wrong_error.value.code == 403
-
-        disallowed = urllib.request.Request(
-            proxy.local_base_url + "/v1/account",
-            data=b'{}',
-            headers={"x-api-key": proxy.token},
-            method="POST",
-        )
-        with pytest.raises(urllib.error.HTTPError) as path_error:
-            urllib.request.urlopen(disallowed, timeout=3)
-        assert path_error.value.code == 404
-        assert len(seen) == 1
-
-        def read_stream():
-            stream_request = urllib.request.Request(
-                proxy_url,
-                data=b'stream',
-                headers={"x-api-key": proxy.token},
-                method="POST",
-            )
-            with urllib.request.urlopen(stream_request, timeout=3) as response:
-                stream_lines.append(response.readline())
-                stream_client_received.set()
-
-        stream_thread = threading.Thread(target=read_stream, daemon=True)
-        stream_thread.start()
-        assert stream_first_sent.wait(timeout=1)
-        try:
-            assert stream_client_received.wait(timeout=1)
-            assert stream_lines == [b'data: first\n']
-        finally:
-            stream_release.set()
-            stream_thread.join(timeout=3)
-
-        redirect_request = urllib.request.Request(
-            proxy_url,
-            data=b'redirect',
-            headers={"x-api-key": proxy.token},
-            method="POST",
-        )
-        no_redirect_client = urllib.request.build_opener(
-            reverse_tasks._ReverseProxyNoRedirect(),
-        )
-        with pytest.raises(urllib.error.HTTPError) as redirect_error:
-            no_redirect_client.open(redirect_request, timeout=3)
-        assert redirect_error.value.code == 302
-        assert seen[-1]["api_key"] == real_key
-        assert redirect_seen == []
-    finally:
-        stream_release.set()
-        proxy.close()
-        upstream.shutdown()
-        upstream.server_close()
-        upstream_thread.join(timeout=3)
-        redirect_target.shutdown()
-        redirect_target.server_close()
-        redirect_thread.join(timeout=3)
-
-    with pytest.raises(urllib.error.URLError):
-        urllib.request.urlopen(
-            urllib.request.Request(
-                proxy_url, data=b'{}',
-                headers={"x-api-key": proxy.token}, method="POST",
-            ),
-            timeout=1,
-        )
-
-
 def test_reverse_agent_answer_archive_path_is_attempt_scoped_and_cannot_escape(
         monkeypatch, tmp_path):
     root = _patch_submission_root(monkeypatch, tmp_path)
@@ -900,7 +582,6 @@ def test_build_reverse_judge_snapshot_exposes_current_archive_only_on_agent_step
             or archive_path
         ),
     )
-    monkeypatch.setattr(reverse_service, "collect_agent_trace_messages", lambda _path: [])
 
     snapshot = reverse_service.build_reverse_judge_snapshot(9)
 
@@ -1460,3 +1141,30 @@ def test_all_submissions_api_admin_projection_flag_tracks_mode(
     assert data["total"] == 3
     assert data["page"] == 2
     assert data["submissions"] == [{"id": 9}]
+
+
+@pytest.fixture(autouse=True)
+def _no_judge_sessions_by_default(monkeypatch):
+    monkeypatch.setattr(reverse_service, 'get_judge_session_for_attempt', lambda *args: None)
+
+
+def test_reverse_snapshot_links_generic_session_without_internal_dispatch_state(monkeypatch):
+    monkeypatch.setattr(reverse_service, 'get_ranking_submission', lambda sid: {
+        'id': sid, 'judge_attempt_id': 'attempt', 'status': 'Judging'})
+    monkeypatch.setattr(reverse_service, 'list_reverse_judge_steps', lambda sid: [{
+        'step_key': reverse_db.STEP_QUALITY_GATE, 'status': 'passed',
+        'result_json': {'passed': True, 'summary': '通过', '_agent': {
+            'session_id': 'generic-quality', 'task_id': 'private-task',
+            'slot_key': 'private-pool-slot', 'endpoint_id': 11}},
+        'trace_dir': '/private/legacy/trace',
+    }, {
+        'step_key': reverse_db.STEP_AGENT, 'status': 'running',
+        'result_json': {'_agent': {'session_id': 'generic-answer'}},
+    }])
+    snapshot = reverse_service.build_reverse_judge_snapshot(7)
+    quality, answer = snapshot['steps']
+    assert quality['agent_session_id'] == 'generic-quality'
+    assert answer['agent_session_id'] == 'generic-answer'
+    assert quality['result'] == {'passed': True, 'summary': '通过'}
+    assert 'private' not in repr(snapshot)
+    assert all('trace_messages' not in step and 'trace_files' not in step for step in snapshot['steps'])

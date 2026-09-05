@@ -7,14 +7,11 @@ import time
 
 from backend.oj_modules.ranking.db import get_ranking_submission
 from backend.oj_modules.ranking.reverse_judge.db import (
-    STEP_AGENT,
+    STEP_AGENT, STEP_QUALITY_GATE,
     available_reverse_agent_answer_archive_path,
     list_reverse_judge_steps,
 )
-from backend.oj_modules.ranking.reverse_judge.traces import (
-    collect_agent_token_usage,
-    collect_agent_trace_messages,
-)
+from backend.oj_modules.agents.sessions import get_judge_session_for_attempt
 
 
 def _format_now():
@@ -52,6 +49,14 @@ def build_reverse_judge_snapshot(submission_id):
     steps = []
     for row in list_reverse_judge_steps(submission_id):
         result = _parse_result(row.get('result_json'))
+        state = dict((result or {}).get('_agent') or {})
+        if result is not None:
+            result = {key: value for key, value in result.items() if key != '_agent'}
+        agent_session_id = state.get('session_id')
+        if row.get('step_key') in {STEP_AGENT, STEP_QUALITY_GATE} and not agent_session_id:
+            kind = 'reverse_answer' if row['step_key'] == STEP_AGENT else 'reverse_quality'
+            session = get_judge_session_for_attempt(submission_id, submission.get('judge_attempt_id'), kind)
+            agent_session_id = (session or {}).get('session_id')
         item = {
             'step_key': row.get('step_key'),
             'step_order': int(row.get('step_order') or 0),
@@ -63,10 +68,7 @@ def build_reverse_judge_snapshot(submission_id):
             'stdout': _short_text(row.get('stdout')),
             'stderr': _short_text(row.get('stderr')),
             'error_message': row.get('error_message') or '',
-            # 原始 JSONL 只留在服务端，不作为评测详情的一部分提供。
-            'trace_files': [],
-            'trace_messages': collect_agent_trace_messages(row.get('trace_dir')),
-            'token_usage': collect_agent_token_usage(row.get('trace_dir')),
+            'agent_session_id': agent_session_id,
             'started_at': str(row.get('started_at') or ''),
             'finished_at': str(row.get('finished_at') or ''),
         }

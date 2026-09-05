@@ -222,21 +222,6 @@ def test_resolve_selected_endpoint_returns_only_selected_enabled_endpoint(monkey
     }
 
 
-def test_agent_container_base_url_maps_localhost_for_docker():
-    assert (
-        rj._agent_container_base_url("http://127.0.0.1:18080")
-        == "http://host.docker.internal:18080"
-    )
-    assert (
-        rj._agent_container_base_url("http://localhost:18080/v1")
-        == "http://host.docker.internal:18080/v1"
-    )
-    assert (
-        rj._agent_container_base_url("https://dashscope.aliyuncs.com/compatible-mode")
-        == "https://dashscope.aliyuncs.com/compatible-mode"
-    )
-
-
 def test_collect_trace_files_prefers_single_claude_project_jsonl(tmp_path):
     trace = tmp_path / "trace"
     project = trace / ".claude" / "projects" / "-workspace"
@@ -875,79 +860,11 @@ def _successful_run(result):
     }
 
 
-def test_fake_reverse_judge_helpers_distinguish_solution_and_config(monkeypatch):
-    solution = rj._fake_judge_result("  solution/  ")
-    template = rj._fake_judge_result("template/")
-    empty = rj._fake_judge_result(None)
-
-    assert solution["score"] == solution["max_score"] == 100.0
-    assert solution["test_points"]["fake"]["score"] == 100.0
-    assert template["score"] == empty["score"] == 25.0
-    assert template["test_points"]["fake"]["description"] == "本地 e2e 假反向评测"
-
-    monkeypatch.delenv("NUMOJ_FAKE_REVERSE_JUDGE", raising=False)
-    monkeypatch.setattr(rj._cfg, "NUMOJ_FAKE_REVERSE_JUDGE", True, raising=False)
-    assert rj._fake_reverse_judge_enabled() is True
-    monkeypatch.setenv("NUMOJ_FAKE_REVERSE_JUDGE", "  OFF  ")
-    assert rj._fake_reverse_judge_enabled() is False
-    monkeypatch.setenv("NUMOJ_FAKE_REVERSE_JUDGE", " YeS ")
-    assert rj._fake_reverse_judge_enabled() is True
-
-    monkeypatch.delenv("NUMOJ_FAKE_REVERSE_QUALITY_GATE", raising=False)
-    monkeypatch.setattr(rj._cfg, "NUMOJ_FAKE_REVERSE_QUALITY_GATE", False, raising=False)
-    assert rj._fake_reverse_quality_gate_enabled() is False
-    monkeypatch.setenv("NUMOJ_FAKE_REVERSE_QUALITY_GATE", " ON ")
-    assert rj._fake_reverse_quality_gate_enabled() is True
-
-
 def test_safe_attempt_component_blocks_path_traversal_and_limits_length():
     assert rj._safe_attempt_component("../../attempt_A-1") == "attempt_A-1"
     assert rj._safe_attempt_component(None) == "legacy"
     assert rj._safe_attempt_component("../..") == "legacy"
     assert rj._safe_attempt_component("a" * 100) == "a" * 80
-
-
-def test_attempt_workspace_cleanup_is_scoped_and_trace_retention_is_bounded(
-        monkeypatch, tmp_path):
-    workspace_root = tmp_path / "workspaces"
-    current_workspace = workspace_root / "9" / "attempt-new"
-    sibling_workspace = workspace_root / "9" / "attempt-old"
-    current_workspace.mkdir(parents=True)
-    sibling_workspace.mkdir(parents=True)
-    monkeypatch.setattr(rj, "REVERSE_WORKSPACE_ROOT", str(workspace_root))
-
-    rj._cleanup_attempt_workspace(9, "attempt-new")
-
-    assert not current_workspace.exists()
-    assert sibling_workspace.exists()
-
-    submission_root = tmp_path / "submission"
-    trace_parent = submission_root / "reverse_agent_trace"
-    for name in ("keep", "newer", "old-a", "old-b"):
-        path = trace_parent / name
-        path.mkdir(parents=True)
-        (path / "trace.jsonl").write_text("trace", encoding="utf-8")
-    now = 1_000_000.0
-    for name, mtime in (
-        ("keep", now),
-        ("newer", now - 10),
-        ("old-a", now - 1000),
-        ("old-b", now - 2000),
-    ):
-        __import__("os").utime(trace_parent / name, (mtime, mtime))
-    monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(submission_root))
-    monkeypatch.setattr(rj.time, "time", lambda: now)
-    monkeypatch.setattr(rj, "REVERSE_TRACE_MAX_ATTEMPTS", 2)
-    monkeypatch.setattr(rj, "REVERSE_TRACE_MIN_DELETE_AGE_SECONDS", 100)
-    monkeypatch.setattr(rj, "REVERSE_TRACE_RETENTION_SECONDS", 5000)
-
-    removed = rj._prune_reverse_trace_attempts(9, keep_attempt="keep")
-
-    assert removed == 2
-    assert (trace_parent / "keep").exists()
-    assert (trace_parent / "newer").exists()
-    assert not (trace_parent / "old-a").exists()
-    assert not (trace_parent / "old-b").exists()
 
 
 def test_parse_quality_gate_result_accepts_strict_json_and_fenced_json():
@@ -1164,113 +1081,6 @@ def test_quality_gate_prompt_and_step_status_normalize_values(monkeypatch):
     assert rj._step_status(3, rj.STEP_QUALITY_GATE) == "pending"
 
 
-def test_start_isolated_quality_gate_proxy_builds_internal_agent_network(monkeypatch):
-    calls = []
-    endpoint_proxy = SimpleNamespace(
-        token="attempt-only-token",
-        local_base_url="http://127.0.0.1:43123/compatible/v1/",
-        close=lambda: calls.append(("endpoint-close",)),
-    )
-    monkeypatch.setattr(
-        rj, "_start_reverse_endpoint_proxy", lambda *_args, **_kwargs: endpoint_proxy,
-    )
-    monkeypatch.setattr(rj, "_wait_quality_gate_container_ready", lambda _name: True)
-
-    def docker_run(args, **_kwargs):
-        calls.append(tuple(args))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", docker_run)
-
-    proxy = rj._start_isolated_quality_gate_proxy(
-        "https://model.example/v1", "real-key", rj.HARNESS_CLAUDE_CODE,
-        "gate-internal-net", "gate-trusted-relay",
-    )
-
-    assert proxy.network_name == "gate-internal-net"
-    assert proxy.relay_name == "gate-trusted-relay"
-    assert proxy.container_base_url == (
-        f"http://quality-model-proxy:{rj.REVERSE_QUALITY_GATE_RELAY_PORT}"
-        "/compatible/v1"
-    )
-    network_create = next(
-        call for call in calls if call[:3] == ("docker", "network", "create")
-    )
-    assert "--internal" in network_create
-    assert network_create.count("--opt") == 2
-    assert "com.docker.network.bridge.gateway_mode_ipv4=isolated" in network_create
-    assert "com.docker.network.bridge.gateway_mode_ipv6=isolated" in network_create
-    assert network_create[-1] == "gate-internal-net"
-    relay_run = next(call for call in calls if call[:3] == ("docker", "run", "-d"))
-    assert relay_run[relay_run.index("--network") + 1] == "bridge"
-    assert "host.docker.internal:host-gateway" in relay_run
-    assert rj.JUDGE_IMAGE in relay_run
-    assert (
-        "docker", "network", "connect", "--alias", "quality-model-proxy",
-        "gate-internal-net", "gate-trusted-relay",
-    ) in calls
-    assert ("endpoint-close",) not in calls
-
-
-def test_start_isolated_quality_gate_proxy_failure_cleans_all_layers(monkeypatch):
-    events = []
-    endpoint_proxy = SimpleNamespace(
-        token="attempt-only-token",
-        local_base_url="http://127.0.0.1:43123/v1",
-        close=lambda: events.append("endpoint-close"),
-    )
-    monkeypatch.setattr(
-        rj, "_start_reverse_endpoint_proxy", lambda *_args, **_kwargs: endpoint_proxy,
-    )
-    monkeypatch.setattr(rj, "_wait_quality_gate_container_ready", lambda _name: False)
-
-    def docker_run(args, **_kwargs):
-        if args[:4] == ["docker", "rm", "-f", "gate-relay"]:
-            events.append("relay-rm")
-        elif args[:4] == ["docker", "network", "rm", "gate-net"]:
-            events.append("network-rm")
-        else:
-            events.append(tuple(args))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", docker_run)
-
-    with pytest.raises(RuntimeError, match="可信网络中继"):
-        rj._start_isolated_quality_gate_proxy(
-            "https://model.example/v1", "real-key", rj.HARNESS_CLAUDE_CODE,
-            "gate-net", "gate-relay",
-        )
-
-    endpoint_index = events.index("endpoint-close")
-    assert events[endpoint_index + 1:endpoint_index + 3] == ["relay-rm", "network-rm"]
-
-
-def test_isolated_quality_gate_proxy_close_order_and_idempotence(monkeypatch):
-    events = []
-    endpoint_proxy = SimpleNamespace(
-        token="temporary-token",
-        close=lambda: events.append("endpoint-close"),
-    )
-    proxy = rj._ReverseIsolatedEndpointProxy(
-        endpoint_proxy, "gate-net", "gate-relay",
-        "http://quality-model-proxy:18080/v1",
-    )
-
-    def docker_run(args, **_kwargs):
-        if args[:4] == ["docker", "rm", "-f", "gate-relay"]:
-            events.append("relay-rm")
-        elif args[:4] == ["docker", "network", "rm", "gate-net"]:
-            events.append("network-rm")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", docker_run)
-
-    proxy.close()
-    proxy.close()
-
-    assert events == ["endpoint-close", "relay-rm", "network-rm"]
-
-
 def _make_quality_gate_audit(monkeypatch, tmp_path, submission_id=31, attempt_id="a1"):
     workspace_root = tmp_path / "workspaces"
     monkeypatch.setattr(rj, "REVERSE_WORKSPACE_ROOT", str(workspace_root))
@@ -1279,686 +1089,6 @@ def _make_quality_gate_audit(monkeypatch, tmp_path, submission_id=31, attempt_id
         (audit / directory).mkdir(parents=True)
     (audit / "judge.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     return audit
-
-
-def test_validate_quality_gate_source_accepts_complete_large_binary_package(
-        monkeypatch, tmp_path):
-    audit = _make_quality_gate_audit(monkeypatch, tmp_path)
-    (audit / "problem" / "readme.md").write_text("题面", encoding="utf-8")
-    (audit / "solution" / "large.bin").write_bytes(
-        b"\x00\xff" + b"x" * (70 * 1024)
-    )
-    (audit / "template" / "main.py").write_text("pass\n", encoding="utf-8")
-
-    validated, file_count = rj._validate_quality_gate_source(str(audit), 31, "a1")
-
-    assert validated == str(audit.resolve())
-    assert file_count == 4
-
-
-def test_validate_quality_gate_source_rejects_wrong_attempt_and_symlink(
-        monkeypatch, tmp_path):
-    audit = _make_quality_gate_audit(monkeypatch, tmp_path)
-    outside = tmp_path / "outside.txt"
-    outside.write_text("private", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="路径非法"):
-        rj._validate_quality_gate_source(str(audit), 31, "other-attempt")
-
-    (audit / "problem" / "outside-link").symlink_to(outside)
-    with pytest.raises(RuntimeError, match="符号链接"):
-        rj._validate_quality_gate_source(str(audit), 31, "a1")
-
-
-def test_quality_gate_container_uses_agent_judge_image_and_strict_isolation():
-    proxy = SimpleNamespace(
-        network_name="gate-internal-net",
-        container_base_url="http://quality-model-proxy:18080/v1",
-        token="attempt-only-proxy-token",
-        real_api_key="REAL_ENDPOINT_API_KEY",
-    )
-
-    args = rj._quality_gate_container_args(
-        "gate-container", "/srv/audit", proxy,
-        rj.HARNESS_PI, "generic-model",
-        endpoint={
-            "context_window_tokens": 131_072,
-            "max_output_tokens": 16_384,
-            "thinking_compatibility": False,
-        },
-    )
-    rendered = json.dumps(args, ensure_ascii=False)
-
-    assert args[-4] == rj.JUDGE_IMAGE
-    assert args[-3:] == ["bash", "-lc", "tail -f /dev/null"]
-    assert ["--network", "gate-internal-net"] == (
-        args[args.index("--network"):args.index("--network") + 2]
-    )
-    assert ["--user", "node"] == args[args.index("--user"):args.index("--user") + 2]
-    assert "--read-only" in args
-    assert ["--cap-drop", "ALL"] == args[args.index("--cap-drop"):args.index("--cap-drop") + 2]
-    assert "type=bind,source=/srv/audit,target=/evidence,readonly" in args
-    assert "AJ_AUDIT_READ_ONLY=1" in args
-    assert "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS=131072" in args
-    assert "AJ_ENDPOINT_MAX_OUTPUT_TOKENS=16384" in args
-    assert "AJ_ENDPOINT_THINKING_ENABLED=0" in args
-    assert "AJ_RESULT_FILE=" not in rendered
-    assert "attempt-only-proxy-token" in rendered
-    assert "REAL_ENDPOINT_API_KEY" not in rendered
-    assert "docker.sock" not in rendered
-    assert "host-gateway" not in rendered
-    assert "bridge" not in args
-
-
-def test_quality_gate_harness_result_extracts_structured_final_reply():
-    verdict = json.dumps({
-        "passed": True, "summary": "审核通过", "violations": [],
-    }, ensure_ascii=False)
-    samples = {
-        rj.HARNESS_CLAUDE_CODE: json.dumps({
-            "type": "result", "result": verdict,
-        }, ensure_ascii=False),
-        rj.HARNESS_PI: "\n".join([
-            json.dumps({
-                "type": "message_end",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": verdict}],
-                },
-            }, ensure_ascii=False),
-            json.dumps({
-                "type": "agent_end",
-                "messages": [{
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": verdict}],
-                }],
-            }, ensure_ascii=False),
-        ]),
-    }
-
-    for harness, stdout in samples.items():
-        assert rj._quality_gate_harness_result_text(stdout, harness) == verdict
-
-
-@pytest.mark.parametrize("harness,stdout,error_fragment", [
-    (rj.HARNESS_CLAUDE_CODE, "not-json", "Claude Code 输出不是合法 JSON"),
-    (rj.HARNESS_CLAUDE_CODE, '{"type":"result"}', "缺少最终结论"),
-    (
-        rj.HARNESS_PI,
-        '{"type":"message_end","message":{"role":"toolResult","content":[]}}',
-        "缺少最终结论",
-    ),
-])
-def test_quality_gate_harness_result_rejects_malformed_structured_output(
-        harness, stdout, error_fragment):
-    with pytest.raises(ValueError, match=error_fragment):
-        rj._quality_gate_harness_result_text(stdout, harness)
-
-
-@pytest.mark.parametrize("harness,stdout", [
-    (rj.HARNESS_CLAUDE_CODE, json.dumps({"result": "123456789"})),
-    (
-        rj.HARNESS_PI,
-        json.dumps({
-            "type": "turn_end",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "123456789"}],
-            },
-        }),
-    ),
-])
-def test_quality_gate_harness_result_rejects_oversized_reply(
-        monkeypatch, harness, stdout):
-    monkeypatch.setattr(rj, "REVERSE_QUALITY_GATE_RESULT_MAX_BYTES", 8)
-
-    with pytest.raises(ValueError, match="审核结论过大"):
-        rj._quality_gate_harness_result_text(stdout, harness)
-
-
-@pytest.mark.parametrize("inspect_values,expected_commands,expected", [
-    (["false"], ["stop", "inspect"], True),
-    (["true", "false"], ["stop", "inspect", "kill", "inspect"], True),
-    (["true", "true"], ["stop", "inspect", "kill", "inspect"], False),
-])
-def test_stop_quality_gate_container_confirms_shutdown_or_kills(
-        monkeypatch, inspect_values, expected_commands, expected):
-    commands = []
-    states = iter(inspect_values)
-
-    def docker_run(args, **_kwargs):
-        command = args[1]
-        commands.append(command)
-        if command == "inspect":
-            return SimpleNamespace(returncode=0, stdout=next(states), stderr="")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", docker_run)
-
-    assert rj._stop_quality_gate_container("gate-agent") is expected
-    assert commands == expected_commands
-
-
-def test_run_quality_gate_agent_fake_pass_and_reject_include_full_package_metadata(
-        monkeypatch, tmp_path):
-    audit = _make_quality_gate_audit(monkeypatch, tmp_path)
-    (audit / "solution" / "large.bin").write_bytes(b"\x00" + b"x" * (70 * 1024))
-    monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: True)
-
-    passed = rj._run_quality_gate_agent(
-        31, "a1", str(audit), _quality_endpoint(), "rule", 30,
-    )
-    (audit / "quality_gate_reject.txt").write_text("reject", encoding="utf-8")
-    rejected = rj._run_quality_gate_agent(
-        31, "a1", str(audit), _quality_endpoint(), "rule", 30,
-    )
-
-    assert passed["ok"] is True
-    assert passed["stdout"] == "fake quality gate agent"
-    assert passed["result"]["verdict"] == "pass"
-    assert passed["result"]["criteria_sha256"] == hashlib.sha256(b"rule").hexdigest()
-    assert passed["result"]["source_file_count"] == 2
-    assert passed["result"]["agentic_review"] is True
-    assert rejected["ok"] is True
-    assert rejected["result"]["verdict"] == "reject"
-    assert rejected["result"]["violations"][0]["evidence"][0]["path"] == (
-        "quality_gate_reject.txt"
-    )
-    assert rejected["result"]["source_file_count"] == 3
-
-
-def test_run_quality_gate_agent_executes_harness_parses_json_and_cleans_up(
-        monkeypatch, tmp_path):
-    audit = _make_quality_gate_audit(monkeypatch, tmp_path, 42, "attempt-1")
-    (audit / "problem" / "readme.md").write_text(
-        "private package body",
-        encoding="utf-8",
-    )
-    events = []
-    docker_calls = []
-    phase_calls = []
-    real_key = "real-endpoint-api-key"
-    endpoint_proxy = SimpleNamespace(
-        token="attempt-only-proxy-token",
-        close=lambda: events.append("endpoint-revoke"),
-    )
-    proxy = rj._ReverseIsolatedEndpointProxy(
-        endpoint_proxy, "gate-internal-net", "gate-trusted-relay",
-        "http://quality-model-proxy:18080/v1",
-    )
-    monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: False)
-    monkeypatch.setattr(
-        rj, "_start_isolated_quality_gate_proxy", lambda *_args, **_kwargs: proxy,
-    )
-    monkeypatch.setattr(rj.secrets, "token_hex", lambda _size: "nonce")
-    monkeypatch.setattr(rj, "_quality_gate_container_running", lambda _name: True)
-    monkeypatch.setattr(rj, "_quality_gate_image_supports_audit_mode", lambda _name: True)
-    monkeypatch.setattr(
-        rj, "_stop_quality_gate_container",
-        lambda _name: events.append("stop-confirmed") or True,
-    )
-
-    def docker_run(args, **_kwargs):
-        docker_calls.append(list(args))
-        if args[1] == "run":
-            events.append("agent-run")
-        elif args[:4] == ["docker", "rm", "-f", "gate-trusted-relay"]:
-            events.append("relay-rm")
-        elif args[:4] == ["docker", "network", "rm", "gate-internal-net"]:
-            events.append("network-rm")
-        elif args[1] == "rm" and args[-1].endswith("_agent"):
-            events.append("agent-rm")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    def run_phase(container_name, runtime_dir, phase, prompt, timeout_s, **_kwargs):
-        events.append("harness")
-        phase_calls.append((container_name, runtime_dir, phase, prompt, timeout_s))
-        verdict = json.dumps({
-            "passed": True,
-            "summary": f"通过，但不得泄露 {real_key}",
-            "violations": [],
-        }, ensure_ascii=False)
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps({"type": "result", "result": verdict}, ensure_ascii=False),
-            stderr="agent stderr",
-            aj_timed_out=False,
-        )
-
-    monkeypatch.setattr(rj.subprocess, "run", docker_run)
-    monkeypatch.setattr(rj, "_exec_reverse_harness_phase", run_phase)
-
-    result = rj._run_quality_gate_agent(
-        42, "attempt-1", str(audit),
-        _quality_endpoint(9, api_key=real_key), "不得隐藏私有协议", 45,
-    )
-
-    assert result["ok"] is True
-    assert result["result"]["verdict"] == "pass"
-    assert result["result"]["summary"] == "通过，但不得泄露 [redacted]"
-    assert result["result"]["source_file_count"] == 2
-    assert result["result"]["agentic_review"] is True
-    assert real_key not in result["stdout"]
-    assert "[redacted]" in result["stdout"]
-    assert result["stderr"] == "agent stderr"
-    assert phase_calls[0][0] == "rjg_42_attempt-_nonce_agent"
-    assert phase_calls[0][1].endswith("/42/attempt-1/quality_gate_agent")
-    assert phase_calls[0][2] == "quality_gate"
-    assert phase_calls[0][4] == 45
-    stop_index = events.index("stop-confirmed")
-    cleanup_agent_index = events.index("agent-rm", stop_index)
-    assert events.index("endpoint-revoke") < stop_index
-    assert stop_index < cleanup_agent_index < events.index("relay-rm")
-    assert events.index("relay-rm") < events.index("network-rm")
-    assert any(call[1] == "run" and rj.JUDGE_IMAGE in call for call in docker_calls)
-    assert real_key not in json.dumps(docker_calls, ensure_ascii=False)
-    assert real_key not in json.dumps(result, ensure_ascii=False)
-
-
-@pytest.mark.parametrize("harness,stdout,error_fragment", [
-    (rj.HARNESS_CLAUDE_CODE, "not-json", "Claude Code 输出不是合法 JSON"),
-    (
-        rj.HARNESS_PI,
-        '{"type":"message_end","message":{"role":"toolResult","content":[]}}',
-        "缺少最终结论",
-    ),
-])
-def test_run_quality_gate_agent_fails_closed_on_malformed_structured_stdout(
-        monkeypatch, tmp_path, harness, stdout, error_fragment):
-    audit = _make_quality_gate_audit(monkeypatch, tmp_path)
-    cleanup = []
-    endpoint_proxy = SimpleNamespace(
-        token="attempt-only-token",
-        close=lambda: cleanup.append("revoke"),
-    )
-    proxy = rj._ReverseIsolatedEndpointProxy(
-        endpoint_proxy, "gate-net", "gate-relay",
-        "http://quality-model-proxy:18080/v1",
-    )
-    monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: False)
-    monkeypatch.setattr(
-        rj, "_start_isolated_quality_gate_proxy", lambda *_args, **_kwargs: proxy,
-    )
-    monkeypatch.setattr(rj, "_quality_gate_container_running", lambda _name: True)
-    monkeypatch.setattr(rj, "_quality_gate_image_supports_audit_mode", lambda _name: True)
-    monkeypatch.setattr(rj, "_stop_quality_gate_container", lambda _name: True)
-    monkeypatch.setattr(
-        rj.subprocess, "run",
-        lambda args, **_kwargs: cleanup.append(args[1]) or SimpleNamespace(
-            returncode=0, stdout="", stderr="",
-        ),
-    )
-    monkeypatch.setattr(
-        rj, "_exec_reverse_harness_phase",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=stdout, stderr="", aj_timed_out=False,
-        ),
-    )
-
-    result = rj._run_quality_gate_agent(
-        31, "a1", str(audit), _quality_endpoint(harness=harness), "rule", 30,
-    )
-
-    assert result["ok"] is False
-    assert result["result"] is None
-    assert error_fragment in result["error"]
-    assert cleanup.index("revoke") < cleanup.index("network")
-    assert cleanup[-1] == "rm"
-
-
-def test_run_judge_script_and_agent_fake_paths_never_start_docker(monkeypatch, tmp_path):
-    monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: True)
-    monkeypatch.setattr(
-        rj.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("fake 模式不应启动 Docker"),
-    )
-
-    solution = rj._run_judge_script(1, str(tmp_path), "solution", 10)
-    template = rj._run_judge_script(1, str(tmp_path), "template", 10)
-    agent = rj._run_agent(1, "attempt", str(tmp_path), _quality_endpoint(), 10, 5)
-
-    assert solution["ok"] is template["ok"] is agent["ok"] is True
-    assert solution["result"]["score"] == 100.0
-    assert template["result"]["score"] == 25.0
-    assert agent["trace_dir"] is None
-
-
-def test_run_agent_sync_trace_registers_once_and_always_cleans_container(
-        monkeypatch, tmp_path):
-    package = tmp_path / "package"
-    (package / "template").mkdir(parents=True)
-    (package / "problem").mkdir()
-    sync_calls = []
-    updates = []
-    publications = []
-    docker_calls = []
-    dumps = []
-    env_calls = []
-    phase_users = []
-    proxy_closes = []
-    proxy = SimpleNamespace(
-        container_base_url="http://host.docker.internal:43123/v1",
-        token="attempt-only-token",
-        close=lambda: proxy_closes.append(True),
-    )
-
-    monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: False)
-    monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(tmp_path / "submission"))
-    monkeypatch.setattr(
-        rj, "_start_reverse_endpoint_proxy",
-        lambda base_url, api_key, harness, protocol=None: (
-            proxy if (base_url, api_key, harness, protocol) == (
-                "https://gate-3.example/v1", "top-secret", rj.HARNESS_CLAUDE_CODE,
-                None,
-            ) else pytest.fail("代理收到错误的真实端点配置")
-        ),
-    )
-    monkeypatch.setattr(
-        rj, "_agent_env_args",
-        lambda harness, base_url, api_key, model, *_args, **_kwargs:
-            env_calls.append((harness, base_url, api_key, model)) or [],
-    )
-    monkeypatch.setattr(
-        rj.subprocess, "run",
-        lambda args, **_kwargs:
-            docker_calls.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
-    monkeypatch.setattr(rj, "_exec_container_apt_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        rj, "_prepare_agent_workspace_for_node", lambda *_args: "501:20",
-    )
-    monkeypatch.setattr(
-        rj, "_sync_claude_project_jsonl",
-        lambda *_args: sync_calls.append("sync") or True,
-    )
-
-    def fake_phase(*_args, on_tick=None, **kwargs):
-        phase_users.append(kwargs.get("runtime_user"))
-        on_tick()
-        on_tick()
-        return SimpleNamespace(returncode=0, stdout="done", stderr="", aj_timed_out=False)
-
-    monkeypatch.setattr(rj, "_exec_reverse_harness_phase", fake_phase)
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda sid: publications.append(sid))
-    monkeypatch.setattr(
-        rj, "_dump_harness_trace",
-        lambda *args, **kwargs: dumps.append((args, kwargs)),
-    )
-
-    result = rj._run_agent(
-        12, "attempt-1", str(package),
-        _quality_endpoint(3, api_key="top-secret"), 30, 10,
-    )
-
-    assert result["ok"] is True
-    assert result["stdout"] == "done"
-    assert len(sync_calls) == 4
-    running_updates = [call for call in updates if call[1].get("status") == "running"]
-    assert len(running_updates) == 1
-    assert running_updates[0][1]["trace_dir"] == result["trace_dir"]
-    assert publications == [12, 12, 12, 12]
-    assert env_calls == [
-        (
-            rj.HARNESS_CLAUDE_CODE,
-            "http://host.docker.internal:43123/v1",
-            "attempt-only-token",
-            "model-3",
-        )
-    ]
-    assert proxy_closes == [True]
-    assert phase_users == ["501:20"]
-    assert "top-secret" not in json.dumps(docker_calls, ensure_ascii=False)
-    assert "top-secret" not in json.dumps(result, ensure_ascii=False)
-    assert len(dumps) == 1
-    assert dumps[0][1]["runtime_user"] == "501:20"
-    assert docker_calls[-1][:4] == ["docker", "rm", "-f", "rj_agent_12_attempt-1"]
-
-
-@pytest.mark.parametrize(("latest_message", "expected"), [
-    ({"role": "assistant", "stop_reason": "end_turn"}, "end_turn"),
-    ({"role": "assistant"}, ""),
-])
-def test_detect_claude_stop_reason_uses_latest_assistant_even_without_reason(
-        tmp_path, latest_message, expected):
-    project = tmp_path / ".claude" / "projects" / "-workspace"
-    project.mkdir(parents=True)
-    older = project / "older.jsonl"
-    latest = project / "latest.jsonl"
-    older.write_text(json.dumps({
-        "type": "assistant",
-        "message": {"role": "assistant", "stop_reason": "abort"},
-    }) + "\n", encoding="utf-8")
-    latest.write_text(
-        "not-json\n" + json.dumps({
-            "type": "assistant",
-            "message": latest_message,
-        }) + "\n",
-        encoding="utf-8",
-    )
-    __import__("os").utime(older, (1, 1))
-    __import__("os").utime(latest, (2, 2))
-
-    assert rj._detect_claude_stop_reason(str(tmp_path)) == expected
-
-
-@pytest.mark.parametrize(("retry_stop_reason", "expected_ok"), [
-    ("end_turn", True),
-    ("abort", False),
-    ("", False),
-])
-def test_run_agent_resumes_aborted_claude_session_once_and_requires_recovery(
-        monkeypatch, tmp_path, retry_stop_reason, expected_ok):
-    package = tmp_path / "package"
-    (package / "template").mkdir(parents=True)
-    (package / "problem").mkdir()
-    proxy_closes = []
-    phase_calls = []
-    stop_reasons = iter(("abort", retry_stop_reason))
-    proxy = SimpleNamespace(
-        container_base_url="http://host.docker.internal:43123/v1",
-        token="attempt-token",
-        close=lambda: proxy_closes.append(True),
-    )
-
-    monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: False)
-    monkeypatch.setattr(rj, "submission_dir", lambda _sid: str(tmp_path / "submission"))
-    monkeypatch.setattr(
-        rj, "_start_reverse_endpoint_proxy", lambda *_args, **_kwargs: proxy,
-    )
-    monkeypatch.setattr(rj, "_agent_env_args", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        rj.subprocess, "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
-    monkeypatch.setattr(rj, "_exec_container_apt_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(rj, "_prepare_agent_workspace_for_node", lambda *_args: None)
-    monkeypatch.setattr(rj, "_sync_claude_project_jsonl", lambda *_args: True)
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda *_args: None)
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt", lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        rj, "_dump_harness_trace", lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        rj, "_resolve_resume_session_id",
-        lambda *_args, **_kwargs: "session-to-resume",
-    )
-    monkeypatch.setattr(
-        rj, "_detect_claude_stop_reason", lambda *_args, **_kwargs: next(stop_reasons),
-    )
-
-    def run_phase(*args, **kwargs):
-        phase_calls.append((args, kwargs))
-        index = len(phase_calls)
-        return SimpleNamespace(
-            returncode=0,
-            stdout="initial" if index == 1 else "resumed",
-            stderr="",
-            aj_timed_out=False,
-        )
-
-    monkeypatch.setattr(rj, "_exec_reverse_harness_phase", run_phase)
-
-    result = rj._run_agent(
-        12, "attempt-1", str(package), _quality_endpoint(3), 30, 10,
-    )
-
-    assert result["ok"] is expected_ok
-    if expected_ok:
-        assert result["stdout"] == "resumed"
-        assert result["error"] == ""
-    else:
-        assert result["stdout"] == "initial\n\nresumed"
-        assert result["error"] == "Agent 思考被中止（abort）且重试未恢复"
-    assert len(phase_calls) == 2
-    assert phase_calls[0][1]["effort"] == rj.REVERSE_DEFAULT_EFFORT
-    assert "resume_session_id" not in phase_calls[0][1]
-    assert phase_calls[1][1]["resume_session_id"] == "session-to-resume"
-    assert phase_calls[1][1]["fork_session"] is False
-    assert phase_calls[1][1]["effort"] == rj.REVERSE_RETRY_EFFORT
-    assert proxy_closes == [True]
-
-
-@pytest.mark.parametrize(("value", "fallback", "expected"), [
-    (" HIGH ", "", "high"),
-    ("turbo", "max", "max"),
-    ("turbo", "also-invalid", ""),
-    (None, "xhigh", "xhigh"),
-])
-def test_normalize_claude_effort_allows_only_cli_supported_values(
-        value, fallback, expected):
-    assert rj._normalize_claude_effort(value, fallback) == expected
-
-
-def test_prepare_agent_workspace_uses_bind_mount_owner_without_chowning_workspace(
-        monkeypatch):
-    calls = []
-
-    def fake_run(args, **kwargs):
-        calls.append((list(args), kwargs))
-        if args[3:6] == ["stat", "-c", "%u:%g"]:
-            return SimpleNamespace(returncode=0, stdout="501:20\n", stderr="")
-        if args[3:6] == ["id", "-g", "node"]:
-            return SimpleNamespace(returncode=0, stdout="1000\n", stderr="")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", fake_run)
-
-    runtime_user = rj._prepare_agent_workspace_for_node("agent-container")
-
-    assert runtime_user == "501:1000"
-    assert len(calls) == 3
-    assert calls[0][0] == [
-        "docker", "exec", "agent-container", "stat", "-c", "%u:%g",
-        "/workspace",
-    ]
-    assert calls[1][0] == [
-        "docker", "exec", "agent-container", "id", "-g", "node",
-    ]
-    setup_args = calls[2][0]
-    assert setup_args[:5] == [
-        "docker", "exec", "agent-container", "bash", "-lc",
-    ]
-    assert setup_args[-3:] == ["agent-runtime-setup", "501", "1000"]
-    assert "chown -R" in setup_args[5]
-    assert "/home/node" in setup_args[5]
-    assert "/workspace" not in setup_args[5]
-    assert "/etc/passwd" in setup_args[5]
-
-
-def test_prepare_agent_workspace_keeps_node_fallback_for_root_owned_mount(
-        monkeypatch):
-    calls = []
-
-    def fake_run(args, **kwargs):
-        calls.append((list(args), kwargs))
-        stdout = "0:0\n" if args[3:6] == ["stat", "-c", "%u:%g"] else ""
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", fake_run)
-
-    runtime_user = rj._prepare_agent_workspace_for_node("agent-container")
-
-    assert runtime_user == "node"
-    assert len(calls) == 2
-    assert "chown node:node /home/node /workspace" in calls[1][0][5]
-    assert "! -name problem" in calls[1][0][5]
-
-
-@pytest.mark.parametrize("owner", ["", "not-an-owner", "-1:20", "2147483648:20"])
-def test_prepare_agent_workspace_rejects_untrusted_owner(monkeypatch, owner):
-    monkeypatch.setattr(
-        rj.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout=owner, stderr="",
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="UID:GID"):
-        rj._prepare_agent_workspace_for_node("agent-container")
-
-
-@pytest.mark.parametrize("node_gid", ["", "node", "0", "2147483648"])
-def test_prepare_agent_workspace_rejects_untrusted_container_group(
-        monkeypatch, node_gid):
-    def fake_run(args, **_kwargs):
-        stdout = "501:20\n" if args[3:6] == ["stat", "-c", "%u:%g"] else node_gid
-        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
-
-    monkeypatch.setattr(rj.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="node 用户的 GID"):
-        rj._prepare_agent_workspace_for_node("agent-container")
-
-
-def test_exec_reverse_harness_phase_passes_only_normalized_effort(monkeypatch, tmp_path):
-    commands = []
-
-    class Stdin:
-        def write(self, _value):
-            return None
-
-        def close(self):
-            return None
-
-    class Process:
-        returncode = 0
-        stdin = Stdin()
-
-        def __init__(self, args, **_kwargs):
-            commands.append(list(args))
-
-        def poll(self):
-            return self.returncode
-
-        def wait(self, timeout=None):
-            return self.returncode
-
-    monkeypatch.setattr(rj.subprocess, "Popen", Process)
-
-    valid = rj._exec_reverse_harness_phase(
-        "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
-        capture_dir=str(tmp_path), effort=" HIGH ",
-    )
-    invalid = rj._exec_reverse_harness_phase(
-        "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
-        capture_dir=str(tmp_path), effort="turbo",
-    )
-    numeric_user = rj._exec_reverse_harness_phase(
-        "agent-container", str(tmp_path), "reverse_solve", "prompt", 5,
-        capture_dir=str(tmp_path), runtime_user="501:20",
-    )
-
-    assert valid.returncode == invalid.returncode == numeric_user.returncode == 0
-    assert commands[0][3:5] == ["--user", "node"]
-    assert "AJ_EFFORT=high" in commands[0]
-    assert not any(arg.startswith("AJ_EFFORT=") for arg in commands[1])
-    assert commands[2][3:5] == ["--user", "501:20"]
 
 
 def test_retry_queued_submission_requeues_current_attempt(monkeypatch):
@@ -2018,289 +1148,6 @@ def test_retry_queued_submission_marks_only_busy_step_after_retry_exhaustion(mon
     assert final_errors == [(5, "a1", "gate busy")]
 
 
-def test_quality_gate_phase_disabled_records_skipped_without_using_pool(monkeypatch):
-    updates = []
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda _sid: None)
-    monkeypatch.setattr(
-        rj, "_quality_endpoint_payloads",
-        lambda *_args, **_kwargs: pytest.fail("禁用门禁不得访问端点池"),
-    )
-    monkeypatch.setattr(
-        rj, "_acquire_endpoint_slot",
-        lambda *_args, **_kwargs: pytest.fail("禁用门禁不得占槽"),
-    )
-
-    result = rj._run_quality_gate_phase(
-        SimpleNamespace(), object(), 8, "a1",
-        {"id": 7, "reverse_quality_gate_enabled": False}, "/audit",
-    )
-
-    assert result == {"success": True, "message": "质量门禁未启用"}
-    assert updates[0][0] == (8, "a1", rj.STEP_QUALITY_GATE)
-    assert updates[0][1]["status"] == "skipped"
-    assert updates[0][1]["result_json"]["verdict"] == "skipped"
-
-
-def test_quality_gate_phase_switches_after_failed_hello_and_releases_every_slot(monkeypatch):
-    bad = _quality_endpoint(1)
-    good = _quality_endpoint(2)
-    acquired = []
-    released = []
-    disabled = []
-    updates = []
-    gate_calls = []
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: False)
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: True)
-    monkeypatch.setattr(
-        rj, "_quality_endpoint_payloads",
-        lambda _cid, exclude_ids=None:
-            [ep for ep in (bad, good) if ep["id"] not in set(exclude_ids or ())],
-    )
-
-    def acquire(_client, endpoints, _sid, _ttl):
-        endpoint = endpoints[0]
-        acquired.append(endpoint["id"])
-        return endpoint, f"slot-{endpoint['id']}", f"token-{endpoint['id']}"
-
-    monkeypatch.setattr(rj, "_acquire_endpoint_slot", acquire)
-    monkeypatch.setattr(
-        rj, "_probe_endpoint",
-        lambda endpoint: (endpoint["id"] == 2, "ok" if endpoint["id"] == 2 else "down"),
-    )
-    monkeypatch.setattr(
-        rj, "_disable_unhealthy_endpoint",
-        lambda endpoint, reason: disabled.append((endpoint["id"], reason)),
-    )
-    monkeypatch.setattr(
-        rj, "_release_slot",
-        lambda _client, key, token: released.append((key, token)),
-    )
-    monkeypatch.setattr(
-        rj, "_run_quality_gate_agent",
-        lambda sid, attempt, root, endpoint, criteria, timeout:
-            gate_calls.append((sid, attempt, root, endpoint["id"], criteria, timeout)) or {
-            "ok": True, "error": "", "stdout": "gate stdout",
-            "stderr": "gate stderr", "trace_dir": "/trace/gate", "result": {
-                "passed": True, "verdict": "pass", "summary": f"ep-{endpoint['id']}",
-                "violations": [],
-            },
-        },
-    )
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda _sid: None)
-
-    result = rj._run_quality_gate_phase(
-        SimpleNamespace(), object(), 8, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, "/audit",
-    )
-
-    assert result == {"success": True, "message": "质量门禁通过"}
-    assert acquired == [1, 2]
-    assert disabled == [(1, "down")]
-    assert released == [("slot-1", "token-1"), ("slot-2", "token-2")]
-    assert gate_calls == [(8, "a1", "/audit", 2, "rule", rj.REVERSE_QUALITY_GATE_TIMEOUT)]
-    assert [kwargs["status"] for _args, kwargs in updates] == ["running", "passed"]
-    assert updates[-1][1]["result_json"]["summary"] == "ep-2"
-    assert updates[-1][1]["stdout"] == "gate stdout"
-    assert updates[-1][1]["stderr"] == "gate stderr"
-    assert updates[-1][1]["trace_dir"] == "/trace/gate"
-
-
-def test_quality_gate_phase_rejects_and_releases_slot(monkeypatch):
-    endpoint = _quality_endpoint(3)
-    updates = []
-    final_errors = []
-    releases = []
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(rj, "_quality_endpoint_payloads", lambda *_args, **_kwargs: [endpoint])
-    monkeypatch.setattr(
-        rj, "_acquire_endpoint_slot",
-        lambda *_args: (endpoint, "slot", "token"),
-    )
-    monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: True)
-    monkeypatch.setattr(rj, "_probe_endpoint", lambda _endpoint: (True, "ok"))
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: True)
-    monkeypatch.setattr(rj, "_run_quality_gate_agent", lambda *_args: {
-        "ok": True,
-        "error": "",
-        "stdout": "reject stdout",
-        "stderr": "reject stderr",
-        "trace_dir": "/trace/reject",
-        "result": {
-            "passed": False,
-            "verdict": "reject",
-            "summary": "隐藏私有调用",
-            "violations": [{"rule": "rule", "reason": "reason", "evidence": []}],
-        },
-    })
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-    monkeypatch.setattr(
-        rj, "_write_error_for_attempt", lambda *args: final_errors.append(args),
-    )
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda _sid: None)
-    monkeypatch.setattr(
-        rj, "_release_slot", lambda *_args: releases.append(_args[1:]),
-    )
-
-    result = rj._run_quality_gate_phase(
-        SimpleNamespace(), object(), 8, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, "/audit",
-    )
-
-    assert result == {"success": False, "message": "质量门禁未通过，请检查题目包后重试"}
-    assert [kwargs["status"] for _args, kwargs in updates] == ["running", "failed"]
-    assert updates[-1][1]["stdout"] == "reject stdout"
-    assert updates[-1][1]["stderr"] == "reject stderr"
-    assert updates[-1][1]["trace_dir"] == "/trace/reject"
-    assert final_errors == [(8, "a1", "质量门禁未通过，请检查题目包后重试")]
-    assert releases == [("slot", "token")]
-
-
-def test_quality_gate_phase_agent_error_propagates_diagnostics(monkeypatch):
-    endpoint = _quality_endpoint(6)
-    updates = []
-    final_errors = []
-    releases = []
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(rj, "_quality_endpoint_payloads", lambda *_args, **_kwargs: [endpoint])
-    monkeypatch.setattr(
-        rj, "_acquire_endpoint_slot",
-        lambda *_args: (endpoint, "slot", "token"),
-    )
-    monkeypatch.setattr(rj, "_probe_endpoint", lambda _endpoint: (True, "ok"))
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: True)
-    monkeypatch.setattr(rj, "_run_quality_gate_agent", lambda *_args: {
-        "ok": False,
-        "error": "质量门禁 Agent 结果异常",
-        "stdout": "failure stdout",
-        "stderr": "failure stderr",
-        "trace_dir": "/trace/failure",
-        "result": None,
-    })
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-    monkeypatch.setattr(
-        rj, "_write_error_for_attempt", lambda *args: final_errors.append(args),
-    )
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda _sid: None)
-    monkeypatch.setattr(
-        rj, "_release_slot", lambda *_args: releases.append(_args[1:]),
-    )
-
-    result = rj._run_quality_gate_phase(
-        SimpleNamespace(), object(), 8, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, "/audit",
-    )
-
-    assert result == {"success": False, "message": "质量门禁 Agent 结果异常"}
-    assert [kwargs["status"] for _args, kwargs in updates] == ["running", "error"]
-    assert updates[-1][1]["stdout"] == "failure stdout"
-    assert updates[-1][1]["stderr"] == "failure stderr"
-    assert updates[-1][1]["trace_dir"] == "/trace/failure"
-    assert final_errors == [(8, "a1", "质量门禁 Agent 结果异常")]
-    assert releases == [("slot", "token")]
-
-
-def test_quality_gate_phase_busy_delegates_retry_without_marking_gate(monkeypatch):
-    endpoint = _quality_endpoint(4)
-    updates = []
-    retry_calls = []
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(rj, "_quality_endpoint_payloads", lambda *_args, **_kwargs: [endpoint])
-    monkeypatch.setattr(rj, "_acquire_endpoint_slot", lambda *_args: (None, None, None))
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-
-    def retry(*args, **kwargs):
-        retry_calls.append((args, kwargs))
-        return {"success": False, "message": "queued"}
-
-    monkeypatch.setattr(rj, "_retry_queued_submission", retry)
-
-    result = rj._run_quality_gate_phase(
-        SimpleNamespace(), object(), 8, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, "/audit",
-    )
-
-    assert result == {"success": False, "message": "queued"}
-    assert updates == []
-    assert retry_calls[0][1]["timeout_step_key"] == rj.STEP_QUALITY_GATE
-
-
-@pytest.mark.parametrize("current_sequence,agent_called", [
-    ([False], False),
-    ([True, False], True),
-])
-def test_quality_gate_phase_old_attempt_never_commits_result_and_releases_slot(
-        monkeypatch, current_sequence, agent_called):
-    endpoint = _quality_endpoint(5)
-    updates = []
-    releases = []
-    runs = []
-    checks = iter(current_sequence)
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(rj, "_quality_endpoint_payloads", lambda *_args, **_kwargs: [endpoint])
-    monkeypatch.setattr(rj, "_acquire_endpoint_slot", lambda *_args: (endpoint, "slot", "token"))
-    monkeypatch.setattr(rj, "_fake_reverse_quality_gate_enabled", lambda: True)
-    monkeypatch.setattr(rj, "_probe_endpoint", lambda _endpoint: (True, "ok"))
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: next(checks))
-    monkeypatch.setattr(
-        rj, "_run_quality_gate_agent",
-        lambda *_args: runs.append(True) or {
-            "ok": True,
-            "error": "",
-            "result": {"passed": True, "summary": "pass", "violations": []},
-        },
-    )
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: updates.append((args, kwargs)),
-    )
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda _sid: None)
-    monkeypatch.setattr(rj, "_release_slot", lambda *_args: releases.append(_args[1:]))
-
-    result = rj._run_quality_gate_phase(
-        SimpleNamespace(), object(), 8, "old", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, "/audit",
-    )
-
-    assert result == {"success": True, "message": "旧评测 attempt，跳过"}
-    assert bool(runs) is agent_called
-    assert not any(kwargs.get("status") == "passed" for _args, kwargs in updates)
-    assert releases == [("slot", "token")]
-
-
 def _patch_reverse_pipeline_base(monkeypatch, tmp_path, events):
     package = tmp_path / "package"
     audit = tmp_path / "audit"
@@ -2336,299 +1183,181 @@ def _patch_reverse_pipeline_base(monkeypatch, tmp_path, events):
     return package, audit, submission
 
 
-@pytest.mark.parametrize("archive_fails", [False, True])
-def test_run_reverse_judge_orders_gate_between_solution_and_agent_and_restores_snapshot(
-        monkeypatch, tmp_path, archive_fails):
-    events = []
-    package, audit, _submission = _patch_reverse_pipeline_base(monkeypatch, tmp_path, events)
-    endpoint = _quality_endpoint(9)
-    final_results = []
-    releases = []
-    acquisitions = []
-
-    def judge(_sid, package_root, answer_dir, _timeout):
-        events.append(("judge", answer_dir))
-        if answer_dir == "solution":
-            (__import__("pathlib").Path(package_root) / "problem" / "readme.md").write_text(
-                "mutated by solution judge", encoding="utf-8",
-            )
-            return _successful_run({"max_score": 100.0, "score": 100.0, "test_points": {}})
-        return _successful_run({"max_score": 100.0, "score": 25.0, "test_points": {}})
-
-    def gate(_task, _client, _sid, _attempt, _competition, audit_root):
-        events.append(("gate",))
-        assert (__import__("pathlib").Path(audit_root) / "problem" / "readme.md").read_text() == (
-            "original"
-        )
-        assert (package / "problem" / "readme.md").read_text() == "original"
-        return {"success": True, "message": "pass"}
-
-    monkeypatch.setattr(rj, "_run_judge_script", judge)
-    monkeypatch.setattr(rj, "_run_quality_gate_phase", gate)
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: True)
-    monkeypatch.setattr(
-        rj, "_resolve_selected_endpoint",
-        lambda *_args, **_kwargs: events.append(("resolve",)) or (endpoint, ""),
-    )
-    monkeypatch.setattr(
-        rj, "_acquire_endpoint_slot",
-        lambda *args: acquisitions.append(args) or (
-            endpoint, "answer-slot", "answer-token",
-        ),
-    )
-    monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: True)
-    monkeypatch.setattr(
-        rj, "_invalidate_reverse_answer_archive",
-        lambda *_args: events.append(("invalidate",)) or False,
-    )
-    monkeypatch.setattr(
-        rj, "_run_agent",
-        lambda *_args: events.append(("agent",)) or {
-            "ok": True, "stdout": "", "stderr": "", "error": "", "trace_dir": "/trace",
-        },
-    )
-    def persist_archive(*_args, **_kwargs):
-        events.append(("archive",))
-        if archive_fails:
-            raise OSError("disk full")
-
-    monkeypatch.setattr(rj, "_persist_agent_answer_archive", persist_archive)
-    monkeypatch.setattr(
-        rj, "_release_slot",
-        lambda *_args: events.append(("release",)) or releases.append(_args[1:]),
-    )
-    monkeypatch.setattr(
-        rj, "update_submission_result_for_attempt",
-        lambda *args, **kwargs: final_results.append((args, kwargs)),
-    )
-
-    result = rj._run_reverse_judge(
-        SimpleNamespace(), object(), 20, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-            "scoring_script_timeout_seconds": 10,
-            "agent_judge_timeout_seconds": 20,
-            "reverse_judge_finalize_timeout_seconds": 5,
-        }, endpoint_id=77,
-    )
-
-    assert result == {"success": True, "score": 75.0}
-    assert [event for event in events if event[0] in {
-        "judge", "gate", "resolve", "invalidate", "agent", "release", "archive",
-    }] == [
-        ("invalidate",), ("judge", "solution"), ("gate",), ("resolve",),
-        ("agent",), ("release",), ("archive",), ("judge", "template"),
-    ]
-    assert releases == [("answer-slot", "answer-token")]
-    assert acquisitions[0][3] == 20 * 2 + 5 + 10 + rj.JUDGE_SLOT_TTL_BUFFER
-    assert final_results[0][0][:4] == (20, "a1", 75.0, "Accepted")
-    assert final_results[0][1]["grade_details"]["quality_gate"] is True
-    agent_step = next(
-        event for event in events
-        if event[:3] == ("step", rj.STEP_AGENT, "passed")
-    )
-    assert agent_step[3] == (
-        "AI 解答未归档：产物不满足下载安全要求" if archive_fails else ""
-    )
-    assert (audit / "problem" / "readme.md").read_text() == "original"
 
 
-def test_run_reverse_judge_gate_rejection_never_resolves_or_starts_answer_agent(
-        monkeypatch, tmp_path):
-    events = []
-    _patch_reverse_pipeline_base(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: True)
-    monkeypatch.setattr(
-        rj, "_run_judge_script",
-        lambda *_args: events.append(("solution",)) or _successful_run({
-            "max_score": 100.0, "score": 100.0, "test_points": {},
-        }),
-    )
-    monkeypatch.setattr(rj, "_restore_runtime_package", lambda *_args: None)
-    monkeypatch.setattr(
-        rj, "_run_quality_gate_phase",
-        lambda *_args: events.append(("gate-reject",)) or {
-            "success": False, "message": "quality rejected",
-        },
-    )
-    monkeypatch.setattr(
-        rj, "_resolve_selected_endpoint",
-        lambda *_args, **_kwargs: pytest.fail("门禁拒绝后不得解析用户作答端点"),
-    )
-    monkeypatch.setattr(
-        rj, "_run_agent", lambda *_args: pytest.fail("门禁拒绝后不得启动作答 Agent"),
-    )
+@pytest.fixture
+def unified_reverse(monkeypatch, tmp_path):
+    from types import SimpleNamespace
 
-    result = rj._run_reverse_judge(
-        SimpleNamespace(), object(), 20, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, endpoint_id=44,
-    )
+    submission = {'id': 7, 'competition_id': 3, 'judge_attempt_id': 'attempt',
+                  'username': 'alice', 'agent_endpoint_id': 11, 'status': 'Judging'}
+    competition = {'id': 3, 'reverse_quality_gate_enabled': True,
+                   'reverse_quality_gate_prompt': '题意和答案必须一致'}
+    rows = {key: {'step_key': key, 'status': 'pending'} for key in reverse_db.STEP_KEYS}
+    turns, dispatches, releases, schedules, scores = {}, [], [], [], []
+    endpoint = {'id': 11, 'harness': 'pi', 'concurrency_limit': 1,
+                'api_key': 'server-key', 'base_url': 'https://llm.example', 'model': 'test'}
+    root = tmp_path / 'attempt'
+    audit = root / 'quality_gate_source'
+    _make_package(audit)
+    (audit / 'problem' / 'README.md').write_text('公开题面')
+    (audit / 'template' / 'solve.py').write_text('pass')
+    (audit / 'solution' / 'solve.py').write_text('标准答案私密内容')
+    (audit / 'hidden.txt').write_text('私有评测附件')
 
-    assert result == {"success": False, "message": "quality rejected"}
-    stage_events = [
-        event for event in events
-        if event[0] in {"solution", "gate-reject", "resolve", "agent"}
-    ]
-    assert stage_events == [("solution",), ("gate-reject",)]
+    def update(_sid, _attempt, key, **values):
+        rows[key].update(values)
+        return 1
 
+    def submit(**kwargs):
+        dispatches.append(kwargs)
+        turns.setdefault(kwargs['session_id'], []).append(
+            {'task_id': kwargs['task_id'], 'status': 'Pending', 'conclusion': ''})
+        return {'session_id': kwargs['session_id'], 'current_task_id': kwargs['task_id']}
 
-def test_run_reverse_judge_busy_retry_keeps_passed_solution_and_does_not_rerun_it(
-        monkeypatch, tmp_path):
-    events = []
-    _patch_reverse_pipeline_base(monkeypatch, tmp_path, events)
-    monkeypatch.setattr(
-        rj, "_step_status",
-        lambda _sid, step: "passed" if step == rj.STEP_SOLUTION else "pending",
-    )
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: True)
-    monkeypatch.setattr(
-        rj, "_run_judge_script",
-        lambda *_args: pytest.fail("重排队恢复时不得重跑已通过的标准答案自检"),
-    )
-    monkeypatch.setattr(rj, "_restore_runtime_package", lambda *_args: events.append(("restore",)))
-    monkeypatch.setattr(
-        rj, "_run_quality_gate_phase",
-        lambda *_args: events.append(("gate-busy",)) or {
-            "success": False, "message": "queued",
-        },
-    )
+    def finish_submission(_sid, _attempt, score, status, **kwargs):
+        submission['status'] = status
+        scores.append(score)
+        return 1
 
-    result = rj._run_reverse_judge(
-        SimpleNamespace(), object(), 20, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, endpoint_id=44,
-    )
-
-    assert result == {"success": False, "message": "queued"}
-    assert events[-2:] == [("restore",), ("gate-busy",)]
-    assert not any(event[:2] == ("step", rj.STEP_SOLUTION) for event in events)
+    task = SimpleNamespace(app=None, apply_async=lambda **kwargs: schedules.append(kwargs))
+    monkeypatch.setattr(rj, 'get_ranking_submission', lambda _sid: submission)
+    monkeypatch.setattr(rj, 'list_reverse_judge_steps', lambda _sid: list(rows.values()))
+    monkeypatch.setattr(rj, 'update_reverse_judge_step_for_attempt', update)
+    monkeypatch.setattr(rj, 'update_submission_result_for_attempt', finish_submission)
+    monkeypatch.setattr(rj, 'set_submission_status_for_attempt', lambda *args: 1)
+    monkeypatch.setattr(rj, 'ensure_reverse_judge_steps_for_attempt', lambda *args: 1)
+    monkeypatch.setattr(rj, '_publish_snapshot', lambda _sid: None)
+    monkeypatch.setattr(rj, 'get_agent_session_turns', lambda sid: turns.get(sid, []))
+    monkeypatch.setattr(rj, 'submit_judge_turn', submit)
+    monkeypatch.setattr(rj, '_quality_endpoint_payloads', lambda *args, **kwargs: [endpoint])
+    monkeypatch.setattr(rj, '_resolve_selected_endpoint', lambda *args, **kwargs: (endpoint, ''))
+    monkeypatch.setattr(rj, '_acquire_endpoint_slot', lambda *args, **kwargs: (endpoint, 'slot', 'token'))
+    monkeypatch.setattr(rj, '_release_task_slot', lambda client, tid: releases.append(tid))
+    monkeypatch.setattr(rj, '_release_slot', lambda *args: releases.append(args[-1]))
+    monkeypatch.setattr(rj, '_probe_endpoint', lambda _endpoint: (True, ''))
+    monkeypatch.setattr(rj, '_attempt_workspace_path', lambda *args: str(root))
+    monkeypatch.setattr(rj, '_persist_agent_answer_archive', lambda *args, **kwargs: None)
+    return SimpleNamespace(submission=submission, competition=competition, rows=rows,
+                           turns=turns, dispatches=dispatches, releases=releases,
+                           schedules=schedules, scores=scores, task=task,
+                           audit=audit, root=root, endpoint=endpoint)
 
 
-@pytest.mark.parametrize("current_sequence,forbidden_event", [
-    ([False], "solution"),
-    ([True, False], "gate"),
-    ([True, True, False], "resolve"),
-    ([True, True, True, False], "agent"),
-    ([True, True, True, True, False], "ai-judge"),
-    ([True, True, True, True, True, False], "ai-judge"),
-    ([True, True, True, True, True, True, False], "final-result"),
-])
-def test_run_reverse_judge_old_attempt_stops_at_every_stage_boundary(
-        monkeypatch, tmp_path, current_sequence, forbidden_event):
-    events = []
-    _patch_reverse_pipeline_base(monkeypatch, tmp_path, events)
-    endpoint = _quality_endpoint(9)
-    checks = iter(current_sequence)
-    monkeypatch.setattr(rj, "_attempt_still_current", lambda *_args: next(checks))
-
-    def judge(_sid, _root, answer_dir, _timeout):
-        events.append("ai-judge" if answer_dir == "template" else "solution")
-        score = 25.0 if answer_dir == "template" else 100.0
-        return _successful_run({"max_score": 100.0, "score": score, "test_points": {}})
-
-    monkeypatch.setattr(rj, "_run_judge_script", judge)
-    monkeypatch.setattr(rj, "_restore_runtime_package", lambda *_args: events.append("restore"))
-    monkeypatch.setattr(
-        rj, "_run_quality_gate_phase",
-        lambda *_args: events.append("gate") or {"success": True, "message": "pass"},
-    )
-    monkeypatch.setattr(
-        rj, "_resolve_selected_endpoint",
-        lambda *_args, **_kwargs: events.append("resolve") or (endpoint, ""),
-    )
-    monkeypatch.setattr(rj, "_acquire_endpoint_slot", lambda *_args: (endpoint, "slot", "token"))
-    monkeypatch.setattr(rj, "_fake_reverse_judge_enabled", lambda: True)
-    monkeypatch.setattr(
-        rj, "_run_agent",
-        lambda *_args: events.append("agent") or {
-            "ok": True, "stdout": "", "stderr": "", "error": "", "trace_dir": None,
-        },
-    )
-    monkeypatch.setattr(rj, "_release_slot", lambda *_args: events.append("release"))
-    monkeypatch.setattr(
-        rj, "update_submission_result_for_attempt",
-        lambda *_args, **_kwargs: events.append("final-result"),
-    )
-
-    result = rj._run_reverse_judge(
-        SimpleNamespace(), object(), 20, "a1", {
-            "id": 7,
-            "reverse_quality_gate_enabled": True,
-            "reverse_quality_gate_prompt": "rule",
-        }, endpoint_id=44,
-    )
-
-    assert result == {"success": True, "message": "旧评测 attempt，跳过"}
-    assert forbidden_event not in events
-    if "agent" in events:
-        assert "release" in events
+def test_unified_workspace_inputs_separate_answer_from_private_material(unified_reverse):
+    f = unified_reverse
+    quality = rj._workspace_input_files(f.audit, rj.STEP_QUALITY_GATE)
+    answer = rj._workspace_input_files(f.audit, rj.STEP_AGENT)
+    assert {'evidence/judge.sh', 'evidence/solution/solve.py', 'evidence/hidden.txt'} <= quality.keys()
+    assert set(answer) == {'problem/README.md', 'template/solve.py', 'template/.numoj-placeholder'}
+    assert '完整工具' in rj._quality_gate_agent_prompt('标准')
+    assert '/evidence' not in rj._quality_gate_agent_prompt('标准').replace('/workspace/evidence', '')
 
 
-class _ReverseFakeCelery:
-    def task(self, **_kwargs):
-        def decorator(fn):
-            return fn
-        return decorator
+def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatch, unified_reverse):
+    f = unified_reverse
+    judge_calls = []
+
+    def judge(_sid, package_root, answer, timeout):
+        judge_calls.append(answer)
+        if answer == 'solution':
+            from pathlib import Path
+            # 自检脚本只能污染其评分副本，后续作答的输入仍来自冻结包。
+            (Path(package_root) / 'problem' / 'README.md').write_text('污染题面')
+        else:
+            from pathlib import Path
+            assert (Path(package_root) / 'template' / 'solve.py').read_text() == 'AI交付物'
+            assert (Path(package_root) / 'solution' / 'solve.py').read_text() == '标准答案私密内容'
+        return {'ok': True, 'stdout': '', 'stderr': '', 'result': rj._fake_judge_result(answer)}
+
+    def export(sid, path, destination):
+        from pathlib import Path
+        assert sid == f.dispatches[1]['session_id'] and path == 'template'
+        Path(destination).mkdir()
+        (Path(destination) / 'solve.py').write_text('AI交付物')
+
+    monkeypatch.setattr(rj, '_run_judge_script', judge)
+    monkeypatch.setattr(rj, 'export_agent_workspace_directory', export)
+    monkeypatch.setattr(rj, '_read_quality_gate_result', lambda sid: {'passed': True, 'summary': '通过', 'violations': []})
+
+    def advance():
+        return rj._run_reverse_judge(f.task, object(), 7, 'attempt', f.competition, 11)
+
+    assert advance()['pending'] is True
+    assert judge_calls == ['solution']
+    quality = f.dispatches[0]
+    assert quality['judge_kind'] == 'reverse_quality'
+    assert quality['files']['evidence/problem/README.md'].read_text() == '公开题面'
+    assert advance()['pending'] is True
+    assert len(f.dispatches) == 1 and not f.releases
+    assert all(item['queue'] == 'celery' and item['countdown'] > 0 for item in f.schedules)
+
+    f.turns[quality['session_id']][0]['status'] = 'Completed'
+    assert advance()['pending'] is True
+    answer = f.dispatches[1]
+    assert answer['judge_kind'] == 'reverse_answer'
+    assert answer['session_id'] != quality['session_id']
+    assert answer['requested_by'] == 'alice'
+    assert f.releases == [quality['task_id']]
+    assert judge_calls == ['solution']
+    f.turns[answer['session_id']][0]['status'] = 'Completed'
+    assert advance() == {'success': True, 'score': 75.0}
+    assert judge_calls == ['solution', 'template']
+    assert f.scores == [75.0]
+    assert f.releases == [quality['task_id'], answer['task_id']]
 
 
-class _ReverseTaskSelf:
-    request = SimpleNamespace(id="req-quality")
+def test_quality_gate_rejection_never_dispatches_answer(monkeypatch, unified_reverse):
+    f = unified_reverse
+    f.rows[rj.STEP_SOLUTION]['status'] = 'passed'
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_QUALITY_GATE)
+    assert result['pending']
+    sent = f.dispatches[0]
+    f.turns[sent['session_id']][0]['status'] = 'Completed'
+    monkeypatch.setattr(rj, '_read_quality_gate_result', lambda sid: {
+        'passed': False, 'summary': '私有审核标准被违反', 'violations': [{'rule': '私有规则'}]})
+    result = rj._run_reverse_judge(f.task, object(), 7, 'attempt', f.competition, 11)
+    assert result['success'] is False
+    assert len(f.dispatches) == 1
+    assert '私有' not in result['message']
+    assert f.rows[rj.STEP_QUALITY_GATE]['result_json']['summary'] == '私有审核标准被违反'
+    assert f.rows[rj.STEP_AGENT]['status'] == 'pending'
 
 
-def test_registered_reverse_task_lock_ttl_includes_quality_gate_and_forwards_only_answer_endpoint(
-        monkeypatch):
-    client = MagicMock()
-    client.set.return_value = True
-    client.get.return_value = "req-quality"
-    submission = {
-        "id": 41,
-        "competition_id": 7,
-        "judge_attempt_id": "attempt-1",
-        "status": "Queued",
-    }
-    competition = {
-        "id": 7,
-        "scoring_script_timeout_seconds": 11,
-        "agent_judge_timeout_seconds": 22,
-        "reverse_judge_finalize_timeout_seconds": 33,
-        "reverse_quality_gate_enabled": True,
-        "reverse_quality_gate_prompt": "rule",
-    }
-    run_calls = []
-    cleaned = []
-    monkeypatch.setattr(rj, "_ensure_judge_redis", lambda: client)
-    monkeypatch.setattr(rj, "get_ranking_submission", lambda _sid: dict(submission))
-    monkeypatch.setattr(rj, "get_competition", lambda _cid: dict(competition))
-    monkeypatch.setattr(rj, "set_agent_judge_task_id", lambda *_args: None)
-    monkeypatch.setattr(
-        rj, "_run_reverse_judge",
-        lambda *args, **kwargs: run_calls.append((args, kwargs)) or {"success": True},
-    )
-    monkeypatch.setattr(
-        rj, "_cleanup_attempt_workspace",
-        lambda sid, attempt: cleaned.append((sid, attempt)),
-    )
+def test_timeout_finalizes_same_generic_session_after_reacquiring_pool(unified_reverse):
+    f = unified_reverse
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    assert result['pending']
+    first = f.dispatches[0]
+    f.turns[first['session_id']][0].update(status='Failed', conclusion='Agent 执行超时')
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    assert result['pending']
+    finish = f.dispatches[1]
+    assert finish['session_id'] == first['session_id']
+    assert finish['task_id'] != first['task_id']
+    assert finish['files'] is None
+    assert finish['timeout_seconds'] == 180
+    assert f.releases == [first['task_id']]
+    f.turns[first['session_id']][1].update(status='Failed', conclusion='再次超时')
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    assert result['success'] is False
+    assert len(f.dispatches) == 2
 
-    task = rj.register_ranking_reverse_judge_task(_ReverseFakeCelery())
-    result = task(_ReverseTaskSelf(), 41, "attempt-1", endpoint_id=9)
 
-    assert result == {"success": True}
-    assert run_calls[0][0][2:6] == (41, "attempt-1", competition)
-    assert run_calls[0][1] == {"endpoint_id": 9}
-    lock_call = client.set.call_args
-    assert lock_call.args[:2] == (
-        "ranking:reverse_judge:lock:41:attempt-1", "req-quality",
-    )
-    assert lock_call.kwargs["nx"] is True
-    assert lock_call.kwargs["ex"] == (
-        11 * 2 + 22 * 2 + 33 + rj.REVERSE_QUALITY_GATE_TIMEOUT
-        + rj.JUDGE_SLOT_TTL_BUFFER * 2
-    )
-    client.delete.assert_called_once_with("ranking:reverse_judge:lock:41:attempt-1")
-    assert cleaned == [(41, "attempt-1")]
+def test_endpoint_pool_full_does_not_send_generic_task(monkeypatch, unified_reverse):
+    f = unified_reverse
+    monkeypatch.setattr(rj, '_acquire_endpoint_slot', lambda *args, **kwargs: (None, None, None))
+    monkeypatch.setattr(rj, '_retry_queued_submission', lambda *args, **kwargs: {'success': False, 'message': '排队'})
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_QUALITY_GATE)
+    assert result['success'] is False
+    assert f.dispatches == []
+    assert f.rows[rj.STEP_QUALITY_GATE]['status'] == 'pending'
+
+
+def test_cleanup_failure_does_not_release_endpoint_slot(unified_reverse):
+    f = unified_reverse
+    rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    first = f.dispatches[0]
+    f.turns[first['session_id']][0].update(status='CleanupFailed', conclusion='清理失败')
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    assert result['pending'] and not f.releases and len(f.dispatches) == 1
