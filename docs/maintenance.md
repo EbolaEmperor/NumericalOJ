@@ -91,7 +91,7 @@ backend/oj.py 只负责把上述组件装配起来
 
 | 层级 | 基础设施 | 是否破坏数据 | 典型命令 | 使用场景 |
 | --- | --- | --- | --- | --- |
-| 语法 | 无 | 否 | `python -m compileall -q backend deploy scripts skills tests && python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness` | 所有受版本控制的 Python 源码变更 |
+| 语法 | 无 | 否 | `python -m compileall -q backend deploy scripts skills tests && python -m py_compile docker/agent_judge/run_harness` | 所有受版本控制的 Python 源码变更 |
 | 单元 | 无 | 否 | `python -m pytest -q tests/unit` | 所有逻辑、边界和回归变更 |
 | DB | 一次性 MySQL + Redis | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/db` | 查询、事务、schema、缓存一致性 |
 | E2E | 一次性 MySQL + Redis，本地 Flask/Celery，部分场景需 Docker | **是** | `NUMOJ_TEST_ENV=1 python -m pytest tests/e2e` | 路由、CLI、跨进程工作流 |
@@ -173,6 +173,20 @@ DB/E2E 命令只有在 `backend/oj_modules/config.py` 加载后的有效配置�
 4. 涉及重命名、删除、回填、约束或大表操作时，新增独立迁移脚本，包含前置检查、幂等判断、分批策略和失败恢复。
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
+
+### Judge 通用会话的一次性历史导入
+
+`scripts/migrate_judge_agent_sessions.py` 只在 `deploy.sh` 的停服窗口、数据库备份完成且新结构同步后执行。入口同时要求 `--confirm-writers-stopped`、`--backup-manifest`、`--backup-plan` 和 `--report`。部署状态机负责在调用前再次证明 Web、全部 Celery worker 已停止；脚本自身先通过生产 `.env` 校验，再复用备份模块将 manifest、plan 和真实产物重新绑定，验证逻辑备份 CRC/大小/SHA-256 或物理备份 prepare 事实，随后才连接业务数据库。生产主机不得运行这里的单元或数据库测试。
+
+导入读取 `ranking_submissions`、`ranking_competitions`、`ranking_judge_results` 和 `ranking_reverse_judge_steps`，按提交、attempt 和三种 Judge 类别创建稳定的 `*-history` 通用会话。当前空 attempt 保持 SQL NULL；旧 attempt 从受管轨迹、AI 答案归档和 workspace 目录发现，仅剩哈希 workspace 时使用明确标注的独立历史标识。已有正式通用会话不重复导入。导入会话从创建起带有 `historical_import`，通用派发器与 worker 均不得执行；完成时会话、轮次和 outbox 一并进入终态，也不写个人额度或全站费用流水。
+
+旧材料和上传文件始终只读。复制文件时拒绝符号链接、硬链接和特殊文件，输出经通用 workspace 文件注入方法写入独立副本。Agent Judge 和质量门禁副本仅管理员可见；反向 AI 作答副本只包含题面、模板及对应 attempt 的 AI 答案，不能复制 `solution/`、`judge.sh` 或审核副本。执行 workspace 已清理但原提交仍在时，可安全解包恢复输入，并在会话中明确注明它不是最终执行产物。隐藏的 Harness 配置/凭据和原生恢复状态不迁入公开文件区，历史会话不能续聊。
+
+规范轨迹按全文件扫描、去重后写入通用轨迹表；旧 Claude/Pi 轨迹全量扫描记录，不应用页面的尾部/240 条限制，但文本仍沿用旧展示截断规则，图片、非文本和无法解析的记录会明确列入缺失说明。历史用量只存展示快照，不推算或补扣历史费用。`historical_record.json` 保留结果及缺失项。
+
+每个完成标记必须经过以下只读核验才可提交：会话类别/提交者/提交/attempt、会话与轮次终态、outbox 无待派发消息、无新增费用流水、轨迹行数与内容摘要、workspace 文件全集与逐文件大小/SHA-256。重复执行会重新核验已完成记录，文件缺失、内容被改动或权限身份不一致时直接失败，不能只凭完成标记跳过。报告以 `0600` 权限原子写入，包含每个会话的映射、缺失项和摘要；中途失败保留已写入的历史副本并在报告中标记未整体通过，下次停服部署可幂等续接。
+
+发布前回滚点仍由本章发布流程创建。数据库备份不包括上传、旧 Judge workspace/轨迹或通用 workspace；迁移不会删除它们，运维应另行保留这些目录并记录与 backup run-id 的对应关系。失败后保持服务停止，先保全数据库与文件现场、manifest/plan 和迁移报告，再选择修复后重跑；不可自动回灌。若单独回退导入，必须另获生产写入授权，并按报告中的精确 `*-history` session/task ID 与 `runtime_config_json.historical_import` 交叉核对，只删除对应的 `agent_trace_events`、`agent_trace_sync_state`、`agent_task_runs`、`agent_session_messages`、`agent_session_turns`、`agent_sessions` 行，并将对应通用 workspace 隔离留存；不得按 Judge 类别全量清表或删除旧上传/轨迹。也可在停服且原材料保留的前提下，按本章人工恢复流程使用本次结构变更前备份，再隔离报告列出的新增 workspace。完成正式生产迁移且核验报告后，在后续代码提交中删除一次性脚本、专用测试和部署调用；保留报告作为审计记录。
 
 ### LLM 端点身份
 
