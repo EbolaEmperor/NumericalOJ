@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
 
 from backend.oj_modules import config as _cfg
 
-from backend.oj_modules.shared.archive import ZipExtractionPolicy, extract_zip
+from backend.oj_modules.shared.archive import ArchiveExtractionError, ZipExtractionPolicy, extract_zip
 
 from backend.oj_modules.ranking.agent_judge import rules as aj
 
@@ -657,13 +657,14 @@ def _slot_owner(token):
 
 
 def _slot_finished(token):
-    """队列等待不算超时；只回收已确认终态或未创建任务的遗留预留。"""
-    owner, reserved_at = _slot_owner(token)
+    """只回收确认完成的轮次；尚无会话的材料准备预留不能按时间回收。"""
+    owner, _reserved_at = _slot_owner(token)
     if not owner:
         return False
     session = get_agent_session_by_task_id(owner)
     if not session:
-        return time.time() - reserved_at > 300
+        # 尚在注入文件或 worker 已中断的预留只由同 attempt 恢复/停止处理。
+        return False
     turn = next((row for row in get_agent_session_turns(session['session_id'])
                  if row['task_id'] == owner), None)
     return bool(turn and str(turn.get('status')).lower() in {
@@ -692,6 +693,12 @@ def _acquire_endpoint_slot(client, endpoints, submission_id, ttl, *, owner=None)
             if client.set(key, token, **options):
                 return endpoint, key, token
     return None, None, None
+
+
+def _slot_reservation_matches(client, slot_key, token):
+    actual = client.get(slot_key)
+    normalize = lambda value: value.decode() if isinstance(value, bytes) else value
+    return actual is not None and normalize(actual) == normalize(token)
 
 
 def _release_task_slot(client, task_id):
@@ -753,6 +760,8 @@ def _dispatch_judge_phase(task, client, submission, competition, rules, session,
         endpoints = [ep for ep in endpoints if int(ep['id']) == int(session['endpoint_id'])]
     if not endpoints:
         configured = list_agent_judge_endpoints(competition['id'])
+        if session and not any(int(ep['id']) == int(session['endpoint_id']) for ep in configured):
+            raise ValueError('本会话绑定的评测端点已被删除，请重新评测')
         if configured:
             return _wait_for_judge_turn(task, sid, attempt, queued=True)
         raise ValueError('未配置 Agent 评测端点')
@@ -777,6 +786,9 @@ def _dispatch_judge_phase(task, client, submission, competition, rules, session,
                 endpoint=endpoint, prompt=prompt, files=files,
                 title=f'Judge · {competition.get("title") or sid}'[:64],
                 timeout_seconds=timeout, celery_app=task.app,
+                dispatch_guard=lambda: (
+                    _attempt_still_current(sid, attempt) and _slot_reservation_matches(client, slot, token)
+                ),
             )
         dispatched = True
     finally:
@@ -872,10 +884,13 @@ def register_ranking_agent_judge_task(celery_app):
             return _advance_agent_judge(self, client, submission, competition)
         except Retry:
             raise
-        except Exception as exc:
+        except (ValueError, OSError, ArchiveExtractionError) as exc:
             _write_error_for_attempt(sid, attempt_id, f'评测任务异常：{exc}')
             _publish_snapshot(sid)
-            raise
+            return {'success': False, 'message': str(exc)}
+        except Exception as exc:
+            # 数据库/投递结果不明确时继续同一幂等轮次，不把活动会话遗留在终态提交下。
+            raise self.retry(exc=exc, countdown=JUDGE_QUEUE_RETRY_BASE, max_retries=None)
         finally:
             _release_slot(client, lock, token)
     return evaluate_ranking_agent_judge

@@ -3,7 +3,8 @@
 from contextlib import contextmanager
 import secrets
 
-from backend.oj_modules.agents.sessions import get_judge_session_for_attempt
+from backend.oj_modules.agents.sessions import AgentSessionBusyError, get_judge_session_for_attempt
+from backend.oj_modules.agents.judge import judge_session_id, judge_session_write_lock
 
 _TERMINAL = {'completed', 'failed', 'canceled', 'cancelled'}
 _COMPARE_DELETE = (
@@ -35,38 +36,45 @@ def stopped_judge_submission(submission, scoring_mode, *, redis_client, terminat
     token = secrets.token_hex(16)
     if not redis_client.set(lock_key, token, nx=True, ex=300):
         raise JudgeCancellationError('评测正在推进，请稍后重试停止操作')
+    kinds = ('agent_judge', 'reverse_quality', 'reverse_answer')
+    session_ids = tuple(judge_session_id(sid, attempt_id, kind) for kind in kinds)
     confirmed = set()
     all_stopped = False
     try:
-        for kind in ('agent_judge', 'reverse_quality', 'reverse_answer'):
-            session = get_judge_session_for_attempt(sid, attempt_id, kind)
-            if not session or not session.get('current_task_id'):
-                continue
-            task_id = session['current_task_id']
-            if str(session.get('status') or '').lower() not in _TERMINAL:
-                if not callable(terminate_agent):
-                    raise JudgeCancellationError('通用 Agent 停止入口尚未初始化')
-                result = terminate_agent(task_id)
-                if not isinstance(result, dict) or result.get('errors'):
-                    errors = result.get('errors') if isinstance(result, dict) else None
-                    raise JudgeCancellationError('；'.join(errors or ['通用 Agent 尚未确认停止']))
-                refreshed = get_judge_session_for_attempt(sid, attempt_id, kind)
-                if not refreshed or str(refreshed.get('status') or '').lower() not in _TERMINAL:
-                    raise JudgeCancellationError('通用 Agent 停止状态尚未确认，请稍后重试')
-            confirmed.add(task_id)
-        all_stopped = True
-        yield
+        with judge_session_write_lock(*session_ids):
+            for kind in kinds:
+                session = get_judge_session_for_attempt(sid, attempt_id, kind)
+                if not session or not session.get('current_task_id'):
+                    continue
+                task_id = session['current_task_id']
+                if str(session.get('status') or '').lower() not in _TERMINAL:
+                    if not callable(terminate_agent):
+                        raise JudgeCancellationError('通用 Agent 停止入口尚未初始化')
+                    result = terminate_agent(task_id)
+                    if not isinstance(result, dict) or result.get('errors'):
+                        errors = result.get('errors') if isinstance(result, dict) else None
+                        raise JudgeCancellationError('；'.join(errors or ['通用 Agent 尚未确认停止']))
+                    refreshed = get_judge_session_for_attempt(sid, attempt_id, kind)
+                    if not refreshed or str(refreshed.get('status') or '').lower() not in _TERMINAL:
+                        raise JudgeCancellationError('通用 Agent 停止状态尚未确认，请稍后重试')
+                confirmed.add(task_id)
+            all_stopped = True
+            try:
+                yield
+            finally:
+                if all_stopped:
+                    for key in redis_client.scan_iter(match='aj:ep:*:slot:*', count=200):
+                        value = redis_client.get(key)
+                        text = value.decode() if isinstance(value, bytes) else str(value or '')
+                        parts = text.split('|', 2)
+                        if len(parts) == 3 and parts[0] == 'turn' and (
+                            parts[2] in confirmed or any(parts[2].startswith(value + '-') for value in session_ids)
+                        ):
+                            redis_client.eval(_COMPARE_DELETE, 1, key, value)
+    except AgentSessionBusyError as exc:
+        raise JudgeCancellationError(str(exc)) from exc
     finally:
-        try:
-            if all_stopped and confirmed:
-                for key in redis_client.scan_iter(match='aj:ep:*:slot:*', count=200):
-                    value = redis_client.get(key)
-                    text = value.decode() if isinstance(value, bytes) else str(value or '')
-                    parts = text.split('|', 2)
-                    if len(parts) == 3 and parts[0] == 'turn' and parts[2] in confirmed:
-                        redis_client.eval(_COMPARE_DELETE, 1, key, value)
-        finally:
-            redis_client.eval(_COMPARE_DELETE, 1, lock_key, token)
+        redis_client.eval(_COMPARE_DELETE, 1, lock_key, token)
 
 
 __all__ = ['JudgeCancellationError', 'stopped_judge_submission']

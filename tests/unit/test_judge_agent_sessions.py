@@ -167,3 +167,24 @@ def test_public_creation_cannot_overwrite_judge_workspace_with_chosen_message_id
         "message_id": message_id, "message": "覆盖文件", "harness": "pi", "endpoint_id": "8", "access_role": "user",
     }, content_type="multipart/form-data")
     assert response.status_code == 403
+
+
+def test_dispatch_guard_is_checked_after_input_copy_before_publishing_outbox(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(judge, "judge_session_write_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(judge, "get_agent_session", lambda _: None)
+    monkeypatch.setattr(judge, "initialize_agent_task_workspace", lambda *_a, **_k: None)
+    monkeypatch.setattr(judge, "create_empty_agent_runtime_checkpoint", lambda *_: None)
+    events = []
+    monkeypatch.setattr(judge, "inject_agent_workspace_files", lambda *_: events.append("copy"))
+    monkeypatch.setattr(judge, "create_agent_session", lambda **_: pytest.fail("名额已丢失，不能发布outbox"))
+    with pytest.raises(sessions.AgentSessionBusyError, match="停止派发"):
+        judge.submit_judge_turn(
+            session_id="jd-test", task_id="jd-test-turn", requested_by="owner",
+            judge_kind="reverse_answer", submission_id=12, attempt_id="attempt-1",
+            competition_id=3, harness="pi", endpoint={"id": 8, "model": "test"},
+            prompt="执行", files={"problem.md": "材料"},
+            dispatch_guard=lambda: events.append("guard") or False,
+        )
+    assert events == ["copy", "guard"]

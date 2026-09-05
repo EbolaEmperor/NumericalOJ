@@ -48,6 +48,7 @@ from backend.oj_modules.tasks.ranking.agent_judge import (
     HARNESS_CLAUDE_CODE, JUDGE_CPU_LIMIT, JUDGE_DEFAULT_TIMEOUT, JUDGE_IMAGE,
     JUDGE_MAX_QUEUE_RETRIES, JUDGE_MEM_LIMIT, JUDGE_PIDS_LIMIT,
     JUDGE_QUEUE_RETRY_BASE, JUDGE_SLOT_TTL_BUFFER, _acquire_endpoint_slot,
+    _slot_reservation_matches,
     _disable_unhealthy_endpoint, _ensure_judge_redis, _probe_endpoint, _release_slot,
     _release_task_slot,
 )
@@ -1189,6 +1190,10 @@ def _advance_agent_phase(task, client, submission_id, attempt_id, competition,
             prompt=prompt, files=None if turns else _workspace_input_files(audit_root, step_key),
             title=f'反向评测 #{submission_id} · {"质量门禁" if step_key == STEP_QUALITY_GATE else "AI 作答"}',
             timeout_seconds=timeout, celery_app=getattr(task, 'app', None),
+            dispatch_guard=lambda: (
+                _attempt_still_current(submission_id, attempt_id)
+                and _slot_reservation_matches(client, slot_key, slot_token)
+            ),
         )
     except Exception as exc:
         # 只有确认尚未持久化轮次才可放回端点名额；发送结果不明确时继续查询。

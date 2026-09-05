@@ -98,3 +98,80 @@ def test_judge_site_funding_needs_no_personal_quota_and_is_idempotent():
         conn.close()
     with pytest.raises(quota.AgentQuotaValidationError, match="全站代付"):
         quota.charge_agent_usage(**{**usage, "task_id": "unrelated-task"})
+
+
+def test_real_dispatcher_and_generic_worker_complete_private_judge_turns(monkeypatch, tmp_path):
+    from celery import Celery
+    from backend.oj_modules.problems import agent_runs
+    from backend.oj_modules.ranking import db as ranking_db
+    from backend.oj_modules.ranking.agent_judge import db as endpoint_db
+    from backend.oj_modules.tasks.agent import generic, queue
+    from backend.oj_modules.tasks.agent.harness_runtime import HarnessRunResult
+
+    root = tmp_path / 'workspaces'
+    monkeypatch.setattr(workspace, 'AGENT_WORKSPACE_ROOT', root)
+    monkeypatch.setattr(agent_runs, 'AGENT_WORKSPACE_ROOT', root)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO users (username,password_hash,is_admin) VALUES ('judge_owner','unused',0)")
+        conn.commit()
+    finally:
+        conn.close()
+    cid = ranking_db.create_competition(title='贯通评测', description='测试', max_score=100, created_by='admin')
+    endpoint_db.save_agent_judge_endpoints(cid, [{
+        'harness': 'pi', 'protocol': 'openai', 'base_url': 'https://unreachable.invalid/v1',
+        'api_key': 'fake-key-not-used', 'model': 'private-model', 'enabled': True,
+        'input_price_per_million': '2', 'cached_input_price_per_million': '0',
+        'output_price_per_million': '4',
+    }])
+    endpoint = endpoint_db.list_agent_judge_endpoints(cid)[0]
+    runs = []
+    native_id = '12121212-1212-4212-8212-121212121212'
+
+    def harness(**kwargs):
+        runs.append(kwargs)
+        assert kwargs['endpoint']['source'] == 'competition'
+        assert kwargs['endpoint']['id'] == endpoint['id']
+        assert kwargs['task_kind'] == 'judge' and kwargs['enable_site_identity'] is False
+        kwargs['trace_records_callback']([{
+            'version': 1, 'type': 'numoj_trace', 'sequence': 1,
+            'event': {'id': 'conclusion', 'kind': 'assistant', 'text': '本轮完成'},
+        }], final=True)
+        kwargs['usage_callback']({
+            'id': 'fake-provider-request', 'source': 'relay_openai',
+            'usage': {'input_uncached_tokens': 100_000, 'input_cached_tokens': 0,
+                      'input_cache_write_tokens': 0, 'output_tokens': 50_000,
+                      'reasoning_output_tokens': 0},
+        })
+        workspace.write_agent_workspace_file(kwargs['session_id'], '.runtime/pi/state', native_id)
+        kwargs['native_session_callback'](native_id)
+        return HarnessRunResult(0, False, '', '', native_session_id=native_id)
+
+    monkeypatch.setattr(generic, 'run_agent_harness', harness)
+    app = Celery('judge-integration', broker='memory://', backend='cache+memory://')
+    app.conf.task_always_eager = True
+    app.conf.task_eager_propagates = True
+    run_task = generic.register_agent_run_turn_task(app)
+    dispatch_task, _ = queue.register_agent_queue_tasks(app, run_task)
+    wake = SimpleNamespace(send_task=lambda _name, *, args, **_: dispatch_task.apply(args=args).get())
+    sid = judge.judge_session_id(42, 'workflow', 'agent_judge')
+    kwargs = dict(
+        session_id=sid, task_id=sid + '-setup', requested_by='judge_owner',
+        judge_kind='agent_judge', submission_id=42, attempt_id='workflow',
+        competition_id=cid, harness='pi', endpoint=endpoint, prompt='准备评测',
+        title='贯通评测', timeout_seconds=30, celery_app=wake,
+    )
+    judge.submit_judge_turn(**kwargs)
+    first = sessions.get_agent_session(sid)
+    assert first['status'] == 'Completed'
+    assert first['native_session_id'] == native_id
+    kwargs.update(task_id=sid + '-rule-1', prompt='评测第一条规则', timeout_seconds=10)
+    judge.submit_judge_turn(**kwargs)
+    assert sessions.get_agent_session(sid)['status'] == 'Completed'
+    assert [row['conclusion'] for row in sessions.get_agent_session_turns(sid)] == ['本轮完成', '本轮完成']
+    assert [row['timeout_seconds'] for row in runs] == [30, 10]
+    assert [row['resume_session_id'] for row in runs] == ['', native_id]
+    assert quota.get_agent_session_usage_cost(sid) == '0.8'
+    judge.submit_judge_turn(**kwargs)
+    assert len(runs) == 2

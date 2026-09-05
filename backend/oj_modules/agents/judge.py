@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import logging
 
@@ -11,6 +12,7 @@ from backend.oj_modules.agents.runtime_checkpoints import (
     create_empty_agent_runtime_checkpoint, create_agent_runtime_checkpoint,
 )
 from backend.oj_modules.agents.sessions import (
+    AgentSessionBusyError,
     begin_agent_session_turn,
     create_agent_session,
     get_agent_session,
@@ -104,10 +106,32 @@ def judge_endpoint_pricing(endpoint):
     }
 
 
+@contextmanager
+def judge_session_write_lock(*session_ids):
+    """评测创建与停止共用持久连接锁；连接中断会自动释放，不依赖时间租约。"""
+    conn = get_db_connection()
+    acquired = []
+    try:
+        with conn.cursor() as cursor:
+            try:
+                for session_id in sorted(set(session_ids)):
+                    name = f"agent-submit:{normalize_agent_session_id(session_id)}"
+                    cursor.execute("SELECT GET_LOCK(%s, 10) AS acquired", (name,))
+                    if not (cursor.fetchone() or {}).get("acquired"):
+                        raise AgentSessionBusyError("Judge 会话正在准备材料，请稍后重试")
+                    acquired.append(name)
+                yield
+            finally:
+                for name in reversed(acquired):
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (name,))
+    finally:
+        conn.close()
+
+
 def submit_judge_turn(
     *, session_id, task_id, requested_by, judge_kind, submission_id,
     attempt_id, competition_id, harness, endpoint, prompt, files=None,
-    title="", timeout_seconds=None, celery_app=None,
+    title="", timeout_seconds=None, celery_app=None, dispatch_guard=None,
 ):
     """幂等持久化首轮或内部续聊，然后唤醒唯一通用 Agent outbox。
 
@@ -130,57 +154,51 @@ def submit_judge_turn(
         "endpoint_source": "competition" if endpoint.get("competition_id") else "global",
         "timeout_seconds": int(timeout_seconds) if timeout_seconds else None,
     }
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT GET_LOCK(%s, 10) AS acquired", (f"agent-submit:{session_id}",))
-            if not (cursor.fetchone() or {}).get("acquired"):
-                raise RuntimeError("Judge 会话正在创建，请稍后重试")
-            try:
+    with judge_session_write_lock(session_id):
+        session = get_agent_session(session_id)
+        if session:
+            expected = {
+                "task_kind": "judge", "judge_kind": judge_kind,
+                "requested_by": requested_by, "submission_id": submission_id,
+                "attempt_id": attempt_id, "competition_id": competition_id,
+                "endpoint_id": int(endpoint["id"]), "harness": harness,
+            }
+            if any(str(session.get(key)) != str(value) for key, value in expected.items()):
+                raise ValueError("Judge 会话关联或冻结的执行参数不一致")
+            existing_turn = next((row for row in get_agent_session_turns(session_id) if row["task_id"] == task_id), None)
+            if existing_turn:
+                if str(existing_turn.get("user_message") or "") != prompt:
+                    raise ValueError("Judge 轮次幂等键与已持久化指令冲突")
+            else:
+                if files:
+                    raise ValueError("续聊复用已有 workspace，不能重新注入首轮材料")
+                create_agent_runtime_checkpoint(session_id, task_id)
+                if callable(dispatch_guard) and not dispatch_guard():
+                    raise AgentSessionBusyError("评测 attempt 或端点名额已变化，停止派发")
+                begin_agent_session_turn(
+                    session_id, task_id=task_id, user_message=prompt,
+                    internal_judge=True, base_runtime_checkpoint_id=task_id,
+                    dispatch_payload={"timeout_seconds": runtime["timeout_seconds"]},
+                )
                 session = get_agent_session(session_id)
-                if session:
-                    expected = {
-                        "task_kind": "judge", "judge_kind": judge_kind,
-                        "requested_by": requested_by, "submission_id": submission_id,
-                        "attempt_id": attempt_id, "competition_id": competition_id,
-                        "endpoint_id": int(endpoint["id"]), "harness": harness,
-                    }
-                    if any(str(session.get(key)) != str(value) for key, value in expected.items()):
-                        raise ValueError("Judge 会话关联或冻结的执行参数不一致")
-                    existing_turn = next((row for row in get_agent_session_turns(session_id) if row["task_id"] == task_id), None)
-                    if existing_turn:
-                        if str(existing_turn.get("user_message") or "") != prompt:
-                            raise ValueError("Judge 轮次幂等键与已持久化指令冲突")
-                    else:
-                        if files:
-                            raise ValueError("续聊复用已有 workspace，不能重新注入首轮材料")
-                        create_agent_runtime_checkpoint(session_id, task_id)
-                        begin_agent_session_turn(
-                            session_id, task_id=task_id, user_message=prompt,
-                            internal_judge=True, base_runtime_checkpoint_id=task_id,
-                            dispatch_payload={"timeout_seconds": runtime["timeout_seconds"]},
-                        )
-                        session = get_agent_session(session_id)
-                else:
-                    initialize_agent_task_workspace(session_id, harness=harness, access_role="user")
-                    inject_agent_workspace_files(session_id, files)
-                    create_empty_agent_runtime_checkpoint(session_id, task_id)
-                    session = create_agent_session(
-                        session_id=session_id, task_id=task_id,
-                        requested_by=requested_by, harness=harness,
-                        endpoint_id=int(endpoint["id"]),
-                        endpoint_revision=endpoint.get("revision") or 1,
-                        endpoint_model=endpoint["model"], user_message=prompt,
-                        task_kind="judge", access_role="user", title=title,
-                        judge_kind=judge_kind, submission_id=submission_id,
-                        attempt_id=attempt_id, competition_id=competition_id,
-                        runtime_config=runtime, base_runtime_checkpoint_id=task_id,
-                        dispatch_payload={"timeout_seconds": runtime["timeout_seconds"]},
-                    )
-            finally:
-                cursor.execute("SELECT RELEASE_LOCK(%s)", (f"agent-submit:{session_id}",))
-    finally:
-        conn.close()
+        else:
+            initialize_agent_task_workspace(session_id, harness=harness, access_role="user")
+            inject_agent_workspace_files(session_id, files)
+            create_empty_agent_runtime_checkpoint(session_id, task_id)
+            if callable(dispatch_guard) and not dispatch_guard():
+                raise AgentSessionBusyError("评测 attempt 或端点名额已变化，停止派发")
+            session = create_agent_session(
+                session_id=session_id, task_id=task_id,
+                requested_by=requested_by, harness=harness,
+                endpoint_id=int(endpoint["id"]),
+                endpoint_revision=endpoint.get("revision") or 1,
+                endpoint_model=endpoint["model"], user_message=prompt,
+                task_kind="judge", access_role="user", title=title,
+                judge_kind=judge_kind, submission_id=submission_id,
+                attempt_id=attempt_id, competition_id=competition_id,
+                runtime_config=runtime, base_runtime_checkpoint_id=task_id,
+                dispatch_payload={"timeout_seconds": runtime["timeout_seconds"]},
+            )
     try:
         (celery_app or current_app).send_task(
             "oj.agent.dispatch_session_queue", args=(session_id,), queue="celery",

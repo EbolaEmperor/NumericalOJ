@@ -1,5 +1,6 @@
 """停止评测必须与业务派发互斥，并在通用轮次停止后释放端点名额。"""
 
+from contextlib import nullcontext
 import fnmatch
 
 import pytest
@@ -30,6 +31,11 @@ class Redis:
             del self.data[key]
             return 1
         return 0
+
+
+@pytest.fixture(autouse=True)
+def no_real_session_locks(monkeypatch):
+    monkeypatch.setattr(control, 'judge_session_write_lock', lambda *_ids: nullcontext())
 
 
 @pytest.fixture
@@ -118,3 +124,32 @@ def test_http_delete_and_rejudge_refuse_to_change_submission_until_stopped(monke
         response, status = getattr(routes, operation)(3, 7)
     assert status == 409
     assert response.get_json()['success'] is False
+
+
+def test_stop_releases_only_own_unpublished_reservations_under_session_lock(monkeypatch):
+    from contextlib import contextmanager
+
+    monkeypatch.setattr(control, 'get_judge_session_for_attempt', lambda *_: None)
+    own = control.judge_session_id(7, 'attempt', 'reverse_answer')
+    other = control.judge_session_id(8, 'attempt', 'reverse_answer')
+    redis = Redis()
+    redis.data = {'aj:ep:1:slot:0': f'turn|0|{own}-first', 'aj:ep:1:slot:1': f'turn|0|{other}-first'}
+    locked = []
+
+    @contextmanager
+    def session_lock(*session_ids):
+        assert own in session_ids
+        locked.append(True)
+        try:
+            yield
+        finally:
+            assert 'aj:ep:1:slot:0' not in redis.data
+            locked.pop()
+
+    monkeypatch.setattr(control, 'judge_session_write_lock', session_lock)
+    with control.stopped_judge_submission(
+        {'id': 7, 'judge_attempt_id': 'attempt'}, 'reverse_judge',
+        redis_client=redis, terminate_agent=lambda _: pytest.fail('没有已发布任务'),
+    ):
+        assert locked and 'aj:ep:1:slot:0' in redis.data
+    assert redis.data == {'aj:ep:1:slot:1': f'turn|0|{other}-first'}

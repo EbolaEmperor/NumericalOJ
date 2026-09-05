@@ -201,3 +201,20 @@ def test_bulk_rejudge_elo_keeps_activation_and_retirement_in_one_boundary(monkey
     assert activations == [((401, 10, 'u1', 1550.0), {'keep_count': 2})]
     assert burst.calls == [((), {'args': [10, 401], 'countdown': 3})]
     assert jobs['job4']['requeued'] == 1
+
+
+def test_bulk_rejudge_does_not_reset_submission_when_agent_stop_is_unconfirmed(monkeypatch):
+    jobs = {}
+    monkeypatch.setattr(m, 'ITEM_SLEEP_SECONDS', 0)
+    monkeypatch.setattr(m, 'get_competition', lambda cid: {'id': cid, 'scoring_mode': 'agent_judge'})
+    monkeypatch.setattr(m, 'get_ranking_submission', lambda sid: {'id': sid, 'competition_id': 7, 'judge_attempt_id': 'still-running'})
+    monkeypatch.setattr(m, 'get_bulk_rejudge_job', lambda jid: {})
+    monkeypatch.setattr(m, 'save_bulk_rejudge_job', lambda jid, value: jobs.update({jid: dict(value)}))
+    def refused(*args, **kwargs):
+        raise m.JudgeCancellationError('清理尚未确认')
+    monkeypatch.setattr(m, 'stopped_judge_submission', refused)
+    monkeypatch.setattr(m, '_reset_submission_for_rejudge', lambda *args, **kwargs: pytest.fail('不得旋转attempt'))
+    monkeypatch.setattr(m, 'update_submission_result', lambda *args, **kwargs: pytest.fail('不得改写现有评测状态'))
+    m.register_ranking_bulk_rejudge_task(_FakeCelery(), _FakeAsyncTask())(7, [101], 'blocked')
+    assert jobs['blocked']['failed'] == 1
+    assert jobs['blocked']['requeued'] == 0

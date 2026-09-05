@@ -355,3 +355,24 @@ def test_rule_result_rejects_other_rules_and_surrounding_tool_text():
     assert m._parse_rule_conclusion('{"rule_id":2,"result":"pass"}', 1) is None
     assert m._parse_rule_conclusion('tool output\n{"rule_id":1,"result":"pass"}', 1) is None
     assert m._parse_rule_conclusion('```json\n{"rule_id":1,"result":"pass"}\n```', 1)['result'] == 'pass'
+
+
+def test_pool_never_reclaims_slow_input_preparation_without_a_session(monkeypatch):
+    redis = _PoolRedis()
+    endpoints = [{'id': 1, 'concurrency_limit': 1}]
+    first = m._acquire_endpoint_slot(redis, endpoints, 3, 60, owner='slow-turn')
+    monkeypatch.setattr(m, 'get_agent_session_by_task_id', lambda _: None)
+    monkeypatch.setattr(m.time, 'time', lambda: 10**12)
+    assert m._acquire_endpoint_slot(redis, endpoints, 4, 60, owner='another-turn') == (None, None, None)
+    assert m._acquire_endpoint_slot(redis, endpoints, 3, 60, owner='slow-turn') == first
+
+
+def test_deleted_frozen_endpoint_reports_error_instead_of_waiting_forever(monkeypatch):
+    monkeypatch.setattr(m, '_resolve_endpoints', lambda *_: [{'id': 12}])
+    monkeypatch.setattr(m, 'list_agent_judge_endpoints', lambda _: [{'id': 12}])
+    monkeypatch.setattr(m, '_wait_for_judge_turn', lambda *_a, **_k: pytest.fail('被删除的绑定端点不能无限等待'))
+    with pytest.raises(ValueError, match='已被删除'):
+        m._dispatch_judge_phase(
+            object(), object(), {'id': 3, 'judge_attempt_id': 'attempt'}, {'id': 9},
+            [], {'endpoint_id': 11}, 'rule-2', '下一条规则',
+        )
