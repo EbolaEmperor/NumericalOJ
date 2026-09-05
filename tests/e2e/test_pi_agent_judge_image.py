@@ -553,10 +553,9 @@ def test_claude_lite_image_honors_one_million_context_and_384k_output_contract()
         result = _run([
             "docker", "run", "--rm",
             "--add-host", "host.docker.internal:host-gateway",
-            "--tmpfs", "/evidence:rw,nosuid,nodev,size=8m,mode=755",
+            "--tmpfs", "/workspace:rw,nosuid,nodev,size=8m,mode=777",
             "--user", "node",
             "-e", "AJ_HARNESS=claude_code",
-            "-e", "AJ_AUDIT_READ_ONLY=1",
             "-e", "AJ_PROMPT=Reply with the supplied deterministic response.",
             "-e", "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS=1000000",
             "-e", "AJ_ENDPOINT_MAX_OUTPUT_TOKENS=384000",
@@ -646,7 +645,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         first = _docker_exec_pi(
             container_name,
             base_url,
-            "reverse_solve",
+            "problem_agent",
             "Call the bash tool once, then finish.",
         )
         assert first.returncode == 0, first.stderr
@@ -655,12 +654,12 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         )
         session_id = state["session_id"]
         assert state["harness"] == "pi"
-        assert state["phase"] == "reverse_solve"
+        assert state["phase"] == "problem_agent"
         assert normalize_native_session_id(session_id, "pi") == session_id
         first_stdout_events = [
             json.loads(line)
             for line in first.stdout.splitlines()
-            if line.strip()
+            if line.strip() and json.loads(line).get("type") == "session"
         ]
         assert len(first_stdout_events) == 1
         assert first_stdout_events[0]["type"] == "session"
@@ -670,7 +669,7 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         second = _docker_exec_pi(
             container_name,
             base_url,
-            "reverse_finalize",
+            "problem_agent_followup",
             "Return the final confirmation now.",
             session_id=session_id,
         )
@@ -680,11 +679,11 @@ def test_pi_lite_image_runs_tools_resumes_native_session_and_renders_trace(
         )
         assert resumed_state["session_id"] == session_id
         assert resumed_state["resume_session_id"] == session_id
-        assert resumed_state["phase"] == "reverse_finalize"
+        assert resumed_state["phase"] == "problem_agent_followup"
         second_stdout_events = [
             json.loads(line)
             for line in second.stdout.splitlines()
-            if line.strip()
+            if line.strip() and json.loads(line).get("type") == "session"
         ]
         assert len(second_stdout_events) == 1
         assert second_stdout_events[0]["type"] == "session"

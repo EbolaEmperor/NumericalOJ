@@ -57,7 +57,7 @@ jobs:
       - name: Compile all tracked Python entry points
         run: |
           python -m compileall -q backend deploy scripts skills tests
-          python -m py_compile docker/agent_judge/report docker/agent_judge/run_harness
+          python -m py_compile docker/agent_judge/run_harness
 
   unit:
     name: Unit tests

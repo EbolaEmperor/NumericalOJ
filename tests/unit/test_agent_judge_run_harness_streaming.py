@@ -134,7 +134,7 @@ def test_run_relays_first_line_before_child_exits(monkeypatch, tmp_path):
     assert "".join(writes) == "first\nsecond\n"
 
 
-def test_claude_audit_mode_is_bare_safe_and_read_tools_only(monkeypatch):
+def test_claude_judge_uses_standard_tools_and_persistent_resume(monkeypatch):
     module = _load_run_harness()
     calls = []
     monkeypatch.setenv("AJ_AUDIT_READ_ONLY", "1")
@@ -152,20 +152,17 @@ def test_claude_audit_mode_is_bare_safe_and_read_tools_only(monkeypatch):
 
     args, kwargs = calls[0]
     assert args[0] == "claude"
-    assert "--bare" in args
-    assert "--safe-mode" in args
-    assert "--disable-slash-commands" in args
-    assert "--no-session-persistence" in args
-    assert args[args.index("--tools") + 1] == "Read,Glob,Grep"
-    assert args[args.index("--allowed-tools") + 1] == "Read,Glob,Grep"
-    assert args[args.index("--add-dir") + 1] == "/evidence"
+    assert "--bare" not in args
+    assert "--safe-mode" not in args
+    assert "--no-session-persistence" not in args
+    assert "--tools" not in args and "--allowed-tools" not in args
+    assert args[args.index("--add-dir") + 1] == "/workspace"
     assert args[args.index("--output-format") + 1] == "json"
     assert args[args.index("--model") + 1] == "generic-model[1m]"
     assert args[-1] == "audit prompt"
-    assert "--dangerously-skip-permissions" not in args
-    assert "--resume" not in args
-    assert "--fork-session" not in args
-    assert all(forbidden not in ",".join(args) for forbidden in ("Bash", "Write", "Edit"))
+    assert "--dangerously-skip-permissions" in args
+    assert args[args.index("--resume") + 1] == "11111111-1111-1111-1111-111111111111"
+    assert "--fork-session" in args
     assert kwargs["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "1000000"
     assert kwargs["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "384000"
     assert kwargs["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1000000"
@@ -528,10 +525,8 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
     monkeypatch.setenv("AJ_ENDPOINT_MAX_OUTPUT_TOKENS", "384000")
     monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", "true")
 
-    def run(args, env=None, input_text=None, stdout_session_only=False):
-        calls.append((
-            list(args), dict(env or {}), input_text, stdout_session_only,
-        ))
+    def run(args, env=None, input_text=None):
+        calls.append((list(args), dict(env or {}), input_text))
         return SimpleNamespace(
             returncode=0,
             stdout=(
@@ -551,14 +546,13 @@ def test_pi_uses_isolated_openai_chat_config_and_resumes_same_session(
 
     assert module._run_pi("solve prompt") == 0
 
-    args, env, input_text, stdout_session_only = calls[0]
+    args, env, input_text = calls[0]
     assert args[:3] == ["pi", "--mode", "json"]
     assert args[args.index("--provider") + 1] == "agent-judge"
     assert args[args.index("--model") + 1] == "custom-reasoning-model"
     assert args[args.index("--session") + 1] == resume_id
     assert args[-1] == "solve prompt"
     assert input_text is None
-    assert stdout_session_only is True
     for flag in (
         "--no-approve",
         "--no-extensions",
@@ -668,10 +662,10 @@ def test_pi_explicitly_loads_only_the_trusted_web_search_mcp_extension(
     ("phase", "effort", "expected_thinking"),
     [
         ("reverse_solve", "high", "high"),
-        ("reverse_finalize", "max", "off"),
+        ("reverse_finalize", "max", "max"),
     ],
 )
-def test_pi_thinking_compatible_endpoint_controls_reverse_phase_thinking(
+def test_pi_thinking_configuration_has_no_reverse_phase_override(
         monkeypatch, tmp_path, phase, effort, expected_thinking):
     module = _load_run_harness()
     config_dir = tmp_path / "pi-agent"
@@ -794,7 +788,7 @@ def test_pi_thinking_config_is_model_agnostic(tmp_path):
     assert "compat" not in model
 
 
-def test_pi_audit_mode_uses_only_read_tools_and_never_resumes(
+def test_pi_judge_uses_standard_tools_and_persistent_resume(
         monkeypatch, tmp_path):
     module = _load_run_harness()
     config_dir = tmp_path / "pi-agent"
@@ -817,11 +811,8 @@ def test_pi_audit_mode_uses_only_read_tools_and_never_resumes(
     assert module._run_pi("audit") == 0
 
     args, _kwargs = calls[0]
-    assert args[args.index("--tools") + 1] == "read,grep,find,ls"
-    assert "--session" not in args
-    assert all(tool not in args[args.index("--tools") + 1].split(",") for tool in (
-        "bash", "write", "edit",
-    ))
+    assert "--tools" not in args
+    assert args[args.index("--session") + 1] == "44444444-4444-4444-4444-444444444444"
 
 
 def test_pi_disabled_thinking_compatibility_omits_thinking_cli_flag(
@@ -1030,7 +1021,7 @@ def test_run_persists_native_session_before_child_finishes(monkeypatch, tmp_path
     assert result[0].returncode == 0
 
 
-def test_run_can_forward_only_pi_session_header_while_consuming_json_stream(
+def test_run_forwards_complete_pi_stream_and_records_native_session(
         monkeypatch, tmp_path):
     module = _load_run_harness()
     session_id = "77777777-7777-7777-7777-777777777777"
@@ -1055,32 +1046,14 @@ def test_run_can_forward_only_pi_session_header_while_consuming_json_stream(
     ]
     env = dict(os.environ, AJ_WORKSPACE=str(tmp_path))
 
-    proc = module._run(command, env=env, stdout_session_only=True)
+    proc = module._run(command, env=env)
 
     relayed = "".join(writes)
     assert proc.returncode == 0
     assert proc.aj_session_id == session_id
-    assert relayed == (
-        f'{{"type":"session","version":3,"id":"{session_id}"}}\n'
-    )
-    assert "message_update" not in relayed
-    assert "agent_end" not in relayed
-
-
-@pytest.mark.parametrize("alias", ["pi", "pi-agent", "pi_agent"])
-def test_main_dispatches_pi_aliases(monkeypatch, alias):
-    module = _load_run_harness()
-    calls = []
-    monkeypatch.setenv("AJ_HARNESS", alias)
-    monkeypatch.setenv("AJ_PROMPT", "solve")
-    monkeypatch.setattr(
-        module,
-        "_run_pi",
-        lambda prompt: calls.append(prompt) or 0,
-    )
-
-    assert module.main() == 0
-    assert calls == ["solve"]
+    assert session_id in relayed
+    assert "message_update" in relayed
+    assert "agent_end" in relayed
 
 
 def test_main_keeps_empty_harness_claude_default(monkeypatch):

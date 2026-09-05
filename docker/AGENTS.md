@@ -3,7 +3,7 @@
 本文件适用于 `docker/` 下的镜像与运行脚本。
 
 - 普通判题镜像位于 `judger*`，Agent-as-Judge 镜像位于 `agent_judge*`；lite 用于本地和 CI，
-  完整镜像用于生产。修改 `agent_judge/report`、`run_harness` 或其运行依赖后必须重建相应镜像。
+  完整镜像用于生产。修改 `agent_judge/run_harness` 或其运行依赖后必须重建相应镜像。
 - **增加系统包、Python 包或其它环境依赖时，尽可能在 Dockerfile 现有稳定步骤之后追加新层，
   不要为了整理而改动前面的安装列表或重排已有层。只有确需升级、删除或解决依赖冲突时才修改
   旧层，并在变更说明中写明原因与缓存影响。**

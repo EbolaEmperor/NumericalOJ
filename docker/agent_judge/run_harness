@@ -974,7 +974,7 @@ def _validated_skill_files(harness):
         return None
 
 
-def _run(args, env=None, input_text=None, stdout_session_only=False):
+def _run(args, env=None, input_text=None):
     run_env = env or os.environ.copy()
     if shutil.which(args[0], path=run_env.get("PATH")) is None:
         print(f"{args[0]} CLI is not installed in this Agent-as-Judge image", file=sys.stderr)
@@ -993,7 +993,6 @@ def _run(args, env=None, input_text=None, stdout_session_only=False):
     stderr_chunks = deque()
     captured_sizes = {"stdout": 0, "stderr": 0}
     discovered_session = {"id": ""}
-    forwarded_session = {"done": False}
 
     def _remember(chunks, key, chunk):
         chunks.append(chunk)
@@ -1022,13 +1021,7 @@ def _run(args, env=None, input_text=None, stdout_session_only=False):
                                 env=run_env,
                             )
                 _remember(chunks, key, chunk)
-                if key == "stdout" and stdout_session_only:
-                    if not session_header or forwarded_session["done"]:
-                        continue
-                    forwarded_session["done"] = True
-                    target.write(session_header)
-                else:
-                    target.write(chunk)
+                target.write(chunk)
                 target.flush()
         finally:
             source.close()
@@ -1517,12 +1510,6 @@ class _EndpointThinkingRelay(_EndpointRelay):
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def _audit_read_only_enabled():
-    return (os.environ.get("AJ_AUDIT_READ_ONLY") or "").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
 def _endpoint_settings(allowed_protocols):
     """读取 Claude Code/Pi 共用的唯一端点接口。"""
 
@@ -1842,8 +1829,6 @@ def _run_pi(prompt, commands=None):
             "PI_TELEMETRY": "0",
             "PI_SKIP_VERSION_CHECK": "1",
         })
-        phase = str(os.environ.get("AJ_PHASE") or "").strip().lower()
-        audit_read_only = _audit_read_only_enabled()
         base_args = [
             "pi",
             "--mode", "json",
@@ -1863,24 +1848,12 @@ def _run_pi(prompt, commands=None):
             # Pi 在 --no-skills 下仍可以用 --skill 显式加载单个受信任
             # skill，避免扫描镜像内或其他目录的隐式 skill。
             base_args.extend(["--skill", skill_files[0]])
-        if audit_read_only:
-            # Pi 自身不提供沙箱；质量门禁容器另有只读根文件系统、只读 evidence
-            # 挂载与无 capabilities 约束，这里再把内建工具缩到纯读取集合。
-            base_args.extend(["--tools", "read,grep,find,ls"])
-            resume_session_id = ""
         if thinking_compatibility:
             effort = str(os.environ.get("AJ_EFFORT") or "").strip().lower()
-            # Reverse Judge 的收尾轮只负责把已有工作形成交付物，显式关闭
-            # thinking；普通 Agent 完全遵循本轮原生 CLI 的终止结果。
-            if phase == "reverse_finalize":
-                base_args.extend(["--thinking", "off"])
-            elif effort in PI_THINKING_LEVELS:
+            if effort in PI_THINKING_LEVELS:
                 base_args.extend(["--thinking", effort])
 
         if commands is not None:
-            if audit_read_only:
-                _emit_control("__start__", "rejected", "只读审计模式不支持交互控制")
-                return 2
             proc = _run_pi_interactive(
                 base_args, env, prompt, commands, resume_session_id,
             )
@@ -1891,11 +1864,7 @@ def _run_pi(prompt, commands=None):
         if resume_session_id:
             args.extend(["--session", resume_session_id])
         args.append(prompt)
-        proc = _run(
-            args,
-            env=env,
-            stdout_session_only=phase in {"reverse_solve", "reverse_finalize"},
-        )
+        proc = _run(args, env=env)
         _record_session("pi", proc, resume_session_id)
         return proc.returncode
     finally:
@@ -2195,7 +2164,6 @@ def _run_claude_interactive(args, env, prompt, commands, resume_session_id):
 
 
 def _run_claude_code(prompt, commands=None):
-    audit_read_only = _audit_read_only_enabled()
     try:
         resume_session_id = _resume_session_id_from_env("claude_code")
         _protocol, base_url, api_key, model = _endpoint_settings({"anthropic"})
@@ -2253,29 +2221,14 @@ def _run_claude_code(prompt, commands=None):
     else:
         env["CLAUDE_CODE_DISABLE_THINKING"] = "1"
         env["DISABLE_INTERLEAVED_THINKING"] = "1"
-    if audit_read_only:
-        args = [
-            "claude",
-            "--bare",
-            "--safe-mode",
-            "--disable-slash-commands",
-            "--no-session-persistence",
-            "--tools", "Read,Glob,Grep",
-            "--allowed-tools", "Read,Glob,Grep",
-            "--add-dir", "/evidence",
-            "--output-format", "json",
-            "-p",
-        ]
-        resume_session_id = ""
-    else:
-        args = [
-            "claude",
-            "--dangerously-skip-permissions",
-            "--add-dir", "/workspace",
-            "--output-format", "json",
-            "-p",
-        ]
-    if resume_session_id and not audit_read_only:
+    args = [
+        "claude",
+        "--dangerously-skip-permissions",
+        "--add-dir", "/workspace",
+        "--output-format", "json",
+        "-p",
+    ]
+    if resume_session_id:
         args.extend(["--resume", resume_session_id])
         if (os.environ.get("AJ_FORK_SESSION") or "1").strip().lower() not in {"0", "false", "no", "off"}:
             args.append("--fork-session")
@@ -2293,8 +2246,7 @@ def _run_claude_code(prompt, commands=None):
     if cli_model:
         args.extend(["--model", cli_model])
     # AJ_EFFORT 控制努力级别（low/medium/high/xhigh/max）。Anthropic claude CLI
-    # 用此标志联动 thinking token 预算；不设则用 CLI 默认。我们主要在 reverse
-    # 阶段把它调到 high/max，避免 AI 在 thinking 中途被 abort 而不输出代码。
+    # 用此标志联动 thinking token 预算；不设则使用 CLI 默认值。
     effort = (os.environ.get("AJ_EFFORT") or "").strip().lower()
     if thinking_compatibility and effort in CLAUDE_EFFORT_LEVELS:
         args.extend(["--effort", effort])
@@ -2322,9 +2274,6 @@ def _run_claude_code(prompt, commands=None):
         return 2
     try:
         if commands is not None:
-            if audit_read_only:
-                _emit_control("__start__", "rejected", "只读审计模式不支持交互控制")
-                return 2
             proc = _run_claude_interactive(
                 args, env, prompt, commands, resume_session_id,
             )

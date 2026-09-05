@@ -1195,6 +1195,7 @@ def unified_reverse(monkeypatch, tmp_path):
                    'reverse_quality_gate_prompt': '题意和答案必须一致'}
     rows = {key: {'step_key': key, 'status': 'pending'} for key in reverse_db.STEP_KEYS}
     turns, dispatches, releases, schedules, scores = {}, [], [], [], []
+    session_messages = {}
     endpoint = {'id': 11, 'harness': 'pi', 'concurrency_limit': 1,
                 'api_key': 'server-key', 'base_url': 'https://llm.example', 'model': 'test'}
     root = tmp_path / 'attempt'
@@ -1229,6 +1230,9 @@ def unified_reverse(monkeypatch, tmp_path):
     monkeypatch.setattr(rj, 'ensure_reverse_judge_steps_for_attempt', lambda *args: 1)
     monkeypatch.setattr(rj, '_publish_snapshot', lambda _sid: None)
     monkeypatch.setattr(rj, 'get_agent_session_turns', lambda sid: turns.get(sid, []))
+    monkeypatch.setattr(rj, 'get_agent_run_snapshot', lambda tid: None)
+    monkeypatch.setattr(rj, 'get_agent_session', lambda sid: {
+        'current_task_id': turns[sid][-1]['task_id'], 'message': session_messages.get(sid, '')})
     monkeypatch.setattr(rj, 'submit_judge_turn', submit)
     monkeypatch.setattr(rj, '_quality_endpoint_payloads', lambda *args, **kwargs: [endpoint])
     monkeypatch.setattr(rj, '_resolve_selected_endpoint', lambda *args, **kwargs: (endpoint, ''))
@@ -1241,7 +1245,7 @@ def unified_reverse(monkeypatch, tmp_path):
     return SimpleNamespace(submission=submission, competition=competition, rows=rows,
                            turns=turns, dispatches=dispatches, releases=releases,
                            schedules=schedules, scores=scores, task=task,
-                           audit=audit, root=root, endpoint=endpoint)
+                           audit=audit, root=root, endpoint=endpoint, session_messages=session_messages)
 
 
 def test_unified_workspace_inputs_separate_answer_from_private_material(unified_reverse):
@@ -1329,7 +1333,8 @@ def test_timeout_finalizes_same_generic_session_after_reacquiring_pool(unified_r
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
     assert result['pending']
     first = f.dispatches[0]
-    f.turns[first['session_id']][0].update(status='Failed', conclusion='Agent 执行超时')
+    f.turns[first['session_id']][0].update(status='Failed', conclusion='正在验证第三个样例')
+    f.session_messages[first['session_id']] = 'Agent harness 超时'
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
     assert result['pending']
     finish = f.dispatches[1]
@@ -1360,4 +1365,18 @@ def test_cleanup_failure_does_not_release_endpoint_slot(unified_reverse):
     first = f.dispatches[0]
     f.turns[first['session_id']][0].update(status='CleanupFailed', conclusion='清理失败')
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
-    assert result['pending'] and not f.releases and len(f.dispatches) == 1
+    assert result['success'] is False and not f.releases and len(f.dispatches) == 1
+    assert '清理失败' in result['message']
+    assert f.rows[rj.STEP_AGENT]['status'] == 'error'
+
+
+def test_quota_failure_does_not_finalize_even_when_conclusion_mentions_timeout(monkeypatch, unified_reverse):
+    f = unified_reverse
+    rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    first = f.dispatches[0]
+    f.turns[first['session_id']][0].update(status='Failed', conclusion='本地样例超时，我准备继续调试')
+    f.session_messages[first['session_id']] = '额度耗尽'
+    monkeypatch.setattr(rj, 'get_agent_run_snapshot', lambda tid: {'harness_status': 'quota_exhausted'})
+    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
+    assert result['success'] is False
+    assert len(f.dispatches) == 1

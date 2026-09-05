@@ -43,6 +43,7 @@ from backend.oj_modules.ranking.reverse_judge.db import (
     update_reverse_judge_step_for_attempt,
 )
 from backend.oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
+from backend.oj_modules.tasks.agent.shared import get_agent_run_snapshot
 from backend.oj_modules.tasks.ranking.agent_judge import (
     HARNESS_CLAUDE_CODE, JUDGE_CPU_LIMIT, JUDGE_DEFAULT_TIMEOUT, JUDGE_IMAGE,
     JUDGE_MAX_QUEUE_RETRIES, JUDGE_MEM_LIMIT, JUDGE_PIDS_LIMIT,
@@ -1062,6 +1063,15 @@ def _read_quality_gate_result(session_id):
     return _parse_quality_gate_result(data.decode('utf-8'))
 
 
+def _agent_turn_timed_out(session_id, task_id):
+    state = get_agent_run_snapshot(task_id) or {}
+    if state.get('harness_status'):
+        return state['harness_status'] == 'timeout'
+    session = get_agent_session(session_id) or {}
+    return (session.get('current_task_id') == task_id
+            and session.get('message') == 'Agent harness 超时')
+
+
 def _advance_agent_phase(task, client, submission_id, attempt_id, competition,
                          audit_root, step_key, endpoint_id=None):
     """单次只派发或接收一个通用轮次，不阻塞等待另一个 Celery 任务。"""
@@ -1077,6 +1087,12 @@ def _advance_agent_phase(task, client, submission_id, attempt_id, competition,
     turn = next((item for item in turns if item['task_id'] == task_id), None)
     if turn:
         status = str(turn.get('status') or '').lower()
+        if status in {'cleanupfailed', 'cleanup_failed'}:
+            return _finish_error(
+                submission_id, attempt_id, step_key,
+                '通用 Agent 清理失败，端点名额已保留，请管理员处理后重测',
+                result=result,
+            )
         if status not in _AGENT_TERMINAL:
             return _schedule_next(task, submission_id, attempt_id, endpoint_id)
         _release_task_slot(client, task_id)
@@ -1085,7 +1101,7 @@ def _advance_agent_phase(task, client, submission_id, attempt_id, competition,
         if status != 'completed':
             conclusion = str(turn.get('conclusion') or '')
             # 收尾同样是池放行后的通用续聊，复用已有 workspace/native session。
-            timed_out = '超时' in conclusion or 'timeout' in conclusion.lower()
+            timed_out = _agent_turn_timed_out(session_id, task_id)
             if step_key == STEP_AGENT and timed_out and not state.get('finalize'):
                 state.update(task_id=session_id + '-finish', finalize=True)
                 task_id = state['task_id']

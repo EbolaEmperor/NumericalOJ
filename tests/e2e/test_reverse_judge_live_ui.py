@@ -163,12 +163,6 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
     )
     if version.returncode != 0:
         _fail("无法连接本地 Docker daemon")
-    try:
-        docker_major = int(version.stdout.strip().split(".", 1)[0])
-    except (TypeError, ValueError):
-        _fail("无法识别本地 Docker Engine 版本")
-    if docker_major < 28:
-        _fail("真实质量门禁隔离网络需要 Docker Engine 28+")
 
     agent_image = str(
         os.environ.get("NUMOJ_REVERSE_LIVE_AGENT_IMAGE")
@@ -190,7 +184,6 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
         "OJ_LIVE_AI": "1",
         "NUMOJ_FAKE_AGENT_JUDGE": "0",
         "NUMOJ_FAKE_REVERSE_JUDGE": "0",
-        "NUMOJ_FAKE_REVERSE_QUALITY_GATE": "0",
         "AGENT_JUDGE_DOCKER_IMAGE": agent_image,
         "JUDGER_DOCKER_IMAGE": judger_image,
         # 凭证只能由管理员 CLI 从独立测试密钥文件写入一次性测试数据库。Web、Celery、
@@ -221,7 +214,7 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
             "worker",
             "--loglevel=warning",
             "-Q",
-            "celery,agent,judge",
+            "celery,agent",
             "--pool=solo",
             "--concurrency=1",
             "--without-gossip",
@@ -307,6 +300,9 @@ def _endpoint(harness: str, base_url: str) -> dict[str, Any]:
         "max_output_tokens": _MAX_OUTPUT_TOKENS,
         "thinking_compatibility": True,
         "concurrency_limit": 1,
+        "input_price_per_million": "1.0",
+        "cached_input_price_per_million": "0.1",
+        "output_price_per_million": "2.0",
         "status": "enabled",
     }
 
@@ -429,7 +425,7 @@ def _algorithm_package(path: Path) -> Path:
 4
 ```
 
-请使用工具检查当前工作区，并把 `/workspace/main.py` 改成可由 Python 3
+请使用工具检查当前工作区，并把 `/workspace/template/main.py` 改成可由 Python 3
 直接运行的完整程序。完成前请实际运行样例；不要只在回复中解释算法。
 """
     template = (
@@ -740,37 +736,26 @@ def _assert_detail_and_download_answer(
     assert body.locator(".rj-gate-summary").inner_text().strip()
     expect(body.locator(".rj-empty")).to_have_text("无违规项")
     _open_raw_json(body, expect)
+    assert body.get_by_role("link", name="查看 Agent 会话").count() == 0
 
     agent_tab = page.locator("[data-rj-step='agent_answer']")
     expect(agent_tab).to_be_enabled()
     agent_tab.click()
-    expect(body).to_have_attribute("data-agent-trace-scope", "agent_answer")
-    feed = body.locator("[data-agent-trace-feed]")
-    expect(feed).to_be_visible()
-    messages = feed.locator("[data-agent-trace-message-key]")
-    expect(messages.first).to_be_visible()
-    assert messages.count() > 0
-    assert feed.locator(".rj-msg.assistant, .rj-msg.tool").count() > 0
-    if harness == "pi":
-        tool = feed.locator("details.rj-msg.tool").first
-        tool_result = feed.locator("details.rj-msg.tool-result").first
-        expect(tool).to_be_visible()
-        expect(tool_result).to_be_visible()
-        for detail in (tool, tool_result):
-            detail.locator("summary").click()
-            expect(detail.locator(".rj-msg-body")).to_be_visible()
-            assert detail.locator(".rj-msg-body").inner_text().strip()
-    raw_container = body.locator("[data-agent-trace-raw]")
-    expect(raw_container).to_be_attached()
-    answer_step = next(
-        item for item in snapshot["steps"] if item["step_key"] == "agent_answer"
-    )
-    if answer_step.get("trace_files"):
-        _open_raw_json(body, expect)
-    else:
-        # Pi 轨迹已由服务端投影成结构化 message；没有可公开的原始文件时，
-        # 前端保留轨迹容器但不伪造“展开原始 JSON”入口。
-        assert raw_container.locator("details.rj-raw-json").count() == 0
+    assert body.locator("[data-agent-trace-feed]").count() == 0
+    answer_step = next(item for item in snapshot["steps"] if item["step_key"] == "agent_answer")
+    gate_step = next(item for item in snapshot["steps"] if item["step_key"] == "quality_gate")
+    session_id = answer_step["agent_session_id"]
+    link = body.get_by_role("link", name="查看 Agent 会话")
+    expect(link).to_have_attribute("href", f"/agents/{session_id}")
+    assert page.request.get(f"{BASE_URL}/api/agent/sessions/{session_id}").status == 200
+    assert page.request.get(f"{BASE_URL}/api/agent/sessions/{gate_step['agent_session_id']}").status in {403, 404}
+    with page.expect_popup() as popup_info:
+        link.click()
+    session_page = popup_info.value
+    session_page.wait_for_load_state("domcontentloaded")
+    expect(session_page.locator("#agentResumeMessage")).to_be_disabled()
+    _assert_secret_absent(secret, session_page.content(), "AI 作答通用会话")
+    session_page.close()
 
     ai_tab = page.locator("[data-rj-step='ai_judge']")
     expect(ai_tab).to_be_enabled()
@@ -817,7 +802,8 @@ def _assert_real_snapshot(
     harness: str,
     secret: str,
 ) -> dict[str, Any]:
-    from backend.oj_modules.ranking.reverse_judge.db import list_reverse_judge_steps
+    from backend.oj_modules.agents.sessions import get_agent_session, get_agent_session_turns
+    from backend.oj_modules.problems.agent_runs import agent_run_trace_dir
     from backend.oj_modules.ranking.reverse_judge.service import build_reverse_judge_snapshot
 
     snapshot = build_reverse_judge_snapshot(submission_id)
@@ -832,23 +818,21 @@ def _assert_real_snapshot(
     solution, gate, answer, ai_judge = snapshot["steps"]
     assert float(solution["result"]["score"]) == 100.0
     assert len(solution["result"]["test_points"]) == 5
-    assert gate["result"]["agentic_review"] is True
     assert gate["result"]["passed"] is True
     assert "fake quality gate" not in str(gate.get("stdout") or "").lower()
     assert answer["answer_available"] is True
-    assert answer["trace_messages"]
-    if harness == "pi":
-        kinds = {message.get("kind") for message in answer["trace_messages"]}
-        assert {"tool", "tool_result"}.issubset(kinds)
     assert len(ai_judge["result"]["test_points"]) == 5
-
-    for row in list_reverse_judge_steps(submission_id):
-        trace_dir = str(row.get("trace_dir") or "").strip()
-        if not trace_dir:
-            continue
-        for path in Path(trace_dir).rglob("*"):
-            if path.is_file():
-                _assert_secret_absent(secret, path.read_bytes(), "AI 作答轨迹")
+    assert gate["agent_session_id"] != answer["agent_session_id"]
+    for step, kind in ((gate, "reverse_quality"), (answer, "reverse_answer")):
+        assert "trace_messages" not in step
+        session = get_agent_session(step["agent_session_id"])
+        assert session["task_kind"] == "judge" and session["judge_kind"] == kind
+        if kind == "reverse_answer":
+            assert session["harness"] == harness
+        for turn in get_agent_session_turns(session["session_id"]):
+            for path in Path(agent_run_trace_dir(turn["task_id"])).rglob("*"):
+                if path.is_file():
+                    _assert_secret_absent(secret, path.read_bytes(), "通用 Agent 轨迹")
     return snapshot
 
 
@@ -1081,6 +1065,8 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
     suffix = uuid4().hex[:12]
     username = f"reverse_live_{suffix}"
     create_regular_user(username=username, password=_PASSWORD)
+    peer_username = username + "_peer"
+    create_regular_user(username=peer_username, password=_PASSWORD)
     assert cli.init_admin()["success"] is True
     assert cli.init_user(username, _PASSWORD)["success"] is True
 
@@ -1246,6 +1232,16 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
             assert abs(leaderboard_score - max(card_scores.values())) <= 0.011
             _assert_secret_absent(secret, page.content(), "排行榜 DOM")
 
+            peer_context = browser.new_context()
+            peer_page = peer_context.new_page()
+            _browser_login(peer_page, expect, BASE_URL, peer_username, _PASSWORD)
+            for snapshot in snapshots.values():
+                for step in snapshot["steps"]:
+                    if step.get("agent_session_id"):
+                        url = f"{BASE_URL}/api/agent/sessions/{step['agent_session_id']}"
+                        assert peer_page.request.get(url).status in {403, 404}
+            peer_context.close()
+
             # 管理员也真实点击“所有提交”，确认两条记录保留各自 harness 图标。
             admin_context = browser.new_context(
                 viewport={"width": 1440, "height": 1000},
@@ -1276,6 +1272,12 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
                 expect(admin_card).to_be_visible()
                 expect(admin_card.locator(f".{logo_class}")).to_be_visible()
                 expect(admin_card.locator(".numoj-avatar")).to_be_visible()
+            for snapshot in snapshots.values():
+                for step in snapshot["steps"]:
+                    if step.get("agent_session_id"):
+                        url = f"{BASE_URL}/api/agent/sessions/{step['agent_session_id']}"
+                        assert admin_page.request.get(url).status == 200
+                        assert admin_page.request.post(url, data={"message": "禁止的人工消息"}).status == 403
             _assert_secret_absent(secret, admin_page.content(), "管理员提交列表 DOM")
             admin_context.close()
             context.close()

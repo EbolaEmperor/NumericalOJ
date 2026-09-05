@@ -1,4 +1,4 @@
-# 打榜赛 Agent-as-Judge 评测镜像：预装 Agent Harness CLI + 常见工具链 + report 命令。
+# 打榜赛 Agent-as-Judge 评测镜像：预装 Agent Harness CLI + 常见工具链。
 # 构建（在 why-server 上一次性执行）：
 #   docker build -t numericaloj-agent-judge:latest docker/agent_judge
 ARG LEAN4_IMAGE=numericaloj-lean4:latest
@@ -134,10 +134,9 @@ RUN chmod 0755 /usr/local/bin/lean \
     && lean --version \
     && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
-# report 上报命令
-COPY report /usr/local/bin/report
+# 共用 Harness 入口
 COPY run_harness /usr/local/bin/run_harness
 COPY pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
-RUN chmod +x /usr/local/bin/report /usr/local/bin/run_harness
+RUN chmod +x /usr/local/bin/run_harness
 
 WORKDIR /workspace

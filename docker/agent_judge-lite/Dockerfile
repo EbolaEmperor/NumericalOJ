@@ -1,5 +1,5 @@
 # 打榜赛 Agent-as-Judge 轻量评测镜像：预装四种 Harness CLI + 常用工具链。
-# 构建（上下文必须是 docker/，这样可复用 agent_judge/report 与 run_harness）：
+# 构建（上下文必须是 docker/，这样可复用 agent_judge/run_harness）：
 #   docker build -t numericaloj-lean4:latest docker/lean4
 #   docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker
 ARG LEAN4_IMAGE=numericaloj-lean4:latest
@@ -80,10 +80,9 @@ RUN chmod 0755 /usr/local/bin/lean \
     && lean --version \
     && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
-# report / run_harness 与原版镜像复用同一份脚本。
-COPY agent_judge/report /usr/local/bin/report
+# 与完整镜像复用同一份 Harness 入口。
 COPY agent_judge/run_harness /usr/local/bin/run_harness
 COPY agent_judge/pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
-RUN chmod +x /usr/local/bin/report /usr/local/bin/run_harness
+RUN chmod +x /usr/local/bin/run_harness
 
 WORKDIR /workspace
