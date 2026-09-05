@@ -1074,3 +1074,34 @@ def test_list_all_submissions_paginated_search_selects_current_attempt(
     assert rows[0]['agent_endpoint_label'] == 'Pi (generic-model)'
     assert (page, total) == (2, 3)
     assert conn.closed is True
+
+
+@pytest.mark.parametrize('value', ['-1', 'NaN', 'Infinity', '-Infinity', '1000000000000', '0.000000001', None, True, '', {}, []])
+def test_endpoint_prices_reject_invalid_or_lossy_values(value):
+    with pytest.raises(ValueError, match='端点价格'):
+        endpoint_db.normalize_endpoint_prices({'input_price_per_million': value})
+
+
+def test_endpoint_prices_preserve_exact_decimal_and_omitted_values():
+    existing = {'input_price_per_million': '3.12345678', 'cached_input_price_per_million': '0.125', 'output_price_per_million': '20'}
+    actual = endpoint_db.normalize_endpoint_prices({'output_price_per_million': '19.00000001'}, existing)
+    assert actual == {'input_price_per_million': '3.12345678', 'cached_input_price_per_million': '0.12500000', 'output_price_per_million': '19.00000001'}
+
+
+def test_endpoint_prices_are_persisted_in_matching_sql_positions():
+    payload = {'harness': 'pi', 'protocol': 'openai', 'base_url': 'https://endpoint.example/v1', 'api_key': 'key', 'model': 'judge-model',
+               'input_price_per_million': '1.25', 'cached_input_price_per_million': '0.1', 'output_price_per_million': '8'}
+    normalized = endpoint_db._normalize_endpoint_items('primary', [payload], [])
+    cursor = _FakeCursor()
+    endpoint_db._replace_endpoint_pool_with_cursor(cursor, 17, 'primary', normalized)
+    sql, params = cursor.calls[-1]
+    assert sql.count('%s') == len(params)
+    assert params[11:14] == ('1.25000000', '0.10000000', '8.00000000')
+    for field in endpoint_db.ENDPOINT_PRICE_FIELDS:
+        assert field in sql
+    normalized[0]['id'] = 9
+    cursor = _FakeCursor()
+    endpoint_db._replace_endpoint_pool_with_cursor(cursor, 17, 'primary', normalized)
+    sql, params = cursor.calls[-1]
+    assert sql.count('%s') == len(params)
+    assert params[9:12] == ('1.25000000', '0.10000000', '8.00000000')

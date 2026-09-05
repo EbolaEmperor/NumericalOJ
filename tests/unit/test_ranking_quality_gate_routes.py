@@ -505,7 +505,7 @@ def test_reverse_stream_keeps_gate_internals_for_admin(monkeypatch):
 
     assert "private-criteria-hash" in body
     assert "不得使用暗号" in body
-    assert "private gate stdout" in body
+    assert "private gate stdout" not in body
     assert "private.jsonl" not in body
 
 

@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """打榜赛 Agent-as-Judge 的 DB 层：评分规则表 + 逐条结果表 + 快照构造。"""
+from decimal import Decimal, InvalidOperation
+
 import hashlib
 import json
-import os
 import re
 import time
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection
-from backend.oj_modules.ranking.db import get_ranking_submission, submission_dir
+from backend.oj_modules.ranking.db import get_ranking_submission
 from backend.oj_modules.ranking.agent_judge import rules as aj
-from backend.oj_modules.ranking.reverse_judge.traces import (
-    collect_agent_token_usage,
-    collect_agent_trace_messages,
-)
 
 _aj_tables_ready = False
 
@@ -52,8 +49,12 @@ ENDPOINT_POOL_KINDS = (
     ENDPOINT_POOL_PRIMARY,
     ENDPOINT_POOL_QUALITY_GATE,
 )
+ENDPOINT_PRICE_FIELDS = (
+    'input_price_per_million',
+    'cached_input_price_per_million',
+    'output_price_per_million',
+)
 _QUALITY_GATE_UNSET = object()
-_AGENT_TRACE_SUBDIR = 'agent_judge_trace'
 
 
 def normalize_agent_harness(value):
@@ -142,6 +143,7 @@ def list_global_endpoints_for_agent_harness(harness, endpoints=None):
             'model': str(endpoint.get('model') or '').strip(),
             'thinking_enabled': bool(endpoint.get('thinking_enabled')),
             'thinking_format': str(endpoint.get('thinking_format') or 'none'),
+            **normalize_endpoint_prices(endpoint),
         })
     return candidates
 
@@ -310,6 +312,25 @@ def _normalize_endpoint_pool_kind(value):
     return pool_kind if pool_kind in ENDPOINT_POOL_KINDS else ENDPOINT_POOL_PRIMARY
 
 
+def normalize_endpoint_prices(payload, existing_endpoint=None):
+    """保留十进制精度；端点池单价与全站端点使用相同的 DECIMAL(20,8)。"""
+    existing = existing_endpoint or {}
+    prices = {}
+    for field in ENDPOINT_PRICE_FIELDS:
+        raw = payload.get(field, existing.get(field, '0'))
+        try:
+            value = Decimal(str(raw))
+            if not value.is_finite() or value < 0 or value >= Decimal('1000000000000'):
+                raise ValueError('端点价格必须是非负数且小于一万亿元')
+            rounded = value.quantize(Decimal('0.00000001'))
+            if rounded != value:
+                raise ValueError('端点价格最多支持八位小数')
+        except (InvalidOperation, TypeError) as exc:
+            raise ValueError('端点价格必须是有效的非负数') from exc
+        prices[field] = format(rounded, 'f')
+    return prices
+
+
 def _endpoint_row(row):
     status = normalize_endpoint_status(
         row.get('status'),
@@ -338,6 +359,7 @@ def _endpoint_row(row):
         'base_url': row['base_url'] or '',
         'api_key': row['api_key'] or '',
         'model': (row.get('model') or ''),
+        **normalize_endpoint_prices(row),
         'context_window_tokens': int(
             row.get('context_window_tokens') or DEFAULT_ENDPOINT_CONTEXT_WINDOW_TOKENS
         ),
@@ -366,6 +388,7 @@ def _list_endpoints(competition_id, pool_kind, enabled_only=False):
         with conn.cursor() as cursor:
             sql = ("SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,"
                    " context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,"
+                   " input_price_per_million, cached_input_price_per_million, output_price_per_million,"
                    " concurrency_limit, enabled, status, ordering "
                    "FROM ranking_agent_judge_endpoints "
                    "WHERE competition_id = %s AND pool_kind = %s "
@@ -407,6 +430,7 @@ def list_paused_agent_judge_endpoints():
                 """
                 SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,
                        context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,
+                       input_price_per_million, cached_input_price_per_million, output_price_per_million,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE status = 'paused'
@@ -612,6 +636,7 @@ def _normalize_endpoint_items(pool_kind, items, existing_rows):
                            'effective_protocol': effective_protocol,
                            'base_url': base_url, 'api_key': api_key, 'model': model,
                            **model_options,
+                           **normalize_endpoint_prices(source_endpoint if source_endpoint is not None else it, existing_endpoint),
                            'thinking_format': thinking_format,
                            'concurrency_limit': climit, 'status': status,
                            'enabled': enabled, 'ordering': idx})
@@ -648,6 +673,9 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
                     max_output_tokens = %s,
                     thinking_compatibility = %s,
                     thinking_format = %s,
+                    input_price_per_million = %s,
+                    cached_input_price_per_million = %s,
+                    output_price_per_million = %s,
                     concurrency_limit = %s,
                     enabled = %s,
                     status = %s,
@@ -658,6 +686,7 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
                  endpoint['context_window_tokens'], endpoint['max_output_tokens'],
                  1 if endpoint['thinking_compatibility'] else 0,
                  endpoint.get('thinking_format'),
+                 *(endpoint[field] for field in ENDPOINT_PRICE_FIELDS),
                  endpoint['concurrency_limit'], endpoint['enabled'], endpoint['status'],
                  endpoint['ordering'], endpoint['id'], competition_id, pool_kind),
             )
@@ -666,12 +695,14 @@ def _replace_endpoint_pool_with_cursor(cursor, competition_id, pool_kind, normal
                 "INSERT INTO ranking_agent_judge_endpoints"
                 " (competition_id, pool_kind, harness, protocol, base_url, api_key, model,"
                 " context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,"
+                " input_price_per_million, cached_input_price_per_million, output_price_per_million,"
                 " concurrency_limit, enabled, status, ordering)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (competition_id, pool_kind, endpoint['harness'], endpoint.get('protocol'), endpoint['base_url'],
                  endpoint['api_key'], endpoint['model'], endpoint['context_window_tokens'],
                  endpoint['max_output_tokens'], 1 if endpoint['thinking_compatibility'] else 0,
                  endpoint.get('thinking_format'),
+                 *(endpoint[field] for field in ENDPOINT_PRICE_FIELDS),
                  endpoint['concurrency_limit'],
                  endpoint['enabled'], endpoint['status'], endpoint['ordering']),
             )
@@ -730,6 +761,7 @@ def save_agent_judge_configuration(
                 """
                 SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,
                        context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,
+                       input_price_per_million, cached_input_price_per_million, output_price_per_million,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE competition_id = %s AND pool_kind = %s
@@ -808,6 +840,7 @@ def save_reverse_quality_gate_configuration(
                 """
                 SELECT id, competition_id, pool_kind, harness, protocol, base_url, api_key, model,
                        context_window_tokens, max_output_tokens, thinking_compatibility, thinking_format,
+                       input_price_per_million, cached_input_price_per_million, output_price_per_million,
                        concurrency_limit, enabled, status, ordering
                 FROM ranking_agent_judge_endpoints
                 WHERE competition_id = %s AND pool_kind = %s
@@ -1044,61 +1077,16 @@ def _format_now():
     return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
 
 
-def _safe_attempt_component(attempt_id):
-    value = str(attempt_id or 'legacy').strip()
-    value = re.sub(r'[^A-Za-z0-9_.-]+', '_', value).strip('._')
-    return value[:96] or 'legacy'
-
-
-def agent_judge_trace_dir(submission_id, attempt_id):
-    """返回当前评测 attempt 的受信任轨迹目录。
-
-    目录不在选手 ZIP 解压出的 workspace 内，不能被附件预置；attempt 隔离也保证
-    旧 worker 无法把上一轮轨迹混入重测后的评分详情。
-    """
-    return os.path.join(
-        submission_dir(int(submission_id)),
-        _AGENT_TRACE_SUBDIR,
-        _safe_attempt_component(attempt_id),
-    )
-
-
 def agent_judge_trace_id(attempt_id):
     """返回可安全下发给前端的 attempt 标识，不暴露数据库中的原始 UUID。"""
     value = str(attempt_id or 'legacy').encode('utf-8', 'replace')
     return hashlib.sha256(value).hexdigest()[:16]
 
 
-def _execution_trace_status(submission_status):
-    status = str(submission_status or '')
-    if status in ('Judging', 'Pending', 'Queued'):
-        return 'running' if status == 'Judging' else 'pending'
-    if status == 'Accepted':
-        return 'passed'
-    if status == 'Error':
-        return 'error'
-    return 'pending'
-
-
-def _build_execution_trace_payload(submission):
-    trace_dir = agent_judge_trace_dir(
-        submission.get('id'), submission.get('judge_attempt_id'),
-    )
-    return {
-        'trace_id': agent_judge_trace_id(submission.get('judge_attempt_id')),
-        'status': _execution_trace_status(submission.get('status')),
-        'error_message': submission.get('error_message') or '',
-        'stdout': '',
-        'stderr': '',
-        # 原始 JSONL 只留在服务端用于审计，不再随评分详情下发。
-        'trace_files': [],
-        'trace_messages': collect_agent_trace_messages(trace_dir),
-        'token_usage': collect_agent_token_usage(trace_dir),
-    }
-
-
 def build_judge_snapshot(submission_id):
     """组合提交 + 规则 + 已上报结果 → SSE 快照（effective 由纯逻辑按 DAG 重算）。"""
+    from backend.oj_modules.agents.sessions import get_judge_session_for_attempt
+
     submission = get_ranking_submission(submission_id)
     if not submission:
         return None
@@ -1141,7 +1129,9 @@ def build_judge_snapshot(submission_id):
         'total_score': aj.total_score(computed) if computed else 0.0,
         'timed_out': timed_out,
         'rules': rule_payloads,
-        'execution_trace': _build_execution_trace_payload(submission),
+        'agent_session_id': (get_judge_session_for_attempt(
+            submission_id, submission.get('judge_attempt_id'), 'agent_judge',
+        ) or {}).get('session_id'),
         'last_updated': _format_now(),
     }
 

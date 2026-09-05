@@ -2412,44 +2412,6 @@ def ranking_save_reverse_quality_gate(competition_id):
 _AGENT_TRACE_RESULT_FILE_RE = re.compile(
     r'result_[0-9a-fA-F]{32}\.jsonl(?:\.rule_\d+\.jsonl)?', re.I,
 )
-_AGENT_TRACE_PUBLIC_PHASE_RE = re.compile(r'^(?:setup|final|rule_\d+)$')
-
-
-def _public_agent_trace_message(message):
-    """普通参赛者只看事件形态/阶段；自由文本完整轨迹仅管理员可见。"""
-    if not isinstance(message, dict):
-        return None
-    kind = str(message.get('kind') or 'assistant')
-    if kind not in {'assistant', 'thinking', 'tool', 'subagent'}:
-        kind = 'assistant'
-    titles = {
-        'assistant': 'AI 回复',
-        'thinking': '思考片段',
-        'tool': '工具调用',
-        'subagent': '派出 subagent',
-    }
-    phase = str(message.get('phase') or '')
-    if not _AGENT_TRACE_PUBLIC_PHASE_RE.fullmatch(phase):
-        phase = ''
-    projected = {
-        'kind': kind,
-        'title': titles[kind],
-        'text': phase.replace('_', ' ') if phase else '',
-        'meta': phase,
-        'format': 'text',
-    }
-    for key in ('line', 'offset', 'event_index'):
-        value = message.get(key)
-        if isinstance(value, int):
-            projected[key] = value
-    source = str(message.get('source') or '')
-    if re.fullmatch(r'(?:claude|docker)(?:-[A-Za-z0-9]+)*', source):
-        projected['source'] = source
-    if phase:
-        projected['phase'] = phase
-    return projected
-
-
 def _redact_agent_trace_value(value, sensitive_values=()):
     if isinstance(value, dict):
         return {
@@ -2470,27 +2432,13 @@ def _redact_agent_trace_value(value, sensitive_values=()):
 
 def _project_agent_judge_snapshot(snapshot, *, include_internal=False,
                                   sensitive_values=(), redaction_ready=True):
-    """投影评分轨迹：所有查看者都不拿原始轨迹文件，并隐藏随机结果文件名。"""
+    """评分弹窗只返回结果；评测会话链接仅对管理员可见。"""
     if not isinstance(snapshot, dict):
         return snapshot
     projected = copy.deepcopy(snapshot)
-    trace = projected.get('execution_trace')
-    if isinstance(trace, dict):
-        trace = _redact_agent_trace_value(
-            trace, tuple(sensitive_values or ()),
-        )
-        trace['trace_files'] = []
-        projected['execution_trace'] = trace
-    if isinstance(trace, dict) and not include_internal:
-        trace['trace_files'] = []
-        trace['stdout'] = ''
-        trace['stderr'] = ''
-        trace['trace_messages'] = [
-            safe for safe in (
-                _public_agent_trace_message(message)
-                for message in trace.get('trace_messages') or []
-            ) if safe is not None
-        ]
+    projected.pop('execution_trace', None)
+    if not include_internal:
+        projected.pop('agent_session_id', None)
         projected['error_message'] = _redact_agent_trace_value(
             projected.get('error_message'), tuple(sensitive_values or ()),
         ) if redaction_ready else ''
@@ -2643,10 +2591,17 @@ def _project_reverse_judge_snapshot(snapshot, *, include_internal=False):
     if not isinstance(steps, list):
         return projected
 
-    # 轨迹消息仍用于分段式 UI；原始 JSONL 始终只保留在服务器上。
+    # 兼容尚未过期的旧进度缓存，轨迹统一通过通用 Agent 的鉴权接口读取。
     for step in steps:
-        if isinstance(step, dict):
-            step['trace_files'] = []
+        if not isinstance(step, dict):
+            continue
+        for field in ('trace_files', 'trace_messages', 'execution_trace', 'token_usage'):
+            step.pop(field, None)
+        if step.get('step_key') in ('quality_gate', 'agent_answer'):
+            step.pop('stdout', None)
+            step.pop('stderr', None)
+        if not include_internal and step.get('step_key') != 'agent_answer':
+            step.pop('agent_session_id', None)
     if include_internal:
         return projected
 
@@ -2687,11 +2642,6 @@ def _project_reverse_judge_snapshot(snapshot, *, include_internal=False):
                 for _ in range(violation_count)
             ],
         }
-        # 当前门禁不产生日志；这里同时约束未来实现，避免经旁路泄露审核上下文。
-        step['stdout'] = ''
-        step['stderr'] = ''
-        step['trace_files'] = []
-        step['trace_messages'] = []
         if gate_rejected and step.get('error_message'):
             step['error_message'] = summary
     if gate_rejected and projected.get('error_message'):
