@@ -1,4 +1,4 @@
-"""历史 Judge 输入恢复：只采纳原文或有归档摘要佐证的旧门禁模板。"""
+"""历史 Judge 输入恢复：按真实轮次恢复原文或冻结的旧模板。"""
 
 import hashlib
 import json
@@ -11,7 +11,7 @@ from scripts import backfill_judge_history_prompts as backfill
 
 def _row(**changes):
     return {
-        'session_id': 'jd-history', 'submission_id': 7, 'attempt_id': 'current',
+        'session_id': 'jd-history', 'task_id': 'jd-history', 'submission_id': 7, 'attempt_id': 'current',
         'judge_kind': 'reverse_answer', 'harness': 'claude_code',
         'turn_prompt': backfill.PLACEHOLDER, 'message_prompt': backfill.PLACEHOLDER,
         **changes,
@@ -82,7 +82,7 @@ def test_native_and_combined_deduplicate_ids_but_keep_repeated_text_from_distinc
 
     assert result['status'] == 'restored'
     assert result['prompt_count'] == 2
-    assert result['text'].count('\n\n继续') == 2
+    assert [turn['text'] for turn in result['turns']] == ['继续', '继续']
 
 
 def test_only_corresponding_attempt_logs_are_read_and_student_workspaces_are_ignored(paths):
@@ -94,9 +94,9 @@ def test_only_corresponding_attempt_logs_are_read_and_student_workspaces_are_ign
 
     for kind in ('reverse_answer', 'agent_judge'):
         result = backfill.recover_prompt(_row(judge_kind=kind))
-        assert result['text'] == kind
+        assert result['turns'][0]['text'] == kind
         assert result['prompt_count'] == 1
-    assert backfill.recover_prompt(_row(judge_kind='agent_judge', attempt_id='unknown-workspace-submission'))['status'] == 'missing'
+    assert backfill.recover_prompt(_row(judge_kind='agent_judge', attempt_id='unknown-workspace-submission'))['status'] == 'reconstructed'
 
 
 def test_quality_gate_never_recovers_from_answer_logs(paths):
@@ -106,11 +106,11 @@ def test_quality_gate_never_recovers_from_answer_logs(paths):
     result = backfill.recover_prompt(_row(judge_kind='reverse_quality'))
 
     assert result['status'] == 'missing'
-    assert result['text'] == backfill.MISSING_PROMPT
+    assert result['turns'][0]['text'] == backfill.MISSING_PROMPT
 
 
 @pytest.mark.parametrize('archive_state', ['matched', 'changed', 'not_agentic', 'absent'])
-def test_quality_gate_requires_archived_agentic_review_and_matching_criteria(paths, archive_state):
+def test_quality_gate_restores_fixed_template_and_marks_only_missing_criteria(paths, archive_state):
     _, generic = paths
     criteria = '题面明确且样例自洽'
     row = _row(judge_kind='reverse_quality', reverse_quality_gate_prompt=f'  {criteria}\n')
@@ -126,10 +126,14 @@ def test_quality_gate_requires_archived_agentic_review_and_matching_criteria(pat
     recovered = backfill.recover_prompt(row)
 
     if archive_state == 'matched':
-        assert recovered['status'] == 'restored'
+        assert recovered['status'] == 'reconstructed'
         assert recovered['prompt_count'] == 1
         # 冻结统一前 2d68dae^ 的原模板字节；不以当前业务模板作期望值。
-        assert hashlib.sha256(recovered['text'].encode()).hexdigest() == '4a09f148c300e9f585976d3b627e7d54d2a4a02399ad1ea5f9b67d717392ee5d'
+        assert hashlib.sha256(recovered['turns'][0]['text'].encode()).hexdigest() == '4a09f148c300e9f585976d3b627e7d54d2a4a02399ad1ea5f9b67d717392ee5d'
+    elif archive_state == 'changed':
+        assert recovered['status'] == 'reconstructed'
+        assert '[历史管理员审核标准未保留]' in recovered['turns'][0]['text']
+        assert '新审核标准' not in recovered['turns'][0]['text']
     else:
         assert recovered['status'] == 'missing'
         assert recovered['prompt_count'] == 0
@@ -150,7 +154,7 @@ def test_missing_denied_and_malformed_logs_do_not_block_recoverable_input(paths,
 
     result = backfill.recover_prompt(_row())
 
-    assert result['text'] == '能够恢复的原文'
+    assert result['turns'][0]['text'] == '能够恢复的原文'
     assert result['prompt_count'] == 1
     assert any('无法读取' in warning for warning in result['warnings'])
     assert sum('无法解析' in warning for warning in result['warnings']) == 2
@@ -166,8 +170,7 @@ def test_multiple_full_prompts_keep_actual_timezone_order_without_truncation(pat
     result = backfill.recover_prompt(_row())
 
     assert result['prompt_count'] == 2
-    assert first in result['text']
-    assert result['text'].index(first) < result['text'].index('第二轮输入')
+    assert [turn['text'] for turn in result['turns']] == [first, '第二轮输入']
 
 
 def _args(tmp_path):
@@ -231,3 +234,28 @@ def test_interrupted_run_preserves_progress_and_records_current_session(monkeypa
     assert report['completed'] is False
     assert report['interrupted_at'] == 'failed'
     assert report['sessions'] == [previous, {'session_id': 'first', 'status': 'missing'}]
+
+
+def test_v1_completed_report_does_not_prevent_correcting_merged_history(monkeypatch, tmp_path):
+    _valid_backup(monkeypatch)
+    (tmp_path / 'report.json').write_text(json.dumps({'version': 1, 'completed': True, 'sessions': []}))
+    calls = []
+    monkeypatch.setattr(backfill, 'load_candidates', lambda: [_row()])
+    def fill(row):
+        calls.append(row['session_id'])
+        return {'session_id': row['session_id'], 'status': 'reconstructed'}
+    monkeypatch.setattr(backfill, 'backfill_one', fill)
+
+    assert backfill.main(_args(tmp_path)) == 0
+
+    assert calls == ['jd-history']
+    assert json.loads((tmp_path / 'report.json').read_text())['version'] == 2
+
+
+def test_v1_merged_actual_text_stays_separate_when_native_log_is_missing(paths):
+    merged = backfill.MERGED_PREFIX + '\n\n### 第 1 次输入\n\n原始首轮\n\n### 第 2 次输入\n\n原始收尾'
+
+    recovered = backfill.recover_prompt(_row(turn_prompt=merged, message_prompt=merged))
+
+    assert [turn['text'] for turn in recovered['turns']] == ['原始首轮', '原始收尾']
+    assert recovered['status'] == 'restored'
