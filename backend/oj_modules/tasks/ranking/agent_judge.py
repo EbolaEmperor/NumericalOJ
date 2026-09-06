@@ -715,13 +715,13 @@ def _release_task_slot(client, task_id):
             _release_slot(client, key, token)
 
 
-def _judge_input_files(submission, competition, rules, staging):
+def _judge_input_files(submission, competition, rules, staging, *, include_dependencies=True):
     """仅在宿主临时目录解包，随后由通用 workspace 复制输入。"""
     staging = Path(staging)
     source = submission.get('code_path')
     files = {
         'description.md': str(competition.get('description') or '').encode(),
-        'rules.json': json.dumps(aj.build_rules_json(rules), ensure_ascii=False).encode(),
+        'rules.json': json.dumps(aj.build_rules_json(rules, include_dependencies=include_dependencies), ensure_ascii=False).encode(),
     }
     if source:
         if str(source).lower().endswith('.zip') or zipfile.is_zipfile(source):
@@ -820,7 +820,9 @@ def _dispatch_judge_phase(task, client, submission, competition, rules, session,
             return _wait_for_judge_turn(task, sid, attempt, queued=True)
         timeout = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
         with TemporaryDirectory(prefix='numoj-judge-') as staging:
-            files = None if session else _judge_input_files(submission, competition, rules, staging)
+            files = None if session else _judge_input_files(
+                submission, competition, rules, staging, include_dependencies=phase == 'single',
+            )
             if phase == 'single':
                 template = [{'rule_id': int(rule['rule_id']), 'result': None, 'evidence': ''} for rule in rules]
                 files = {**(files or {}), 'judge_results.json': json.dumps(template, ensure_ascii=False, indent=2).encode()}

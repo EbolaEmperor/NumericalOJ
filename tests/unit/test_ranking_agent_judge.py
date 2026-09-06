@@ -159,10 +159,38 @@ def test_parse_invalid_returns_none(bad):
 
 
 # ---- build_rules_json ----
-def test_build_rules_json_shape():
+def test_build_rules_json_hides_values_and_selects_dependencies_without_changing_scoring():
     rules = aj.normalize_rules(_rules((1, 10, []), (2, 20, [1])))
-    out = aj.build_rules_json(rules)
-    assert out[1] == {'rule_id': 2, 'rule': '规则2', 'value': 20.0, 'dependence': [1]}
+    assert aj.build_rules_json(rules) == [
+        {'rule_id': 1, 'rule': '规则1', 'dependence': []},
+        {'rule_id': 2, 'rule': '规则2', 'dependence': [1]},
+    ]
+    assert aj.build_rules_json(rules, include_dependencies=False) == [
+        {'rule_id': 1, 'rule': '规则1'}, {'rule_id': 2, 'rule': '规则2'},
+    ]
+    assert rules[1]['value'] == 20.0 and rules[1]['dependencies'] == [1]
+    assert aj.compute_results(rules, {1: 'failed', 2: 'pass'}, finalize=True)[2] == {
+        'effective': 'skipped', 'score': 0.0,
+    }
+    assert aj.total_score(aj.compute_results(rules, {1: 'pass', 2: 'pass'}, finalize=True)) == 30.0
+
+
+def test_single_prompt_keeps_dependency_instructions_without_values():
+    prompt = aj.build_prompt('测试比赛')
+    assert 'rule_id、rule（描述）、dependence（前置规则的 rule_id 列表）' in prompt
+    assert '依赖门槛' in prompt and '因前置规则未通过' in prompt
+    assert 'value' not in prompt and '分值' not in prompt
+
+
+@pytest.mark.parametrize('continuation', [False, True])
+def test_rule_prompt_omits_values_and_dependencies_for_both_turn_forms(continuation):
+    prompt = aj.build_rule_prompt('测试比赛', {
+        'rule_id': 7, 'rule_name': '正确性', 'rule_text': '运行样例并核对结果',
+        'value': 987654.0, 'dependencies': [97531],
+    }, continuation=continuation)
+    assert '- rule_id: 7' in prompt and '- rule: 运行样例并核对结果' in prompt
+    assert 'judge_result_7.json' in prompt
+    assert not any(text in prompt for text in ('value', 'dependence', '987654', '97531'))
 
 
 # ---- render_md_math ----

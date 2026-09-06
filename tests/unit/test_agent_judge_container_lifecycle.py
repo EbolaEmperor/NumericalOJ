@@ -445,7 +445,11 @@ def test_single_dispatches_one_generic_turn_and_injects_materials_once(single_fl
     assert dispatched['prompt'] == m.aj.build_prompt('单轮测试')
     assert dispatched['timeout_seconds'] == 90
     assert dispatched['files']['description.md'] == '比赛说明'.encode()
-    assert json.loads(dispatched['files']['rules.json']) == m.aj.build_rules_json(flow.rules)
+    assert json.loads(dispatched['files']['rules.json']) == [
+        {'rule_id': rule['rule_id'], 'rule': rule['rule_text'], 'dependence': rule['dependencies']}
+        for rule in flow.rules
+    ]
+    assert 'value' not in dispatched['prompt'] and '依赖门槛' in dispatched['prompt']
     assert json.loads(dispatched['files']['judge_results.json']) == [
         {'rule_id': rule['rule_id'], 'result': None, 'evidence': ''} for rule in flow.rules
     ]
@@ -458,6 +462,19 @@ def test_single_dispatches_one_generic_turn_and_injects_materials_once(single_fl
     assert m._advance_agent_judge(flow.task, flow.client, flow.submission, flow.competition)['success']
     assert len(flow.submissions) == 1
     assert flow.updates[-1][0][2:4] == (30.0, 'Accepted')
+
+
+def test_topology_initial_workspace_omits_rule_values_and_dependencies(single_flow):
+    flow = single_flow
+    flow.competition['agent_judge_orchestration_mode'] = 'topological'
+    with pytest.raises(m.Retry):
+        m._advance_agent_judge(flow.task, flow.client, flow.submission, flow.competition)
+    dispatched, = flow.submissions
+    assert dispatched['task_id'] == f'{flow.session_id}-setup'
+    assert json.loads(dispatched['files']['rules.json']) == [
+        {'rule_id': rule['rule_id'], 'rule': rule['rule_text']} for rule in flow.rules
+    ]
+    assert flow.rules[1]['value'] == 20.0 and flow.rules[1]['dependencies'] == [1]
 
 
 def test_single_file_keeps_first_valid_known_rule_and_applies_dependency_gates(single_flow):
