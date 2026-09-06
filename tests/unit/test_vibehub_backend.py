@@ -1439,3 +1439,78 @@ def test_schema_contains_vibehub_project_and_immutable_version_tables():
     assert "UNIQUE KEY `uq_vibehub_versions_project_number`" in sql
     assert "`review_version_id` bigint unsigned" in sql
     assert "`last_reviewed_version_id` bigint unsigned" in sql
+
+
+@pytest.mark.parametrize('actor,channel,allowed', [
+    (USER, 'latest', False),
+    (USER, 'review', False),
+    (ADMIN, 'review', True),
+    ({**USER, 'is_admin': 1}, 'latest', True),
+    ({**USER, 'is_admin': 1}, 'review', True),
+])
+def test_gpu_pending_runtime_permission_applies_to_authors_and_admins(monkeypatch, actor, channel, allowed):
+    version = _version_row(12, 3, 'pending')
+    version['manifest_json'] = '{"gpu_memory_mib":4096}'
+    conn = _Connection([_project_row(), version])
+    monkeypatch.setattr(services, 'get_db_connection', lambda: conn)
+    if not allowed:
+        with pytest.raises(services.VibeHubPermissionError):
+            services.resolve_project_package('demo-vibe', audience=channel, actor=actor)
+    else:
+        package = services.resolve_project_package('demo-vibe', audience=channel, actor=actor)
+        assert package['gpu'] == {'memory_mib': 4096, 'version_id': 12}
+
+
+@pytest.mark.parametrize('approved', [0, 2048])
+def test_gpu_approved_version_uses_approved_not_requested_memory(monkeypatch, approved):
+    version = _version_row(12, 3, 'approved')
+    version['manifest_json'] = json.dumps({'gpu_memory_mib': 4096, 'gpu_approved_memory_mib': approved})
+    conn = _Connection([_project_row(public_version_id=12), version])
+    monkeypatch.setattr(services, 'get_db_connection', lambda: conn)
+    package = services.resolve_project_package('demo-vibe', audience='public', actor=USER)
+    assert package['gpu'] == ({'memory_mib': approved, 'version_id': 12} if approved else None)
+
+
+def test_gpu_cards_block_only_unapproved_author_preview():
+    row = _project_row(latest_manifest_json='{"gpu_memory_mib":4096}')
+    assert services._serialize_project(row, audience='latest', actor=USER)['play_url'] is None
+    assert services._serialize_project(row, audience='latest', actor=ADMIN)['play_url']
+    assert services._serialize_project(row, audience='public', actor=USER)['play_url']
+
+
+@pytest.mark.parametrize('approved', [0, 2048, None])
+def test_gpu_review_persists_only_admin_approved_limit(tmp_path, monkeypatch, approved):
+    version = _version_row(12, 3, 'pending')
+    version['manifest_json'] = '{"gpu_memory_mib":4096}'
+    conn = _Connection([_project_row(), version, _project_row(public_version_id=12)])
+    monkeypatch.setattr(services, 'get_db_connection', lambda: conn)
+    monkeypatch.setattr(services, '_promote_latest_image', lambda *_: None)
+    monkeypatch.setattr(services, '_version_identity_map', lambda *_: {12: 3})
+    monkeypatch.setattr(storage, 'read_pointer', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(storage, 'write_pointer', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(storage, 'prune_project_snapshots', lambda *_args, **_kwargs: None)
+    services.review_submission(ADMIN, 'demo-vibe', 'approve', expected_version=3, gpu_memory_mib=approved, upload_root=tmp_path)
+    saved = next(params for sql, params in conn.fake_cursor.calls if 'SET manifest_json' in sql)
+    assert json.loads(saved[0])['gpu_approved_memory_mib'] == (4096 if approved is None else approved)
+    assert conn.committed
+
+
+def test_gpu_review_cannot_grant_more_than_requested(tmp_path, monkeypatch):
+    version = _version_row(12, 3, 'pending')
+    version['manifest_json'] = '{"gpu_memory_mib":4096}'
+    conn = _Connection([_project_row(), version])
+    monkeypatch.setattr(services, 'get_db_connection', lambda: conn)
+    with pytest.raises(services.VibeHubError, match='超过作者申请'):
+        services.review_submission(ADMIN, 'demo-vibe', 'approve', expected_version=3, gpu_memory_mib=8192, upload_root=tmp_path)
+    assert conn.rolled_back
+    assert not any(sql.startswith('UPDATE') for sql, _ in conn.fake_cursor.calls)
+
+
+def test_gpu_pending_cover_resolution_remains_available_without_granting_runtime(monkeypatch):
+    version = _version_row(12, 3, 'pending')
+    version['manifest_json'] = '{"gpu_memory_mib":4096}'
+    conn = _Connection([_project_row(), version])
+    monkeypatch.setattr(services, 'get_db_connection', lambda: conn)
+    package = services.resolve_project_package('demo-vibe', audience='latest', actor=USER, for_runtime=False)
+    assert package['version'] == 3
+    assert package['gpu'] is None

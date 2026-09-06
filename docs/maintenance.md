@@ -391,3 +391,12 @@ frontend/
 - 事故恢复时间，以及同类事故是否有自动化回归测试。
 
 指标变差时先定位导致长期总成本上升的边界，再决定重构；不要为了降低行数或提高覆盖率制造更多间接层。
+
+### VibeHub GPU 运行条件
+
+GPU 作品要求 Linux Docker 宿主安装兼容 RTX 3090 Ti 的 NVIDIA 驱动、NVIDIA Container Toolkit，
+并允许部署用户执行宿主 `nvidia-smi`、`docker top` 与按设备 UUID 启动 GPU 容器。
+平台选择宿主 GPU 0，仅暴露 `compute` 能力；CPU 作品显式禁用 NVIDIA 设备。
+显存监测依赖同一宿主的 PID，因此不支持远程 Docker daemon 或 CUDA MPS 代理进程代管。
+Web 的现有 runtime reaper 同时核对 GPU 授权与显存；监测失败停止 GPU 作品。
+GPU 申请、批准值存于版本 `manifest_json`，不需要 schema 迁移。部署脚本不会自动安装 GPU 驱动或 Toolkit。

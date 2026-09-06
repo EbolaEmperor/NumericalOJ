@@ -496,7 +496,7 @@ def test_create_retries_after_rolled_back_slug_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(
         services,
         "_serialize_project",
-        lambda row, *, audience: {"row": row, "audience": audience},
+        lambda row, *, audience, actor=None: {"row": row, "audience": audience},
     )
     built = []
     monkeypatch.setattr(
@@ -646,7 +646,7 @@ def test_metadata_edit_checks_source_size_before_clone(tmp_path, monkeypatch):
     monkeypatch.setattr(
         services,
         "_serialize_project",
-        lambda row, *, audience: {"row": row, "audience": audience},
+        lambda row, *, audience, actor=None: {"row": row, "audience": audience},
     )
 
     order = []

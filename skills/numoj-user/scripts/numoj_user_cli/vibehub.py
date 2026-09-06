@@ -10,6 +10,7 @@ client_from_args = common.client_from_args
 
 
 PROJECT_FIELDS = (
+    "gpu_memory_mib", "gpu_approved_memory_mib", "runtime_blocked_reason",
     "id",
     "slug",
     "title",
@@ -78,7 +79,7 @@ def _output(resp, projector) -> None:
 
 def _metadata(args, *, creating=False) -> Dict[str, str]:
     data: Dict[str, str] = {}
-    for name in ("slug", "title", "summary", "tags", "cover_image"):
+    for name in ("slug", "title", "summary", "tags", "cover_image", "gpu_memory_mib"):
         value = getattr(args, name, None)
         if value is not None:
             data[name] = str(value)
@@ -170,6 +171,7 @@ def developer_guide(args: argparse.Namespace) -> None:
 def _add_metadata_args(parser, *, include_slug=False, require_title=False) -> None:
     if include_slug:
         parser.add_argument("--slug", help="Optional stable URL slug (lowercase letters, numbers, and hyphens).")
+    parser.add_argument("--gpu-memory-mib", type=int, help="申请 GPU 显存（256–24576 MiB）；0 表示关闭。")
     parser.add_argument("--title", required=require_title, help="Project title.")
     parser.add_argument("--summary", help="Short card summary.")
     parser.add_argument("--description", help="Full description text, or @file to read it from a file.")

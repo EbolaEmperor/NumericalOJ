@@ -14,6 +14,7 @@ from backend.oj_modules.vibehub import quotas, services, storage
 from backend.oj_modules.vibehub.guide import DEVELOPER_GUIDE_PATH, render_developer_guide
 from backend.oj_modules.vibehub.runtime import (
     VibeHubCapacityError,
+    VibeHubGPUError,
     VibeHubRuntimeError,
     get_runtime_manager,
 )
@@ -199,7 +200,10 @@ def acquire_runtime_lease(slug):
             base_path="/vibehub/runtime",
             package_digest=package["package_sha256"],
             storage_key=f"project-{package['project_id']}-{channel}",
+            **({"gpu_allocation": package["gpu"]} if package.get("gpu") else {}),
         )
+    except VibeHubGPUError as exc:
+        return json_error(str(exc), 429, code="gpu_unavailable")
     except VibeHubCapacityError:
         response, status = json_error("运行资源繁忙，请稍后重试。", 429)
         response.headers["Retry-After"] = "1"
@@ -279,7 +283,7 @@ def project_cover(slug):
     if not cover_image:
         raise services.VibeHubNotFoundError("该作品没有封面图")
     package = services.resolve_project_package(
-        slug, audience=view, actor=actor, upload_root=_upload_root(),
+        slug, audience=view, actor=actor, upload_root=_upload_root(), for_runtime=False,
     )
     app_dir = storage.resolve_snapshot_app(
         package["slug"], package["version"], upload_root=_upload_root(),
@@ -329,6 +333,7 @@ def review_project(slug):
             payload.get("decision"),
             note=payload.get("note") or "",
             expected_version=payload.get("expected_version"),
+            **({"gpu_memory_mib": payload["gpu_memory_mib"]} if "gpu_memory_mib" in payload else {}),
             upload_root=_upload_root(),
         )
     return json_success(project=project)

@@ -2025,3 +2025,55 @@ def test_proxy_slots_are_shared_across_processes(short_tmp):
             process.terminate()
             process.join(timeout=2)
     assert process.exitcode == 0
+
+
+@pytest.mark.parametrize('monitor_failure', [False, True])
+def test_gpu_reaper_stops_all_project_containers_and_blocks_restart(monkeypatch, tmp_path, monitor_failure):
+    manager = _manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, 'start_reaper', lambda: None)
+    monkeypatch.setattr(runtime.gpu, 'device', lambda *_: 'GPU-12345678-1234-1234-1234-123456789abc')
+    monkeypatch.setattr(runtime.gpu, 'invalid_allocations', lambda *_: set())
+    allocation = {'memory_mib': 4096, 'version_id': 12}
+    public = manager.acquire('gpu-demo', gpu_allocation=allocation)
+    preview = manager.acquire('gpu-demo', channel='latest', storage_key='project-1-latest', gpu_allocation=allocation)
+    cpu = manager.acquire('cpu-demo')
+    def measure(_docker, snapshots):
+        if monitor_failure:
+            raise runtime.gpu.GPUError('监测不可用')
+        return {runtime_id: 2500 for runtime_id in snapshots}
+    monkeypatch.setattr(runtime.gpu, 'usage', measure)
+    assert manager.reap_expired() == 2
+    assert public.container_name in manager.docker.stopped
+    assert preview.container_name in manager.docker.stopped
+    assert manager.docker.container_running(cpu.container_name)
+    with pytest.raises(runtime.VibeHubGPUError, match='60 秒'):
+        manager.acquire('gpu-demo', gpu_allocation=allocation)
+    gpu_cmd = manager.docker.run_commands[0]
+    assert gpu_cmd[gpu_cmd.index('--gpus') + 1] == 'device=GPU-12345678-1234-1234-1234-123456789abc'
+    assert 'NVIDIA_DRIVER_CAPABILITIES=compute' in gpu_cmd
+    assert 'NVIDIA_VISIBLE_DEVICES=void' in manager.docker.run_commands[2]
+
+
+def test_gpu_reaper_retires_old_policy_without_touching_new_allocation(monkeypatch, tmp_path):
+    manager = _manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, 'start_reaper', lambda: None)
+    monkeypatch.setattr(runtime.gpu, 'device', lambda *_: 'GPU-12345678-1234-1234-1234-123456789abc')
+    old = manager.acquire('gpu-demo', gpu_allocation={'memory_mib': 4096, 'version_id': 12})
+    new = manager.acquire('gpu-demo', gpu_allocation={'memory_mib': 2048, 'version_id': 12})
+    assert old.container_name != new.container_name
+    monkeypatch.setattr(runtime.gpu, 'invalid_allocations', lambda rows: {key for key, row in rows.items() if row['gpu']['memory_mib'] == 4096})
+    monkeypatch.setattr(runtime.gpu, 'usage', lambda _docker, rows: {key: 0 for key in rows})
+    assert manager.reap_expired() == 1
+    assert manager.docker.container_running(new.container_name)
+    with pytest.raises(runtime.VibeHubLeaseError):
+        manager.heartbeat(old.token)
+
+
+def test_first_gpu_acquire_wakes_existing_slow_reaper(monkeypatch, tmp_path):
+    manager = _manager(monkeypatch, tmp_path, reaper_interval_seconds=25)
+    monkeypatch.setattr(manager, 'start_reaper', lambda: None)
+    monkeypatch.setattr(runtime.gpu, 'device', lambda *_: 'GPU-12345678-1234-1234-1234-123456789abc')
+    assert not manager._gpu_polling
+    manager.acquire('gpu-demo', gpu_allocation={'memory_mib': 4096, 'version_id': 12})
+    assert manager._gpu_polling
+    assert manager._reaper_wakeup.is_set()

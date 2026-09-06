@@ -15,6 +15,7 @@ from backend.oj_modules.security.origin_guard import is_same_origin
 from backend.oj_modules.vibehub import services
 from backend.oj_modules.vibehub.runtime import (
     VibeHubCapacityError,
+    VibeHubGPUError,
     VibeHubLeaseError,
     VibeHubRequestTooLarge,
     VibeHubRuntimeError,
@@ -152,9 +153,12 @@ def runtime_acquire(slug):
             base_path="/vibehub/runtime",
             package_digest=package["package_sha256"],
             storage_key=f"project-{package['project_id']}-{channel}",
+            **({"gpu_allocation": package["gpu"]} if package.get("gpu") else {}),
         )
     except services.VibeHubError as exc:
         return jsonify(success=False, message=str(exc), code=exc.code), exc.status_code
+    except VibeHubGPUError as exc:
+        return jsonify(success=False, message=str(exc), code="gpu_unavailable"), 429
     except VibeHubCapacityError as exc:
         return _runtime_capacity_response(exc)
     except VibeHubRuntimeError as exc:

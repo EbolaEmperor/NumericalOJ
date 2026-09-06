@@ -8,7 +8,7 @@ import re
 import secrets
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection
-from backend.oj_modules.vibehub import quotas, storage
+from backend.oj_modules.vibehub import gpu, quotas, storage
 from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
@@ -131,6 +131,7 @@ SELECT
     lv.cover_image AS latest_cover_image,
     lv.review_status AS latest_review_status,
     lv.review_note AS latest_review_note,
+    lv.manifest_json AS latest_manifest_json,
     lv.created_at AS latest_version_created_at,
     pv.version_number AS public_version,
     pv.title AS public_title,
@@ -140,6 +141,7 @@ SELECT
     pv.cover_image AS public_cover_image,
     pv.review_status AS public_review_status,
     pv.review_note AS public_review_note,
+    pv.manifest_json AS public_manifest_json,
     pv.reviewed_at AS public_reviewed_at,
     rv.version_number AS submitted_version,
     rv.title AS review_title,
@@ -149,6 +151,7 @@ SELECT
     rv.cover_image AS review_cover_image,
     rv.review_status AS review_review_status,
     rv.review_note AS review_review_note,
+    rv.manifest_json AS review_manifest_json,
     rv.review_requested_at AS review_requested_at,
     xv.version_number AS last_reviewed_version,
     xv.review_status AS last_review_status,
@@ -291,6 +294,13 @@ def _metadata(
     }
 
 
+def _set_gpu_request(manifest, metadata, *, previous=None):
+    try:
+        gpu.set_request(manifest, metadata, previous=previous)
+    except gpu.GPUError as exc:
+        raise VibeHubError(str(exc)) from exc
+
+
 def _requested_slug(value=None) -> str:
     if value in (None, ""):
         return f"vibe-{secrets.token_hex(8)}"
@@ -317,7 +327,7 @@ def _without_private_workflow(project: dict) -> dict:
     return public
 
 
-def _serialize_project(row, *, audience: str, include_workflow=False) -> dict:
+def _serialize_project(row, *, audience: str, include_workflow=False, actor=None) -> dict:
     prefix = {"latest": "latest", "public": "public", "review": "review"}[audience]
     selected_version = row.get(
         {"latest": "latest_version", "public": "public_version", "review": "submitted_version"}[audience]
@@ -330,7 +340,16 @@ def _serialize_project(row, *, audience: str, include_workflow=False) -> dict:
         play_url = f"/vibehub/{slug}/play?channel=review"
     else:
         play_url = f"/vibehub/{slug}/play" if row.get("public_version_id") else None
+    requested, approved = gpu.manifest_policy(row.get(f"{prefix}_manifest_json"))
+    awaiting_gpu_review = bool(requested and row.get(f"{prefix}_review_status") != "approved")
+    runtime_blocked_reason = ""
+    if audience == "latest" and awaiting_gpu_review and (not _is_admin(actor) or row.get(f"{prefix}_review_status") != "pending"):
+        play_url = None
+        runtime_blocked_reason = "GPU 申请尚未审核通过，暂不可运行。"
     project = {
+        "gpu_memory_mib": requested if audience != "public" or include_workflow else approved,
+        "gpu_approved_memory_mib": approved,
+        "runtime_blocked_reason": runtime_blocked_reason,
         "id": row.get("id"),
         "slug": slug,
         "title": row.get(f"{prefix}_title") or "",
@@ -844,7 +863,7 @@ def _list_projects(*, limit=None, actor=None, gallery=False) -> list[dict]:
                 is_mine = _owns(row, actor)
                 is_review = admin and row.get("review_review_status") == "pending"
                 audience = "review" if is_review else ("latest" if is_mine else "public")
-                project = _serialize_project(row, audience=audience)
+                project = _serialize_project(row, audience=audience, actor=actor)
                 pending = is_review or is_mine and (
                     row.get("latest_version_id") != row.get("public_version_id")
                 )
@@ -884,7 +903,7 @@ def list_user_projects(actor) -> list[dict]:
                 (actor_id,),
             )
             return [
-                _serialize_project(row, audience="latest")
+                _serialize_project(row, audience="latest", actor=actor)
                 for row in (cursor.fetchall() or [])
             ]
     finally:
@@ -919,6 +938,7 @@ def get_project(slug: str, *, actor=None, audience=None) -> dict:
                 # 作者显式读取 public 投影时需要看到开发版本管理提示；管理员
                 # 对他人作品的 public 投影仍必须与其他访客完全相同。
                 include_workflow=selected == "public" and is_owner,
+                actor=actor,
             )
     finally:
         conn.close()
@@ -972,6 +992,7 @@ def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
                         app_dir=prepared.snapshot_dir / "app",
                         package_replaced=True,
                     )
+                    _set_gpu_request(prepared.manifest, metadata)
                     prepared.manifest["cover_image"] = normalized["cover_image"]
                     prepared.manifest["cover_image_mime"] = normalized["cover_image_mime"]
                     storage.generate_processed_cover(
@@ -1032,7 +1053,7 @@ def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
                     {1},
                     upload_root=upload_root,
                 )
-                return _serialize_project(row, audience="latest")
+                return _serialize_project(row, audience="latest", actor=actor)
             except Exception as exc:
                 if not committed:
                     conn.rollback()
@@ -1219,6 +1240,7 @@ def _create_next_version(
                             app_dir.parent / storage.PROCESSED_COVER_FILENAME,
                         )
 
+                    _set_gpu_request(manifest, metadata, previous=latest.get("manifest_json"))
                     previous_latest_image = _prepare_latest_image(
                         normalized_slug, app_dir,
                         package_digest=package_sha256,
@@ -1278,7 +1300,7 @@ def _create_next_version(
                     live_versions,
                     upload_root=upload_root,
                 )
-                return _serialize_project(row, audience="latest")
+                return _serialize_project(row, audience="latest", actor=actor)
             except Exception:
                 if not committed:
                     conn.rollback()
@@ -1320,7 +1342,7 @@ def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=N
 
 def edit_project(actor, slug: str, metadata, *, upload_root=None) -> dict:
     if not isinstance(metadata, dict) or not any(
-        key in metadata for key in ("title", "summary", "description", "tags", "cover_image")
+        key in metadata for key in ("title", "summary", "description", "tags", "cover_image", "gpu_memory_mib")
     ):
         raise VibeHubError("没有可更新的作品字段")
     return _create_next_version(
@@ -1391,6 +1413,7 @@ def review_submission(
     *,
     note="",
     expected_version=None,
+    gpu_memory_mib=None,
     upload_root=None,
 ) -> dict:
     _require_admin(actor)
@@ -1438,6 +1461,21 @@ def review_submission(
                             status_code=409,
                             code="review_stale",
                         )
+                    manifest = json.loads(version.get("manifest_json") or "{}")
+                    requested, _ = gpu.manifest_policy(manifest)
+                    if decision == "approve" and (requested or gpu_memory_mib is not None):
+                        try:
+                            approved = gpu.memory_limit(requested if gpu_memory_mib is None else gpu_memory_mib)
+                        except gpu.GPUError as exc:
+                            raise VibeHubError(str(exc)) from exc
+                        if approved > requested:
+                            raise VibeHubError("批准显存不能超过作者申请的额度")
+                        if requested:
+                            manifest["gpu_approved_memory_mib"] = approved
+                            cursor.execute(
+                                "UPDATE vibehub_versions SET manifest_json = %s WHERE id = %s",
+                                (json.dumps(manifest, ensure_ascii=False), version["id"]),
+                            )
                     rejected_response = None
                     if decision == "reject":
                         rejected_response = _serialize_project(
@@ -1603,7 +1641,7 @@ def set_featured(actor, slug: str, featured: bool) -> dict:
         conn.close()
 
 
-def resolve_project_package(slug: str, *, audience="public", actor=None, upload_root=None) -> dict:
+def resolve_project_package(slug: str, *, audience="public", actor=None, upload_root=None, for_runtime=True) -> dict:
     """为运行时解析已授权的作品版本。"""
     if audience not in {"public", "latest", "review"}:
         raise VibeHubError("未知的作品包视图")
@@ -1637,7 +1675,17 @@ def resolve_project_package(slug: str, *, audience="public", actor=None, upload_
         manifest = json.loads(version.get("manifest_json") or "{}")
     except json.JSONDecodeError:
         manifest = {}
+    requested, approved = gpu.manifest_policy(manifest)
+    if not for_runtime:
+        selected_gpu = 0
+    elif requested and version.get("review_status") != "approved":
+        if not _is_admin(actor) or version.get("review_status") != "pending":
+            raise VibeHubPermissionError("GPU 申请尚未审核通过，暂不可运行。")
+        selected_gpu = requested
+    else:
+        selected_gpu = approved
     return {
+        "gpu": {"memory_mib": selected_gpu, "version_id": int(version["id"])} if selected_gpu else None,
         "project_id": int(project["id"]),
         "slug": project["slug"],
         "version_id": int(version["id"]),

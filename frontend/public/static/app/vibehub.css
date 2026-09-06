@@ -189,6 +189,24 @@ body.vibe-modal-open { overflow: hidden; }
 
 .vibe-form-field input:focus { border-color: #ea580c; box-shadow: 0 0 0 3px rgb(234 88 12 / 11%); }
 
+.vibe-gpu-control { display: grid; gap: 12px; text-align: left; }
+.vibe-gpu-switch { display: inline-flex; align-items: center; gap: 9px; justify-self: start; padding: 0; border: 0; background: transparent; color: #3f3f46; font: inherit; font-size: .72rem; }
+.vibe-gpu-switch > i { width: 30px; height: 18px; padding: 3px; border-radius: 12px; background: #d4d4d8; transition: background .15s; }
+.vibe-gpu-switch > i::after { display: block; width: 12px; height: 12px; border-radius: 50%; background: #fff; content: ''; transition: transform .15s; }
+.vibe-gpu-switch[aria-checked="true"] > i { background: #ea580c; }
+.vibe-gpu-switch[aria-checked="true"] > i::after { transform: translateX(12px); }
+.vibe-gpu-memory { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #3f3f46; font-size: .72rem; }
+.vibe-gpu-stepper { display: flex; align-items: center; border: 1px solid #d4d4d8; border-radius: 8px; }
+.vibe-gpu-stepper button { width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: #52525b; }
+.vibe-gpu-stepper button:hover:not(:disabled) { background: #fff7ed; color: #ea580c; }
+.vibe-gpu-stepper output { min-width: 76px; text-align: center; font-variant-numeric: tabular-nums; }
+.vibe-gpu-control button:disabled { opacity: .45; cursor: default; }
+.vibe-gpu-control button:focus-visible { outline: 2px solid #ea580c; outline-offset: 3px; }
+.vibe-gpu-request { margin: 14px 0 0; color: #71717a; font-size: .72rem; text-align: left; }
+.vibe-review-field { margin-top: 14px; text-align: left; }
+.vibe-form-field textarea { width: 100%; padding: 10px 12px; border: 1px solid #d4d4d8; border-radius: 8px; background: #fff; color: #18181b; font: inherit; font-size: .78rem; resize: vertical; }
+.vibe-form-field textarea:focus { outline: 0; border-color: #ea580c; box-shadow: 0 0 0 3px rgb(234 88 12 / 11%); }
+
 .vibe-package-field { display: grid; min-height: 84px; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px; border: 1px dashed #a1a1aa; border-radius: 9px; background: #fafafa; cursor: pointer; transition: border-color 150ms ease, background-color 150ms ease; }
 
 .vibe-package-field:hover,
@@ -212,6 +230,10 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-form-status { min-height: 1em; margin: 0; color: #16845b; font-size: .68rem; }
 
 .vibe-form-status.is-error { color: #b91c1c; }
+
+.vibe-review-note { min-width: 0; padding: 12px; border-radius: 6px; background: #f4f4f5; color: #52525b; font-size: .72rem; line-height: 1.65; overflow-wrap: anywhere; }
+
+.vibe-review-note p { margin: 4px 0 0; white-space: pre-wrap; }
 
 .vibe-modal-panel footer { display: flex; justify-content: flex-end; gap: 8px; }
 

@@ -40,7 +40,7 @@ from urllib.parse import quote, urljoin, urlsplit
 
 from backend.oj_modules.observability import redact_text
 from backend.oj_modules.project_paths import PROJECT_ROOT
-from backend.oj_modules.vibehub import storage
+from backend.oj_modules.vibehub import gpu, storage
 
 
 MANAGED_IMAGE_LABEL = "com.numericaloj.vibehub.image"
@@ -287,6 +287,10 @@ class VibeHubProxyError(VibeHubRuntimeError):
 
 class VibeHubRequestTooLarge(VibeHubProxyError):
     """代理请求体超过配置硬上限；HTTP 适配层应返回 413。"""
+
+
+class VibeHubGPUError(VibeHubRuntimeError):
+    """GPU 超限或监测不可用，允许向用户返回明确原因。"""
 
 
 class VibeHubCapacityError(VibeHubRuntimeError):
@@ -2094,6 +2098,8 @@ class VibeHubRuntimeManager:
         self._reconcile_once_lock = threading.Lock()
         self._thread_lock = threading.RLock()
         self._reaper_stop = threading.Event()
+        self._reaper_wakeup = threading.Event()
+        self._gpu_polling = False
         self._reaper_thread: threading.Thread | None = None
         if not math.isfinite(self.lease_ttl_seconds) or not 10 <= self.lease_ttl_seconds <= 3600:
             raise ValueError("VibeHub lease TTL 必须在 10–3600 秒之间")
@@ -2324,11 +2330,14 @@ class VibeHubRuntimeManager:
         image_id: str,
         featured: bool,
         storage_key: str,
+        gpu_allocation: dict | None = None,
     ) -> str:
         payload = (
             f"{RUNTIME_ABI}\0{project_key}\0{channel}\0{image_id}\0"
             f"{int(featured)}\0{storage_key}"
         )
+        if gpu_allocation:
+            payload += "\0gpu:" + json.dumps(gpu_allocation, sort_keys=True)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:40]
 
     def _data_volume_name(self, storage_key: str) -> str:
@@ -2349,6 +2358,7 @@ class VibeHubRuntimeManager:
         image_id: str,
         featured: bool,
         data_volume: str,
+        gpu_allocation: dict | None = None,
     ) -> list[str]:
         if not _DATA_VOLUME_RE.fullmatch(data_volume):
             raise VibeHubRuntimeError("VibeHub data volume 名称无效")
@@ -2394,6 +2404,19 @@ class VibeHubRuntimeManager:
             "--log-driver", "none",
             "--stop-timeout", "1",
         ]
+        if gpu_allocation:
+            device = gpu_allocation["device"]
+            if not gpu.GPU_UUID_RE.fullmatch(device):
+                raise VibeHubRuntimeError("GPU 设备标识无效")
+            args.extend([
+                "--gpus", f"device={device}",
+                "--env", f"NVIDIA_VISIBLE_DEVICES={device}",
+                "--env", "NVIDIA_DRIVER_CAPABILITIES=compute",
+                "--env", f"VIBEHUB_GPU_MEMORY_MIB={gpu_allocation['memory_mib']}",
+            ])
+        else:
+            # 镜像环境变量不能在默认 NVIDIA runtime 下给 CPU 作品偷偷挂卡。
+            args.extend(["--env", "NVIDIA_VISIBLE_DEVICES=void"])
         args.append(image_id)
         return args
 
@@ -2468,6 +2491,7 @@ class VibeHubRuntimeManager:
         image: ImageInfo,
         featured: bool,
         storage_key: str,
+        gpu_allocation: dict | None = None,
     ) -> dict:
         name = self._container_name(runtime_id)
         data_volume = self._data_volume_name(storage_key)
@@ -2480,6 +2504,7 @@ class VibeHubRuntimeManager:
                 image_id=image.image_id,
                 featured=featured,
                 data_volume=data_volume,
+                gpu_allocation=gpu_allocation,
             ))
             self._wait_ready(name)
         except Exception:
@@ -2488,6 +2513,7 @@ class VibeHubRuntimeManager:
         return {
             "project_key": project_key,
             "channel": channel,
+            "gpu": gpu_allocation,
             "image_ref": image.reference,
             "image_id": image.image_id,
             "featured": bool(featured),
@@ -2525,7 +2551,7 @@ class VibeHubRuntimeManager:
 
     @staticmethod
     def _runtime_instance_key(runtime: Mapping[str, object]) -> str:
-        explicit = str(runtime.get("instance_id") or "")
+        explicit = str(runtime.get("instance_id") or runtime.get("reservation_id") or "")
         if explicit:
             return explicit
         return "legacy:" + hashlib.sha256(
@@ -2818,6 +2844,7 @@ class VibeHubRuntimeManager:
         base_path: str = "/api/vibehub/runtime",
         package_digest: str,
         storage_key: str,
+        gpu_allocation: dict | None = None,
     ) -> RuntimeLease:
         """取得短期租约；只启动保存时已经构建好的受管镜像。"""
 
@@ -2826,6 +2853,20 @@ class VibeHubRuntimeManager:
         selected_storage_key = _validate_storage_key(
             storage_key, channel=selected_channel,
         )
+        selected_gpu = None
+        if gpu_allocation:
+            try:
+                limit = gpu.memory_limit(gpu_allocation["memory_mib"])
+                if not limit or type(gpu_allocation["version_id"]) is not int or gpu_allocation["version_id"] <= 0:
+                    raise gpu.GPUError("GPU 运行配置无效")
+                selected_gpu = {
+                    "memory_mib": limit,
+                    "version_id": gpu_allocation["version_id"],
+                    "device": gpu.device(self.docker, limit),
+                }
+            except (gpu.GPUError, KeyError, VibeHubRuntimeError) as exc:
+                raise VibeHubGPUError("GPU 不可用或显存监测未就绪，请联系管理员") from exc
+            self.start_reaper()
         proxy_root = _validate_proxy_root(base_path)
         selected_image_ref = image_reference_for(key, channel=selected_channel)
         image = self._inspect_runnable_image(selected_image_ref)
@@ -2842,10 +2883,19 @@ class VibeHubRuntimeManager:
             image.image_id,
             bool(featured),
             selected_storage_key,
+            selected_gpu,
         )
         reservation_id = ""
         ready_probe = None
         with self._locked_state() as state:
+            if selected_gpu:
+                if any(item.get("gpu") and item.get("project_key") == key and self._runtime_status(item) == "stopping" for item in state["runtimes"].values()):
+                    raise VibeHubGPUError("GPU 容器正在回收，请稍后重试。")
+                self._gpu_polling = True
+                self._reaper_wakeup.set()
+                blocked = state.get("gpu_blocks", {}).get(key)
+                if blocked and float(blocked["until"]) > float(self._clock()):
+                    raise VibeHubGPUError(str(blocked["reason"]))
             runtime = state["runtimes"].get(runtime_id)
             if isinstance(runtime, dict):
                 if self._runtime_status(runtime) == "ready":
@@ -2876,6 +2926,7 @@ class VibeHubRuntimeManager:
                     ),
                     "project_key": key,
                     "channel": selected_channel,
+                    "gpu": selected_gpu,
                     "image_ref": image.reference,
                     "image_id": image.image_id,
                     "featured": bool(featured),
@@ -2916,6 +2967,7 @@ class VibeHubRuntimeManager:
                 base_path=proxy_root,
                 package_digest=expected_digest,
                 storage_key=selected_storage_key,
+                gpu_allocation=selected_gpu,
             )
 
         try:
@@ -2926,6 +2978,7 @@ class VibeHubRuntimeManager:
                 image=image,
                 featured=bool(featured),
                 storage_key=selected_storage_key,
+                gpu_allocation=selected_gpu,
             )
         except Exception:
             action = None
@@ -3087,8 +3140,58 @@ class VibeHubRuntimeManager:
             self._stop_and_finalize(action)
         return True
 
+    def _reap_gpu(self) -> int:
+        with self._locked_state() as state:
+            snapshots = {
+                runtime_id: dict(item)
+                for runtime_id, item in state["runtimes"].items()
+                if item.get("gpu") and self._runtime_status(item) != "stopping"
+            }
+            self._gpu_polling = bool(snapshots)
+            state["gpu_blocks"] = {
+                key: block for key, block in state.get("gpu_blocks", {}).items()
+                if float(block["until"]) > float(self._clock())
+            }
+        if not snapshots:
+            return 0
+        invalid, exceeded = set(), set()
+        reason = "作品显存超出额度，已停止 GPU 容器；请在 60 秒后重试。"
+        try:
+            invalid = gpu.invalid_allocations(snapshots)
+            memory = gpu.usage(self.docker, snapshots)
+            exceeded = gpu.over_limit_projects(snapshots, memory)
+        except Exception:
+            # 无法核对授权或计量时仅停止 GPU 作品，不影响普通 CPU 作品。
+            exceeded = {item["project_key"] for item in snapshots.values()}
+            reason = "GPU 监测暂时不可用，已停止 GPU 容器；请在 60 秒后重试。"
+            _logger.warning("VibeHub GPU 监测失败，回收 GPU 容器")
+        actions = []
+        with self._locked_state() as state:
+            for project in exceeded:
+                state.setdefault("gpu_blocks", {})[project] = {
+                    "until": float(self._clock()) + 60, "reason": reason,
+                }
+            for runtime_id, item in list(state["runtimes"].items()):
+                if not item.get("gpu") or self._runtime_status(item) == "stopping":
+                    continue
+                old = snapshots.get(runtime_id)
+                stale = runtime_id in invalid and old and self._runtime_instance_key(old) == self._runtime_instance_key(item)
+                if stale or item["project_key"] in exceeded:
+                    actions.append(self._mark_stopping_locked(state, runtime_id, item))
+        first_error = None
+        for action in actions:
+            try:
+                self._stop_and_finalize(action)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+        return len(actions)
+
     def reap_expired(self) -> int:
         self._reconcile_once()
+        gpu_removed = self._reap_gpu()
         with self._locked_state() as state:
             removed, actions = self._collect_cleanup_locked(state)
             retained_relays = {
@@ -3111,7 +3214,7 @@ class VibeHubRuntimeManager:
                     first_error = exc
         if first_error is not None:
             raise first_error
-        return removed
+        return removed + gpu_removed
 
     def _reaper_loop(self) -> None:
         while not self._reaper_stop.is_set():
@@ -3120,7 +3223,10 @@ class VibeHubRuntimeManager:
             except Exception:
                 # 不包含 token、project 内容或 Docker 输出；具体失败会在下一轮重试。
                 _logger.exception("VibeHub 后台容器回收失败")
-            self._reaper_stop.wait(self.reaper_interval_seconds)
+            # GPU 用量的目标采样间隔为一秒；命令耗时和调度可能延长实际间隔。
+            interval = min(self.reaper_interval_seconds, 1.0) if self._gpu_polling else self.reaper_interval_seconds
+            self._reaper_wakeup.wait(interval)
+            self._reaper_wakeup.clear()
 
     def start_reaper(self) -> None:
         """显式启动进程内 daemon；共享 flock 保证多 worker 不会并发清理。"""
@@ -3143,6 +3249,7 @@ class VibeHubRuntimeManager:
         with self._thread_lock:
             thread = self._reaper_thread
             self._reaper_stop.set()
+            self._reaper_wakeup.set()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, float(timeout)))
         with self._thread_lock:

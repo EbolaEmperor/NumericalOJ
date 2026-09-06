@@ -10,6 +10,7 @@ client_from_args = common.client_from_args
 
 
 PROJECT_FIELDS = (
+    "gpu_memory_mib", "gpu_approved_memory_mib", "runtime_blocked_reason",
     "id", "slug", "title", "summary", "description", "owner_username",
     "latest_version", "public_version", "submitted_version", "has_pending_review",
     "review_status", "review_note", "latest_review_note", "last_reviewed_version",
@@ -60,7 +61,7 @@ def _output(resp, projector) -> None:
 
 def _metadata(args, *, creating=False) -> Dict[str, str]:
     data: Dict[str, str] = {}
-    for name in ("slug", "title", "summary", "tags", "cover_image"):
+    for name in ("slug", "title", "summary", "tags", "cover_image", "gpu_memory_mib"):
         value = getattr(args, name, None)
         if value is not None:
             data[name] = str(value)
@@ -151,7 +152,8 @@ def review_decide(args):
         "POST",
         f"/api/vibehub/admin/reviews/{args.slug}",
         json={"decision": args.decision, "note": common.read_text_value(args.note or ""),
-              "expected_version": args.expected_version},
+              "expected_version": args.expected_version,
+              **({"gpu_memory_mib": args.gpu_memory_mib} if getattr(args, "gpu_memory_mib", None) is not None else {})},
     )
     _output(resp, necessary_project_payload)
 
@@ -168,6 +170,7 @@ def featured_set(args):
 def _add_metadata_args(parser, *, include_slug=False, require_title=False):
     if include_slug:
         parser.add_argument("--slug", help="Optional stable URL slug.")
+    parser.add_argument("--gpu-memory-mib", type=int, help="申请 GPU 显存（256–24576 MiB）；0 表示关闭。")
     parser.add_argument("--title", required=require_title, help="Project title.")
     parser.add_argument("--summary", help="Short card summary.")
     parser.add_argument("--description", help="Full description, or @file.")
@@ -217,6 +220,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--expected-version", type=int, required=True,
                         help="Version number shown in the pending-review queue.")
     parser.add_argument("--note", help="Review note, or @file.")
+    parser.add_argument("--gpu-memory-mib", type=int, help="批准显存 MiB；0 表示不批准 GPU，省略则按申请值批准。")
     parser.set_defaults(func=review_decide)
     parser = common.add_cli_parser(commands, "featured", "Set or unset a project's featured status.")
     parser.add_argument("slug")
