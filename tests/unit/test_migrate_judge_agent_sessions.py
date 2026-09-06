@@ -1,5 +1,6 @@
 """历史 Judge 导入：原材料只读、作答隔离、完整轨迹、幂等核验与部署前置。"""
 import hashlib
+import errno
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -229,3 +230,135 @@ def test_missing_runtime_workspace_recovers_only_public_input_from_original_uplo
     assert not (output / 'solution').exists()
     assert any('从原提交恢复输入' in item for item in result['missing'])
     assert original.exists()
+
+
+@pytest.mark.parametrize('denied', [False, True])
+def test_core_file_is_imported_when_readable_or_reported_missing_when_denied(storage, database, monkeypatch, denied):
+    root = storage / 'source'
+    core = _file(root / 'core', 'EXISTING CORE')
+    _file(root / 'main.py', 'SOURCE')
+    original_open = migration._open_source
+    def open_source(path):
+        if denied and path == core:
+            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
+        return original_open(path)
+    monkeypatch.setattr(migration, '_open_source', open_source)
+    args = (_submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {}, root)
+    result = migration.migrate_one(*args)
+    output = workspace.get_existing_agent_workspace_path(result['session_id'])
+    assert ('historical_workspace/core' in result['workspace_manifest']) is not denied
+    assert (output / 'historical_workspace/main.py').read_text() == 'SOURCE'
+    record = json.loads((output / 'historical_record.json').read_text())
+    assert any('权限不足' in item and '/core' in item for item in record['missing']) is denied
+    assert record['missing'] == result['missing']
+    assert core.read_text() == 'EXISTING CORE'
+    assert migration.migrate_one(*args)['existing'] is True
+    assert database.creates == 1
+
+
+def test_unreadable_directory_is_recorded_instead_of_silently_disappearing(storage, monkeypatch):
+    root = storage / 'source'
+    _file(root / 'public.txt')
+    _file(root / 'private/secret.txt')
+    original_scandir = migration.os.scandir
+    def scandir(path):
+        if str(path) == str(root / 'private'):
+            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
+        return original_scandir(path)
+    monkeypatch.setattr(migration.os, 'scandir', scandir)
+    missing = []
+    assert set(migration._regular_files(root, 'audit', missing)) == {'audit/public.txt'}
+    assert any('PermissionError' in item and 'audit/private' in item for item in missing)
+
+
+@pytest.mark.parametrize('kind', ['agent_judge', 'reverse_answer'])
+def test_missing_original_upload_still_archives_results_with_explicit_missing_note(storage, database, kind):
+    result = migration.migrate_one(
+        _submission(code_path=str(storage / 'deleted.zip')), kind, 'current', None,
+        {'status': 'passed'}, storage / 'removed-runtime',
+    )
+    assert any('文件已不存在' in item and '原提交' in item for item in result['missing'])
+    assert set(result['workspace_manifest']) == {'historical_record.json'}
+    assert database.configs[result['session_id']]['historical_import_completed'] == 1
+
+
+def test_unreadable_trace_and_corrupt_answer_archive_are_reported(storage, database, monkeypatch):
+    root = storage / 'reverse'
+    _file(root / 'package/problem/p.md', 'QUESTION')
+    _file(root / 'package/template/a.py', 'TEMPLATE')
+    trace = storage / 'trace'
+    unreadable = _file(trace / 'numoj_trace_v1.jsonl', 'PRIVATE TRACE')
+    _file(storage / 'submissions/7/reverse_agent_answers/current.zip', 'CORRUPT ZIP')
+    original_open = migration._open_source
+    def open_source(path):
+        if path == unreadable:
+            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
+        return original_open(path)
+    monkeypatch.setattr(migration, '_open_source', open_source)
+    result = migration.migrate_one(_submission(), 'reverse_answer', 'current', trace, {}, root)
+    assert result['trace_events'] == 0
+    assert any('trace/numoj_trace_v1.jsonl' in item for item in result['missing'])
+    assert any('历史归档无法安全解包' in item for item in result['missing'])
+    output = workspace.get_existing_agent_workspace_path(result['session_id'])
+    assert (output / 'template/a.py').read_text() == 'TEMPLATE'
+
+
+def test_interrupted_injection_preserves_copy_when_source_becomes_unreadable(storage, database, monkeypatch):
+    root = storage / 'source'
+    first_source = _file(root / 'a.txt', 'FIRST COPY')
+    _file(root / 'b.txt', 'SECOND COPY')
+    inject = migration.inject_agent_workspace_files
+    def interrupt(sid, files, **kwargs):
+        inject(sid, dict(list(files.items())[:1]))
+        raise OSError(errno.ENOSPC, 'simulated target disk full')
+    monkeypatch.setattr(migration, 'inject_agent_workspace_files', interrupt)
+    args = (_submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {}, root)
+    with pytest.raises(OSError, match='disk full'):
+        migration.migrate_one(*args)
+    monkeypatch.setattr(migration, 'inject_agent_workspace_files', inject)
+    original_open = migration._open_source
+    def open_source(path):
+        if path == first_source:
+            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
+        return original_open(path)
+    monkeypatch.setattr(migration, '_open_source', open_source)
+    result = migration.migrate_one(*args)
+    output = workspace.get_existing_agent_workspace_path(result['session_id'])
+    assert (output / 'historical_workspace/a.txt').read_text() == 'FIRST COPY'
+    assert (output / 'historical_workspace/b.txt').read_text() == 'SECOND COPY'
+    assert any('保留上次未完成导入的副本' in item for item in result['missing'])
+    assert migration.migrate_one(*args)['existing'] is True
+    assert database.creates == 1
+
+
+def test_migration_logs_progress_and_reports_interrupted_submission(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(migration, 'validate_production_config', lambda _: None)
+    monkeypatch.setattr(migration, 'read_manifest', lambda _: {'backup_status': 'complete', 'completed_at': 'now', 'prepared': True})
+    monkeypatch.setattr(migration, 'validate_manifest_artifact', lambda *_, **__: None)
+    monkeypatch.setattr(migration, '_rows', lambda: ([_submission()], {}))
+    def sources(submission, steps, missing):
+        missing.append('无法枚举历史目录：unreadable')
+        yield 'reverse_answer', 'current', None, {}, tmp_path
+    monkeypatch.setattr(migration, '_sources', sources)
+    def fail(*_):
+        raise OSError(errno.ENOSPC, 'target disk full')
+    monkeypatch.setattr(migration, 'migrate_one', fail)
+    report = tmp_path / 'report.json'
+    with pytest.raises(OSError, match='disk full'):
+        migration.main(['--confirm-writers-stopped', '--backup-manifest', str(tmp_path / 'manifest'),
+                        '--backup-plan', str(tmp_path / 'plan'), '--report', str(report)])
+    saved = json.loads(report.read_text())
+    assert saved['verified'] is False
+    assert saved['interrupted_at'] == {'submission_id': 7, 'judge_kind': 'reverse_answer', 'attempt': 'current'}
+    assert saved['discovery_missing'] == ['无法枚举历史目录：unreadable']
+    assert report.stat().st_mode & 0o777 == 0o600
+    log = capsys.readouterr().out
+    assert '数据库备份核验通过' in log and '提交 1/1' in log
+
+
+def test_source_disk_io_errors_remain_fatal(storage, monkeypatch):
+    def broken(_):
+        raise OSError(errno.EIO, 'source disk I/O failure')
+    monkeypatch.setattr(migration, '_open_source', broken)
+    with pytest.raises(OSError, match='I/O failure'):
+        migration._available_source(storage / 'source', [], 'source')

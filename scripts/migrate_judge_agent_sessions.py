@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 import zipfile
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 
@@ -32,23 +33,43 @@ from backend.oj_modules.db_services import upsert_agent_run_snapshot
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.ranking.db import submission_dir
 from backend.oj_modules.ranking.reverse_judge.traces import collect_agent_trace_messages, collect_agent_token_usage
-from backend.oj_modules.shared.archive import extract_zip, ZipExtractionPolicy
+from backend.oj_modules.shared.archive import ArchiveExtractionError, extract_zip, ZipExtractionPolicy
 from backend.oj_modules import config
 from deploy.backup.orchestrator import read_manifest, validate_manifest_artifact
 from deploy.preflight import validate_production_config
 
 MIGRATION_VERSION = 1
 TRACE_FIELDS = ('event_id', 'event_order', 'kind', 'title', 'text', 'meta', 'format', 'is_error', 'message_id')
+SOURCE_UNAVAILABLE = (PermissionError, FileNotFoundError)
+
+
+def _progress(message):
+    print(f'[judge-history] {message}', flush=True)
+
+
+def _file_progress(label):
+    last = time.monotonic()
+    def progress(completed, total):
+        nonlocal last
+        now = time.monotonic()
+        if now - last >= 5:
+            _progress(f'{label}：{completed}/{total} 个文件')
+            last = now
+    return progress
 
 
 def _safe_attempt(attempt):
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(attempt or 'legacy')).strip('._')[:96] or 'legacy'
 
 
-def _safe_directory(path):
+def _safe_directory(path, missing=None):
     """历史路径任何祖先都不得是软链接；材料只读，不替换原目录。"""
     try:
         return all(stat.S_ISDIR(part.lstat().st_mode) for part in (path.absolute(), *path.absolute().parents))
+    except PermissionError:
+        if missing is not None:
+            missing.append(f'无法检查历史目录（PermissionError）：{path}')
+        return False
     except FileNotFoundError:
         return False
 
@@ -69,6 +90,16 @@ def _open_source(path):
         os.close(source_fd)
         raise ValueError(f'历史材料不是独立普通文件：{path}')
     return os.fdopen(source_fd, 'rb')
+
+
+def _available_source(path, missing, label):
+    """仅容忍历史源缺失/权限不足；目标写入、磁盘和安全校验错误仍须中止。"""
+    try:
+        return _open_source(path)
+    except SOURCE_UNAVAILABLE as exc:
+        reason = '权限不足' if isinstance(exc, PermissionError) else '文件已不存在'
+        missing.append(f'历史材料不可读取（{reason}）：{label}')
+        return None
 
 
 def _rows():
@@ -93,11 +124,16 @@ def _rows():
     return submissions, {(row['submission_id'], row['step_key']): row for row in steps}
 
 
-def _directories(root):
-    return [path for path in root.iterdir() if _safe_directory(path)] if _safe_directory(root) else []
+def _directories(root, missing=None):
+    try:
+        return [path for path in root.iterdir() if _safe_directory(path, missing)] if _safe_directory(root, missing) else []
+    except SOURCE_UNAVAILABLE as exc:
+        if missing is not None:
+            missing.append(f'无法枚举历史目录（{type(exc).__name__}）：{root}')
+        return []
 
 
-def _sources(submission, steps):
+def _sources(submission, steps, missing=None):
     """发现当前记录、轨迹、答案归档和仅剩 workspace 的旧 attempt。"""
     sid = submission['id']
     current = _safe_attempt(submission.get('judge_attempt_id'))
@@ -105,23 +141,27 @@ def _sources(submission, steps):
     if submission['scoring_mode'] == 'agent_judge':
         trace_root = root / 'agent_judge_trace'
         workspace_root = Path(config.AGENT_JUDGE_WORKSPACE_ROOT) / str(sid)
-        attempts = {current} | {path.name for path in _directories(trace_root)}
+        attempts = {current} | {path.name for path in _directories(trace_root, missing)}
         known_workspaces = set()
         for attempt in sorted(attempts):
             raw = submission.get('judge_attempt_id') if attempt == current else attempt
             key = hashlib.sha256(str(raw or 'legacy').encode()).hexdigest()[:16]
             known_workspaces.add(key)
             yield 'agent_judge', attempt, trace_root / attempt, submission if attempt == current else {}, workspace_root / key
-        for path in _directories(workspace_root):
+        for path in _directories(workspace_root, missing):
             if path.name not in known_workspaces:
                 yield 'agent_judge', f'unknown-workspace-{path.name}', None, {}, path
     else:
         trace_root = root / 'reverse_agent_trace'
         workspace_root = Path(config.REVERSE_JUDGE_WORKSPACE_ROOT) / str(sid)
-        attempts = {current} | {path.name for path in _directories(trace_root)} | {path.name for path in _directories(workspace_root)}
+        attempts = {current} | {path.name for path in _directories(trace_root, missing)} | {path.name for path in _directories(workspace_root, missing)}
         archives = root / 'reverse_agent_answers'
-        if _safe_directory(archives):
-            attempts.update(path.stem for path in archives.glob('*.zip') if stat.S_ISREG(path.lstat().st_mode))
+        if _safe_directory(archives, missing):
+            try:
+                attempts.update(path.stem for path in archives.iterdir() if path.suffix == '.zip' and stat.S_ISREG(path.lstat().st_mode))
+            except SOURCE_UNAVAILABLE as exc:
+                if missing is not None:
+                    missing.append(f'无法枚举历史答案归档（{type(exc).__name__}）：{archives}')
         for attempt in sorted(attempts):
             workspace = workspace_root / attempt
             quality = steps.get((sid, 'quality_gate'), {}) if attempt == current else {}
@@ -132,10 +172,15 @@ def _sources(submission, steps):
 
 def _regular_files(source, prefix, missing, *, include_hidden=False):
     if not _safe_directory(source):
-        missing.append(f'workspace 材料缺失或目录含链接：{prefix}')
+        missing.append(f'workspace 材料缺失、目录不可读或含链接：{prefix}')
         return {}
     files = {}
-    for parent, directories, names in os.walk(source, followlinks=False):
+    def unavailable(exc):
+        if not isinstance(exc, SOURCE_UNAVAILABLE):
+            raise exc
+        relative = Path(exc.filename).relative_to(source) if exc.filename else Path('.')
+        missing.append(f'历史目录不可读取（{type(exc).__name__}）：{prefix}/{relative}')
+    for parent, directories, names in os.walk(source, followlinks=False, onerror=unavailable):
         parent = Path(parent)
         directories[:] = sorted(name for name in directories if not (parent / name).is_symlink() and (include_hidden or not name.startswith('.')))
         for name in sorted(names):
@@ -143,7 +188,11 @@ def _regular_files(source, prefix, missing, *, include_hidden=False):
             relative = path.relative_to(source)
             if not include_hidden and any(part.startswith('.') for part in relative.parts):
                 continue
-            info = path.lstat()
+            try:
+                info = path.lstat()
+            except SOURCE_UNAVAILABLE as exc:
+                missing.append(f'历史材料无法检查（{type(exc).__name__}）：{prefix}/{relative}')
+                continue
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 missing.append(f'已跳过链接或特殊文件：{prefix}/{relative}')
                 continue
@@ -151,16 +200,24 @@ def _regular_files(source, prefix, missing, *, include_hidden=False):
     return files
 
 
-def _extract_copy(archive, output, staging):
+def _extract_copy(archive, output, staging, missing, label):
     archive_copy = Path(staging) / (output.name + '.zip')
-    with _open_source(archive) as source, archive_copy.open('wb') as copied:
+    source = _available_source(archive, missing, label)
+    if source is None:
+        return False
+    with source, archive_copy.open('wb') as copied:
         while chunk := source.read(1024 * 1024):
             copied.write(chunk)
-    extract_zip(archive_copy, output, policy=ZipExtractionPolicy(
-        max_members=config.REVERSE_PACKAGE_MAX_MEMBERS, max_file_bytes=config.REVERSE_PACKAGE_MAX_FILE_BYTES,
-        max_total_bytes=config.REVERSE_PACKAGE_MAX_TOTAL_BYTES, max_compression_ratio=config.REVERSE_PACKAGE_MAX_COMPRESSION_RATIO,
-        unsafe_member_action='raise', cleanup_on_error=True,
-    ))
+    try:
+        extract_zip(archive_copy, output, policy=ZipExtractionPolicy(
+            max_members=config.REVERSE_PACKAGE_MAX_MEMBERS, max_file_bytes=config.REVERSE_PACKAGE_MAX_FILE_BYTES,
+            max_total_bytes=config.REVERSE_PACKAGE_MAX_TOTAL_BYTES, max_compression_ratio=config.REVERSE_PACKAGE_MAX_COMPRESSION_RATIO,
+            unsafe_member_action='raise', cleanup_on_error=True,
+        ))
+    except (ArchiveExtractionError, zipfile.BadZipFile) as exc:
+        missing.append(f'历史归档无法安全解包：{label}（{exc}）')
+        return False
+    return True
 
 
 def _uploaded_material(submission, staging, missing):
@@ -170,14 +227,17 @@ def _uploaded_material(submission, staging, missing):
     if not uploaded:
         return target
     source = Path(uploaded)
-    with _open_source(source) as stream:
+    stream = _available_source(source, missing, '原提交')
+    if stream is None:
+        return target
+    with stream:
         zipped = zipfile.is_zipfile(stream)
-    if zipped:
-        _extract_copy(source, target, staging)
-    else:
-        target.mkdir()
-        with _open_source(source) as stream:
+        if not zipped:
+            stream.seek(0)
+            target.mkdir()
             (target / source.name).write_bytes(stream.read())
+    if zipped and not _extract_copy(source, target, staging, missing, '原提交'):
+        return target
     missing.append('执行 workspace 已缺失；已从原提交恢复输入副本，不代表最终执行文件')
     return target
 
@@ -193,15 +253,14 @@ def _workspace_files(submission, kind, attempt, source, staging, missing):
     package = source / 'package'
     if not _safe_directory(package):
         package = _uploaded_material(submission, staging, missing)
-    roots = [package] + _directories(package)
+    roots = [package] + _directories(package, missing)
     material = next((path for path in roots if _safe_directory(path / 'problem')), package)
     if kind == 'reverse_quality':
         return _regular_files(material, 'audit', missing)
     files = _regular_files(material / 'problem', 'problem', missing)
     archive = Path(submission_dir(submission['id'])) / 'reverse_agent_answers' / f'{attempt}.zip'
-    if archive.exists():
-        output = Path(staging) / 'answer'
-        _extract_copy(archive, output, staging)
+    output = Path(staging) / 'answer'
+    if _extract_copy(archive, output, staging, missing, '该轮 AI 答案归档'):
         files.update(_regular_files(output, 'template', missing))
     else:
         missing.append('该轮 AI 答案归档不可取得；模板副本不代表最终作答')
@@ -216,12 +275,19 @@ def _trace_records(task_id, trace, staging, missing):
         return records, None
     # 先复制经过文件类型校验的轨迹到私有临时目录，旧解析器不直接遍历原文件树。
     safe_trace = Path(staging) / 'trace'
-    for relative, path in _regular_files(trace, 'trace', missing, include_hidden=True).items():
+    files = _regular_files(trace, 'trace', missing, include_hidden=True)
+    progress = _file_progress(f'{task_id} 复制轨迹')
+    for index, (relative, path) in enumerate(files.items(), 1):
+        source = _available_source(path, missing, relative)
+        if source is None:
+            continue
         target = Path(staging) / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with _open_source(path) as source, target.open('wb') as destination:
-            while chunk := source.read(1024 * 1024):
-                destination.write(chunk)
+        with source:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('wb') as destination:
+                while chunk := source.read(1024 * 1024):
+                    destination.write(chunk)
+        progress(index, len(files))
     canonical = safe_trace / 'numoj_trace_v1.jsonl'
     if canonical.is_file():
         seen = set()
@@ -272,20 +338,55 @@ def _identity(submission, kind, actual_attempt):
                 'submission_id': submission['id'], 'competition_id': submission['competition_id'], 'attempt_id': actual_attempt}
 
 
+def _workspace_paths(session_id):
+    def files_in_tree(nodes):
+        return {path for node in nodes for path in (files_in_tree(node.get('children', [])) if node['type'] == 'directory' else {node['path']})}
+    return files_in_tree(build_agent_workspace_tree(session_id))
+
+
+def _material_manifest(session_id, files, kind, missing):
+    """筛出可读材料；失败续跑时保留先前成功注入但源已不可取得的安全副本。"""
+    readable, manifest = {}, {}
+    progress = _file_progress(f'{session_id} 读取材料摘要')
+    for index, (relative, content) in enumerate(files.items(), 1):
+        if isinstance(content, Path):
+            stream = _available_source(content, missing, relative)
+            if stream is None:
+                continue
+            with stream:
+                manifest[relative] = _digest(stream)
+        else:
+            manifest[relative] = {'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
+        readable[relative] = content
+        progress(index, len(files))
+    prefixes = {'agent_judge': ('historical_workspace/',), 'reverse_quality': ('audit/',),
+                'reverse_answer': ('problem/', 'template/')}[kind]
+    for relative in sorted(_workspace_paths(session_id) - set(readable) - {'historical_record.json'}):
+        if not relative.startswith(prefixes):
+            raise RuntimeError(f'未完成历史副本含意外路径：{session_id}/{relative}')
+        stream, _ = open_agent_workspace_file(session_id, relative)
+        with stream:
+            if os.fstat(stream.fileno()).st_nlink != 1:
+                raise RuntimeError(f'未完成历史副本含硬链接：{session_id}/{relative}')
+            manifest[relative] = _digest(stream)
+        missing.append(f'原材料不可复核，保留上次未完成导入的副本：{relative}')
+    return readable, manifest
+
+
 def _verify(session_id, expected, *, submission, kind, actual_attempt):
     session = get_agent_session(session_id)
     identity = _identity(submission, kind, actual_attempt)
     if not session or any(session.get(key) != value for key, value in identity.items()) or session.get('status') != 'Completed':
         raise RuntimeError(f'历史会话状态或访问权限核验失败：{session_id}')
-    def files_in_tree(nodes):
-        return {path for node in nodes for path in (files_in_tree(node.get('children', [])) if node['type'] == 'directory' else {node['path']})}
-    if files_in_tree(build_agent_workspace_tree(session_id)) != set(expected['workspace_manifest']):
+    if _workspace_paths(session_id) != set(expected['workspace_manifest']):
         raise RuntimeError(f'历史 workspace 文件集合核验失败：{session_id}')
-    for relative, metadata in expected['workspace_manifest'].items():
+    progress = _file_progress(f'{session_id} 核验副本')
+    for index, (relative, metadata) in enumerate(expected['workspace_manifest'].items(), 1):
         stream, _ = open_agent_workspace_file(session_id, relative)
         with stream:
             if _digest(stream) != metadata:
                 raise RuntimeError(f'历史 workspace 副本核验失败：{session_id}/{relative}')
+        progress(index, len(expected['workspace_manifest']))
     if get_agent_trace_token_usage(session_id) != expected.get('token_usage'):
         raise RuntimeError(f'历史用量核验失败：{session_id}')
     conn = get_db_connection()
@@ -329,6 +430,7 @@ def migrate_one(submission, kind, attempt, trace, record, source):
     if existing and (not runtime.get('historical_import') or any(existing.get(key) != value for key, value in identity.items())):
         raise RuntimeError(f'历史会话 ID 已被非导入会话占用：{session_id}')
     if runtime.get('historical_import_completed') == MIGRATION_VERSION:
+        _progress(f'{session_id}：重新核验已完成会话')
         _verify(session_id, runtime, submission=submission, kind=kind, actual_attempt=actual_attempt)
         return {'session_id': session_id, 'verified': True, 'existing': True, **runtime}
     if not existing:
@@ -343,6 +445,7 @@ def migrate_one(submission, kind, attempt, trace, record, source):
             runtime_config={'historical_import': True},
         )
     missing = []
+    _progress(f'{session_id}：准备历史轨迹和材料')
     if attempt.startswith('unknown-workspace-'):
         missing.append('旧 workspace 的原始评测 attempt 无法恢复，使用独立历史标识')
     if not record:
@@ -354,17 +457,15 @@ def migrate_one(submission, kind, attempt, trace, record, source):
             missing.append('历史用量不可取得；未推算或补记费用')
         ensure_agent_workspace(session_id)
         files = _workspace_files(submission, kind, attempt, source, staging, missing)
+        files, manifest = _material_manifest(session_id, files, kind, missing)
+        # 权限不足等缺失说明必须在材料读取后汇总，不能先生成报告再跳过文件。
         history = _history_record(kind, record, missing)
         conclusion = '历史评测导入；原有费用不重复记账。\n\n' + json.dumps(history, ensure_ascii=False, default=str, indent=2)
         files['historical_record.json'] = json.dumps(history, ensure_ascii=False, default=str, indent=2).encode()
-        manifest = {}
-        for relative, content in files.items():
-            if isinstance(content, Path):
-                with _open_source(content) as stream:
-                    manifest[relative] = _digest(stream)
-            else:
-                manifest[relative] = {'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
-        inject_agent_workspace_files(session_id, files)
+        content = files['historical_record.json']
+        manifest['historical_record.json'] = {'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
+        _progress(f'{session_id}：注入 {len(files)} 个文件，记录 {len(history["missing"])} 项缺失说明')
+        inject_agent_workspace_files(session_id, files, progress=_file_progress(f'{session_id} 注入材料'))
     ingest_agent_trace_records(session_id, records, final=True)
     if usage:
         save_agent_trace_token_usage(session_id, usage)
@@ -387,6 +488,7 @@ def migrate_one(submission, kind, attempt, trace, record, source):
         conn.commit()
     finally:
         conn.close()
+    _progress(f'{session_id}：完成并核验，{len(manifest)} 个文件、{len(records)} 条轨迹')
     return {'session_id': session_id, 'verified': True, **runtime}
 
 
@@ -397,6 +499,7 @@ def main(argv=None):
     parser.add_argument('--backup-plan', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args(argv)
+    _progress('校验生产配置和部署前数据库备份')
     validate_production_config(ROOT / '.env')
     backup = read_manifest(args.backup_manifest)
     if backup.get('backup_status') != 'complete' or not backup.get('completed_at'):
@@ -404,23 +507,32 @@ def main(argv=None):
     if not (backup.get('gzip_crc_verified') is True or backup.get('prepared') is True):
         raise ValueError('备份未通过完整性核验')
     validate_manifest_artifact(args.backup_manifest, backup, plan_path=args.backup_plan)
-    submissions, steps = _rows()
+    _progress('数据库备份核验通过，读取历史提交')
     report = []
+    missing = []
     verified = False
+    current = None
     try:
-        for submission in submissions:
-            for source in _sources(submission, steps):
+        submissions, steps = _rows()
+        _progress(f'发现 {len(submissions)} 条评测提交；会话按类别和历史 attempt 分别导入')
+        for index, submission in enumerate(submissions, 1):
+            current = {'submission_id': submission['id']}
+            _progress(f'提交 {index}/{len(submissions)}（ID {submission["id"]}），已处理 {len(report)} 个会话')
+            for source in _sources(submission, steps, missing):
+                current.update(judge_kind=source[0], attempt=source[1])
                 report.append(migrate_one(submission, *source))
         verified = True
     finally:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(mode='w', encoding='utf-8', dir=args.report.parent, prefix='.judge-migration-', delete=False) as stream:
             temporary_report = Path(stream.name)
-            json.dump({'version': MIGRATION_VERSION, 'verified': verified, 'sessions': report}, stream, ensure_ascii=False, indent=2)
+            json.dump({'version': MIGRATION_VERSION, 'verified': verified, 'sessions': report,
+                       'discovery_missing': sorted(set(missing)), 'interrupted_at': None if verified else current},
+                      stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_report, args.report)
-    print(f'Judge 历史迁移完成并核验：{len(report)} 个会话；报告 {args.report}')
+    _progress(f'Judge 历史迁移完成并核验：{len(report)} 个会话；报告 {args.report}')
     return 0
 
 

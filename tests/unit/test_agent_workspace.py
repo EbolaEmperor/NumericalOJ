@@ -745,3 +745,187 @@ def test_host_workspace_write_uses_net_projection_and_preserves_old_file_on_fail
     workspace.write_agent_workspace_file("session", ".runtime-state", b"6")
     assert target.read_bytes() == b"6"
     assert workspace.get_agent_workspace_usage("session").total_bytes == 4
+
+
+@pytest.mark.parametrize("file_count", [1, 200])
+def test_batch_injection_scans_workspace_twice_and_reports_committed_progress(
+    workspace_root, monkeypatch, file_count,
+):
+    scans = []
+    original_scan = workspace._scan_workspace_usage_fd
+
+    def track_scan(*args, **kwargs):
+        scans.append(True)
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(workspace, "_scan_workspace_usage_fd", track_scan)
+    events = []
+    files = {f"evidence/lib/file-{index}.h": b"content" for index in range(file_count)}
+    workspace.inject_agent_workspace_files("session", files, progress=lambda *event: events.append(event))
+
+    assert len(scans) == 2
+    assert events == [(index, file_count) for index in range(1, file_count + 1)]
+    public = workspace_root / "sessions/session/workspace"
+    assert len(list((public / "evidence/lib").iterdir())) == file_count
+    assert (public / "evidence/lib/file-0.h").read_bytes() == b"content"
+    assert _mode(public / "evidence/lib/file-0.h") == 0o600
+
+
+def test_batch_injection_resume_counts_overwrites_and_keeps_unlisted_files(
+    workspace_root, monkeypatch,
+):
+    public = workspace.ensure_agent_workspace("session")
+    (public / "keep").write_bytes(b"12")
+    (public / "first").write_bytes(b"34")
+    (public / "second").write_bytes(b"56")
+    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MAX_BYTES", 6)
+
+    with pytest.raises(workspace.AgentWorkspaceQuotaError):
+        workspace.inject_agent_workspace_files("session", {"first": b"a", "second": b"long"})
+    assert (public / "first").read_bytes() == b"a"
+    assert (public / "second").read_bytes() == b"56"
+    assert (public / "keep").read_bytes() == b"12"
+
+    workspace.inject_agent_workspace_files("session", {"first": b"a", "second": b"xyz"})
+    assert workspace.get_agent_workspace_usage("session").total_bytes == 6
+    assert (public / "second").read_bytes() == b"xyz"
+    assert (public / "keep").read_bytes() == b"12"
+    assert not list((public.parent / ".host-write-staging").iterdir())
+
+
+def test_batch_injection_replacing_shared_hardlinks_counts_remaining_inode(
+    workspace_root, monkeypatch,
+):
+    public = workspace.ensure_agent_workspace("session")
+    (public / "first").write_bytes(b"1234")
+    os.link(public / "first", public / "second")
+    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_MAX_BYTES", 6)
+
+    with pytest.raises(workspace.AgentWorkspaceQuotaError):
+        workspace.inject_agent_workspace_files("session", {"first": b"abc"})
+    assert (public / "first").stat().st_ino == (public / "second").stat().st_ino
+    assert (public / "first").read_bytes() == b"1234"
+
+    workspace.inject_agent_workspace_files("session", {"first": b"ab", "second": b"cdef"})
+    assert workspace.get_agent_workspace_usage("session").total_bytes == 6
+    assert (public / "first").stat().st_ino != (public / "second").stat().st_ino
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_batch_injection_replaces_destination_link_without_changing_outside_file(
+    workspace_root, tmp_path, link_kind,
+):
+    public = workspace.ensure_agent_workspace("session")
+    outside = tmp_path / "outside"
+    outside.write_text("original")
+    if link_kind == "symlink":
+        (public / "target").symlink_to(outside)
+    else:
+        os.link(outside, public / "target")
+
+    workspace.inject_agent_workspace_files("session", {"target": "replacement"})
+    assert outside.read_text() == "original"
+    assert (public / "target").read_text() == "replacement"
+    assert (public / "target").stat().st_nlink == 1
+    assert not (public / "target").is_symlink()
+
+
+@pytest.mark.parametrize("source_kind", ["symlink", "hardlink", "parent_symlink", "fifo"])
+def test_batch_injection_rejects_linked_and_special_sources(
+    workspace_root, tmp_path, source_kind,
+):
+    directory = tmp_path / "input"
+    directory.mkdir()
+    original = directory / "original"
+    original.write_bytes(b"original")
+    source = directory / "source"
+    if source_kind == "symlink":
+        source.symlink_to(original)
+    elif source_kind == "hardlink":
+        os.link(original, source)
+    elif source_kind == "parent_symlink":
+        linked = tmp_path / "linked"
+        linked.symlink_to(directory, target_is_directory=True)
+        source = linked / "original"
+    else:
+        os.mkfifo(source)
+
+    with pytest.raises(workspace.AgentWorkspaceSecurityError):
+        workspace.inject_agent_workspace_files("session", {"result": source})
+    assert not (workspace_root / "sessions/session/workspace/result").exists()
+    assert original.read_bytes() == b"original"
+
+
+def test_batch_injection_rejects_linked_destination_parent(workspace_root, tmp_path):
+    public = workspace.ensure_agent_workspace("session")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (public / "linked").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(workspace.AgentWorkspaceSecurityError):
+        workspace.inject_agent_workspace_files("session", {"linked/result": b"bad"})
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("relative_path", ["../escape", "/absolute", ".runtime/private", "dir/.numoj-agent/state"])
+def test_batch_injection_rejects_nonpublic_paths(workspace_root, relative_path):
+    with pytest.raises(workspace.AgentWorkspacePathError):
+        workspace.inject_agent_workspace_files("session", {relative_path: b"bad"})
+
+
+def test_batch_injection_restores_old_file_when_publication_fails(workspace_root, monkeypatch):
+    public = workspace.ensure_agent_workspace("session")
+    (public / "target").write_bytes(b"original")
+    original_rename = workspace.os.rename
+
+    def fail_publication(source, destination, **kwargs):
+        if str(source).startswith("write-"):
+            raise OSError("publication failed")
+        return original_rename(source, destination, **kwargs)
+
+    monkeypatch.setattr(workspace.os, "rename", fail_publication)
+    with pytest.raises(OSError, match="publication failed"):
+        workspace.inject_agent_workspace_files("session", {"target": b"replacement"})
+    assert (public / "target").read_bytes() == b"original"
+    assert not list((public.parent / ".host-write-staging").iterdir())
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_host_publication_keeps_backup_until_fsync_succeeds(workspace_root, monkeypatch, batch):
+    public = workspace.ensure_agent_workspace("session")
+    (public / "target").write_bytes(b"original")
+    staging = public.parent / ".host-write-staging"
+    staging.mkdir()
+    staging_inode = staging.stat().st_ino
+    original_fsync = workspace.os.fsync
+
+    def fail_staging_fsync(fd):
+        if os.fstat(fd).st_ino == staging_inode:
+            raise OSError("fsync failed")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(workspace.os, "fsync", fail_staging_fsync)
+    with pytest.raises(OSError, match="fsync failed"):
+        if batch:
+            workspace.inject_agent_workspace_files("session", {"target": b"replacement"})
+        else:
+            workspace.write_agent_workspace_file("session", "target", b"replacement")
+    assert (public / "target").read_bytes() == b"original"
+    assert not list(staging.iterdir())
+
+
+def test_batch_injection_refuses_incomplete_existing_usage_scan(workspace_root, monkeypatch):
+    public = workspace.ensure_agent_workspace("session")
+    (public / "unreadable").mkdir()
+    (public / "unreadable/old").write_bytes(b"existing data")
+    original_open = workspace._open_existing_directory_at
+
+    def deny_existing_directory(parent_fd, name, **kwargs):
+        if name == "unreadable":
+            raise workspace.AgentWorkspaceSecurityError("cannot inspect")
+        return original_open(parent_fd, name, **kwargs)
+
+    monkeypatch.setattr(workspace, "_open_existing_directory_at", deny_existing_directory)
+    with pytest.raises(workspace.AgentWorkspaceQuotaError, match="无法完整统计"):
+        workspace.inject_agent_workspace_files("session", {"new": b"new data"})
+    assert not (public / "new").exists()
+    assert (public / "unreadable/old").read_bytes() == b"existing data"

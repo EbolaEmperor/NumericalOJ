@@ -441,8 +441,13 @@ def _scan_workspace_usage_fd(
     workspace_fd: int,
     *,
     max_bytes: int,
+    inode_references: dict[tuple[int, int], tuple[int, int]] | None = None,
 ) -> AgentWorkspaceUsage:
-    """逐级 no-follow 统计数据量，不对文件或目录形态施加策略限制。"""
+    """逐级 no-follow 统计数据量，不对文件或目录形态施加策略限制。
+
+    批量注入可请求每个 inode 的 (字节数, 目录项引用数)，此时目录必须静默且
+    完整可读，任何无法统计的入口都拒绝操作，避免覆盖时低估净增量。
+    """
 
     try:
         root_info = os.fstat(workspace_fd)
@@ -459,9 +464,11 @@ def _scan_workspace_usage_fd(
     def push(directory_fd: int, *, owns_fd: bool) -> bool:
         try:
             iterator = os.scandir(directory_fd)
-        except OSError:
+        except OSError as exc:
             if owns_fd:
                 os.close(directory_fd)
+            if inode_references is not None:
+                raise AgentWorkspaceQuotaError("无法完整统计批量注入的 workspace") from exc
             return False
         frames.append([directory_fd, iterator, owns_fd])
         return True
@@ -486,11 +493,15 @@ def _scan_workspace_usage_fd(
                     dir_fd=directory_fd,
                     follow_symlinks=False,
                 )
-            except FileNotFoundError:
+            except FileNotFoundError as exc:
+                if inode_references is not None:
+                    raise AgentWorkspaceQuotaError("批量注入期间 workspace 被其他进程修改") from exc
                 # Harness 可以在检查期间原子替换或删除文件；
                 # 本轮已消失的入口留给下一个周期重新统计。
                 continue
-            except OSError:
+            except OSError as exc:
+                if inode_references is not None:
+                    raise AgentWorkspaceQuotaError("无法完整统计批量注入的 workspace") from exc
                 continue
             entry_count += 1
             if stat.S_ISDIR(info.st_mode):
@@ -500,13 +511,18 @@ def _scan_workspace_usage_fd(
                         raw_name,
                         label="Agent workspace 子目录",
                     )
-                except (FileNotFoundError, AgentWorkspaceError):
+                except (FileNotFoundError, AgentWorkspaceError) as exc:
+                    if inode_references is not None:
+                        raise AgentWorkspaceQuotaError("无法完整统计批量注入的 workspace") from exc
                     continue
                 push(child_fd, owns_fd=True)
                 continue
             inode_key = (int(info.st_dev), int(info.st_ino))
             if stat.S_ISREG(info.st_mode):
                 file_count += 1
+            if inode_references is not None:
+                size, count = inode_references.get(inode_key, (max(0, int(info.st_size)), 0))
+                inode_references[inode_key] = (size, count + 1)
             if inode_key in counted_inodes:
                 continue
             counted_inodes.add(inode_key)
@@ -1198,129 +1214,136 @@ def write_agent_workspace_file(
         workspace_fd,
     ):
         _check_workspace_quota_fd(workspace_fd)
-        parent_fd, opened_parents = _workspace_target_parent_fd(
-            workspace_fd,
-            parts,
-        )
         staging_fd = _open_managed_child_directory(
             session_fd,
             ".host-write-staging",
             label="Agent workspace 宿主写入暂存目录",
         )
-        stage_name = f"write-{uuid.uuid4().hex}"
-        backup_name = f"backup-{uuid.uuid4().hex}"
-        stage_present = False
-        backup_present = False
-        published = False
         try:
-            try:
-                file_fd = os.open(
-                    stage_name,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    mode,
-                    dir_fd=staging_fd,
-                )
-            except OSError as exc:
-                raise AgentWorkspaceError(
-                    "无法安全创建 Agent workspace 宿主写入暂存文件"
-                ) from exc
-            stage_present = True
-            try:
-                view = memoryview(payload)
-                while view:
-                    written = os.write(file_fd, view)
-                    if written <= 0:
-                        raise AgentWorkspaceError(
-                            "Agent workspace 宿主写入未取得进展"
-                        )
-                    view = view[written:]
-                os.fchmod(file_fd, mode)
-                os.fsync(file_fd)
-                staged_info = os.fstat(file_fd)
-                if (
-                    not stat.S_ISREG(staged_info.st_mode)
-                    or int(staged_info.st_size) != len(payload)
-                ):
-                    raise AgentWorkspaceSecurityError(
-                        "Agent workspace 宿主写入暂存文件属性异常"
-                    )
-            finally:
-                os.close(file_fd)
+            _publish_workspace_payload(
+                workspace_fd, staging_fd, parts, payload, mode=mode,
+                check_publication=lambda _old, _new: _check_workspace_quota_fd(workspace_fd),
+            )
+        finally:
+            os.close(staging_fd)
+        return _workspace_root() / "sessions" / safe_session_id / "workspace" / normalized
 
-            # 先把发布时实际存在的旧入口移到会话私有暂存目录，使新文件发布后
-            # 仍能在任何后置校验失败时无损恢复。
-            if _replaceable_target_info(parent_fd, parts[-1]) is not None:
-                os.rename(
-                    parts[-1],
-                    backup_name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=staging_fd,
-                )
-                backup_present = True
-            os.rename(
+
+def _publish_workspace_payload(
+    workspace_fd, staging_fd, parts, payload, *, mode, check_publication,
+):
+    """单文件和静默 workspace 批量写入共用的 inode 暂存、发布与回滚。"""
+    parent_fd, opened_parents = _workspace_target_parent_fd(workspace_fd, parts)
+    stage_name = f"write-{uuid.uuid4().hex}"
+    backup_name = f"backup-{uuid.uuid4().hex}"
+    stage_present = False
+    backup_present = False
+    published = False
+    try:
+        try:
+            file_fd = os.open(
                 stage_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                mode,
+                dir_fd=staging_fd,
+            )
+        except OSError as exc:
+            raise AgentWorkspaceError(
+                "无法安全创建 Agent workspace 宿主写入暂存文件"
+            ) from exc
+        stage_present = True
+        try:
+            view = memoryview(payload)
+            while view:
+                written = os.write(file_fd, view)
+                if written <= 0:
+                    raise AgentWorkspaceError(
+                        "Agent workspace 宿主写入未取得进展"
+                    )
+                view = view[written:]
+            os.fchmod(file_fd, mode)
+            os.fsync(file_fd)
+            staged_info = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(staged_info.st_mode)
+                or int(staged_info.st_size) != len(payload)
+            ):
+                raise AgentWorkspaceSecurityError(
+                    "Agent workspace 宿主写入暂存文件属性异常"
+                )
+        finally:
+            os.close(file_fd)
+
+        # 先把发布时实际存在的旧入口移到会话私有暂存目录，使新文件发布后
+        # 仍能在任何后置校验失败时无损恢复。
+        if _replaceable_target_info(parent_fd, parts[-1]) is not None:
+            os.rename(
                 parts[-1],
-                src_dir_fd=staging_fd,
-                dst_dir_fd=parent_fd,
+                backup_name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=staging_fd,
             )
-            stage_present = False
-            published = True
-            os.fsync(parent_fd)
-            _check_workspace_quota_fd(
-                workspace_fd,
+            backup_present = True
+        replaced_info = (
+            os.stat(backup_name, dir_fd=staging_fd, follow_symlinks=False)
+            if backup_present else None
+        )
+        os.rename(
+            stage_name,
+            parts[-1],
+            src_dir_fd=staging_fd,
+            dst_dir_fd=parent_fd,
+        )
+        stage_present = False
+        published = True
+        os.fsync(parent_fd)
+        check_publication(replaced_info, staged_info)
+        # 所有可能失败的持久化检查完成后才删除旧入口；否则 fsync 失败会
+        # 在备份已被删除后进入回滚，误删已经发布的新文件。
+        os.fsync(staging_fd)
+        if backup_present:
+            _unlink_regular_file(
+                staging_fd,
+                backup_name,
+                missing_ok=False,
             )
-            if backup_present:
-                _unlink_regular_file(
-                    staging_fd,
+            backup_present = False
+    except Exception:
+        if published:
+            try:
+                _unlink_regular_file(parent_fd, parts[-1], missing_ok=True)
+            except (OSError, AgentWorkspaceError):
+                pass
+            published = False
+        if backup_present:
+            try:
+                os.rename(
                     backup_name,
-                    missing_ok=False,
+                    parts[-1],
+                    src_dir_fd=staging_fd,
+                    dst_dir_fd=parent_fd,
                 )
                 backup_present = False
-            os.fsync(staging_fd)
-            return (
-                _workspace_root()
-                / "sessions"
-                / safe_session_id
-                / "workspace"
-                / normalized
-            )
-        except Exception:
-            if published:
-                try:
-                    _unlink_regular_file(parent_fd, parts[-1], missing_ok=True)
-                except (OSError, AgentWorkspaceError):
-                    pass
-                published = False
-            if backup_present:
-                try:
-                    os.rename(
-                        backup_name,
-                        parts[-1],
-                        src_dir_fd=staging_fd,
-                        dst_dir_fd=parent_fd,
-                    )
-                    backup_present = False
-                    os.fsync(parent_fd)
-                except OSError:
-                    pass
-            raise
-        finally:
-            if stage_present:
-                try:
-                    _unlink_regular_file(staging_fd, stage_name, missing_ok=True)
-                except (OSError, AgentWorkspaceError):
-                    pass
-            if backup_present:
-                # 只有恢复本身失败时才可能到达这里；保留备份比删除
-                # 用户原文件更安全，下次启动会因私有暂存异常 fail closed。
+                os.fsync(parent_fd)
+            except OSError:
                 pass
-            os.close(staging_fd)
-            for fd in reversed(opened_parents):
-                os.close(fd)
+        raise
+    finally:
+        if stage_present:
+            try:
+                _unlink_regular_file(staging_fd, stage_name, missing_ok=True)
+            except (OSError, AgentWorkspaceError):
+                pass
+        if backup_present:
+            # 只有恢复本身失败时才可能到达这里；保留备份比删除
+            # 用户原文件更安全，下次启动会因私有暂存异常 fail closed。
+            pass
+        for fd in reversed(opened_parents):
+            os.close(fd)
 
 
 def _unlink_regular_file(directory_fd: int, name: str, *, missing_ok: bool) -> bool:
@@ -1634,28 +1657,85 @@ def clear_agent_session_state_file(session_id) -> bool:
 
 
 
-def inject_agent_workspace_files(session_id, files):
-    """向通用 workspace 注入独立副本；路径来自内部编排而非浏览器。"""
-    for relative_path, source in (files or {}).items():
-        relative_path = _normalize_relative_path(relative_path, public=True)
-        if isinstance(source, Path):
-            absolute = source.absolute()
-            root_fd = os.open(absolute.anchor, _DIRECTORY_OPEN_FLAGS)
-            try:
-                fd, info = _open_regular_file_fd(root_fd, absolute.parts[1:])
-            finally:
-                os.close(root_fd)
-            with os.fdopen(fd, "rb") as stream:
-                if info.st_nlink != 1 or info.st_size > _quota_limit():
-                    raise AgentWorkspaceSecurityError("注入源必须是限额内的独立普通文件")
-                content = stream.read(_quota_limit() + 1)
-                if len(content) > _quota_limit():
-                    raise AgentWorkspaceQuotaError("注入文件超过工作区限额")
-        elif isinstance(source, (str, bytes, bytearray, memoryview)):
-            content = source
-        else:
-            raise AgentWorkspacePathError("注入内容必须是文本、字节或 Path")
-        write_agent_workspace_file(session_id, relative_path, content)
+def _injection_source_payload(source):
+    if isinstance(source, Path):
+        absolute = source.absolute()
+        root_fd = os.open(absolute.anchor, _DIRECTORY_OPEN_FLAGS)
+        try:
+            fd, info = _open_regular_file_fd(root_fd, absolute.parts[1:])
+        finally:
+            os.close(root_fd)
+        with os.fdopen(fd, "rb") as stream:
+            if info.st_nlink != 1 or info.st_size > _quota_limit():
+                raise AgentWorkspaceSecurityError("注入源必须是限额内的独立普通文件")
+            content = stream.read(_quota_limit() + 1)
+            if len(content) > _quota_limit():
+                raise AgentWorkspaceQuotaError("注入文件超过工作区限额")
+        return content
+    if isinstance(source, str):
+        return source.encode("utf-8")
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        return bytes(source)
+    raise AgentWorkspacePathError("注入内容必须是文本、字节或 Path")
+
+
+def inject_agent_workspace_files(session_id, files, *, progress=None):
+    """向静默 workspace 批量注入独立副本，目录用量仅在批次前后扫描。
+
+    内部调用方必须先排除容器及其他 writer：仅用于持会话锁且尚未派发的
+    首轮初始化，或 worker 全部停止后的历史迁移。普通运行中宿主写入继续
+    使用 write_agent_workspace_file。逐文件原子发布并按 inode 净增量校验
+    配额；失败恢复当前文件，保留已成功前缀和未列出的旧文件，允许安全续跑。
+    progress(completed, total) 在每个文件提交后调用，节流由调用方负责。
+    """
+    files = files or {}
+    if not files:
+        return
+    with _open_session_directories(session_id) as (_, session_fd, workspace_fd):
+        max_bytes = _quota_limit()
+        inode_references = {}
+        total_bytes = _scan_workspace_usage_fd(
+            workspace_fd, max_bytes=max_bytes, inode_references=inode_references,
+        ).total_bytes
+
+        def check_publication(old_info, new_info):
+            nonlocal total_bytes
+            old_key = (int(old_info.st_dev), int(old_info.st_ino)) if old_info else None
+            old_size, old_count = inode_references.get(old_key, (0, 0))
+            if old_info is not None and (
+                old_count == 0 or old_size != max(0, int(old_info.st_size))
+            ):
+                raise AgentWorkspaceSecurityError("批量注入期间 workspace 被其他进程修改")
+            projected = total_bytes + int(new_info.st_size) - (old_size if old_count == 1 else 0)
+            if projected > max_bytes:
+                raise AgentWorkspaceQuotaError(f"Agent workspace 总大小不能超过 {max_bytes} 字节")
+            if old_count == 1:
+                del inode_references[old_key]
+            elif old_count > 1:
+                inode_references[old_key] = (old_size, old_count - 1)
+            inode_references[(int(new_info.st_dev), int(new_info.st_ino))] = (int(new_info.st_size), 1)
+            total_bytes = projected
+
+        staging_fd = _open_managed_child_directory(
+            session_fd, ".host-write-staging", label="Agent workspace 宿主写入暂存目录",
+        )
+        try:
+            for completed, (relative_path, source) in enumerate(files.items(), 1):
+                normalized = _normalize_relative_path(relative_path, public=True)
+                _publish_workspace_payload(
+                    workspace_fd, staging_fd, tuple(PurePosixPath(normalized).parts),
+                    _injection_source_payload(source), mode=0o600,
+                    check_publication=check_publication,
+                )
+                if progress is not None:
+                    progress(completed, len(files))
+            actual = _scan_workspace_usage_fd(
+                workspace_fd, max_bytes=max_bytes, inode_references={},
+            )
+            if actual.total_bytes != total_bytes:
+                raise AgentWorkspaceSecurityError("批量注入期间 workspace 被其他进程修改")
+        finally:
+            os.close(staging_fd)
 
 
 def export_agent_workspace_file(session_id, path, destination):
