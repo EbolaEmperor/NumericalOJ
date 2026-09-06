@@ -841,6 +841,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         with zipfile.ZipFile(downloaded_path) as archive:
             assert "ai_answer/README.md" in archive.namelist()
             assert archive.read("ai_answer/README.md").decode("utf-8") == "在此目录作答。\n"
+            assert archive.read("ai_answer/agent-output.txt").decode("utf-8") == "本地测试 Agent 的根目录交付物。\n"
 
     rejected_submit = cli.user_json(
         "ranking",

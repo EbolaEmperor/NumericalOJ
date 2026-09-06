@@ -1253,35 +1253,62 @@ def test_unified_workspace_inputs_separate_answer_from_private_material(unified_
     quality = rj._workspace_input_files(f.audit, rj.STEP_QUALITY_GATE)
     answer = rj._workspace_input_files(f.audit, rj.STEP_AGENT)
     assert {'evidence/judge.sh', 'evidence/solution/solve.py', 'evidence/hidden.txt'} <= quality.keys()
-    assert set(answer) == {'problem/README.md', 'template/solve.py', 'template/.numoj-placeholder'}
-    assert '完整工具' in rj._quality_gate_agent_prompt('标准')
-    assert '/evidence' not in rj._quality_gate_agent_prompt('标准').replace('/workspace/evidence', '')
+    assert set(answer) == {'problem/README.md', 'solve.py', 'problem/.numoj-placeholder'}
+    assert answer['solve.py'].read_text() == 'pass'
+    assert not {'judge.sh', 'solution/solve.py', 'hidden.txt'} & answer.keys()
 
 
-def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatch, unified_reverse):
+def test_runtime_prompts_preserve_review_and_deliverable_requirements():
+    quality = rj._quality_gate_agent_prompt('逐项审核题目与答案的一致性')
+    answer = rj._reverse_prompt()
+    assert '逐项审核题目与答案的一致性' in quality
+    assert '管理员审核标准是唯一的判定依据' in quality
+    assert '并根据审核标准决定读取哪些文件' in quality
+    assert '出题者标准答案' in quality and '评测入口' in quality
+    assert 'quality_gate_result.json' in quality
+    assert '/workspace' not in quality
+    assert '存在任一违规时 passed=false' in quality
+    assert '题面、说明、样例或其它材料' in answer
+    assert '不要用说明性文档替代可评测文件' in answer
+    assert '最终评测会把整个项目目录作为答案目录' in answer
+    assert '/workspace' not in answer
+    for prompt in (quality, answer):
+        assert not any(term in prompt for term in ('只读', '可写', '不得执行', '禁止执行', '不要修改'))
+
+
+@pytest.mark.parametrize('existing_template_session', [False, True])
+def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatch, unified_reverse, existing_template_session):
+    from pathlib import Path
+    from backend.oj_modules.agents import workspace
+
     f = unified_reverse
     judge_calls = []
+    monkeypatch.setattr(workspace, 'AGENT_WORKSPACE_ROOT', f.root / 'agent-workspaces')
 
     def judge(_sid, package_root, answer, timeout):
         judge_calls.append(answer)
         if answer == 'solution':
-            from pathlib import Path
             # 自检脚本只能污染其评分副本，后续作答的输入仍来自冻结包。
             (Path(package_root) / 'problem' / 'README.md').write_text('污染题面')
         else:
-            from pathlib import Path
             assert (Path(package_root) / 'template' / 'solve.py').read_text() == 'AI交付物'
+            assert (Path(package_root) / 'template' / 'new-output.txt').read_text() == '根目录新增交付物'
+            assert (Path(package_root) / 'template' / 'problem' / 'README.md').read_text() == 'AI修改的题面'
+            assert (Path(package_root) / 'problem' / 'README.md').read_text() == '公开题面'
             assert (Path(package_root) / 'solution' / 'solve.py').read_text() == '标准答案私密内容'
+            assert (Path(package_root) / 'judge.sh').read_text() == '#!/usr/bin/env bash\n'
+            assert not (Path(package_root) / 'template' / 'solution').exists()
+            assert not (Path(package_root) / 'template' / 'judge.sh').exists()
+            assert not (Path(package_root) / 'template' / '.runtime').exists()
         return {'ok': True, 'stdout': '', 'stderr': '', 'result': {
             'max_score': 100, 'score': 100 if answer == 'solution' else 25,
             'test_points': {},
         }}
 
     def export(sid, path, destination):
-        from pathlib import Path
-        assert sid == f.dispatches[1]['session_id'] and path == 'template'
-        Path(destination).mkdir()
-        (Path(destination) / 'solve.py').write_text('AI交付物')
+        assert sid == f.dispatches[1]['session_id']
+        assert path == ('template' if existing_template_session else '.')
+        return workspace.export_agent_workspace_directory(sid, path, destination)
 
     monkeypatch.setattr(rj, '_run_judge_script', judge)
     monkeypatch.setattr(rj, 'export_agent_workspace_directory', export)
@@ -1307,6 +1334,20 @@ def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatc
     assert answer['requested_by'] == 'alice'
     assert f.releases == [quality['task_id']]
     assert judge_calls == ['solution']
+    workspace.initialize_agent_task_workspace(answer['session_id'], harness='pi', access_role='user')
+    workspace.inject_agent_workspace_files(answer['session_id'], answer['files'])
+    if existing_template_session:
+        # 部署前已发送的会话保持原答案路径，新任务才使用项目根目录。
+        f.rows[rj.STEP_AGENT]['result_json']['_agent'].pop('answer_path')
+    for path, content in {
+        'solve.py': 'AI交付物', 'new-output.txt': '根目录新增交付物',
+        'problem/README.md': 'AI修改的题面', '.runtime/internal': '内部运行数据',
+    }.items():
+        if existing_template_session:
+            path = 'template/' + path
+        workspace.write_agent_workspace_file(answer['session_id'], path, content)
+    assert (f.audit / 'problem' / 'README.md').read_text() == '公开题面'
+    assert (f.audit / 'template' / 'solve.py').read_text() == 'pass'
     f.turns[answer['session_id']][0]['status'] = 'Completed'
     assert advance() == {'success': True, 'score': 75.0}
     assert judge_calls == ['solution', 'template']
@@ -1370,6 +1411,9 @@ def test_timeout_finalizes_same_generic_session_after_reacquiring_pool(unified_r
     assert finish['task_id'] != first['task_id']
     assert finish['files'] is None
     assert finish['timeout_seconds'] == 180
+    assert '无论正确性与性能是否达标，都请停下你的工作' in finish['prompt']
+    assert '整理代码，形成一个可运行的交付物' in finish['prompt']
+    assert '/workspace' not in finish['prompt']
     assert f.releases == [first['task_id']]
     f.turns[first['session_id']][1].update(status='Failed', conclusion='再次超时')
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)

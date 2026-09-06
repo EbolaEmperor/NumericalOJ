@@ -424,7 +424,7 @@ def _algorithm_package(path: Path) -> Path:
 4
 ```
 
-请使用工具检查当前工作区，并把 `/workspace/template/main.py` 改成可由 Python 3
+请使用工具检查当前工作区，并把 `/workspace/main.py` 改成可由 Python 3
 直接运行的完整程序。完成前请实际运行样例；不要只在回复中解释算法。
 """
     template = (

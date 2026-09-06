@@ -72,10 +72,13 @@ def _run_reverse_agent(**kwargs):
         )
         conclusion = "已完成题目包质量审核"
     else:
-        if not (workspace / "problem").is_dir() or not (workspace / "template").is_dir():
-            raise RuntimeError("作答会话缺少已注入的题目或模板")
-        # 导出与下载继续读取实际 template，替身不重造交付文件。
-        conclusion = "已在 template 中保留可交付答案"
+        if not (workspace / "problem").is_dir():
+            raise RuntimeError("作答会话缺少已注入的题目")
+        # 保留已展开到根目录的模板，再新增产物验证完整 workspace 交付。
+        write_agent_workspace_file(
+            session_id, "agent-output.txt", "本地测试 Agent 的根目录交付物。\n",
+        )
+        conclusion = "已在 workspace 中完成可交付答案"
     native_id = kwargs.get("resume_session_id") or str(uuid.uuid4())
     kwargs["native_session_callback"](native_id)
     kwargs["trace_records_callback"]([{

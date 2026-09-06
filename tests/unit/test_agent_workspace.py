@@ -929,3 +929,64 @@ def test_batch_injection_refuses_incomplete_existing_usage_scan(workspace_root, 
         workspace.inject_agent_workspace_files("session", {"new": b"new data"})
     assert not (public / "new").exists()
     assert (public / "unreadable/old").read_bytes() == b"existing data"
+
+
+
+def test_export_public_workspace_root_keeps_independent_files_and_skips_runtime(workspace_root, tmp_path):
+    public = workspace.ensure_agent_workspace("session")
+    visible = {
+        "main.py": b"print('answer')", "problem/problem.md": b"question",
+        "assets/data.bin": b"data", ".gitignore": b"cache/",
+        ".git/config": b"user project config", ".claude/notes": b"user project notes",
+    }
+    hidden = {
+        ".runtime/home/token": b"secret", ".numoj-agent": b"internal",
+        ".aj_session_state.json": b"native session", "src/.runtime-cache/private": b"secret",
+    }
+    for relative, content in (visible | hidden).items():
+        path = public / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    destination = tmp_path / "answer"
+
+    assert workspace.export_agent_workspace_directory("session", ".", destination) == destination
+    assert {path.relative_to(destination).as_posix(): path.read_bytes()
+            for path in destination.rglob("*") if path.is_file()} == visible
+    assert not (destination / ".runtime").exists()
+    assert not (destination / "src/.runtime-cache").exists()
+    (public / "main.py").write_bytes(b"late change")
+    assert (destination / "main.py").read_bytes() == visible["main.py"]
+    assert (public / ".runtime/home/token").read_bytes() == b"secret"
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_export_workspace_root_still_rejects_links(workspace_root, tmp_path, link_kind):
+    public = workspace.ensure_agent_workspace("session")
+    outside = tmp_path / "original"
+    outside.write_bytes(b"outside")
+    if link_kind == "symlink":
+        (public / "linked").symlink_to(outside)
+    else:
+        os.link(outside, public / "linked")
+
+    with pytest.raises(workspace.AgentWorkspaceSecurityError):
+        workspace.export_agent_workspace_directory("session", ".", tmp_path / "answer")
+    assert outside.read_bytes() == b"outside"
+
+
+def test_export_workspace_root_does_not_overwrite_existing_destination(workspace_root, tmp_path):
+    workspace.inject_agent_workspace_files("session", {"new.txt": b"new"})
+    destination = tmp_path / "answer"
+    destination.mkdir()
+    (destination / "old.txt").write_bytes(b"old")
+
+    with pytest.raises(FileExistsError):
+        workspace.export_agent_workspace_directory("session", ".", destination)
+    assert [path.name for path in destination.iterdir()] == ["old.txt"]
+    assert (destination / "old.txt").read_bytes() == b"old"
+
+
+@pytest.mark.parametrize("path", ["", "./", "..", "/"])
+def test_export_workspace_root_alias_does_not_relax_other_paths(workspace_root, tmp_path, path):
+    with pytest.raises(workspace.AgentWorkspacePathError):
+        workspace.export_agent_workspace_directory("session", path, tmp_path / "answer")

@@ -1765,8 +1765,12 @@ def export_agent_workspace_file(session_id, path, destination):
 
 
 def export_agent_workspace_directory(session_id, path, destination):
-    """导出通用 workspace 子树，遍历和文件打开都不跟随链接。"""
-    normalized = _normalize_relative_path(path, public=True)
+    """导出公开 workspace 子树；'.' 表示根，私有运行数据不参与导出。
+
+    调用方须在 Agent 结束且容器清理完成后导出；结果是与原 workspace
+    独立的副本，遍历和文件打开都不跟随链接。
+    """
+    normalized = "" if path == "." else _normalize_relative_path(path, public=True)
     destination = Path(destination)
     if destination.exists():
         raise FileExistsError("导出目标必须是新的私有目录")
@@ -1781,16 +1785,19 @@ def export_agent_workspace_directory(session_id, path, destination):
             def walk(directory_fd, relative, target):
                 target.mkdir(mode=0o700, parents=True, exist_ok=False)
                 for name in os.listdir(directory_fd):
+                    if _is_private_name(name):
+                        continue
                     _normalize_entry_name(name, attachment=True)
+                    child_relative = f"{relative}/{name}" if relative else name
                     info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     if stat.S_ISDIR(info.st_mode):
                         child_fd = _open_existing_directory_at(directory_fd, name, label="导出子目录")
                         try:
-                            walk(child_fd, f"{relative}/{name}", target / name)
+                            walk(child_fd, child_relative, target / name)
                         finally:
                             os.close(child_fd)
                     elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
-                        export_agent_workspace_file(session_id, f"{relative}/{name}", target / name)
+                        export_agent_workspace_file(session_id, child_relative, target / name)
                     else:
                         raise AgentWorkspaceSecurityError("导出结果包含链接或特殊文件")
             walk(current_fd, normalized, destination)
