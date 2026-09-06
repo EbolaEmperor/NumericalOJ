@@ -23,6 +23,15 @@ from backend.oj_modules.vibehub.runtime import (
 vibehub_api_bp = Blueprint("vibehub_api", __name__, url_prefix="/api/vibehub")
 
 
+@vibehub_api_bp.before_request
+def _set_package_upload_request_limit():
+    # 必须先于 request.files/form 解析；不放宽其他接口的全站限制。
+    if request.method == "POST" and request.endpoint in {
+        "vibehub_api.create_project", "vibehub_api.upload_version",
+    }:
+        request.max_content_length = storage.MAX_UPLOAD_REQUEST_BYTES
+
+
 def _upload_root():
     return current_app.config.get("VIBEHUB_UPLOAD_ROOT")
 

@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin
 
+from .multipart import MultipartUpload
+
 try:
     import requests
 except ImportError as exc:
@@ -269,6 +271,12 @@ class NumOJClient:
         url = urljoin(self.base_url + "/", path.lstrip("/"))
         kwargs.setdefault("timeout", self.timeout)
         kwargs.setdefault("allow_redirects", False)
+        files = kwargs.pop("files", None)
+        if files:
+            body = MultipartUpload(kwargs.pop("data", None) or {}, files)
+            headers = requests.structures.CaseInsensitiveDict(kwargs.pop("headers", None) or {})
+            headers["Content-Type"] = body.content_type
+            kwargs.update(data=body, headers=headers)
         return self.session.request(method.upper(), url, **kwargs)
 
 

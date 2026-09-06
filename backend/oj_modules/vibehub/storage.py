@@ -30,9 +30,12 @@ from backend.oj_modules.vibehub import quotas
 
 
 VIBEHUB_UPLOAD_ROOT = PROJECT_ROOT / "uploads" / "vibehub"
-MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
-MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
-MAX_FILE_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 5 * 1024**3
+MAX_EXTRACTED_BYTES = 8 * 1024**3
+# 单个普通成员不另设大小上限，仍计入整个作品包的解压总量。
+MAX_FILE_BYTES = None
+# HTTP multipart 边界和元数据不占 ZIP 本身的 5 GiB 配额。
+MAX_UPLOAD_REQUEST_BYTES = MAX_ARCHIVE_BYTES + 16 * 1024**2
 MAX_MEMBERS = 20_000
 MAX_COMPRESSION_RATIO = 200.0
 MANIFEST_FILENAME = "vibehub.json"
@@ -210,7 +213,7 @@ def _save_limited_archive(upload, destination: Path) -> tuple[str, int]:
                 break
             total += len(chunk)
             if total > MAX_ARCHIVE_BYTES:
-                raise PackageValidationError("压缩包不能超过 256 MiB")
+                raise PackageValidationError("压缩包不能超过 5 GiB")
             digest.update(chunk)
             output.write(chunk)
     destination.chmod(0o600)

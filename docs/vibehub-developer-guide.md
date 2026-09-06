@@ -22,6 +22,10 @@ python3 scripts/numoj_user.py vibehub guide -o vibehub-developer-guide.md
 
 ## 最小作品包
 
+上传 ZIP 最多 **5 GiB**（5 × 1024³ 字节），解压后的所有文件合计最多 **8 GiB**。
+普通成员文件不设单独大小上限，仍受解压总量及操作系统限制；封面图片继续遵守下文的格式与大小要求。
+平台保留文件数量、压缩比、路径和文件类型检查。CLI 以流式 multipart 上传，完整包无需读入内存。
+
 ZIP 解压后的根目录必须直接包含 `Dockerfile` 和 `vibehub.json`，不能再套一层目录：
 
 ```text
@@ -175,7 +179,7 @@ python3 scripts/numoj_user.py vibehub edit <slug> \
 ## 提交前检查
 
 1. ZIP 根目录直接包含 `Dockerfile` 和 `vibehub.json`，没有额外外层目录。
-2. 程序包不含密钥、隐私数据、符号链接、FIFO、socket 或超大文件。
+2. 程序包不含密钥、隐私数据、符号链接、FIFO 或 socket；ZIP 和解压总量符合大小上限。
 3. `cover_image` 指向包内真实 PNG、JPEG 或 WebP，主体位于 16:9 中央安全区。
 4. 需要联网安装的依赖使用 lockfile 或精确版本。
 5. 容器以非 root 身份在 `VIBEHUB_SOCKET` 上提供 HTTP/1.1，`GET /healthz` 返回 `200`。

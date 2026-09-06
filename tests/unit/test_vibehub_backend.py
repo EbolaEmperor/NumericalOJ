@@ -1514,3 +1514,48 @@ def test_gpu_pending_cover_resolution_remains_available_without_granting_runtime
     package = services.resolve_project_package('demo-vibe', audience='latest', actor=USER, for_runtime=False)
     assert package['version'] == 3
     assert package['gpu'] is None
+
+
+def test_package_size_policy_has_no_independent_file_cap(tmp_path, monkeypatch):
+    assert storage.MAX_ARCHIVE_BYTES == 5 * 1024**3
+    assert storage.MAX_EXTRACTED_BYTES == 8 * 1024**3
+    assert storage.MAX_FILE_BYTES is None
+    raw = _package_bytes(files={"weights.bin": bytes(range(256)) * 8})
+    total = sum(info.file_size for info in zipfile.ZipFile(BytesIO(raw)).infolist())
+    monkeypatch.setattr(storage, "MAX_ARCHIVE_BYTES", len(raw))
+    monkeypatch.setattr(storage, "MAX_EXTRACTED_BYTES", total)
+    prepared = storage.prepare_uploaded_package(BytesIO(raw), upload_root=tmp_path)
+    assert (prepared.snapshot_dir / "app" / "weights.bin").stat().st_size == 2048
+    monkeypatch.setattr(storage, "MAX_EXTRACTED_BYTES", total - 1)
+    with pytest.raises(storage.PackageValidationError, match="total_too_large"):
+        storage.prepare_uploaded_package(BytesIO(raw), upload_root=tmp_path)
+    monkeypatch.setattr(storage, "MAX_ARCHIVE_BYTES", len(raw) - 1)
+    with pytest.raises(storage.PackageValidationError, match="5 GiB"):
+        storage.prepare_uploaded_package(BytesIO(raw), upload_root=tmp_path)
+
+
+@pytest.mark.parametrize("path", ["/api/vibehub/projects", "/api/vibehub/projects/demo/versions"])
+def test_upload_http_limit_allows_multipart_overhead_and_keeps_other_routes_small(
+    path, tmp_path, monkeypatch,
+):
+    app = Flask(__name__)
+    app.config.update(TESTING=True, MAX_CONTENT_LENGTH=32, VIBEHUB_UPLOAD_ROOT=tmp_path)
+    app.register_blueprint(vibehub_api.vibehub_api_bp)
+    monkeypatch.setattr(vibehub_api, "current_user", lambda: USER)
+    monkeypatch.setattr(services, "preflight_create_project", lambda *_: None)
+    monkeypatch.setattr(services, "preflight_upload_project", lambda *_: None)
+    monkeypatch.setattr(storage, "MAX_UPLOAD_REQUEST_BYTES", 2048)
+
+    def receive(*args, **kwargs):
+        upload = next(arg for arg in args if hasattr(arg, "stream"))
+        assert upload.read() == b"x" * 128
+        return {"slug": "demo"}
+
+    monkeypatch.setattr(services, "create_project", receive)
+    monkeypatch.setattr(services, "upload_new_version", receive)
+    with app.test_client() as client:
+        assert client.post(path, data={"package": (BytesIO(b"x" * 128), "work.zip")}).status_code == 201
+        assert client.post(path, data={"package": (BytesIO(b"x" * 2048), "work.zip")}).status_code == 413
+        assert client.patch("/api/vibehub/projects/demo", data=b"x" * 128,
+                            content_type="application/x-www-form-urlencoded").status_code == 413
+    assert app.config["MAX_CONTENT_LENGTH"] == 32
