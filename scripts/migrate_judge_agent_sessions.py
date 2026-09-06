@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import sys
 import time
@@ -24,11 +25,9 @@ from backend.oj_modules.agents.sessions import (
 )
 from backend.oj_modules.agents.trace_store import (
     ingest_agent_trace_records, save_agent_trace_token_usage,
-    _normalize_canonical_record, get_agent_trace_token_usage, _normalized_token_usage,
+    _normalize_canonical_record, _normalized_token_usage,
 )
-from backend.oj_modules.agents.workspace import (
-    inject_agent_workspace_files, ensure_agent_workspace, open_agent_workspace_file, build_agent_workspace_tree,
-)
+from backend.oj_modules.agents.workspace import ensure_agent_workspace
 from backend.oj_modules.db_services import upsert_agent_run_snapshot
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.ranking.db import submission_dir
@@ -39,12 +38,16 @@ from deploy.backup.orchestrator import read_manifest, validate_manifest_artifact
 from deploy.preflight import validate_production_config
 
 MIGRATION_VERSION = 1
-TRACE_FIELDS = ('event_id', 'event_order', 'kind', 'title', 'text', 'meta', 'format', 'is_error', 'message_id')
 SOURCE_UNAVAILABLE = (PermissionError, FileNotFoundError)
 
 
 def _progress(message):
-    print(f'[judge-history] {message}', flush=True)
+    print(f'[judge-history] {_display_text(message)}', flush=True)
+
+
+def _display_text(value):
+    """日志和 JSON 展示使用转义文字，磁盘上的原始名称保持不变。"""
+    return str(value).encode('utf-8', errors='backslashreplace').decode('utf-8')
 
 
 def _file_progress(label):
@@ -93,11 +96,11 @@ def _open_source(path):
 
 
 def _available_source(path, missing, label):
-    """仅容忍历史源缺失/权限不足；目标写入、磁盘和安全校验错误仍须中止。"""
+    """读取不了的旧材料记入报告，不影响其他历史会话。"""
     try:
         return _open_source(path)
-    except SOURCE_UNAVAILABLE as exc:
-        reason = '权限不足' if isinstance(exc, PermissionError) else '文件已不存在'
+    except OSError as exc:
+        reason = '权限不足' if isinstance(exc, PermissionError) else ('文件已不存在' if isinstance(exc, FileNotFoundError) else str(exc))
         missing.append(f'历史材料不可读取（{reason}）：{label}')
         return None
 
@@ -205,16 +208,15 @@ def _extract_copy(archive, output, staging, missing, label):
     source = _available_source(archive, missing, label)
     if source is None:
         return False
-    with source, archive_copy.open('wb') as copied:
-        while chunk := source.read(1024 * 1024):
-            copied.write(chunk)
     try:
+        with source, archive_copy.open('wb') as copied:
+            shutil.copyfileobj(source, copied)
         extract_zip(archive_copy, output, policy=ZipExtractionPolicy(
             max_members=config.REVERSE_PACKAGE_MAX_MEMBERS, max_file_bytes=config.REVERSE_PACKAGE_MAX_FILE_BYTES,
             max_total_bytes=config.REVERSE_PACKAGE_MAX_TOTAL_BYTES, max_compression_ratio=config.REVERSE_PACKAGE_MAX_COMPRESSION_RATIO,
             unsafe_member_action='raise', cleanup_on_error=True,
         ))
-    except (ArchiveExtractionError, zipfile.BadZipFile) as exc:
+    except (OSError, ArchiveExtractionError, zipfile.BadZipFile) as exc:
         missing.append(f'历史归档无法安全解包：{label}（{exc}）')
         return False
     return True
@@ -230,12 +232,16 @@ def _uploaded_material(submission, staging, missing):
     stream = _available_source(source, missing, '原提交')
     if stream is None:
         return target
-    with stream:
-        zipped = zipfile.is_zipfile(stream)
-        if not zipped:
-            stream.seek(0)
-            target.mkdir()
-            (target / source.name).write_bytes(stream.read())
+    try:
+        with stream:
+            zipped = zipfile.is_zipfile(stream)
+            if not zipped:
+                stream.seek(0)
+                target.mkdir()
+                (target / source.name).write_bytes(stream.read())
+    except OSError as exc:
+        missing.append(f'原提交无法复制：{exc}')
+        return target
     if zipped and not _extract_copy(source, target, staging, missing, '原提交'):
         return target
     missing.append('执行 workspace 已缺失；已从原提交恢复输入副本，不代表最终执行文件')
@@ -276,18 +282,7 @@ def _trace_records(task_id, trace, staging, missing):
     # 先复制经过文件类型校验的轨迹到私有临时目录，旧解析器不直接遍历原文件树。
     safe_trace = Path(staging) / 'trace'
     files = _regular_files(trace, 'trace', missing, include_hidden=True)
-    progress = _file_progress(f'{task_id} 复制轨迹')
-    for index, (relative, path) in enumerate(files.items(), 1):
-        source = _available_source(path, missing, relative)
-        if source is None:
-            continue
-        target = Path(staging) / relative
-        with source:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open('wb') as destination:
-                while chunk := source.read(1024 * 1024):
-                    destination.write(chunk)
-        progress(index, len(files))
+    _copy_files(files, Path(staging), missing, f'{task_id} 复制轨迹')
     canonical = safe_trace / 'numoj_trace_v1.jsonl'
     if canonical.is_file():
         seen = set()
@@ -319,100 +314,49 @@ def _trace_records(task_id, trace, staging, missing):
     return records, collect_agent_token_usage(str(safe_trace))
 
 
-def _digest(stream):
-    digest = hashlib.sha256()
-    size = 0
-    while chunk := stream.read(1024 * 1024):
-        digest.update(chunk)
-        size += len(chunk)
-    return {'size': size, 'sha256': digest.hexdigest()}
-
-
-def _trace_digest(rows):
-    normalized = [{key: bool(row.get(key)) if key == 'is_error' else row.get(key) for key in TRACE_FIELDS} for row in rows]
-    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-
-
 def _identity(submission, kind, actual_attempt):
     return {'task_kind': 'judge', 'judge_kind': kind, 'requested_by': submission['username'],
                 'submission_id': submission['id'], 'competition_id': submission['competition_id'], 'attempt_id': actual_attempt}
 
 
-def _workspace_paths(session_id):
-    def files_in_tree(nodes):
-        return {path for node in nodes for path in (files_in_tree(node.get('children', [])) if node['type'] == 'directory' else {node['path']})}
-    return files_in_tree(build_agent_workspace_tree(session_id))
-
-
-def _material_manifest(session_id, files, kind, missing):
-    """筛出可读材料；失败续跑时保留先前成功注入但源已不可取得的安全副本。"""
-    readable, manifest = {}, {}
-    progress = _file_progress(f'{session_id} 读取材料摘要')
-    for index, (relative, content) in enumerate(files.items(), 1):
-        if isinstance(content, Path):
-            stream = _available_source(content, missing, relative)
-            if stream is None:
-                continue
-            with stream:
-                manifest[relative] = _digest(stream)
-        else:
-            manifest[relative] = {'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
-        readable[relative] = content
+def _copy_files(files, root, missing, label):
+    """原样复制；临时文件替换保证失败时不破坏上次已经复制的内容。"""
+    copied = 0
+    progress = _file_progress(label)
+    for index, (relative, source) in enumerate(files.items(), 1):
+        target = root / relative
+        temporary = None
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with NamedTemporaryFile(dir=target.parent, prefix='.history-copy-', delete=False) as stream:
+                temporary = Path(stream.name)
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, target)
+            temporary = None
+            copied += 1
+        except OSError as exc:
+            message = f'复制失败，保留原材料和已有副本：{relative}（{exc}）'
+            missing.append(_display_text(message))
+            _progress(message)
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
         progress(index, len(files))
-    prefixes = {'agent_judge': ('historical_workspace/',), 'reverse_quality': ('audit/',),
-                'reverse_answer': ('problem/', 'template/')}[kind]
-    for relative in sorted(_workspace_paths(session_id) - set(readable) - {'historical_record.json'}):
-        if not relative.startswith(prefixes):
-            raise RuntimeError(f'未完成历史副本含意外路径：{session_id}/{relative}')
-        stream, _ = open_agent_workspace_file(session_id, relative)
-        with stream:
-            if os.fstat(stream.fileno()).st_nlink != 1:
-                raise RuntimeError(f'未完成历史副本含硬链接：{session_id}/{relative}')
-            manifest[relative] = _digest(stream)
-        missing.append(f'原材料不可复核，保留上次未完成导入的副本：{relative}')
-    return readable, manifest
+    return copied
 
 
-def _verify(session_id, expected, *, submission, kind, actual_attempt):
-    session = get_agent_session(session_id)
-    identity = _identity(submission, kind, actual_attempt)
-    if not session or any(session.get(key) != value for key, value in identity.items()) or session.get('status') != 'Completed':
-        raise RuntimeError(f'历史会话状态或访问权限核验失败：{session_id}')
-    if _workspace_paths(session_id) != set(expected['workspace_manifest']):
-        raise RuntimeError(f'历史 workspace 文件集合核验失败：{session_id}')
-    progress = _file_progress(f'{session_id} 核验副本')
-    for index, (relative, metadata) in enumerate(expected['workspace_manifest'].items(), 1):
-        stream, _ = open_agent_workspace_file(session_id, relative)
-        with stream:
-            if _digest(stream) != metadata:
-                raise RuntimeError(f'历史 workspace 副本核验失败：{session_id}/{relative}')
-        progress(index, len(expected['workspace_manifest']))
-    if get_agent_trace_token_usage(session_id) != expected.get('token_usage'):
-        raise RuntimeError(f'历史用量核验失败：{session_id}')
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute('SELECT COUNT(*) AS n FROM agent_usage_ledger WHERE task_id=%s', (session_id,))
-            if (cursor.fetchone() or {}).get('n', 0):
-                raise RuntimeError(f'历史导入不应产生费用流水：{session_id}')
-            cursor.execute('SELECT status FROM agent_session_turns WHERE session_id=%s AND task_id=%s', (session_id, session_id))
-            if (cursor.fetchone() or {}).get('status') != 'Completed':
-                raise RuntimeError(f'历史轮次终态核验失败：{session_id}')
-            cursor.execute('SELECT status FROM agent_session_messages WHERE session_id=%s', (session_id,))
-            messages = cursor.fetchall() or []
-            if len(messages) != 1 or messages[0].get('status') != 'sent':
-                raise RuntimeError(f'历史会话 outbox 终态核验失败：{session_id}')
-            cursor.execute(f"SELECT {', '.join(TRACE_FIELDS)} FROM agent_trace_events WHERE task_id=%s ORDER BY event_order", (session_id,))
-            rows = cursor.fetchall() or []
-            if len(rows) != expected['trace_events'] or _trace_digest(rows) != expected['trace_sha256']:
-                raise RuntimeError(f'历史轨迹持久化核验失败：{session_id}')
-    finally:
-        conn.close()
+def _copy_workspace_files(session_id, files, missing):
+    """停服历史导入直接复制字节和原始名称；不做格式、配额或摘要核验。"""
+    root = ensure_agent_workspace(session_id, check_quota=False)
+    return root, _copy_files(files, root, missing, f'{session_id} 复制材料')
 
 
 def _history_record(kind, record, missing):
     fields = ('status', 'score', 'grade_details', 'judge_results', 'error_message') if kind == 'agent_judge' else ('status', 'score', 'max_score', 'result_json', 'error_message')
-    return {'result': {key: record.get(key) for key in fields}, 'missing': sorted(set(missing))}
+    return {'result': {key: record.get(key) for key in fields}, 'missing': sorted({_display_text(item) for item in missing})}
 
 
 def migrate_one(submission, kind, attempt, trace, record, source):
@@ -430,9 +374,8 @@ def migrate_one(submission, kind, attempt, trace, record, source):
     if existing and (not runtime.get('historical_import') or any(existing.get(key) != value for key, value in identity.items())):
         raise RuntimeError(f'历史会话 ID 已被非导入会话占用：{session_id}')
     if runtime.get('historical_import_completed') == MIGRATION_VERSION:
-        _progress(f'{session_id}：重新核验已完成会话')
-        _verify(session_id, runtime, submission=submission, kind=kind, actual_attempt=actual_attempt)
-        return {'session_id': session_id, 'verified': True, 'existing': True, **runtime}
+        _progress(f'{session_id}：已完成，跳过')
+        return {'session_id': session_id, 'existing': True}
     if not existing:
         create_agent_session(
             session_id=session_id, task_id=session_id, requested_by=submission['username'],
@@ -455,17 +398,14 @@ def migrate_one(submission, kind, attempt, trace, record, source):
         records, usage = _trace_records(session_id, trace, staging, missing)
         if not usage:
             missing.append('历史用量不可取得；未推算或补记费用')
-        ensure_agent_workspace(session_id)
         files = _workspace_files(submission, kind, attempt, source, staging, missing)
-        files, manifest = _material_manifest(session_id, files, kind, missing)
-        # 权限不足等缺失说明必须在材料读取后汇总，不能先生成报告再跳过文件。
+        _progress(f'{session_id}：复制 {len(files)} 个文件')
+        output, copied = _copy_workspace_files(session_id, files, missing)
         history = _history_record(kind, record, missing)
         conclusion = '历史评测导入；原有费用不重复记账。\n\n' + json.dumps(history, ensure_ascii=False, default=str, indent=2)
-        files['historical_record.json'] = json.dumps(history, ensure_ascii=False, default=str, indent=2).encode()
-        content = files['historical_record.json']
-        manifest['historical_record.json'] = {'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
-        _progress(f'{session_id}：注入 {len(files)} 个文件，记录 {len(history["missing"])} 项缺失说明')
-        inject_agent_workspace_files(session_id, files, progress=_file_progress(f'{session_id} 注入材料'))
+        (output / 'historical_record.json').write_text(
+            json.dumps(history, ensure_ascii=True, default=str, indent=2), encoding='utf-8',
+        )
     ingest_agent_trace_records(session_id, records, final=True)
     if usage:
         save_agent_trace_token_usage(session_id, usage)
@@ -475,11 +415,9 @@ def migrate_one(submission, kind, attempt, trace, record, source):
         'endpoint_id': submission.get('agent_endpoint_id'), 'status': 'Completed', 'stage': 'finished',
         'harness_status': 'completed', 'message': '历史评测已归档', 'conclusion': conclusion,
     })
-    runtime.update({'historical_import': True, 'historical_import_completed': MIGRATION_VERSION,
-                    'missing': history['missing'], 'trace_events': len(records), 'token_usage': _normalized_token_usage(usage),
-                    'trace_sha256': _trace_digest([_normalize_canonical_record(session_id, item) for item in records]),
-                    'workspace_manifest': manifest})
-    _verify(session_id, runtime, submission=submission, kind=kind, actual_attempt=actual_attempt)
+    runtime = {'historical_import': True, 'historical_import_completed': MIGRATION_VERSION,
+               'missing': history['missing'], 'copied_files': copied,
+               'trace_events': len(records), 'token_usage': _normalized_token_usage(usage)}
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -488,8 +426,8 @@ def migrate_one(submission, kind, attempt, trace, record, source):
         conn.commit()
     finally:
         conn.close()
-    _progress(f'{session_id}：完成并核验，{len(manifest)} 个文件、{len(records)} 条轨迹')
-    return {'session_id': session_id, 'verified': True, **runtime}
+    _progress(f'{session_id}：完成，复制 {copied} 个文件、{len(records)} 条轨迹，{len(history["missing"])} 项缺失说明')
+    return {'session_id': session_id, **runtime}
 
 
 def main(argv=None):
@@ -510,7 +448,7 @@ def main(argv=None):
     _progress('数据库备份核验通过，读取历史提交')
     report = []
     missing = []
-    verified = False
+    completed = False
     current = None
     try:
         submissions, steps = _rows()
@@ -521,18 +459,18 @@ def main(argv=None):
             for source in _sources(submission, steps, missing):
                 current.update(judge_kind=source[0], attempt=source[1])
                 report.append(migrate_one(submission, *source))
-        verified = True
+        completed = True
     finally:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         with NamedTemporaryFile(mode='w', encoding='utf-8', dir=args.report.parent, prefix='.judge-migration-', delete=False) as stream:
             temporary_report = Path(stream.name)
-            json.dump({'version': MIGRATION_VERSION, 'verified': verified, 'sessions': report,
-                       'discovery_missing': sorted(set(missing)), 'interrupted_at': None if verified else current},
-                      stream, ensure_ascii=False, indent=2)
+            json.dump({'version': MIGRATION_VERSION, 'completed': completed, 'sessions': report,
+                       'discovery_missing': sorted(set(missing)), 'interrupted_at': None if completed else current},
+                      stream, ensure_ascii=True, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary_report, args.report)
-    _progress(f'Judge 历史迁移完成并核验：{len(report)} 个会话；报告 {args.report}')
+    _progress(f'Judge 历史迁移完成：{len(report)} 个会话；报告 {args.report}')
     return 0
 
 

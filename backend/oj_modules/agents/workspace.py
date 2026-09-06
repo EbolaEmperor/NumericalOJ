@@ -598,7 +598,7 @@ def get_existing_agent_workspace_path(session_id) -> Path:
         return _workspace_root() / "sessions" / safe_session_id / "workspace"
 
 
-def ensure_agent_workspace(session_id) -> Path:
+def ensure_agent_workspace(session_id, *, check_quota=True) -> Path:
     """创建并验证 ``AGENT_WORKSPACE_ROOT/sessions/<id>/workspace``。"""
 
     with _open_session_directories(session_id) as (
@@ -606,7 +606,8 @@ def ensure_agent_workspace(session_id) -> Path:
         _session_fd,
         workspace_fd,
     ):
-        _check_workspace_quota_fd(workspace_fd)
+        if check_quota:
+            _check_workspace_quota_fd(workspace_fd)
         return _workspace_root() / "sessions" / safe_session_id / "workspace"
 
 

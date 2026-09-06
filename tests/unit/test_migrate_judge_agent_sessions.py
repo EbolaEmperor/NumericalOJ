@@ -1,8 +1,8 @@
-"""历史 Judge 导入：原材料只读、作答隔离、完整轨迹、幂等核验与部署前置。"""
-import hashlib
+"""历史 Judge 导入：原样复制、作答隔离、失败继续与完成标记幂等。"""
 import errno
 import json
 from pathlib import Path
+import stat
 from types import SimpleNamespace
 import zipfile
 
@@ -10,6 +10,7 @@ import pytest
 
 from scripts import migrate_judge_agent_sessions as migration
 from backend.oj_modules.agents import workspace
+from backend.oj_modules.agents.trace_store import _normalize_canonical_record, _normalized_token_usage
 
 
 def _submission(**patch):
@@ -33,21 +34,17 @@ def storage(monkeypatch, tmp_path):
 
 @pytest.fixture
 def database(monkeypatch, storage):
-    data = SimpleNamespace(sessions={}, configs={}, traces={}, usage={}, turns={}, messages={}, creates=0, ledgers=0)
+    data = SimpleNamespace(sessions={}, configs={}, traces={}, usage={}, creates=0)
     def create(**kwargs):
         data.creates += 1
         sid = kwargs['session_id']
         data.sessions[sid] = {**kwargs, 'status': 'Pending'}
         data.configs[sid] = kwargs['runtime_config']
-        data.messages[sid] = [{'status': 'dispatching'}]
-        data.turns[sid] = {'status': 'Pending'}
     def complete(state):
         sid = state['session_id']
         data.sessions[sid]['status'] = state['status']
-        data.turns[sid]['status'] = state['status']
-        data.messages[sid] = [{'status': 'sent'}]
     def ingest(sid, records, **_kwargs):
-        data.traces[sid] = [migration._normalize_canonical_record(sid, row) for row in records]
+        data.traces[sid] = [_normalize_canonical_record(sid, row) for row in records]
     class Connection:
         def cursor(self): return self
         def __enter__(self): return self
@@ -58,10 +55,6 @@ def database(monkeypatch, storage):
             if sql.startswith('UPDATE agent_sessions SET runtime_config_json'):
                 data.configs[params[1]] = json.loads(params[0])
                 self.result = []
-            elif 'agent_usage_ledger' in sql: self.result = [{'n': data.ledgers}]
-            elif 'agent_session_turns' in sql: self.result = [data.turns[params[0]]]
-            elif 'agent_session_messages' in sql: self.result = data.messages[params[0]]
-            elif 'agent_trace_events' in sql: self.result = data.traces.get(params[0], [])
             else: raise AssertionError(sql)
         def fetchone(self): return self.result[0] if self.result else None
         def fetchall(self): return self.result
@@ -71,8 +64,7 @@ def database(monkeypatch, storage):
     monkeypatch.setattr(migration, 'get_agent_session_runtime_config', lambda sid: dict(data.configs.get(sid, {})))
     monkeypatch.setattr(migration, 'upsert_agent_run_snapshot', complete)
     monkeypatch.setattr(migration, 'ingest_agent_trace_records', ingest)
-    monkeypatch.setattr(migration, 'save_agent_trace_token_usage', lambda sid, usage: data.usage.update({sid: migration._normalized_token_usage(usage)}))
-    monkeypatch.setattr(migration, 'get_agent_trace_token_usage', lambda sid: data.usage.get(sid))
+    monkeypatch.setattr(migration, 'save_agent_trace_token_usage', lambda sid, usage: data.usage.update({sid: _normalized_token_usage(usage)}))
     return data
 
 
@@ -87,51 +79,43 @@ def test_reverse_answer_copies_only_public_material_and_current_answer(storage, 
     archive.parent.mkdir(parents=True)
     with zipfile.ZipFile(archive, 'w') as zipped:
         zipped.writestr('main.py', 'AI ANSWER')
-    before = hashlib.sha256(archive.read_bytes()).hexdigest()
+    before = archive.read_bytes()
     result = migration.migrate_one(_submission(), 'reverse_answer', 'current', None, {'status': 'passed'}, root)
     sid = result['session_id']
-    manifest = result['workspace_manifest']
-    assert set(manifest) == {'problem/prompt.md', 'template/main.py', 'historical_record.json'}
     output = workspace.get_existing_agent_workspace_path(sid)
+    assert {path.relative_to(output).as_posix() for path in output.rglob('*') if path.is_file()} == {'problem/prompt.md', 'template/main.py', 'historical_record.json'}
     assert (output / 'template/main.py').read_text() == 'AI ANSWER'
     assert 'SECRET' not in ''.join(path.read_text() for path in output.rglob('*') if path.is_file())
-    assert hashlib.sha256(archive.read_bytes()).hexdigest() == before
+    assert archive.read_bytes() == before
     assert (root / 'package/solution/main.py').read_text() == 'SECRET SOLUTION'
     assert json.loads((output / 'historical_record.json').read_text())['result']['status'] == 'passed'
     assert database.configs[sid]['historical_import_completed'] == 1
 
 
-def test_existing_completed_import_is_reverified_and_detects_tampered_workspace(storage, database):
+def test_existing_completed_import_skips_material_and_trace_scans(storage, database, monkeypatch):
     root = storage / 'agent-workspaces/7/source'
     _file(root / 'submission/code.py', 'ORIGINAL')
     args = (_submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {'status': 'Accepted'}, root)
     first = migration.migrate_one(*args)
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('已完成会话不应重新扫描材料或轨迹')
+    for helper in ('_workspace_files', '_trace_records', '_regular_files', '_open_source'):
+        monkeypatch.setattr(migration, helper, unexpected)
     second = migration.migrate_one(*args)
     assert database.creates == 1
     assert second['existing'] is True
     assert first['trace_events'] == 0
-    output = workspace.get_existing_agent_workspace_path(first['session_id'])
-    (output / 'historical_workspace/submission/code.py').write_text('TAMPERED')
-    with pytest.raises(RuntimeError, match='副本核验失败'):
-        migration.migrate_one(*args)
+    assert second['session_id'] == first['session_id']
 
 
-def test_verification_checks_trace_content_outbox_and_no_duplicate_billing(storage, database):
+def test_existing_import_rejects_another_submission_identity(storage, database):
     root = storage / 'empty'
     root.mkdir()
     args = (_submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {}, root)
     result = migration.migrate_one(*args)
     sid = result['session_id']
-    database.traces[sid] = [{'kind': 'assistant', 'text': 'unexpected'}]
-    with pytest.raises(RuntimeError, match='轨迹持久化'):
-        migration.migrate_one(*args)
-    database.traces[sid] = []
-    database.messages[sid] = [{'status': 'dispatching'}]
-    with pytest.raises(RuntimeError, match='outbox'):
-        migration.migrate_one(*args)
-    database.messages[sid] = [{'status': 'sent'}]
-    database.ledgers = 1
-    with pytest.raises(RuntimeError, match='费用流水'):
+    database.sessions[sid]['requested_by'] = 'another-student'
+    with pytest.raises(RuntimeError, match='历史会话 ID'):
         migration.migrate_one(*args)
 
 
@@ -237,19 +221,19 @@ def test_core_file_is_imported_when_readable_or_reported_missing_when_denied(sto
     root = storage / 'source'
     core = _file(root / 'core', 'EXISTING CORE')
     _file(root / 'main.py', 'SOURCE')
-    original_open = migration._open_source
-    def open_source(path):
-        if denied and path == core:
-            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
-        return original_open(path)
-    monkeypatch.setattr(migration, '_open_source', open_source)
+    original_copy = migration.shutil.copyfile
+    def copyfile(source, target):
+        if denied and source == core:
+            raise PermissionError(errno.EACCES, 'Permission denied', str(source))
+        return original_copy(source, target)
+    monkeypatch.setattr(migration.shutil, 'copyfile', copyfile)
     args = (_submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {}, root)
     result = migration.migrate_one(*args)
     output = workspace.get_existing_agent_workspace_path(result['session_id'])
-    assert ('historical_workspace/core' in result['workspace_manifest']) is not denied
+    assert (output / 'historical_workspace/core').exists() is not denied
     assert (output / 'historical_workspace/main.py').read_text() == 'SOURCE'
     record = json.loads((output / 'historical_record.json').read_text())
-    assert any('权限不足' in item and '/core' in item for item in record['missing']) is denied
+    assert any('/core' in item for item in record['missing']) is denied
     assert record['missing'] == result['missing']
     assert core.read_text() == 'EXISTING CORE'
     assert migration.migrate_one(*args)['existing'] is True
@@ -278,7 +262,8 @@ def test_missing_original_upload_still_archives_results_with_explicit_missing_no
         {'status': 'passed'}, storage / 'removed-runtime',
     )
     assert any('文件已不存在' in item and '原提交' in item for item in result['missing'])
-    assert set(result['workspace_manifest']) == {'historical_record.json'}
+    output = workspace.get_existing_agent_workspace_path(result['session_id'])
+    assert [path.name for path in output.iterdir() if path.is_file()] == ['historical_record.json']
     assert database.configs[result['session_id']]['historical_import_completed'] == 1
 
 
@@ -289,12 +274,12 @@ def test_unreadable_trace_and_corrupt_answer_archive_are_reported(storage, datab
     trace = storage / 'trace'
     unreadable = _file(trace / 'numoj_trace_v1.jsonl', 'PRIVATE TRACE')
     _file(storage / 'submissions/7/reverse_agent_answers/current.zip', 'CORRUPT ZIP')
-    original_open = migration._open_source
-    def open_source(path):
-        if path == unreadable:
-            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
-        return original_open(path)
-    monkeypatch.setattr(migration, '_open_source', open_source)
+    original_copy = migration.shutil.copyfile
+    def copyfile(source, target):
+        if source == unreadable:
+            raise PermissionError(errno.EACCES, 'Permission denied', str(source))
+        return original_copy(source, target)
+    monkeypatch.setattr(migration.shutil, 'copyfile', copyfile)
     result = migration.migrate_one(_submission(), 'reverse_answer', 'current', trace, {}, root)
     assert result['trace_events'] == 0
     assert any('trace/numoj_trace_v1.jsonl' in item for item in result['missing'])
@@ -303,35 +288,7 @@ def test_unreadable_trace_and_corrupt_answer_archive_are_reported(storage, datab
     assert (output / 'template/a.py').read_text() == 'TEMPLATE'
 
 
-def test_interrupted_injection_preserves_copy_when_source_becomes_unreadable(storage, database, monkeypatch):
-    root = storage / 'source'
-    first_source = _file(root / 'a.txt', 'FIRST COPY')
-    _file(root / 'b.txt', 'SECOND COPY')
-    inject = migration.inject_agent_workspace_files
-    def interrupt(sid, files, **kwargs):
-        inject(sid, dict(list(files.items())[:1]))
-        raise OSError(errno.ENOSPC, 'simulated target disk full')
-    monkeypatch.setattr(migration, 'inject_agent_workspace_files', interrupt)
-    args = (_submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {}, root)
-    with pytest.raises(OSError, match='disk full'):
-        migration.migrate_one(*args)
-    monkeypatch.setattr(migration, 'inject_agent_workspace_files', inject)
-    original_open = migration._open_source
-    def open_source(path):
-        if path == first_source:
-            raise PermissionError(errno.EACCES, 'Permission denied', str(path))
-        return original_open(path)
-    monkeypatch.setattr(migration, '_open_source', open_source)
-    result = migration.migrate_one(*args)
-    output = workspace.get_existing_agent_workspace_path(result['session_id'])
-    assert (output / 'historical_workspace/a.txt').read_text() == 'FIRST COPY'
-    assert (output / 'historical_workspace/b.txt').read_text() == 'SECOND COPY'
-    assert any('保留上次未完成导入的副本' in item for item in result['missing'])
-    assert migration.migrate_one(*args)['existing'] is True
-    assert database.creates == 1
-
-
-def test_migration_logs_progress_and_reports_interrupted_submission(monkeypatch, tmp_path, capsys):
+def test_migration_logs_progress_and_reports_database_interruption(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(migration, 'validate_production_config', lambda _: None)
     monkeypatch.setattr(migration, 'read_manifest', lambda _: {'backup_status': 'complete', 'completed_at': 'now', 'prepared': True})
     monkeypatch.setattr(migration, 'validate_manifest_artifact', lambda *_, **__: None)
@@ -341,14 +298,14 @@ def test_migration_logs_progress_and_reports_interrupted_submission(monkeypatch,
         yield 'reverse_answer', 'current', None, {}, tmp_path
     monkeypatch.setattr(migration, '_sources', sources)
     def fail(*_):
-        raise OSError(errno.ENOSPC, 'target disk full')
+        raise RuntimeError('database disconnected')
     monkeypatch.setattr(migration, 'migrate_one', fail)
     report = tmp_path / 'report.json'
-    with pytest.raises(OSError, match='disk full'):
+    with pytest.raises(RuntimeError, match='database disconnected'):
         migration.main(['--confirm-writers-stopped', '--backup-manifest', str(tmp_path / 'manifest'),
                         '--backup-plan', str(tmp_path / 'plan'), '--report', str(report)])
     saved = json.loads(report.read_text())
-    assert saved['verified'] is False
+    assert saved['completed'] is False
     assert saved['interrupted_at'] == {'submission_id': 7, 'judge_kind': 'reverse_answer', 'attempt': 'current'}
     assert saved['discovery_missing'] == ['无法枚举历史目录：unreadable']
     assert report.stat().st_mode & 0o777 == 0o600
@@ -356,9 +313,76 @@ def test_migration_logs_progress_and_reports_interrupted_submission(monkeypatch,
     assert '数据库备份核验通过' in log and '提交 1/1' in log
 
 
-def test_source_disk_io_errors_remain_fatal(storage, monkeypatch):
-    def broken(_):
-        raise OSError(errno.EIO, 'source disk I/O failure')
-    monkeypatch.setattr(migration, '_open_source', broken)
-    with pytest.raises(OSError, match='I/O failure'):
-        migration._available_source(storage / 'source', [], 'source')
+@pytest.mark.parametrize('failure_code', [errno.EIO, errno.ENOSPC])
+def test_copy_failure_keeps_existing_file_and_continues_with_later_files(storage, monkeypatch, failure_code):
+    first = _file(storage / 'source/a.txt', 'UNREADABLE OR UNWRITABLE')
+    second = _file(storage / 'source/b.txt', 'SECOND COPY')
+    output = workspace.ensure_agent_workspace('copy-history')
+    _file(output / 'historical_workspace/a.txt', 'EXISTING COPY')
+    original_copy = migration.shutil.copyfile
+    def copyfile(source, target):
+        if source == first:
+            Path(target).write_text('INCOMPLETE COPY')
+            raise OSError(failure_code, 'simulated copy failure', str(source))
+        return original_copy(source, target)
+    monkeypatch.setattr(migration.shutil, 'copyfile', copyfile)
+    missing = []
+    root, copied = migration._copy_workspace_files(
+        'copy-history', {'historical_workspace/a.txt': first, 'historical_workspace/b.txt': second}, missing,
+    )
+    assert copied == 1 and root == output
+    assert (root / 'historical_workspace/a.txt').read_text() == 'EXISTING COPY'
+    assert (root / 'historical_workspace/b.txt').read_text() == 'SECOND COPY'
+    assert first.read_text() == 'UNREADABLE OR UNWRITABLE'
+    assert len(missing) == 1 and 'historical_workspace/a.txt' in missing[0]
+    assert not list(root.rglob('.history-copy-*'))
+
+
+def test_historical_copy_preserves_names_without_public_upload_normalization(storage, database):
+    source = storage / 'source'
+    names = [' spaced name \n.m', 'module:part.py', 'back\\slash.bin']
+    for name in names:
+        path = _file(source / name)
+        path.write_bytes(b'\x00\xffUNCHANGED\n')
+    result = migration.migrate_one(
+        _submission(scoring_mode='agent_judge'), 'agent_judge', 'current', None, {}, source,
+    )
+    output = workspace.get_existing_agent_workspace_path(result['session_id'])
+    assert result['copied_files'] == len(names)
+    for name in names:
+        assert (output / 'historical_workspace' / name).read_bytes() == (source / name).read_bytes()
+
+
+def test_non_utf8_filename_reaches_copy_and_destination_unchanged(storage, monkeypatch):
+    # macOS 无法创建 surrogateescape 文件名；只替代源枚举和最终 rename 系统调用。
+    root = storage / 'source'
+    root.mkdir()
+    raw_name = 'old-\udcff.m'
+    source = root / raw_name
+    original_lstat = Path.lstat
+    def lstat(path, *args, **kwargs):
+        if path == source:
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_nlink=1)
+        return original_lstat(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'lstat', lstat)
+    monkeypatch.setattr(migration.os, 'walk', lambda *_args, **_kwargs: iter([(str(root), [], [raw_name])]))
+    missing = []
+    files = migration._regular_files(root, 'historical_workspace', missing)
+    assert files == {f'historical_workspace/{raw_name}': source}
+    sources, destinations = [], []
+    def copyfile(original, temporary):
+        sources.append(original)
+        Path(temporary).write_bytes(b'ORIGINAL BYTES')
+    original_replace = migration.os.replace
+    def replace(temporary, target):
+        if Path(target).name == raw_name:
+            destinations.append(Path(target))
+            Path(temporary).unlink()
+        else:
+            original_replace(temporary, target)
+    monkeypatch.setattr(migration.shutil, 'copyfile', copyfile)
+    monkeypatch.setattr(migration.os, 'replace', replace)
+    output, copied = migration._copy_workspace_files('raw-name-history', files, missing)
+    assert copied == 1 and missing == []
+    assert sources == [source]
+    assert destinations == [output / 'historical_workspace' / raw_name]

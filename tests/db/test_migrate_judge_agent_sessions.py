@@ -1,9 +1,10 @@
-"""一次性数据库上的历史 Judge 导入、再次核验和访问权限。"""
+"""一次性数据库上的历史 Judge 复制、完成跳过与访问权限。"""
 import json
 
 from backend.oj_modules.agents import sessions, workspace
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from scripts import migrate_judge_agent_sessions as migration
+import pytest
 
 
 def test_history_import_roundtrip_is_idempotent_readonly_and_permission_scoped(monkeypatch, tmp_path):
@@ -25,7 +26,12 @@ def test_history_import_roundtrip_is_idempotent_readonly_and_permission_scoped(m
     for kind in ('agent_judge', 'reverse_quality', 'reverse_answer'):
         args = (submission, kind, 'legacy', trace if kind != 'reverse_quality' else None, {'status': 'passed'}, source)
         result = migration.migrate_one(*args)
-        replay = migration.migrate_one(*args)
+        with monkeypatch.context() as completed:
+            def rescan(*_args, **_kwargs):
+                pytest.fail('已完成历史会话不得再次扫描材料或轨迹')
+            completed.setattr(migration, '_workspace_files', rescan)
+            completed.setattr(migration, '_trace_records', rescan)
+            replay = migration.migrate_one(*args)
         sid = result['session_id']
         ids.append(sid)
         assert replay['existing'] is True
@@ -37,7 +43,10 @@ def test_history_import_roundtrip_is_idempotent_readonly_and_permission_scoped(m
         assert sessions.can_view_agent_session(session, username='admin', is_admin=True)
         assert not sessions.can_view_agent_session(session, username='another-user')
         assert sessions.can_view_agent_session(session, username='admin') is (kind == 'reverse_answer')
-        assert sessions.get_agent_session_runtime_config(sid)['historical_import_completed'] == migration.MIGRATION_VERSION
+        runtime = sessions.get_agent_session_runtime_config(sid)
+        assert runtime['historical_import_completed'] == migration.MIGRATION_VERSION
+        assert runtime['copied_files'] > 0
+        assert 'workspace_manifest' not in runtime and 'trace_sha256' not in runtime
         assert sessions.claim_next_agent_session_message(sid) is None
         if kind == 'reverse_answer':
             output = workspace.get_existing_agent_workspace_path(sid)
