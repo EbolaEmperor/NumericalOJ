@@ -911,8 +911,12 @@ def _advance_agent_judge(task, client, submission, competition):
             effective[rid] = effect
             _publish_snapshot(sid)
             continue
+        prompt = aj.build_rule_prompt(
+            competition.get('title'), rule,
+            continuation=any(task_id.startswith(f'{session_id}-rule-') for task_id in turns),
+        )
         return _dispatch_judge_phase(task, client, submission, competition, rules, session,
-                                    f'rule-{rid}', aj.build_rule_prompt(competition.get('title'), rule))
+                                    f'rule-{rid}', prompt)
     return _finalize(sid, rules, False, True, attempt)
 
 

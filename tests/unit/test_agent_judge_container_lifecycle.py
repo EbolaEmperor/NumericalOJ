@@ -351,6 +351,7 @@ def test_topology_continues_same_session_and_skips_failed_dependencies(monkeypat
     assert [(row[2], row[4]) for row in records] == [(1, 'failed'), (2, 'skipped')]
     assert phases[0][5] is session
     assert phases[0][6] == 'rule-3'
+    assert phases[0][7] == m.aj.build_rule_prompt('测试', rules[2], continuation=True)
 
 
 def test_rule_result_rejects_other_rules_and_surrounding_tool_text():
@@ -542,17 +543,28 @@ def test_existing_single_turn_keeps_mode_after_admin_changes_configuration(singl
     assert flow.submissions == []
 
 
-def test_existing_setup_turn_keeps_topology_after_admin_selects_single(single_flow):
+@pytest.mark.parametrize('prior_skipped_rule', [False, True])
+def test_existing_setup_turn_keeps_topology_after_admin_selects_single(single_flow, prior_skipped_rule):
     flow = single_flow
     flow.competition['agent_judge_orchestration_mode'] = 'single'
     _saved_turn(flow, phase='setup', conclusion='环境准备完成')
+    if prior_skipped_rule:
+        # 后端已有跳过记录不等于曾向 Agent 发送过评分轮次。
+        flow.results[1] = {'rule_id': 1, 'raw_result': None, 'effective_result': 'skipped'}
+    first_rule = flow.rules[2] if prior_skipped_rule else flow.rules[0]
+    rid = first_rule['rule_id']
     with pytest.raises(m.Retry):
         m._advance_agent_judge(flow.task, flow.client, flow.submission, flow.competition)
     dispatched, = flow.submissions
-    assert dispatched['task_id'] == f'{flow.session_id}-rule-1'
-    assert dispatched['prompt'] == m.aj.build_rule_prompt('单轮测试', flow.rules[0])
-    assert list(dispatched['files']) == ['judge_result_1.json']
-    assert json.loads(dispatched['files']['judge_result_1.json']) == {'rule_id': 1, 'result': None, 'evidence': ''}
+    assert dispatched['task_id'] == f'{flow.session_id}-rule-{rid}'
+    assert dispatched['prompt'] == m.aj.build_rule_prompt('单轮测试', first_rule, continuation=False)
+    assert len(dispatched['prompt']) > len(m.aj.build_rule_prompt('单轮测试', first_rule, continuation=True))
+    assert '后端已经按照拓扑序检查依赖' not in dispatched['prompt']
+    assert list(dispatched['files']) == [f'judge_result_{rid}.json']
+    assert json.loads(dispatched['files'][f'judge_result_{rid}.json']) == {'rule_id': rid, 'result': None, 'evidence': ''}
+    if prior_skipped_rule:
+        assert flow.results[2]['effective_result'] == 'skipped'
+        assert [turn['task_id'] for turn in flow.turns] == [f'{flow.session_id}-setup', f'{flow.session_id}-rule-3']
 
 
 @pytest.mark.parametrize('status', ['Pending', 'Running'])
@@ -621,6 +633,10 @@ def test_topology_reads_only_executed_rule_file_and_resets_next_template(single_
     assert 3 not in flow.results
     dispatched, = flow.submissions
     assert dispatched['task_id'] == f'{flow.session_id}-rule-3'
+    assert dispatched['prompt'] == m.aj.build_rule_prompt('单轮测试', flow.rules[2], continuation=True)
+    assert len(dispatched['prompt']) < len(m.aj.build_rule_prompt('单轮测试', flow.rules[2], continuation=False))
+    assert '后端已经按照拓扑序检查依赖' not in dispatched['prompt']
+    assert 'judge_result_3.json' in dispatched['prompt']
     assert json.loads(flow.workspace['judge_result_3.json']) == {'rule_id': 3, 'result': None, 'evidence': ''}
 
 
