@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""停服备份后一次性导入历史 Judge；只新增会话/副本，不删除旧数据或补扣费用。"""
+"""停服备份后一次性导入历史 Judge；导入会话并搬迁旧运行目录，不补扣费用。"""
 from __future__ import annotations
 
 import argparse
@@ -9,11 +9,10 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
+import subprocess
 import sys
-import time
 import zipfile
-from tempfile import NamedTemporaryFile, TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory, mkdtemp
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -38,7 +37,6 @@ from deploy.backup.orchestrator import read_manifest, validate_manifest_artifact
 from deploy.preflight import validate_production_config
 
 MIGRATION_VERSION = 1
-SOURCE_UNAVAILABLE = (PermissionError, FileNotFoundError)
 
 
 def _progress(message):
@@ -50,55 +48,22 @@ def _display_text(value):
     return str(value).encode('utf-8', errors='backslashreplace').decode('utf-8')
 
 
-def _file_progress(label):
-    last = time.monotonic()
-    def progress(completed, total):
-        nonlocal last
-        now = time.monotonic()
-        if now - last >= 5:
-            _progress(f'{label}：{completed}/{total} 个文件')
-            last = now
-    return progress
-
-
 def _safe_attempt(attempt):
     return re.sub(r'[^A-Za-z0-9_.-]+', '_', str(attempt or 'legacy')).strip('._')[:96] or 'legacy'
 
 
-def _safe_directory(path, missing=None):
-    """历史路径任何祖先都不得是软链接；材料只读，不替换原目录。"""
+def _is_directory(path):
+    """只用于选择旧材料布局；无法读取时走缺失材料的回退。"""
     try:
-        return all(stat.S_ISDIR(part.lstat().st_mode) for part in (path.absolute(), *path.absolute().parents))
-    except PermissionError:
-        if missing is not None:
-            missing.append(f'无法检查历史目录（PermissionError）：{path}')
+        return path.is_dir()
+    except OSError:
         return False
-    except FileNotFoundError:
-        return False
-
-
-def _open_source(path):
-    absolute = path.absolute()
-    fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for part in absolute.parts[1:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        source_fd = os.open(absolute.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-    finally:
-        os.close(fd)
-    info = os.fstat(source_fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        os.close(source_fd)
-        raise ValueError(f'历史材料不是独立普通文件：{path}')
-    return os.fdopen(source_fd, 'rb')
 
 
 def _available_source(path, missing, label):
     """读取不了的旧材料记入报告，不影响其他历史会话。"""
     try:
-        return _open_source(path)
+        return path.open('rb')
     except OSError as exc:
         reason = '权限不足' if isinstance(exc, PermissionError) else ('文件已不存在' if isinstance(exc, FileNotFoundError) else str(exc))
         missing.append(f'历史材料不可读取（{reason}）：{label}')
@@ -117,23 +82,29 @@ def _rows():
             steps = cursor.fetchall() or []
             cursor.execute('SELECT * FROM ranking_judge_results ORDER BY submission_id, rule_id')
             results = cursor.fetchall() or []
+            cursor.execute("""SELECT submission_id, judge_kind, attempt_id FROM agent_sessions
+                WHERE task_kind='judge' AND session_id LIKE 'jd-%-history'""")
+            historical = cursor.fetchall() or []
     finally:
         conn.close()
     by_submission = {}
     for result in results:
         by_submission.setdefault(result['submission_id'], []).append(result)
+    historical_by_submission = {}
+    for session in historical:
+        historical_by_submission.setdefault(session['submission_id'], []).append(session)
     for submission in submissions:
         submission['judge_results'] = by_submission.get(submission['id'], [])
+        submission['historical_sessions'] = historical_by_submission.get(submission['id'], [])
     return submissions, {(row['submission_id'], row['step_key']): row for row in steps}
 
 
 def _directories(root, missing=None):
-    try:
-        return [path for path in root.iterdir() if _safe_directory(path, missing)] if _safe_directory(root, missing) else []
-    except SOURCE_UNAVAILABLE as exc:
+    def unavailable(exc):
         if missing is not None:
             missing.append(f'无法枚举历史目录（{type(exc).__name__}）：{root}')
-        return []
+    _, names, _ = next(os.walk(root, onerror=unavailable), (root, [], []))
+    return [root / name for name in names]
 
 
 def _sources(submission, steps, missing=None):
@@ -141,66 +112,46 @@ def _sources(submission, steps, missing=None):
     sid = submission['id']
     current = _safe_attempt(submission.get('judge_attempt_id'))
     root = Path(submission_dir(sid))
+    historical = submission.get('historical_sessions') or []
     if submission['scoring_mode'] == 'agent_judge':
         trace_root = root / 'agent_judge_trace'
         workspace_root = Path(config.AGENT_JUDGE_WORKSPACE_ROOT) / str(sid)
         attempts = {current} | {path.name for path in _directories(trace_root, missing)}
+        attempts.update(str(row['attempt_id'] or 'legacy') for row in historical if row['judge_kind'] == 'agent_judge'
+                        and not str(row['attempt_id']).startswith('unknown-workspace-'))
         known_workspaces = set()
         for attempt in sorted(attempts):
-            raw = submission.get('judge_attempt_id') if attempt == current else attempt
+            raw = _actual_attempt(submission, attempt)
             key = hashlib.sha256(str(raw or 'legacy').encode()).hexdigest()[:16]
             known_workspaces.add(key)
             yield 'agent_judge', attempt, trace_root / attempt, submission if attempt == current else {}, workspace_root / key
-        for path in _directories(workspace_root, missing):
+        workspaces = {path.name: path for path in _directories(workspace_root, missing)}
+        for row in historical:
+            attempt = str(row['attempt_id'] or '')
+            if row['judge_kind'] == 'agent_judge' and attempt.startswith('unknown-workspace-'):
+                name = attempt.removeprefix('unknown-workspace-')
+                workspaces[name] = workspace_root / name
+        for path in workspaces.values():
             if path.name not in known_workspaces:
                 yield 'agent_judge', f'unknown-workspace-{path.name}', None, {}, path
     else:
         trace_root = root / 'reverse_agent_trace'
         workspace_root = Path(config.REVERSE_JUDGE_WORKSPACE_ROOT) / str(sid)
         attempts = {current} | {path.name for path in _directories(trace_root, missing)} | {path.name for path in _directories(workspace_root, missing)}
+        attempts.update(str(row['attempt_id'] or 'legacy') for row in historical if row['judge_kind'] != 'agent_judge')
+        quality_attempts = {str(row['attempt_id'] or 'legacy') for row in historical if row['judge_kind'] == 'reverse_quality'}
         archives = root / 'reverse_agent_answers'
-        if _safe_directory(archives, missing):
-            try:
-                attempts.update(path.stem for path in archives.iterdir() if path.suffix == '.zip' and stat.S_ISREG(path.lstat().st_mode))
-            except SOURCE_UNAVAILABLE as exc:
-                if missing is not None:
-                    missing.append(f'无法枚举历史答案归档（{type(exc).__name__}）：{archives}')
+        try:
+            attempts.update(path.stem for path in archives.iterdir() if path.suffix == '.zip')
+        except OSError as exc:
+            if missing is not None:
+                missing.append(f'无法枚举历史答案归档（{type(exc).__name__}）：{archives}')
         for attempt in sorted(attempts):
             workspace = workspace_root / attempt
             quality = steps.get((sid, 'quality_gate'), {}) if attempt == current else {}
-            if quality and quality.get('status') != 'pending' or _safe_directory(workspace / 'quality_gate_source'):
-                yield 'reverse_quality', attempt, None, quality, workspace
             yield 'reverse_answer', attempt, trace_root / attempt, steps.get((sid, 'agent_answer'), {}) if attempt == current else {}, workspace
-
-
-def _regular_files(source, prefix, missing, *, include_hidden=False):
-    if not _safe_directory(source):
-        missing.append(f'workspace 材料缺失、目录不可读或含链接：{prefix}')
-        return {}
-    files = {}
-    def unavailable(exc):
-        if not isinstance(exc, SOURCE_UNAVAILABLE):
-            raise exc
-        relative = Path(exc.filename).relative_to(source) if exc.filename else Path('.')
-        missing.append(f'历史目录不可读取（{type(exc).__name__}）：{prefix}/{relative}')
-    for parent, directories, names in os.walk(source, followlinks=False, onerror=unavailable):
-        parent = Path(parent)
-        directories[:] = sorted(name for name in directories if not (parent / name).is_symlink() and (include_hidden or not name.startswith('.')))
-        for name in sorted(names):
-            path = parent / name
-            relative = path.relative_to(source)
-            if not include_hidden and any(part.startswith('.') for part in relative.parts):
-                continue
-            try:
-                info = path.lstat()
-            except SOURCE_UNAVAILABLE as exc:
-                missing.append(f'历史材料无法检查（{type(exc).__name__}）：{prefix}/{relative}')
-                continue
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                missing.append(f'已跳过链接或特殊文件：{prefix}/{relative}')
-                continue
-            files[f'{prefix}/{relative.as_posix()}'] = path
-    return files
+            if quality and quality.get('status') != 'pending' or attempt in quality_attempts or _is_directory(workspace / 'quality_gate_source'):
+                yield 'reverse_quality', attempt, None, quality, workspace
 
 
 def _extract_copy(archive, output, staging, missing, label):
@@ -248,60 +199,66 @@ def _uploaded_material(submission, staging, missing):
     return target
 
 
-def _workspace_files(submission, kind, attempt, source, staging, missing):
+def _workspace_materials(submission, kind, attempt, source, staging, missing, *, output=None):
     if kind == 'agent_judge':
-        if _safe_directory(source):
-            return _regular_files(source, 'historical_workspace', missing)
-        return _regular_files(_uploaded_material(submission, staging, missing), 'historical_workspace/submission', missing)
-    if kind == 'reverse_quality' and _safe_directory(source / 'quality_gate_source'):
-        return _regular_files(source / 'quality_gate_source', 'audit', missing)
-    # AI 作答只能取得题面、模板和该 attempt 的 AI 输出，不复制 solution/judge.sh/审核副本。
+        if _is_directory(source):
+            return {'historical_workspace': (source, True)}
+        if output is not None and _is_directory(output / 'historical_workspace'):
+            return {}
+        return {'historical_workspace/submission': (_uploaded_material(submission, staging, missing), True)}
+    if kind == 'reverse_quality' and _is_directory(source / 'quality_gate_source'):
+        return {'audit': (source / 'quality_gate_source', True)}
+    # 先为 AI 作答复制公开材料，再把共用的完整材料搬给质量会话。
     package = source / 'package'
-    if not _safe_directory(package):
+    if not _is_directory(package):
+        if kind == 'reverse_quality' and output is not None and _is_directory(output / 'audit'):
+            return {}
         package = _uploaded_material(submission, staging, missing)
     roots = [package] + _directories(package, missing)
-    material = next((path for path in roots if _safe_directory(path / 'problem')), package)
+    material = next((path for path in roots if _is_directory(path / 'problem')), package)
     if kind == 'reverse_quality':
-        return _regular_files(material, 'audit', missing)
-    files = _regular_files(material / 'problem', 'problem', missing)
+        return {'audit': (material, True)}
+    materials = {'problem': (material / 'problem', False)}
     archive = Path(submission_dir(submission['id'])) / 'reverse_agent_answers' / f'{attempt}.zip'
     output = Path(staging) / 'answer'
     if _extract_copy(archive, output, staging, missing, '该轮 AI 答案归档'):
-        files.update(_regular_files(output, 'template', missing))
+        materials['template'] = (output, True)
     else:
         missing.append('该轮 AI 答案归档不可取得；模板副本不代表最终作答')
-        files.update(_regular_files(material / 'template', 'template', missing))
-    return files
+        materials['template'] = (material / 'template', False)
+    return materials
 
 
 def _trace_records(task_id, trace, staging, missing):
     records = []
-    if trace is None or not _safe_directory(trace):
+    if trace is None:
         missing.append('历史执行轨迹不可取得')
         return records, None
-    # 先复制经过文件类型校验的轨迹到私有临时目录，旧解析器不直接遍历原文件树。
+    # 先复制到临时目录，再沿用旧格式解析器读取轨迹。
     safe_trace = Path(staging) / 'trace'
-    files = _regular_files(trace, 'trace', missing, include_hidden=True)
-    _copy_files(files, Path(staging), missing, f'{task_id} 复制轨迹')
+    _transfer_path(trace, safe_trace, missing, f'{task_id} 复制轨迹')
     canonical = safe_trace / 'numoj_trace_v1.jsonl'
-    if canonical.is_file():
+    stream = _available_source(canonical, missing, '规范轨迹')
+    if stream is not None:
         seen = set()
-        with canonical.open('rb') as stream:
-            for line in stream:
-                try:
-                    record = json.loads(line)
-                    event = record.get('event') or {}
-                    source_id = event.get('id')
-                    if record.get('type') != 'numoj_trace' or source_id in seen:
-                        continue
-                    record['sequence'] = len(records) + 1
-                    # 与实际存储使用同一规范化器，核验数不包含会被通用层丢弃的空事件。
-                    if _normalize_canonical_record(task_id, record) is None:
-                        continue
-                    seen.add(source_id)
-                    records.append(record)
-                except (ValueError, TypeError, AttributeError):
-                    missing.append('规范轨迹包含无法解析的记录，已跳过')
+        try:
+            with stream:
+                for line in stream:
+                    try:
+                        record = json.loads(line)
+                        event = record.get('event') or {}
+                        source_id = event.get('id')
+                        if record.get('type') != 'numoj_trace' or source_id in seen:
+                            continue
+                        record['sequence'] = len(records) + 1
+                        if _normalize_canonical_record(task_id, record) is None:
+                            continue
+                        seen.add(source_id)
+                        records.append(record)
+                    except (ValueError, TypeError, AttributeError):
+                        missing.append('规范轨迹包含无法解析的记录，已跳过')
+        except OSError as exc:
+            missing.append(f'规范轨迹读取失败，保留已读取记录：{exc}')
     else:
         messages = collect_agent_trace_messages(str(safe_trace), full_history=True)
         missing.append('旧格式轨迹已全量扫描；文本沿用历史展示截断规则，图片与非文本内容未导入，原始轨迹仍保留原目录')
@@ -319,39 +276,63 @@ def _identity(submission, kind, actual_attempt):
                 'submission_id': submission['id'], 'competition_id': submission['competition_id'], 'attempt_id': actual_attempt}
 
 
-def _copy_files(files, root, missing, label):
-    """原样复制；临时文件替换保证失败时不破坏上次已经复制的内容。"""
-    copied = 0
-    progress = _file_progress(label)
-    for index, (relative, source) in enumerate(files.items(), 1):
-        target = root / relative
-        temporary = None
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with NamedTemporaryFile(dir=target.parent, prefix='.history-copy-', delete=False) as stream:
-                temporary = Path(stream.name)
-            shutil.copyfile(source, temporary)
-            os.replace(temporary, target)
-            temporary = None
-            copied += 1
-        except OSError as exc:
-            message = f'复制失败，保留原材料和已有副本：{relative}（{exc}）'
-            missing.append(_display_text(message))
-            _progress(message)
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        progress(index, len(files))
-    return copied
+def _actual_attempt(submission, attempt):
+    if attempt == _safe_attempt(submission.get('judge_attempt_id')):
+        return submission.get('judge_attempt_id')
+    for row in submission.get('historical_sessions') or []:
+        if str(row['attempt_id'] or 'legacy') == attempt:
+            return row['attempt_id']
+    return attempt
 
 
-def _copy_workspace_files(session_id, files, missing):
-    """停服历史导入直接复制字节和原始名称；不做格式、配额或摘要核验。"""
+def _run_file_command(command, missing, label):
+    try:
+        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode == 0:
+            return True
+        detail = result.stderr.decode('utf-8', errors='backslashreplace').strip()
+    except OSError as exc:
+        detail = str(exc)
+    message = f'{label}失败，继续处理其他材料：{detail}'
+    missing.append(_display_text(message))
+    _progress(message)
+    return False
+
+
+def _transfer_path(source, target, missing, label, *, move=False):
+    """交给系统 cp -R / mv 搬整个目录，不逐文件枚举或检查。"""
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not move:
+            destination = target.parent if os.path.lexists(target) and source.name == target.name else target
+            return _run_file_command(['cp', '-RP', '--', str(source), str(destination)], missing, label)
+        if not os.path.lexists(target):
+            return _run_file_command(['mv', '--', str(source), str(target)], missing, label)
+        # 旧版本可能已复制部分内容；先搬出源目录，成功后才替换旧副本。
+        holding = Path(mkdtemp(prefix='.history-move-', dir=target.parent))
+        pending = holding / 'material'
+        if not _run_file_command(['mv', '--', str(source), str(pending)], missing, label):
+            holding.rmdir()
+            return False
+        if (not _run_file_command(['rm', '-rf', '--', str(target)], missing, label)
+                or not _run_file_command(['mv', '--', str(pending), str(target)], missing, label)):
+            _run_file_command(['mv', '--', str(pending), str(source)], missing, f'{label}恢复源目录（暂存位置 {pending}）')
+            return False
+        holding.rmdir()
+        return True
+    except OSError as exc:
+        missing.append(_display_text(f'{label}失败，继续处理其他材料：{exc}'))
+        return False
+
+
+def _copy_workspace_materials(session_id, materials, missing, *, move_allowed=True):
     root = ensure_agent_workspace(session_id, check_quota=False)
-    return root, _copy_files(files, root, missing, f'{session_id} 复制材料')
+    transferred = 0
+    for relative, (source, move) in materials.items():
+        move = move and move_allowed
+        _progress(f'{session_id}：{"移动" if move else "复制"} {relative}')
+        transferred += _transfer_path(source, root / relative, missing, f'{session_id} 搬迁 {relative}', move=move)
+    return root, transferred, transferred == len(materials) and move_allowed
 
 
 def _history_record(kind, record, missing):
@@ -359,8 +340,19 @@ def _history_record(kind, record, missing):
     return {'result': {key: record.get(key) for key in fields}, 'missing': sorted({_display_text(item) for item in missing})}
 
 
-def migrate_one(submission, kind, attempt, trace, record, source):
-    actual_attempt = submission.get('judge_attempt_id') if attempt == _safe_attempt(submission.get('judge_attempt_id')) else attempt
+def _save_runtime(session_id, runtime):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('UPDATE agent_sessions SET runtime_config_json=%s WHERE session_id=%s',
+                           (json.dumps(runtime, ensure_ascii=True), session_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_one(submission, kind, attempt, trace, record, source, *, move_allowed=True):
+    actual_attempt = _actual_attempt(submission, attempt)
     canonical_id = judge_session_id(submission['id'], actual_attempt, kind)
     native = get_agent_session(canonical_id)
     identity = _identity(submission, kind, actual_attempt)
@@ -374,8 +366,19 @@ def migrate_one(submission, kind, attempt, trace, record, source):
     if existing and (not runtime.get('historical_import') or any(existing.get(key) != value for key, value in identity.items())):
         raise RuntimeError(f'历史会话 ID 已被非导入会话占用：{session_id}')
     if runtime.get('historical_import_completed') == MIGRATION_VERSION:
+        if not runtime.get('workspace_moved'):
+            missing = list(runtime.get('missing') or [])
+            complete = True
+            if _is_directory(source):
+                with TemporaryDirectory(prefix='numoj-judge-history-') as staging:
+                    output = ensure_agent_workspace(session_id, check_quota=False)
+                    materials = _workspace_materials(submission, kind, attempt, source, Path(staging), missing, output=output)
+                    _, transferred, complete = _copy_workspace_materials(session_id, materials, missing, move_allowed=move_allowed)
+                    runtime['transferred_paths'] = transferred
+            runtime.update(workspace_moved=complete, missing=missing)
+            _save_runtime(session_id, runtime)
         _progress(f'{session_id}：已完成，跳过')
-        return {'session_id': session_id, 'existing': True}
+        return {'session_id': session_id, 'existing': True, 'material_complete': runtime['workspace_moved']}
     if not existing:
         create_agent_session(
             session_id=session_id, task_id=session_id, requested_by=submission['username'],
@@ -398,9 +401,9 @@ def migrate_one(submission, kind, attempt, trace, record, source):
         records, usage = _trace_records(session_id, trace, staging, missing)
         if not usage:
             missing.append('历史用量不可取得；未推算或补记费用')
-        files = _workspace_files(submission, kind, attempt, source, staging, missing)
-        _progress(f'{session_id}：复制 {len(files)} 个文件')
-        output, copied = _copy_workspace_files(session_id, files, missing)
+        output = ensure_agent_workspace(session_id, check_quota=False)
+        materials = _workspace_materials(submission, kind, attempt, source, staging, missing, output=output)
+        output, transferred, material_complete = _copy_workspace_materials(session_id, materials, missing, move_allowed=move_allowed)
         history = _history_record(kind, record, missing)
         conclusion = '历史评测导入；原有费用不重复记账。\n\n' + json.dumps(history, ensure_ascii=False, default=str, indent=2)
         (output / 'historical_record.json').write_text(
@@ -416,17 +419,11 @@ def migrate_one(submission, kind, attempt, trace, record, source):
         'harness_status': 'completed', 'message': '历史评测已归档', 'conclusion': conclusion,
     })
     runtime = {'historical_import': True, 'historical_import_completed': MIGRATION_VERSION,
-               'missing': history['missing'], 'copied_files': copied,
+               'missing': history['missing'], 'transferred_paths': transferred, 'material_complete': material_complete,
+               'workspace_moved': material_complete,
                'trace_events': len(records), 'token_usage': _normalized_token_usage(usage)}
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute('UPDATE agent_sessions SET runtime_config_json=%s WHERE session_id=%s',
-                           (json.dumps(runtime, ensure_ascii=False), session_id))
-        conn.commit()
-    finally:
-        conn.close()
-    _progress(f'{session_id}：完成，复制 {copied} 个文件、{len(records)} 条轨迹，{len(history["missing"])} 项缺失说明')
+    _save_runtime(session_id, runtime)
+    _progress(f'{session_id}：完成，搬迁 {transferred} 个目录、{len(records)} 条轨迹，{len(history["missing"])} 项缺失说明')
     return {'session_id': session_id, **runtime}
 
 
@@ -456,9 +453,17 @@ def main(argv=None):
         for index, submission in enumerate(submissions, 1):
             current = {'submission_id': submission['id']}
             _progress(f'提交 {index}/{len(submissions)}（ID {submission["id"]}），已处理 {len(report)} 个会话')
-            for source in _sources(submission, steps, missing):
+            workspace_results = {}
+            for source in list(_sources(submission, steps, missing)):
                 current.update(judge_kind=source[0], attempt=source[1])
-                report.append(migrate_one(submission, *source))
+                workspace = source[-1]
+                # AI 公开副本尚未复制完时，质量材料先复制，下一次再搬走共享目录。
+                result = migrate_one(submission, *source, move_allowed=workspace_results.get(workspace, True))
+                report.append(result)
+                workspace_results[workspace] = workspace_results.get(workspace, True) and result.get('material_complete', False)
+            for workspace, complete in workspace_results.items():
+                if complete:
+                    _run_file_command(['rm', '-rf', '--', str(workspace)], missing, f'清理旧工作目录 {workspace}')
         completed = True
     finally:
         args.report.parent.mkdir(parents=True, exist_ok=True)
