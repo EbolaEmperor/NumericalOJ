@@ -108,6 +108,86 @@ def test_internal_submit_replay_never_rewrites_workspace_or_creates_turn(monkeyp
     assert conn.closed
 
 
+def test_continuation_injects_template_and_replay_keeps_filled_result_and_checkpoint(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+    from backend.oj_modules.agents import runtime_checkpoints
+
+    monkeypatch.setattr(workspace, "AGENT_WORKSPACE_ROOT", tmp_path / "workspaces")
+    public = workspace.ensure_agent_workspace("jd-test")
+    (public / "submission.py").write_text("保留前一轮修改")
+    runtime = public / ".runtime"
+    runtime.mkdir()
+    native = runtime / "native-session.jsonl"
+    native.write_text("前一轮原生会话\n")
+    runtime_checkpoints.create_agent_runtime_checkpoint("jd-test", "jd-test-turn")
+    session = _session("agent_judge", native_session_id="native-session")
+    turns = [{"task_id": "jd-test-turn", "user_message": "准备"}]
+    injections, starts, wakes = [], [], []
+    task_id = "jd-test-rule-2"
+    result_path = public / "judge-rule-2.json"
+    checkpoint = public.parent / "runtime-checkpoints" / task_id / "runtime" / native.name
+
+    def inject(session_id, files):
+        injections.append((session_id, files))
+        workspace.inject_agent_workspace_files(session_id, files)
+
+    def begin(session_id, **kwargs):
+        assert result_path.read_text() == '{"rule_id":2,"result":null,"evidence":""}'
+        assert checkpoint.read_text() == "前一轮原生会话\n"
+        starts.append((session_id, kwargs))
+        turns.append({"task_id": kwargs["task_id"], "user_message": kwargs["user_message"]})
+        session.update(current_task_id=kwargs["task_id"], turn_count=2)
+
+    monkeypatch.setattr(judge, "judge_session_write_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(judge, "get_agent_session", lambda _: session)
+    monkeypatch.setattr(judge, "get_agent_session_turns", lambda _: turns)
+    monkeypatch.setattr(judge, "inject_agent_workspace_files", inject)
+    monkeypatch.setattr(judge, "begin_agent_session_turn", begin)
+    monkeypatch.setattr(judge, "initialize_agent_task_workspace", lambda *_a, **_k: pytest.fail("续聊不能重置 workspace"))
+    monkeypatch.setattr(judge, "create_empty_agent_runtime_checkpoint", lambda *_: pytest.fail("续聊不能清空原生会话"))
+    arguments = dict(
+        session_id="jd-test", task_id=task_id, requested_by="owner", judge_kind="agent_judge",
+        submission_id=12, attempt_id="attempt-1", competition_id=3, harness="pi", endpoint={"id": 8},
+        prompt="填写第二条规则结果", files={"judge-rule-2.json": '{"rule_id":2,"result":null,"evidence":""}'},
+        timeout_seconds=60,
+        celery_app=SimpleNamespace(send_task=lambda *args, **kwargs: wakes.append((args, kwargs))),
+    )
+
+    assert judge.submit_judge_turn(**arguments)["current_task_id"] == task_id
+    assert starts[0][1]["base_runtime_checkpoint_id"] == task_id
+    assert starts[0][1]["internal_judge"] is True
+    assert starts[0][1]["dispatch_payload"] == {"timeout_seconds": 60}
+    result_path.write_text('{"rule_id":2,"result":"pass","evidence":"已实际验证"}')
+    native.write_text("第二轮新增会话记录\n")
+
+    assert judge.submit_judge_turn(**arguments)["native_session_id"] == "native-session"
+    assert len(injections) == len(starts) == 1
+    assert len(wakes) == 2
+    assert '"result":"pass"' in result_path.read_text()
+    assert (public / "submission.py").read_text() == "保留前一轮修改"
+    assert native.read_text() == "第二轮新增会话记录\n"
+    assert checkpoint.read_text() == "前一轮原生会话\n"
+    assert (public.parent / "runtime-checkpoints/jd-test-turn/runtime" / native.name).read_text() == "前一轮原生会话\n"
+
+
+def test_new_turn_cannot_inject_files_into_a_running_judge_session(monkeypatch):
+    from contextlib import nullcontext
+
+    monkeypatch.setattr(judge, "judge_session_write_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(judge, "get_agent_session", lambda _: _session("agent_judge", status="Running"))
+    monkeypatch.setattr(judge, "get_agent_session_turns", lambda _: [{"task_id": "jd-test-turn", "user_message": "仍在执行"}])
+    monkeypatch.setattr(judge, "inject_agent_workspace_files", lambda *_: pytest.fail("运行中不能覆盖结果模板"))
+    monkeypatch.setattr(judge, "create_agent_runtime_checkpoint", lambda *_: pytest.fail("运行中不能创建下一轮 checkpoint"))
+    monkeypatch.setattr(judge, "begin_agent_session_turn", lambda *_a, **_k: pytest.fail("运行中不能创建下一轮"))
+
+    with pytest.raises(sessions.AgentSessionBusyError):
+        judge.submit_judge_turn(
+            session_id="jd-test", task_id="jd-test-rule-2", requested_by="owner", judge_kind="agent_judge",
+            submission_id=12, attempt_id="attempt-1", competition_id=3, harness="pi", endpoint={"id": 8},
+            prompt="填写第二条规则结果", files={"judge-rule-2.json": '{"result":null}'},
+        )
+
+
 def test_judge_input_and_output_are_independent_copies(monkeypatch, tmp_path):
     monkeypatch.setattr(workspace, "AGENT_WORKSPACE_ROOT", tmp_path / "workspaces")
     source = tmp_path / "original.txt"

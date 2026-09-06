@@ -13,6 +13,7 @@ from backend.oj_modules.agents.runtime_checkpoints import (
 )
 from backend.oj_modules.agents.sessions import (
     AgentSessionBusyError,
+    agent_status_is_terminal,
     begin_agent_session_turn,
     create_agent_session,
     get_agent_session,
@@ -170,8 +171,10 @@ def submit_judge_turn(
                 if str(existing_turn.get("user_message") or "") != prompt:
                     raise ValueError("Judge 轮次幂等键与已持久化指令冲突")
             else:
+                if not agent_status_is_terminal(session.get("status")):
+                    raise AgentSessionBusyError("上一轮尚未结束，请稍后重试")
                 if files:
-                    raise ValueError("续聊复用已有 workspace，不能重新注入首轮材料")
+                    inject_agent_workspace_files(session_id, files)
                 create_agent_runtime_checkpoint(session_id, task_id)
                 if callable(dispatch_guard) and not dispatch_guard():
                     raise AgentSessionBusyError("评测 attempt 或端点名额已变化，停止派发")

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
-import {cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react'
+import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react'
 import {MemoryRouter, Route, Routes} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -30,6 +30,26 @@ async function showSubmit(scoringMode = 'reverse_judge', endpoints = [{id: 11, h
     fireEvent.click(screen.getByRole('option', {name: 'ZIP 压缩包'}))
   }
   return posts
+}
+
+async function showJudgeSettings(orchestration?: string, scoringMode = 'agent_judge') {
+  const competition = {id: 7, title: '测试编排设置', scoring_mode: scoringMode, is_active: 1, agent_judge_orchestration_mode: orchestration}
+  const posts = vi.fn((body: {orchestration_mode?: string}) => {
+    if (body.orchestration_mode) competition.agent_judge_orchestration_mode = body.orchestration_mode
+    return response({endpoints: [], orchestration_mode: competition.agent_judge_orchestration_mode})
+  })
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    if (url === '/api/v1/session') return response({user: {id: 1, username: 'admin', is_admin: 1}, navigation: {counts: {}}})
+    if (url === '/ranking/7/navigation-state') return response({navigation: {scoring_mode: scoringMode, is_active: true}})
+    if (url === '/api/ranking/competitions/7?tab=edit') return response({competition, tab: 'edit', is_admin: true, aj_endpoints: [], judge_rules: []})
+    if (url === '/api/ranking/competitions/7/agent-judge/endpoints' && init?.method === 'POST') return posts(JSON.parse(String(init.body)))
+    throw new Error(`unexpected fetch: ${url}`)
+  }))
+  const client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: false}}})
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/rankings/7?tab=edit']}><SessionProvider><Routes><Route path="/rankings/:competitionId" element={<RankingDetailPage />} /></Routes></SessionProvider></MemoryRouter></QueryClientProvider>)
+  await screen.findByRole('heading', {name: '测试编排设置'})
+  return {posts, client, competition}
 }
 
 function fileInput(kind: string) {
@@ -104,5 +124,35 @@ describe('打榜赛提交文件', () => {
     expect(submit.disabled).toBe(true)
     fireEvent.click(submit)
     expect(posts).not.toHaveBeenCalled()
+  })
+})
+
+describe('Agent Judge 编排设置', () => {
+  it.each([undefined, 'single', 'topological'])('读取 %s 模式、切换保存，并同步服务端更新', async (initial) => {
+    const {posts, client, competition} = await showJudgeSettings(initial)
+    const currentLabel = initial === 'topological' ? '拓扑序编排' : '一次性评测'
+    const nextMode = initial === 'topological' ? 'single' : 'topological'
+    const nextLabel = nextMode === 'single' ? '一次性评测' : '拓扑序编排'
+    const choice = screen.getByRole('combobox', {name: '评测编排'})
+    expect(choice.textContent).toContain(currentLabel)
+    fireEvent.click(choice)
+    fireEvent.click(screen.getByRole('option', {name: nextLabel}))
+    fireEvent.click(screen.getByRole('button', {name: '保存'}))
+    await waitFor(() => expect(posts).toHaveBeenCalledTimes(1))
+    expect(posts.mock.calls[0][0].orchestration_mode).toBe(nextMode)
+    await screen.findByText('已保存')
+    expect(choice.textContent).toContain(nextLabel)
+    competition.agent_judge_orchestration_mode = initial || 'single'
+    await act(() => client.invalidateQueries({queryKey: ['ranking', '7']}))
+    await waitFor(() => expect(choice.textContent).toContain(currentLabel))
+  })
+
+  it('反向评测不展示或提交 Agent Judge 编排配置', async () => {
+    const {posts, competition} = await showJudgeSettings('topological', 'reverse_judge')
+    expect(screen.queryByRole('combobox', {name: '评测编排'})).toBeNull()
+    fireEvent.click(screen.getAllByRole('button', {name: '保存'})[0])
+    await waitFor(() => expect(posts).toHaveBeenCalledTimes(1))
+    expect(posts.mock.calls[0][0]).not.toHaveProperty('orchestration_mode')
+    expect(competition.agent_judge_orchestration_mode).toBe('topological')
   })
 })

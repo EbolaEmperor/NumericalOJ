@@ -83,7 +83,8 @@ def test_normalize_orchestration_mode():
     assert aj.normalize_orchestration_mode('topological') == aj.ORCH_TOPOLOGICAL
     assert aj.normalize_orchestration_mode('topologi') == aj.ORCH_TOPOLOGICAL
     assert aj.normalize_orchestration_mode('topol') == aj.ORCH_TOPOLOGICAL
-    assert aj.normalize_orchestration_mode('anything-else') == aj.ORCH_TOPOLOGICAL
+    for value in ('single', '', None, 'anything-else'):
+        assert aj.normalize_orchestration_mode(value) == aj.ORCH_SINGLE
 
 
 # ---- compute_results ----

@@ -16,7 +16,9 @@ from backend.oj_modules.agents.judge import judge_session_id, submit_judge_turn
 from backend.oj_modules.agents.sessions import (
     get_agent_session, get_agent_session_by_task_id, get_agent_session_turns,
 )
+from backend.oj_modules.agents.workspace import open_agent_workspace_file
 from backend.oj_modules.tasks.agent.control import build_agent_run_terminator
+from backend.oj_modules.tasks.agent.shared import get_agent_run_snapshot
 
 
 try:
@@ -132,6 +134,8 @@ _judge_rds = None
 _judge_blocking_rds = None
 
 _TERMINAL_STATUSES = {'Accepted', 'Error'}
+
+_UNTRUSTED_RESULT_MAX_BYTES = 1024 * 1024
 
 
 def init_judge_progress_cache(redis_client, blocking_client=None):
@@ -736,12 +740,50 @@ def _judge_input_files(submission, competition, rules, staging):
 
 
 def _parse_rule_conclusion(conclusion, rule_id):
-    """只接受当前规则的最终 JSON，工具输出和未来规则不能改变得分。"""
+    """仅兼容部署前已发送的旧回复协议，不用于新轮次。"""
     text = str(conclusion or '').strip()
     if text.startswith('```') and text.endswith('```'):
         text = text.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
     result = aj.parse_result_line(text)
     return result if result and result['rule_id'] == int(rule_id) else None
+
+
+def _read_judge_result(session_id, filename):
+    """运行中可能正在替换模板；尚未写完整时等下次编排读取。"""
+    try:
+        stream, _metadata = open_agent_workspace_file(session_id, filename)
+        with stream:
+            data = stream.read(_UNTRUSTED_RESULT_MAX_BYTES + 1)
+        if len(data) > _UNTRUSTED_RESULT_MAX_BYTES:
+            return None
+        return json.loads(data)
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def _ingest_single_results(submission_id, attempt, session_id, rules):
+    data = _read_judge_result(session_id, 'judge_results.json')
+    if not isinstance(data, list):
+        return True
+    known = {int(rule['rule_id']): rule for rule in rules}
+    raw = {int(row['rule_id']): row['raw_result'] for row in list_judge_results(submission_id)
+           if row.get('raw_result') in (aj.RESULT_PASS, aj.RESULT_FAILED)}
+    accepted = []
+    for item in data:
+        result = aj.parse_result_line(json.dumps(item, ensure_ascii=False))
+        if not result or result['rule_id'] not in known or result['rule_id'] in raw:
+            continue
+        raw[result['rule_id']] = result['result']
+        accepted.append(result)
+    effects = aj.compute_results(rules, raw)
+    for result in accepted:
+        rid = result['rule_id']
+        if upsert_judge_result_for_attempt(submission_id, attempt, rid, result['result'],
+                effects[rid]['effective'], effects[rid]['score'], result['evidence']) <= 0:
+            return False
+    if accepted:
+        _publish_snapshot(submission_id)
+    return True
 
 
 def _wait_for_judge_turn(task, submission_id, attempt_id, *, queued=False):
@@ -779,6 +821,12 @@ def _dispatch_judge_phase(task, client, submission, competition, rules, session,
         timeout = int(competition.get('agent_judge_timeout_seconds') or JUDGE_DEFAULT_TIMEOUT)
         with TemporaryDirectory(prefix='numoj-judge-') as staging:
             files = None if session else _judge_input_files(submission, competition, rules, staging)
+            if phase == 'single':
+                template = [{'rule_id': int(rule['rule_id']), 'result': None, 'evidence': ''} for rule in rules]
+                files = {**(files or {}), 'judge_results.json': json.dumps(template, ensure_ascii=False, indent=2).encode()}
+            elif phase.startswith('rule-'):
+                rid = int(phase.removeprefix('rule-'))
+                files = {f'judge_result_{rid}.json': json.dumps({'rule_id': rid, 'result': None, 'evidence': ''}, indent=2).encode()}
             submit_judge_turn(
                 session_id=session_id, task_id=task_id, requested_by=submission['username'],
                 judge_kind='agent_judge', submission_id=sid, attempt_id=attempt,
@@ -807,16 +855,27 @@ def _advance_agent_judge(task, client, submission, competition):
     session_id = judge_session_id(sid, attempt, 'agent_judge')
     session = get_agent_session(session_id)
     if not session:
+        single = aj.normalize_orchestration_mode(competition.get('agent_judge_orchestration_mode')) == aj.ORCH_SINGLE
         return _dispatch_judge_phase(task, client, submission, competition, rules, None,
-                                     'setup', aj.build_setup_prompt(competition.get('title')))
+                                     'single' if single else 'setup',
+                                     aj.build_prompt(competition.get('title')) if single else aj.build_setup_prompt(competition.get('title')))
     turns = {turn['task_id']: turn for turn in get_agent_session_turns(session_id)}
     current = turns.get(session['current_task_id'])
     status = str((current or {}).get('status') or '').lower()
     if status in {'cleanupfailed', 'cleanup_failed'}:
         raise ValueError('通用 Agent 清理失败，端点名额保留，需管理员处理')
+    # 已开始的会话按实际首轮固定模式，管理端改配置只影响下一次评测。
+    single = f'{session_id}-single' in turns
+    if single and not _ingest_single_results(sid, attempt, session_id, rules):
+        return {'success': True, 'message': '旧评测 attempt，跳过'}
     if status not in {'completed', 'failed', 'canceled', 'cancelled'}:
         return _wait_for_judge_turn(task, sid, attempt, queued=status == 'pending')
     _release_task_slot(client, session['current_task_id'])
+    if single:
+        snapshot = get_agent_run_snapshot(session['current_task_id']) or {}
+        timed_out = (snapshot.get('harness_status') == 'timeout'
+                     or session.get('message') == 'Agent harness 超时')
+        return _finalize(sid, rules, timed_out, status == 'completed' or timed_out, attempt)
     if status != 'completed':
         raise ValueError(f'通用 Agent 轮次未完成：{session.get("message") or status}')
     raw_rows = {int(row['rule_id']): row for row in list_judge_results(sid)}
@@ -836,10 +895,16 @@ def _advance_agent_judge(task, client, submission, competition):
             continue
         turn = turns.get(f'{session_id}-rule-{rid}')
         if turn:
-            parsed = _parse_rule_conclusion(turn.get('conclusion'), rid)
+            if str(turn.get('user_message') or '').strip().endswith('多行证据使用 JSON 字符串转义。'):
+                parsed = _parse_rule_conclusion(turn.get('conclusion'), rid)
+            else:
+                data = _read_judge_result(session_id, f'judge_result_{rid}.json')
+                parsed = aj.parse_result_line(json.dumps(data, ensure_ascii=False))
+                if parsed and parsed['rule_id'] != rid:
+                    parsed = None
             raw = parsed['result'] if parsed else None
             effect = raw or aj.EFF_ERROR
-            evidence = parsed['evidence'] if parsed else f'Agent 未返回规则 {rid} 的有效 JSON 结果。'
+            evidence = parsed['evidence'] if parsed else f'Agent 未在 judge_result_{rid}.json 中填写有效评分结果。'
             if upsert_judge_result_for_attempt(sid, attempt, rid, raw, effect,
                     float(rule.get('value') or 0) if raw == aj.RESULT_PASS else 0, evidence) <= 0:
                 return {'success': True, 'message': '旧评测 attempt，跳过'}
