@@ -785,15 +785,18 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     ]
     assert [step["status"] for step in compliant_steps] == ["passed", "passed", "passed", "passed"]
     compliant_gate = compliant_steps[1]
-    assert compliant_gate["verdict"] == "pass"
-    assert compliant_gate["summary"]
-    assert compliant_gate["violations"] == []
+    assert compliant_gate["passed"] is True
+    assert compliant_gate["reason"]
+    assert not {"verdict", "summary", "violations"} & compliant_gate.keys()
     assert compliant_steps[2]["answer_available"] is True
 
     owner_snapshot = raw_reverse_stream(owner_http, compliant_id)
     admin_snapshot = raw_reverse_stream(admin_http, compliant_id)
     owner_steps = {step["step_key"]: step for step in owner_snapshot["steps"]}
     admin_steps = {step["step_key"]: step for step in admin_snapshot["steps"]}
+    assert admin_steps["quality_gate"]["result"] == {
+        "passed": True, "reason": "题目包通过质量审核",
+    }
     assert "agent_session_id" not in owner_steps["quality_gate"]
     gate_session_id = admin_steps["quality_gate"]["agent_session_id"]
     answer_session_id = owner_steps["agent_answer"]["agent_session_id"]
@@ -875,9 +878,9 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     ]
     assert [step["status"] for step in rejected_steps] == ["passed", "failed", "pending", "pending"]
     rejected_gate = rejected_steps[1]
-    assert rejected_gate["verdict"] == "reject"
-    assert rejected_gate["summary"]
-    assert rejected_gate["violations"]
+    assert rejected_gate["passed"] is False
+    assert rejected_gate["reason"]
+    assert not {"verdict", "summary", "violations"} & rejected_gate.keys()
     assert_no_json_leaks(
         rejected_stream,
         forbidden_keys={"criteria_sha256", "reviewed_file_count", "source_file_count"},
@@ -889,6 +892,10 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     assert "agent_session_id" not in rejected_owner_steps["quality_gate"]
     assert not rejected_owner_steps["agent_answer"].get("agent_session_id")
     rejected_admin = raw_reverse_stream(admin_http, rejected_id)
+    rejected_admin_gate = next(step for step in rejected_admin["steps"] if step["step_key"] == "quality_gate")
+    assert rejected_admin_gate["result"] == {
+        "passed": False, "reason": "命中私有审核标准：solution 和 judge 不得隐藏私有配对密码",
+    }
     rejected_gate_session = next(step["agent_session_id"] for step in rejected_admin["steps"] if step["step_key"] == "quality_gate")
     # 门禁任务正常完成后拒绝题目：会话 Completed，业务步骤 failed。
     completed_session(admin_http, rejected_gate_session, "reverse_quality", rejected_id)

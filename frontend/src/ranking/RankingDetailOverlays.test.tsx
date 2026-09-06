@@ -133,6 +133,59 @@ describe('打榜赛评测详情实时连接', () => {
     }))
     expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/quality-session')
   })
+
+  it.each([
+    {passed: true, label: '通过', reason: '题目和评测程序符合审核标准。'},
+    {passed: false, label: '不通过', reason: '质量门禁未通过，详细判定仅管理员可见。'},
+  ])('新质量门禁结果显示 $label 和判定原因，不生成违规项信息', ({passed, label, reason}) => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 46}} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('done', {
+      status: passed ? 'Accepted' : 'Error',
+      steps: [{step_key: 'quality_gate', status: passed ? 'passed' : 'failed', result: {passed, reason}}],
+    }))
+
+    expect(screen.getByText(label)).toBeTruthy()
+    expect(screen.getByText('判定原因')).toBeTruthy()
+    expect(screen.getByText(reason)).toBeTruthy()
+    expect(screen.queryByText('审核摘要')).toBeNull()
+    expect(screen.queryByText(/违规项/)).toBeNull()
+    expect(screen.queryByRole('link', {name: '查看 Agent 会话'})).toBeNull()
+  })
+
+  it('历史质量门禁保留审核摘要、违规项和证据', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 47}} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('done', {
+      status: 'Error',
+      steps: [{step_key: 'quality_gate', status: 'failed', result: {
+        verdict: 'fail', summary: '评测标准存在问题。',
+        violations: [{title: '缺少结果校验', description: '评测程序未检查答案内容。', evidence: [{path: 'judge.py', line: 9, excerpt: 'return 100'}]}],
+      }}],
+    }))
+
+    expect(screen.getByText('不通过')).toBeTruthy()
+    expect(screen.getByText('审核摘要')).toBeTruthy()
+    expect(screen.getByText('评测标准存在问题。')).toBeTruthy()
+    expect(screen.getByText('违规项 · 1')).toBeTruthy()
+    expect(screen.getByText('缺少结果校验')).toBeTruthy()
+    expect(screen.getByText('评测程序未检查答案内容。')).toBeTruthy()
+    expect(screen.getByText('judge.py:9')).toBeTruthy()
+    expect(screen.getByText('return 100')).toBeTruthy()
+  })
+
+  it('历史无违规项结果仍按原格式展示', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 48}} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('done', {
+      status: 'Accepted', steps: [{step_key: 'quality_gate', status: 'passed', result: {passed: true, summary: '审核通过。', violations: []}}],
+    }))
+
+    expect(screen.getByText('通过')).toBeTruthy()
+    expect(screen.getByText('审核通过。')).toBeTruthy()
+    expect(screen.getByText('违规项 · 0')).toBeTruthy()
+    expect(screen.getByText('无违规项')).toBeTruthy()
+  })
 })
 
 describe('ELO 互动详情 Safari 生命周期', () => {

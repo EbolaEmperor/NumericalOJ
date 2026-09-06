@@ -2623,18 +2623,21 @@ def _project_reverse_judge_snapshot(snapshot, *, include_internal=False):
         else:
             summary = '质量门禁审核中'
 
-        raw_violations = result.get('violations')
-        violation_count = len(raw_violations) if isinstance(raw_violations, list) else 0
-        step['result'] = {
-            'passed': passed,
-            'verdict': verdict,
-            'summary': summary,
-            # 模型生成的 rule/reason/evidence 都可能复述私有审核标准；仅公开数量。
-            'violations': [
-                {'reason': '检测到不符合质量门禁的行为'}
-                for _ in range(violation_count)
-            ],
-        }
+        if any(key in result for key in ('verdict', 'summary', 'violations')):
+            # 历史结果保留原有公有结构，模型生成的证据仍不能复述私有标准。
+            raw_violations = result.get('violations')
+            violation_count = len(raw_violations) if isinstance(raw_violations, list) else 0
+            step['result'] = {
+                'passed': passed,
+                'verdict': verdict,
+                'summary': summary,
+                'violations': [
+                    {'reason': '检测到不符合质量门禁的行为'}
+                    for _ in range(violation_count)
+                ],
+            }
+        else:
+            step['result'] = {'passed': passed, 'reason': summary}
         if gate_rejected and step.get('error_message'):
             step['error_message'] = summary
     if gate_rejected and projected.get('error_message'):

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from flask import Flask
 
 from backend.oj_modules.api import ranking_api
@@ -530,3 +531,31 @@ def test_reverse_snapshot_projects_historical_quality_gate_as_skipped():
         "summary": "本次评测未执行质量门禁",
         "violations": [],
     }
+
+
+@pytest.mark.parametrize("passed", [True, False])
+@pytest.mark.parametrize("include_internal", [False, True])
+def test_reverse_snapshot_projects_new_reason_with_existing_session_permissions(passed, include_internal):
+    snapshot = _private_gate_snapshot()
+    original = {"passed": passed, "reason": "私有审核标准要求检查 sesame"}
+    snapshot["steps"][0]["result"] = original
+    snapshot["steps"][0]["agent_session_id"] = "private-quality-session"
+    snapshot["steps"].append({"step_key": "agent_answer", "agent_session_id": "owner-answer-session"})
+    if passed:
+        snapshot.pop("error_message")
+        snapshot["steps"][0].pop("error_message")
+
+    projected = routes._project_reverse_judge_snapshot(snapshot, include_internal=include_internal)
+
+    gate, answer = projected["steps"]
+    public_reason = "题目已通过质量门禁" if passed else "题目未通过质量门禁，请检查题目包后重试"
+    assert gate["result"] == (original if include_internal else {"passed": passed, "reason": public_reason})
+    assert ("agent_session_id" in gate) is include_internal
+    assert answer["agent_session_id"] == "owner-answer-session"
+    assert "stdout" not in gate
+    assert "trace_messages" not in gate
+    if not passed and not include_internal:
+        assert gate["error_message"] == public_reason
+        assert projected["error_message"] == "质量门禁未通过，请检查题目包后重试"
+    assert snapshot["steps"][0]["result"] == original
+    assert snapshot["steps"][0]["agent_session_id"] == "private-quality-session"

@@ -867,109 +867,51 @@ def test_safe_attempt_component_blocks_path_traversal_and_limits_length():
     assert rj._safe_attempt_component("a" * 100) == "a" * 80
 
 
-def test_parse_quality_gate_result_accepts_strict_json_and_fenced_json():
-    passed = rj._parse_quality_gate_result(
-        '```json\n{"passed": true, "summary": "符合标准", "violations": []}\n```'
-    )
-    rejected = rj._parse_quality_gate_result(json.dumps({
-        "passed": False,
-        "summary": "存在私有协议",
-        "violations": [{
-            "rule": "不得隐藏配对密码",
-            "reason": "标准答案含私有调用",
-            "evidence": [{
-                "path": "solution/main.py",
-                "line": "17",
-                "excerpt": "secret_handshake()",
-            }],
-        }],
+@pytest.mark.parametrize("passed", [True, False])
+def test_parse_quality_gate_result_reads_boolean_and_reason_from_json_file(passed):
+    result = rj._parse_quality_gate_result(json.dumps({
+        "passed": passed, "reason": "  已按审核标准检查题目和标准答案。\n  ",
     }, ensure_ascii=False))
 
-    assert passed == {
-        "passed": True,
-        "verdict": "pass",
-        "summary": "符合标准",
-        "violations": [],
-    }
-    assert rejected["passed"] is False
-    assert rejected["verdict"] == "reject"
-    assert rejected["violations"][0]["evidence"][0]["line"] == 17
+    assert result == {"passed": passed, "reason": "已按审核标准检查题目和标准答案。"}
 
 
-@pytest.mark.parametrize("prefix", [
-    "审核说明：已经逐项检查。\n",
-    '前文有未闭合引号 " 和花括号 {，但 verdict 独立有效。\n',
-    "说明里甚至有残缺 JSON：{\"foo\": 1。\n```json\n",
-])
-def test_parse_quality_gate_result_accepts_only_explanation_before_final_json(prefix):
-    suffix = "\n```" if prefix.endswith("```json\n") else ""
-
-    result = rj._parse_quality_gate_result(
-        prefix + '{"passed":true,"summary":"符合标准","violations":[]}' + suffix
-    )
-
-    assert result["passed"] is True
-    assert result["summary"] == "符合标准"
+def test_parse_quality_gate_result_preserves_full_reason():
+    reason = '逐项依据包含 }、{、"quoted" 和路径说明。\n' * 500
+    result = rj._parse_quality_gate_result(json.dumps({"passed": False, "reason": reason}))
+    assert result == {"passed": False, "reason": reason.strip()}
 
 
-def test_parse_quality_gate_result_suffix_scanner_ignores_braces_and_quotes_in_strings():
-    summary = '字符串证据含有 }、{、"quoted" 和 \\\\ 路径'
-    verdict = json.dumps({
-        "passed": True, "summary": summary, "violations": [],
-    }, ensure_ascii=False)
-
-    result = rj._parse_quality_gate_result('前言留下未闭合的 " 和 {\n' + verdict)
-
-    assert result["passed"] is True
-    assert result["summary"] == summary
-
-
-def test_parse_quality_gate_result_rejects_pass_with_violations_and_caps_output():
-    evidence = [{
-        "path": "p" * 600,
-        "line": "not-an-int",
-        "excerpt": "e" * 2200,
-    } for _ in range(21)]
-    violations = [{
-        "rule": "r" * 2200,
-        "reason": "x" * 4200,
-        "evidence": evidence,
-    } for _ in range(51)]
-
+def test_parse_quality_gate_result_uses_legacy_summary_only_when_reason_is_absent():
     result = rj._parse_quality_gate_result(json.dumps({
-        "passed": True,
-        "summary": "s" * 4200,
-        "violations": violations,
+        "passed": True, "summary": "  旧任务审核说明  ",
+        "violations": {"旧扩展字段": "不再解析或改变 passed"},
     }))
-
-    assert result["passed"] is False
-    assert result["verdict"] == "reject"
-    assert len(result["summary"]) == 4000
-    assert len(result["violations"]) == 50
-    first = result["violations"][0]
-    assert len(first["rule"]) == 2000
-    assert len(first["reason"]) == 4000
-    assert len(first["evidence"]) == 20
-    assert first["evidence"][0]["line"] is None
-    assert len(first["evidence"][0]["path"]) == 500
-    assert len(first["evidence"][0]["excerpt"]) == 2000
+    assert result == {"passed": True, "reason": "旧任务审核说明"}
+    result = rj._parse_quality_gate_result(json.dumps({
+        "passed": False, "reason": "新格式理由", "summary": "旧格式摘要",
+    }))
+    assert result == {"passed": False, "reason": "新格式理由"}
 
 
 @pytest.mark.parametrize("raw", [
     "not-json",
-    'before {"passed":true,"summary":"ok","violations":[]} after',
+    '审核说明：\n{"passed":true,"reason":"ok"}',
+    '```json\n{"passed":true,"reason":"ok"}\n```',
+    '{"passed":true,"reason":"ok"} after',
     "[]",
-    '{"passed":1,"summary":"ok","violations":[]}',
-    '{"passed":true,"summary":" ","violations":[]}',
-    '{"passed":true,"summary":"ok","violations":{}}',
-    '{"passed":false,"summary":"bad","violations":[1]}',
-    ('{"passed":false,"summary":"bad","violations":['
-     '{"rule":"r","reason":"x","evidence":{}}]}'),
-    ('{"passed":false,"summary":"bad","violations":['
-     '{"rule":"r","reason":"x","evidence":[1]}]}'),
+    '{"passed":1,"reason":"ok"}',
+    '{"passed":"true","reason":"ok"}',
+    '{"passed":null,"reason":""}',
+    '{"passed":true,"reason":" "}',
+    '{"passed":false,"reason":42}',
+    '{"passed":true}',
+    '{"passed":true,"summary":" "}',
+    '{"passed":true,"reason":null,"summary":"不能回退"}',
+    '{"passed":true,"reason":"","summary":"不能回退"}',
 ])
 def test_parse_quality_gate_result_rejects_malformed_schema(raw):
-    with pytest.raises(ValueError, match="质量门禁"):
+    with pytest.raises(ValueError):
         rj._parse_quality_gate_result(raw)
 
 
@@ -1261,16 +1203,12 @@ def test_unified_workspace_inputs_separate_answer_from_private_material(unified_
 def test_quality_gate_preloads_an_unfilled_result_template_separate_from_evidence(unified_reverse):
     f = unified_reverse
     uploaded = f.audit / 'quality_gate_result.json'
-    uploaded.write_text('{"passed":true,"summary":"提交包自称通过","violations":[]}')
+    uploaded.write_text('{"passed":true,"reason":"提交包自称通过"}')
 
     files = rj._workspace_input_files(f.audit, rj.STEP_QUALITY_GATE)
     template = json.loads(files['quality_gate_result.json'])
 
-    assert template == {
-        'passed': None, 'summary': '',
-        'violations': [{'rule': '', 'reason': '',
-                        'evidence': [{'path': '', 'line': None, 'excerpt': ''}]}],
-    }
+    assert template == {'passed': None, 'reason': ''}
     assert files['evidence/quality_gate_result.json'] == uploaded
     with pytest.raises(ValueError, match='布尔字段 passed'):
         rj._parse_quality_gate_result(files['quality_gate_result.json'].decode('utf-8'))
@@ -1281,7 +1219,7 @@ def test_quality_gate_reads_filled_template_from_workspace(monkeypatch, unified_
 
     content = rj._workspace_input_files(unified_reverse.audit, rj.STEP_QUALITY_GATE)['quality_gate_result.json']
     template = json.loads(content)
-    template.update(passed=True, summary='各项审核标准均满足', violations=[])
+    template.update(passed=True, reason='各项审核标准均满足')
     calls = []
 
     def open_file(session_id, path):
@@ -1292,29 +1230,22 @@ def test_quality_gate_reads_filled_template_from_workspace(monkeypatch, unified_
     result = rj._read_quality_gate_result('quality-session')
 
     assert calls == [('quality-session', 'quality_gate_result.json')]
-    assert result['passed'] is True and result['violations'] == []
-    assert result['summary'] == '各项审核标准均满足'
+    assert result == {'passed': True, 'reason': '各项审核标准均满足'}
 
 
 def test_runtime_prompts_preserve_review_and_deliverable_requirements():
     quality = rj._quality_gate_agent_prompt('逐项审核题目与答案的一致性')
     answer = rj._reverse_prompt()
     assert '逐项审核题目与答案的一致性' in quality
-    assert '管理员审核标准是唯一的判定依据' in quality
-    assert '并根据审核标准决定读取哪些文件' in quality
-    assert '出题者标准答案' in quality and '评测入口' in quality
     assert 'quality_gate_result.json' in quality
-    assert '结果模板' in quality and '替换初始占位内容' in quality
-    assert '可以正常使用中文回复' in quality
-    assert 'JSON 对象结构必须' not in quality and '{"passed"' not in quality
-    assert '/workspace' not in quality
-    assert '存在任一违规时 passed=false' in quality
+    assert 'passed' in quality and 'reason' in quality
+    assert 'evidence/' in quality
+    assert 'violations' not in quality and 'summary' not in quality
     assert '题面、说明、样例或其它材料' in answer
     assert '不要用说明性文档替代可评测文件' in answer
     assert '最终评测会把整个项目目录作为答案目录' in answer
     assert '/workspace' not in answer
-    for prompt in (quality, answer):
-        assert not any(term in prompt for term in ('只读', '可写', '不得执行', '禁止执行', '不要修改'))
+    assert not any(term in answer for term in ('只读', '可写', '不得执行', '禁止执行', '不要修改'))
 
 
 @pytest.mark.parametrize('existing_template_session', [False, True])
@@ -1353,7 +1284,7 @@ def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatc
 
     monkeypatch.setattr(rj, '_run_judge_script', judge)
     monkeypatch.setattr(rj, 'export_agent_workspace_directory', export)
-    monkeypatch.setattr(rj, '_read_quality_gate_result', lambda sid: {'passed': True, 'summary': '通过', 'violations': []})
+    monkeypatch.setattr(rj, '_read_quality_gate_result', lambda sid: {'passed': True, 'reason': '通过'})
 
     def advance():
         return rj._run_reverse_judge(f.task, object(), 7, 'attempt', f.competition, 11)
@@ -1404,12 +1335,12 @@ def test_quality_gate_rejection_never_dispatches_answer(monkeypatch, unified_rev
     sent = f.dispatches[0]
     f.turns[sent['session_id']][0]['status'] = 'Completed'
     monkeypatch.setattr(rj, '_read_quality_gate_result', lambda sid: {
-        'passed': False, 'summary': '私有审核标准被违反', 'violations': [{'rule': '私有规则'}]})
+        'passed': False, 'reason': '私有审核标准被违反'})
     result = rj._run_reverse_judge(f.task, object(), 7, 'attempt', f.competition, 11)
     assert result['success'] is False
     assert len(f.dispatches) == 1
     assert '私有' not in result['message']
-    assert f.rows[rj.STEP_QUALITY_GATE]['result_json']['summary'] == '私有审核标准被违反'
+    assert f.rows[rj.STEP_QUALITY_GATE]['result_json']['reason'] == '私有审核标准被违反'
     assert f.rows[rj.STEP_AGENT]['status'] == 'pending'
 
 

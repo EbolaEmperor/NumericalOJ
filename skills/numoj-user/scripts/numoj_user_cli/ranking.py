@@ -212,7 +212,7 @@ def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
         if step.get("error_message"):
             item["error_message"] = step["error_message"]
         if step_key == "quality_gate":
-            for key in ("passed", "verdict", "summary", "violations"):
+            for key in ("passed", "reason", "verdict", "summary", "violations"):
                 if key in result:
                     item[key] = result[key]
         steps.append(item)

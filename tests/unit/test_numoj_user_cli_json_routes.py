@@ -1126,7 +1126,8 @@ def test_user_ranking_submit_confirms_creation_after_a_proxy_5xx(monkeypatch, ca
     }
 
 
-def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeypatch, capsys):
+@pytest.mark.parametrize("new_result", [False, True])
+def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeypatch, capsys, new_result):
     cli = _load_numoj_user_cli_module()
     fake_client = _FakeClient()
     snapshot = {
@@ -1151,6 +1152,11 @@ def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeyp
         ],
         "quality_gate_endpoints": [{"id": 99, "api_key": "must-not-leak"}],
     }
+    if new_result:
+        snapshot["steps"][1]["result"] = {
+            "passed": False,
+            "reason": "题目未通过质量门禁，请检查题目包后重试",
+        }
     monkeypatch.setattr(fake_client, "request", lambda *args, **kwargs: _StreamResponse(snapshot))
     monkeypatch.setattr(cli.common, "client_from_args", lambda _args, **_kwargs: fake_client)
 
@@ -1165,9 +1171,13 @@ def test_user_reverse_stream_projects_four_steps_without_internal_fields(monkeyp
     ]
     gate = out["latest"]["steps"][1]
     assert gate["passed"] is False
-    assert gate["verdict"] == "reject"
-    assert gate["summary"] == "不合规"
-    assert gate["violations"] == ["存在私有密码"]
+    if new_result:
+        assert gate["reason"] == "题目未通过质量门禁，请检查题目包后重试"
+        assert not {"verdict", "summary", "violations"}.intersection(gate)
+    else:
+        assert gate["verdict"] == "reject"
+        assert gate["summary"] == "不合规"
+        assert gate["violations"] == ["存在私有密码"]
     assert "quality_gate_endpoints" not in out["latest"]
     assert "stdout" not in out["latest"]["steps"][0]
     assert "raw_model_response" not in gate

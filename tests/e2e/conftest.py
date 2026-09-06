@@ -156,19 +156,10 @@ class _QualityGateStubHandler(BaseHTTPRequestHandler):
         rejected = "quality_gate_reject.txt" in package_text
         result = {
             "passed": not rejected,
-            "summary": (
+            "reason": (
                 "命中私有审核标准：solution 和 judge 不得隐藏私有配对密码"
                 if rejected else "题目包通过质量审核"
             ),
-            "violations": ([{
-                "rule": "solution 和 judge 不得隐藏私有配对密码",
-                "reason": "发现测试用违规标记",
-                "evidence": [{
-                    "path": "quality_gate_reject.txt",
-                    "line": 1,
-                    "excerpt": "fake gate rejection marker",
-                }],
-            }] if rejected else []),
         }
         self._reply(200, {
             "content": [{

@@ -1250,6 +1250,23 @@ def test_admin_reverse_snapshot_uses_step_key_and_projects_quality_verdict():
     ]
 
 
+@pytest.mark.parametrize("passed", [True, False])
+def test_admin_reverse_snapshot_keeps_new_reason_without_inventing_legacy_fields(passed):
+    cli = _load_numoj_admin_cli_module()
+    projected = cli.ranking.necessary_reverse_judge_snapshot_payload({
+        "submission_id": 12,
+        "steps": [{
+            "step_key": "quality_gate",
+            "result": {"passed": passed, "reason": "管理员可见的完整审核理由"},
+        }],
+    })
+
+    gate, = projected["steps"]
+    assert gate["passed"] is passed
+    assert gate["reason"] == "管理员可见的完整审核理由"
+    assert not {"verdict", "summary", "violations"}.intersection(gate)
+
+
 def test_admin_ranking_submission_projection_keeps_ai_answer_metadata_only_for_mapping_input():
     cli = _load_numoj_admin_cli_module()
 
