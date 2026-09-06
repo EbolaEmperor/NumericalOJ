@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.conftest import (
+    USER_CLI,
     assert_no_json_leaks,
     count_ranking_endpoints,
     create_local_git_repo,
@@ -481,6 +482,33 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     create_regular_user(username=username, password="pw123456")
     assert cli.init_admin()["success"] is True
     assert cli.init_user(username)["success"] is True
+    monkeypatch.syspath_prepend(str(USER_CLI.parent))
+    from numoj_user_cli.common import NumOJClient, load_config, read_stream_events
+
+    owner_http = NumOJClient(load_config(cli.user_config))
+    admin_http = NumOJClient(load_config(cli.admin_config))
+
+    def raw_reverse_stream(client, submission_id):
+        # CLI 摘要会再次裁剪字段；直接读取同一 API，验证服务端投影。
+        with client.request("GET", f"/api/ranking/competitions/{ranking_id}/submissions/{submission_id}/reverse-judge-events", stream=True) as response:
+            assert response.status_code == 200
+            return read_stream_events(response, max_lines=20)["events"][-1]
+
+    def completed_session(client, session_id, kind, submission_id):
+        response = client.request("GET", f"/api/agent/sessions/{session_id}")
+        assert response.status_code == 200
+        detail = response.json()
+        session = detail["agent_session"]
+        assert session["category"] == session["task_kind"] == "judge"
+        assert session["judge_kind"] == kind
+        assert session["submission_id"] == submission_id
+        assert session["competition_id"] == ranking_id
+        assert session["requested_by"] == username
+        assert session["status"] == detail["current_state"]["status"] == "Completed"
+        turn = next(item for item in detail["turns"] if item["task_id"] == session["current_task_id"])
+        assert turn["status"] == "Completed"
+        assert detail["can_resume"] is False and detail["can_retry"] is False
+        return session["current_task_id"]
 
     ranking_id = _create_ranking(cli, f"CLI Reverse Gate {unique_suffix}")
     assert cli.admin_json(
@@ -503,7 +531,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         {
             "harness": "pi",
             "protocol": "openai",
-            "base_url": "http://127.0.0.1:19001",
+            "base_url": "http://127.0.0.1:19101",
             "api_key": "answer-pool-secret",
             "model": "fake-answer-model",
             "concurrency_limit": 1,
@@ -699,7 +727,6 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
             "recovering-quality-model",
             "fake-quality-paused",
             "fake-quality-disabled",
-            "http://127.0.0.1:19001",
             "http://127.0.0.1:19101",
             "http://127.0.0.1:19102",
             "http://127.0.0.1:19103",
@@ -762,6 +789,34 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     assert compliant_gate["summary"]
     assert compliant_gate["violations"] == []
     assert compliant_steps[2]["answer_available"] is True
+
+    owner_snapshot = raw_reverse_stream(owner_http, compliant_id)
+    admin_snapshot = raw_reverse_stream(admin_http, compliant_id)
+    owner_steps = {step["step_key"]: step for step in owner_snapshot["steps"]}
+    admin_steps = {step["step_key"]: step for step in admin_snapshot["steps"]}
+    assert "agent_session_id" not in owner_steps["quality_gate"]
+    gate_session_id = admin_steps["quality_gate"]["agent_session_id"]
+    answer_session_id = owner_steps["agent_answer"]["agent_session_id"]
+    assert gate_session_id and answer_session_id and gate_session_id != answer_session_id
+    assert admin_steps["agent_answer"]["agent_session_id"] == answer_session_id
+    for steps in (owner_steps, admin_steps):
+        for key in ("quality_gate", "agent_answer"):
+            assert not {"stdout", "stderr", "trace_messages", "trace_files", "execution_trace", "token_usage"} & steps[key].keys()
+    assert_no_json_leaks(owner_snapshot, forbidden_keys={"criteria_sha256", "reviewed_file_count", "source_file_count"}, forbidden_terms=("私有配对密码",))
+    gate_task_id = completed_session(admin_http, gate_session_id, "reverse_quality", compliant_id)
+    completed_session(owner_http, answer_session_id, "reverse_answer", compliant_id)
+    assert admin_http.request("GET", f"/api/agent/sessions/{answer_session_id}").status_code == 200
+    for path in (f"/api/agent/sessions/{gate_session_id}", f"/api/agent/sessions/{gate_session_id}/workspace", f"/api/agent/runs/{gate_task_id}"):
+        assert owner_http.request("GET", path).status_code == 403
+
+    other_username = f"cli_reverse_other_{unique_suffix}"
+    create_regular_user(username=other_username, password="pw123456")
+    other_config = tmp_path / "other-user.json"
+    assert cli.run(USER_CLI, other_config, "init", "--base-url", cli.base_url, "-u", other_username, "-p", "pw123456").json()["success"] is True
+    other_http = NumOJClient(load_config(other_config))
+    for session_id in (gate_session_id, answer_session_id):
+        assert other_http.request("GET", f"/api/agent/sessions/{session_id}").status_code == 403
+        assert other_http.request("GET", f"/api/agent/sessions/{session_id}/workspace").status_code == 403
 
     user_download_dir = tmp_path / "user-ai-answer"
     admin_download_dir = tmp_path / "admin-ai-answer"
@@ -827,6 +882,15 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         forbidden_keys={"criteria_sha256", "reviewed_file_count", "source_file_count"},
         forbidden_terms=("私有配对密码",),
     )
+    rejected_raw = raw_reverse_stream(owner_http, rejected_id)
+    assert_no_json_leaks(rejected_raw, forbidden_keys={"criteria_sha256", "reviewed_file_count", "source_file_count"}, forbidden_terms=("私有配对密码",))
+    rejected_owner_steps = {step["step_key"]: step for step in rejected_raw["steps"]}
+    assert "agent_session_id" not in rejected_owner_steps["quality_gate"]
+    assert not rejected_owner_steps["agent_answer"].get("agent_session_id")
+    rejected_admin = raw_reverse_stream(admin_http, rejected_id)
+    rejected_gate_session = next(step["agent_session_id"] for step in rejected_admin["steps"] if step["step_key"] == "quality_gate")
+    # 门禁任务正常完成后拒绝题目：会话 Completed，业务步骤 failed。
+    completed_session(admin_http, rejected_gate_session, "reverse_quality", rejected_id)
     rejected_download_path = tmp_path / "rejected-ai-answer.zip"
     rejected_download = cli.user(
         "ranking", "download-submission", str(rejected_id), "ai-answer",

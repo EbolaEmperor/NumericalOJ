@@ -591,39 +591,7 @@ def _load_result_json(package_root):
     }
 
 
-def _fake_reverse_judge_enabled():
-    raw = os.getenv('NUMOJ_FAKE_REVERSE_JUDGE')
-    if raw is None:
-        raw = getattr(_cfg, 'NUMOJ_FAKE_REVERSE_JUDGE', False)
-    return str(raw or '').strip().lower() in ('1', 'true', 'yes', 'on')
-
-
-def _fake_judge_result(answer_dir):
-    is_solution = str(answer_dir or '').strip().rstrip('/') == 'solution'
-    score = 100.0 if is_solution else 25.0
-    return {
-        'max_score': 100.0,
-        'score': score,
-        'test_points': {
-            'fake': {
-                'description': '本地 e2e 假反向评测',
-                'max_score': 100.0,
-                'score': score,
-            },
-        },
-    }
-
-
 def _run_judge_script(submission_id, package_root, answer_dir, timeout_s):
-    if _fake_reverse_judge_enabled():
-        return {
-            'ok': True,
-            'returncode': 0,
-            'stdout': 'fake reverse judge',
-            'stderr': '',
-            'error': '',
-            'result': _fake_judge_result(answer_dir),
-        }
     result_path = os.path.join(package_root, 'result.json')
     try:
         os.remove(result_path)
@@ -1156,7 +1124,7 @@ def _advance_agent_phase(task, client, submission_id, attempt_id, competition,
         )
         if endpoint is None:
             return _retry_queued_submission(task, submission_id, attempt_id, timeout_step_key=step_key)
-        ok, probe_message = (True, '') if _fake_reverse_judge_enabled() else _probe_endpoint(endpoint)
+        ok, probe_message = _probe_endpoint(endpoint)
         if ok:
             break
         _disable_unhealthy_endpoint(endpoint, probe_message)

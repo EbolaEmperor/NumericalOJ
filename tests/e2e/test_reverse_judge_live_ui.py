@@ -183,7 +183,6 @@ def live_numoj_server(tmp_path: Path) -> _LiveServer:
         "PYTHONUNBUFFERED": "1",
         "OJ_LIVE_AI": "1",
         "NUMOJ_FAKE_AGENT_JUDGE": "0",
-        "NUMOJ_FAKE_REVERSE_JUDGE": "0",
         "AGENT_JUDGE_DOCKER_IMAGE": agent_image,
         "JUDGER_DOCKER_IMAGE": judger_image,
         # 凭证只能由管理员 CLI 从独立测试密钥文件写入一次性测试数据库。Web、Celery、

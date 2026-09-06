@@ -211,6 +211,28 @@ class _QualityGateStubHandler(BaseHTTPRequestHandler):
             },
         })
 
+    def _handle_answer_hello(self, payload: dict[str, Any]) -> None:
+        """作答节点也经过真实 hello；模型执行由测试 worker 接管。"""
+        if (
+            self.path != "/v1/chat/completions"
+            or not str(self.headers.get("Authorization") or "").lower().startswith("bearer ")
+            or payload.get("model") != "fake-answer-model"
+            or payload.get("messages") != [{"role": "user", "content": "hello"}]
+            or payload.get("system")
+        ):
+            self._reply(400, {"error": "answer endpoint only accepts hello"})
+            return
+        self._reply(200, {
+            "id": "chatcmpl-e2e-answer-hello",
+            "object": "chat.completion",
+            "model": payload["model"],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello"},
+                "finish_reason": "stop",
+            }],
+        })
+
     def _handle_openai_embeddings(self, payload: dict[str, Any]) -> None:
         authorization = self.headers.get("Authorization") or ""
         self._record_dynamic_probe(
@@ -319,6 +341,8 @@ class _QualityGateStubHandler(BaseHTTPRequestHandler):
         api_key = self.headers.get("x-api-key") or ""
         if api_key in self._QUALITY_MODELS:
             self._handle_quality_gate(payload, api_key)
+        elif self._auth_marker(self.headers.get("Authorization"), bearer=True) == "answer-pool-secret":
+            self._handle_answer_hello(payload)
         elif self.path == "/v1/chat/completions":
             self._handle_openai_chat(payload)
         elif self.path == "/v1/embeddings":
@@ -502,10 +526,8 @@ def local_numoj_server(tmp_path: Path) -> str:
     env["OJ_LIVE_AI"] = "0"
     env["NUMOJ_FAKE_AGENT_JUDGE"] = "1"
     env["NUMOJ_FAKE_AGENT_JUDGE_DELAY_SECONDS"] = "0"
-    env["NUMOJ_FAKE_REVERSE_JUDGE"] = "1"
-    # 端点 hello 仍走本地 HTTP 桩，只将需要真实模型 CLI 的门禁
-    # Agent 替换为确定性实现；容器安全边界由单元测独立覆盖。
-    env["NUMOJ_FAKE_REVERSE_QUALITY_GATE"] = "1"
+    # 反向评测沿用真实通用会话/队列/工作区与本地端点 hello；仅在
+    # loopback_worker 内替换模型执行和评分脚本，不向生产代码注入开关。
     env["NUMOJ_FAKE_PROGRAM_IMAGE_GRADING_RESULT"] = '{"score": 1, "comment": "本地 e2e 假图片批改通过。"}'
     env["NUMOJ_FAKE_WRITTEN_HOMEWORK_SCORE"] = "5"
     env["NUMOJ_FAKE_WRITTEN_HOMEWORK_COMMENT"] = "本地 e2e 假书面批改通过。"
@@ -529,14 +551,13 @@ def local_numoj_server(tmp_path: Path) -> str:
     celery_proc = subprocess.Popen(
         [
             sys.executable,
+            "-B",
             "-m",
-            "celery",
-            "-A",
-            "backend.oj.celery",
+            "tests.e2e.loopback_worker",
             "worker",
             "--loglevel=warning",
             "-Q",
-            "celery,agent,judge",
+            "celery,agent",
             "--pool=solo",
             "--concurrency=1",
         ],

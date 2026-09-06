@@ -2570,7 +2570,6 @@ def ranking_judge_stream(competition_id, submission_id):
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
-            'Connection': 'keep-alive',
         },
     )
 
@@ -2731,7 +2730,6 @@ def ranking_reverse_judge_stream(competition_id, submission_id):
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
-            'Connection': 'keep-alive',
         },
     )
 

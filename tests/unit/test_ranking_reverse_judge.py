@@ -1272,7 +1272,10 @@ def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatc
             from pathlib import Path
             assert (Path(package_root) / 'template' / 'solve.py').read_text() == 'AI交付物'
             assert (Path(package_root) / 'solution' / 'solve.py').read_text() == '标准答案私密内容'
-        return {'ok': True, 'stdout': '', 'stderr': '', 'result': rj._fake_judge_result(answer)}
+        return {'ok': True, 'stdout': '', 'stderr': '', 'result': {
+            'max_score': 100, 'score': 100 if answer == 'solution' else 25,
+            'test_points': {},
+        }}
 
     def export(sid, path, destination):
         from pathlib import Path
@@ -1326,6 +1329,31 @@ def test_quality_gate_rejection_never_dispatches_answer(monkeypatch, unified_rev
     assert '私有' not in result['message']
     assert f.rows[rj.STEP_QUALITY_GATE]['result_json']['summary'] == '私有审核标准被违反'
     assert f.rows[rj.STEP_AGENT]['status'] == 'pending'
+
+
+@pytest.mark.parametrize('step_key', [rj.STEP_QUALITY_GATE, rj.STEP_AGENT])
+def test_unhealthy_endpoint_is_paused_before_dispatch(monkeypatch, unified_reverse, step_key):
+    f = unified_reverse
+    probes, pauses = [], []
+
+    def probe(endpoint):
+        probes.append(endpoint['id'])
+        return False, 'HTTP 503'
+
+    monkeypatch.setattr(rj, '_probe_endpoint', probe)
+    monkeypatch.setattr(rj, '_disable_unhealthy_endpoint',
+                        lambda endpoint, reason: pauses.append((endpoint['id'], reason)))
+    result = rj._advance_agent_phase(
+        f.task, object(), 7, 'attempt', f.competition, str(f.audit), step_key, 11,
+    )
+
+    assert result['success'] is False
+    assert probes == [11]
+    assert pauses == [(11, 'HTTP 503')]
+    assert f.releases == ['token']
+    assert f.dispatches == []
+    assert f.submission['status'] == 'Error'
+    assert f.rows[step_key]['status'] == 'error'
 
 
 def test_timeout_finalizes_same_generic_session_after_reacquiring_pool(unified_reverse):
