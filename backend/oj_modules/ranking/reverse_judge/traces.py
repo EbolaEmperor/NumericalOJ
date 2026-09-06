@@ -673,16 +673,7 @@ def _pi_event_messages(event, line_no):
     return messages
 
 
-def _historical_jsonl_rows(path):
-    """一次性历史迁移流式读取全部记录，不应用交互页面的尾部窗口。"""
-    with open(path, 'rb') as stream:
-        offset = 0
-        for raw in stream:
-            yield offset, raw
-            offset += len(raw)
-
-
-def _collect_claude_trace_messages(path, *, full_history=False):
+def _collect_claude_trace_messages(path):
     if not path:
         return []
     messages = []
@@ -690,7 +681,7 @@ def _collect_claude_trace_messages(path, *, full_history=False):
     # 间保持稳定，因此在共享渲染层按 uuid 去重，既保留每次 resume 的新增轨迹，
     # 也避免旧历史随阶段数成倍重复。没有 uuid 的兼容事件仍按原样保留。
     seen_event_uuids = set()
-    rows = _historical_jsonl_rows(path) if full_history else _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
+    rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
     for line_no, (source_offset, raw) in enumerate(
             rows, start=1):
         message_start = len(messages)
@@ -747,14 +738,14 @@ def _collect_claude_trace_messages(path, *, full_history=False):
                 item['source'] = event_source
             if event_phase:
                 item['phase'] = event_phase
-        if not full_history and len(messages) >= _TRACE_MAX_MESSAGES:
+        if len(messages) >= _TRACE_MAX_MESSAGES:
             messages = messages[-_TRACE_MAX_MESSAGES:]
-    return messages if full_history else messages[-_TRACE_MAX_MESSAGES:]
+    return messages[-_TRACE_MAX_MESSAGES:]
 
 
-def _collect_pi_trace_messages(path, *, full_history=False):
+def _collect_pi_trace_messages(path):
     messages = []
-    rows = _historical_jsonl_rows(path) if full_history else _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
+    rows = _read_jsonl_tail(path, _TRACE_JSONL_PARSE_MAX_BYTES)
     for line_no, (source_offset, raw) in enumerate(rows, start=1):
         raw = raw.strip()
         if not raw:
@@ -783,12 +774,12 @@ def _collect_pi_trace_messages(path, *, full_history=False):
             if event_phase:
                 item['phase'] = event_phase
         messages.extend(parsed)
-        if not full_history and len(messages) >= _TRACE_MAX_MESSAGES:
+        if len(messages) >= _TRACE_MAX_MESSAGES:
             messages = messages[-_TRACE_MAX_MESSAGES:]
-    return messages if full_history else messages[-_TRACE_MAX_MESSAGES:]
+    return messages[-_TRACE_MAX_MESSAGES:]
 
 
-def _collect_trace_messages(trace_dir, *, include_steer_markers=False, full_history=False):
+def _collect_trace_messages(trace_dir, *, include_steer_markers=False):
     canonical_path = _canonical_trace_path(trace_dir)
     if canonical_path:
         return _collect_canonical_trace_messages(
@@ -797,10 +788,10 @@ def _collect_trace_messages(trace_dir, *, include_steer_markers=False, full_hist
         )
     claude_path = _latest_claude_jsonl(trace_dir)
     if claude_path:
-        return _collect_claude_trace_messages(claude_path, full_history=full_history)
+        return _collect_claude_trace_messages(claude_path)
     pi_path = _latest_pi_jsonl(trace_dir)
     if pi_path:
-        return _collect_pi_trace_messages(pi_path, full_history=full_history)
+        return _collect_pi_trace_messages(pi_path)
     return []
 
 
@@ -1164,10 +1155,10 @@ def collect_agent_trace_files(trace_dir):
     return _collect_trace_files(trace_dir)
 
 
-def collect_agent_trace_messages(trace_dir, *, include_steer_markers=False, full_history=False):
+def collect_agent_trace_messages(trace_dir, *, include_steer_markers=False):
     return _collect_trace_messages(
         trace_dir,
-        include_steer_markers=include_steer_markers, full_history=full_history,
+        include_steer_markers=include_steer_markers,
     )
 
 

@@ -929,11 +929,6 @@ rm -f -- "$ARC_RESULT_FILE"
 
 "$CANDIDATE_PYTHON" scripts/init_db_schema.py
 
-phase='补齐历史 Judge 提示词'
-"$CANDIDATE_PYTHON" scripts/backfill_judge_history_prompts.py \
-  --confirm-writers-stopped --backup-manifest "$backup_manifest" --backup-plan "$backup_plan" \
-  --report "$ROOT_DIR/.deploy/judge-history-prompts.json"
-
 phase='种入 VibeHub 示例作品'
 "$CANDIDATE_PYTHON" -B deploy/seed_vibehub_examples.py \
   --repository-root "$ROOT_DIR" \

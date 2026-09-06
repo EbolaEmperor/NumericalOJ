@@ -133,7 +133,7 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
 | `AGENT_JUDGE_DOCKER_IMAGE` | string | `numericaloj-agent-judge:latest` |
-| `AGENT_JUDGE_WORKSPACE_ROOT`（仅历史迁移） | string | `ranking_uploads/judge_workspace` |
+| `AGENT_JUDGE_WORKSPACE_ROOT`（普通比赛与 ELO 评测） | string | `ranking_uploads/judge_workspace` |
 | `AGENT_JUDGE_DEFAULT_TIMEOUT` | int | `1800` |
 | `AGENT_JUDGE_MEM_LIMIT` | string | `4g` |
 | `AGENT_JUDGE_CPU_LIMIT` | string | `2` |
