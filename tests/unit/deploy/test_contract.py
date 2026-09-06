@@ -79,6 +79,7 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
         "phase='停止现有服务'",
         "phase='创建并验证数据库回滚点'",
         "phase='切换运行环境并更新数据库结构'",
+        "phase='补齐历史 Judge 提示词'",
         "phase='切换判题镜像'",
         "phase='启动统一日志采集'",
         "phase='启动 Celery 服务'",
@@ -722,13 +723,21 @@ def test_obsolete_remote_release_helpers_are_removed():
     assert not any((ROOT / path).exists() for path in obsolete)
 
 
-def test_judge_history_migration_runs_after_backup_and_schema_before_recovery():
+def test_judge_history_prompt_backfill_replaces_completed_migration_after_schema():
     script = _read('deploy.sh')
     backup = script.index('"$CANDIDATE_PYTHON" -B deploy/backup_database.py backup')
     schema = script.index('"$CANDIDATE_PYTHON" scripts/init_db_schema.py')
-    migration = script.index('"$CANDIDATE_PYTHON" scripts/migrate_judge_agent_sessions.py')
+    backfill = script.index('"$CANDIDATE_PYTHON" scripts/backfill_judge_history_prompts.py')
     recovery = script.index('"$CANDIDATE_PYTHON" scripts/recover_pending_tasks.py')
-    assert backup < schema < migration < recovery
-    assert '--confirm-writers-stopped --backup-manifest "$backup_manifest" --backup-plan "$backup_plan"' in script
+    assert backup < schema < backfill < recovery
+    invocation = script[backfill:script.index("phase='种入 VibeHub 示例作品'", backfill)]
+    assert '--confirm-writers-stopped --backup-manifest "$backup_manifest" --backup-plan "$backup_plan"' in invocation
+    assert '--report "$ROOT_DIR/.deploy/judge-history-prompts.json"' in invocation
+    assert (ROOT / 'scripts/backfill_judge_history_prompts.py').is_file()
+    assert 'migrate_judge_agent_sessions.py' not in script
+    for removed in ('scripts/migrate_judge_agent_sessions.py',
+                    'tests/unit/test_migrate_judge_agent_sessions.py',
+                    'tests/db/test_migrate_judge_agent_sessions.py'):
+        assert not (ROOT / removed).exists()
     assert 'celery_agent_judge' not in _read('deploy/supervisor/celery.conf')
     assert ' -Q judge ' not in _read('deploy/supervisor/local-dev.conf')

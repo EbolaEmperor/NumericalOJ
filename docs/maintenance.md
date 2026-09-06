@@ -174,23 +174,15 @@ DB/E2E 命令只有在 `backend/oj_modules/config.py` 加载后的有效配置�
 5. 在一次性数据库覆盖“旧结构 -> 新代码”和“新结构 -> 回滚代码”的兼容窗口。
 6. 生产执行需要单独授权。由 `deploy.sh` 发布时，必须使用停服后、结构变更前创建并验证的回滚点；脚本之外的人工 schema/data 操作必须另行准备备份、恢复步骤与验证标准。
 
-### Judge 通用会话的一次性历史导入
+### 历史 Judge 提示词的一次性补齐
 
-`scripts/migrate_judge_agent_sessions.py` 只在 `deploy.sh` 的停服窗口、数据库备份完成且新结构同步后执行。入口同时要求 `--confirm-writers-stopped`、`--backup-manifest`、`--backup-plan` 和 `--report`。部署状态机负责确认 Web、全部 Celery worker 已停止；脚本先校验生产 `.env`，再验证备份 manifest、plan 与真实备份产物，随后连接业务数据库。生产主机不得运行这里的单元或数据库测试。
+用户已确认提交 `3f864ce` 对应的历史 Judge 会话与 workspace 迁移全部完成，旧迁移脚本及其专用测试已移除。原迁移报告继续保留，不再搬迁目录或重新创建历史会话。
 
-脚本读取 `ranking_submissions`、`ranking_competitions`、`ranking_judge_results` 和 `ranking_reverse_judge_steps`，按提交、attempt 和三种 Judge 类别创建稳定的 `*-history` 通用会话。当前空 attempt 保持 SQL NULL；旧 attempt 从轨迹、AI 答案归档和 workspace 目录发现，仅剩哈希 workspace 时使用明确标注的历史标识。已有正式通用会话不重复导入，复用历史会话时检查提交者、类别、提交和 attempt，防止串号。导入会话从创建起带有 `historical_import`，不得派发执行；完成时会话、轮次和 outbox 进入终态，不增加费用流水。
+下次 `deploy.sh` 在停服、数据库备份和结构同步后，任务恢复前执行 `scripts/backfill_judge_history_prompts.py`。参数沿用 `--confirm-writers-stopped`、`--backup-manifest`、`--backup-plan` 和 `--report`，报告写入 `.deploy/judge-history-prompts.json`；生产配置与备份检查沿用既有流程，生产主机不运行测试。
 
-历史 workspace 直接交给系统 `mv` 整目录搬入通用 workspace；需要共享的材料使用系统 `cp -R` 复制目录。Python 不逐文件枚举、验证文件名、检查链接或计算哈希，文件名与目录内容由系统命令原样搬运。已有目标副本时，先把源目录搬到临时位置，成功后再替换目标；搬运失败记入缺失说明并继续，保留能够恢复的源目录或暂存目录。普通 Agent 的上传和 workspace 规则不变。
+补齐只面向已经导入的历史 Judge 会话。Agent Judge 与反向 AI 作答只读取对应 attempt 的原生日志，多条历史输入按发送顺序合并展示。质量门禁允许在归档结果为 `agentic_review=True`、候选审核标准与 `criteria_sha256` 完全匹配时，使用冻结的统一前旧门禁模板恢复输入；不能以当前模板冒充旧提示词。无法恢复时明确写明原文缺失。评测结果、执行状态、workspace、轨迹和费用均不改动，也不重新运行评测。
 
-反向评测先处理 AI 作答，再处理质量门禁。AI 作答只复制题面和模板，或取得对应 attempt 的答案归档；质量门禁将独立审核目录或完整 package 移入管理员可见的 `audit`。若作答材料复制失败，质量门禁本轮先复制材料，保留共享源目录供下次续跑。作答会话不能包含 `solution/`、`judge.sh` 或审核材料。执行 workspace 缺失时，可解包原提交恢复输入，并注明这不是最终执行产物。原上传 `code_path` 和答案 ZIP 保留。属于同一旧 attempt 目录的会话全部完成材料搬迁后，删除剩余旧工作目录，不再保留重复占空间的 workspace。
-
-轨迹目录用系统 `cp -R` 复制到临时目录后解析，原轨迹保留。规范轨迹全量读取并去重；旧 Claude/Pi 轨迹不应用页面的尾部或 240 条限制，文本仍沿用旧展示截断规则。无法取得或解析的内容列入缺失说明，历史用量只作为展示快照，不推算或补扣费用。`historical_record.json` 保留结果和缺失项。
-
-`historical_import_completed` 表示历史会话已写入；`workspace_moved` 表示材料搬迁已完成。旧版本已经导入但尚未搬走源目录的会话，续跑时只补搬材料并更新搬迁标记，不重新导入轨迹或费用。材料已搬迁的会话直接跳过。旧目录已移动但数据库尚未写完时，从历史会话元数据补全 attempt 和类别继续处理，不依赖源目录仍然存在。命令失败不阻断其他材料和会话；数据库等会话写入错误仍中止部署，并保留现场供正常部署入口续跑。
-
-脚本即时打印提交序号、正在搬运的目录和完成状态。报告以 `0600` 权限原子写入，记录会话 ID、`transferred_paths` 成功搬运路径数、`material_complete` 材料完成情况及 `missing` 缺失项。顶层 `completed` 只表示遍历完成，不能代替检查材料失败记录；中断报告用 `interrupted_at` 定位当前提交、类别和 attempt。无法枚举或清理旧目录的情况记入 `discovery_missing`。
-
-数据库回滚点不包含文件目录；成功搬迁后的旧 workspace 已在通用 workspace 中，恢复数据库不会把文件搬回原位置。失败时保全数据库、通用 workspace、搬运暂存目录、备份 manifest/plan 和迁移报告，不自动回灌。若需要回退导入，须按本章生产恢复流程另获写入授权，按提交、attempt 和会话类别，将通用 workspace 中的材料搬回对应旧目录，再按精确 `*-history` session/task ID 和 `runtime_config_json.historical_import` 删除对应导入行；涉及 `agent_trace_events`、`agent_trace_sync_state`、`agent_task_runs`、`agent_session_messages`、`agent_session_turns`、`agent_sessions`，不得按 Judge 类别全量清表。完成正式生产迁移并确认报告后，在后续提交删除一次性脚本、专用测试和部署调用，保留报告作为运维记录。
+脚本仅更新目标历史会话中仍为迁移占位文案的正文，轮次和消息在同一事务中补齐；已有正文不覆盖，一侧已有正文时只同步另一侧占位。报告记录原正文和处理情况，同版本报告带有 `completed` 标记时重跑直接跳过。保留本次数据库备份和补齐报告；若需要回退，按报告中的会话、轮次和消息 ID，依本章生产恢复流程恢复补齐前正文，不删除会话或搬动文件，也不自动回灌整库。确认补齐完成后，在后续提交移除一次性补齐脚本、专用测试及部署调用，保留报告。
 
 ### LLM 端点身份
 
