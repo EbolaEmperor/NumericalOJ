@@ -218,7 +218,7 @@ function FileDrop({kind, title, extension, icon, file, onFile}: {kind: string; t
     onFile(event.dataTransfer.files?.[0] || null)
   }
   return <label className={`file-drop${file ? ' has-file' : ''}${dragging ? ' dragover' : ''}`} data-kind={kind} onDragEnter={(event) => {event.preventDefault(); setDragging(true)}} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDragging(false)} onDrop={drop}>
-    <input ref={inputRef} type="file" name={`${kind}_file`} accept={extension} required hidden onChange={(event) => onFile(event.target.files?.[0] || null)} />
+    <input ref={inputRef} type="file" name={`${kind}_file`} accept={extension} required={!file} hidden onChange={(event) => onFile(event.target.files?.[0] || null)} />
     <div className="file-drop-inner">
       <i className={`fas ${icon} file-drop-icon file-drop-icon-${kind}`} />
       <div className="file-drop-title">{title}</div>
