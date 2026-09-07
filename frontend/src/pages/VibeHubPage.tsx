@@ -1,3 +1,4 @@
+import {ChoicePicker} from '../components/ChoicePicker'
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useRef, useState, type FormEvent} from 'react'
 import {useLocation} from 'react-router-dom'
@@ -29,6 +30,9 @@ export default function VibeHubPage() {
   const [title, setTitle] = useState('')
   const [originalTitle, setOriginalTitle] = useState('')
   const [gpuMemory, setGpuMemory] = useState(0)
+  const [sourceType, setSourceType] = useState<'zip' | 'git'>('zip')
+  const [gitUrl, setGitUrl] = useState('')
+  const [gitRef, setGitRef] = useState('')
   const [packageFile, setPackageFile] = useState<File | null>(null)
   const [editorStatus, setEditorStatus] = useState('')
   const [editorError, setEditorError] = useState(false)
@@ -75,15 +79,22 @@ export default function VibeHubPage() {
   const refresh = async () => {await queryClient.invalidateQueries({queryKey: ['vibehub']})}
   const saveProject = useMutation({
     mutationFn: () => {
-      if (editorMode === 'create' && !packageFile) throw new Error('请选择 ZIP 程序包。')
-      if (packageFile && packageFile.size > 5 * 1024 ** 3) throw new Error('压缩包不能超过 5 GiB。')
+      const git = sourceType === 'git'
+      if (git && !gitUrl.trim()) throw new Error('请填写 Git 仓库地址。')
+      if (!git && editorMode === 'create' && !packageFile) throw new Error('请选择 ZIP 程序包。')
+      if (!git && packageFile && packageFile.size > 5 * 1024 ** 3) throw new Error('压缩包不能超过 5 GiB。')
       const body = new FormData()
       body.append('title', title)
       body.append('gpu_memory_mib', String(gpuMemory))
-      if (packageFile) body.append('package', packageFile)
+      if (git) {
+        body.append('source_type', 'git')
+        body.append('git_url', gitUrl.trim())
+        if (gitRef.trim()) body.append('git_ref', gitRef.trim())
+      } else if (packageFile) body.append('package', packageFile)
+      const newSource = git || Boolean(packageFile)
       const encoded = encodeURIComponent(editorSlug)
-      const url = editorMode === 'create' ? '/api/vibehub/projects' : packageFile ? `/api/vibehub/projects/${encoded}/versions` : `/api/vibehub/projects/${encoded}`
-      const method = editorMode === 'create' || packageFile ? 'POST' : 'PATCH'
+      const url = editorMode === 'create' ? '/api/vibehub/projects' : newSource ? `/api/vibehub/projects/${encoded}/versions` : `/api/vibehub/projects/${encoded}`
+      const method = editorMode === 'create' || newSource ? 'POST' : 'PATCH'
       return apiFetch<ApiEnvelope>(url, {method, body})
     },
     onMutate: () => {setEditorError(false); setEditorStatus(editorMode === 'edit' ? '正在构建更新并自动送审…' : '正在构建作品并自动送审…')},
@@ -114,7 +125,7 @@ export default function VibeHubPage() {
     editorRequestRef.current?.abort(); editorRequestRef.current = null
     setEditorReview(null)
     setGpuMemory(0)
-    setEditorMode('create'); setEditorSlug(''); setTitle(''); setOriginalTitle(''); setPackageFile(null); setEditorStatus(''); setEditorError(false); setEditorLoading(false); setEditorOpen(true)
+    setEditorMode('create'); setEditorSlug(''); setTitle(''); setOriginalTitle(''); setPackageFile(null); setSourceType('zip'); setGitUrl(''); setGitRef(''); setEditorStatus(''); setEditorError(false); setEditorLoading(false); setEditorOpen(true)
   }
   const openEdit = async (project: JsonRecord) => {
     const slug = String(project.slug || '')
@@ -123,13 +134,15 @@ export default function VibeHubPage() {
     editorRequestRef.current = request
     setEditorReview(null)
     setGpuMemory(0)
-    setEditorMode('edit'); setEditorSlug(slug); setTitle(''); setOriginalTitle(''); setPackageFile(null); setEditorStatus('正在读取作品信息…'); setEditorError(false); setEditorLoading(true); setEditorOpen(true)
+    setEditorMode('edit'); setEditorSlug(slug); setTitle(''); setOriginalTitle(''); setPackageFile(null); setSourceType('zip'); setGitUrl(''); setGitRef(''); setEditorStatus('正在读取作品信息…'); setEditorError(false); setEditorLoading(true); setEditorOpen(true)
     try {
       const response = await apiFetch<ProjectResponse>(`/api/vibehub/projects/${encodeURIComponent(slug)}?view=latest`, {signal: request.signal})
       if (request.signal.aborted || editorRequestRef.current !== request) return
       setTitle(String(response.project.title || ''))
       setOriginalTitle(String(response.project.title || ''))
       setGpuMemory(Number(response.project.gpu_memory_mib || 0))
+      const source = response.project.source as JsonRecord | undefined
+      if (source?.kind === 'git') {setSourceType('git'); setGitUrl(String(source.url || '')); setGitRef(String(source.ref || ''))}
       const reviewNote = String(response.project.last_review_note || '').trim()
       setEditorReview(reviewNote ? {version: String(response.project.last_reviewed_version || ''), note: reviewNote} : null)
       setEditorStatus('')
@@ -179,9 +192,10 @@ export default function VibeHubPage() {
       {!projects.length ? <div className="vibe-empty-state"><i className="fas fa-shapes" /><h2>{result.data?.projects?.length ? '没有找到相符的作品' : '还没有作品'}</h2><p>{result.data?.projects?.length ? '换个关键词或筛选条件再试试。' : '审核通过的作品会出现在这里。'}</p></div> : null}
     </section>
 
-    <dialog ref={editorDialogRef} className="vibe-modal" aria-labelledby="vibeProjectModalTitle" onCancel={(event) => {event.preventDefault(); editorRequestRef.current?.abort(); setEditorOpen(false)}} onClose={() => setEditorOpen(false)}><section className="vibe-modal-panel"><header><div><h2 id="vibeProjectModalTitle">{editorMode === 'edit' ? '编辑作品' : '创建作品'}</h2><p>{editorMode === 'edit' ? '保存修改时构建镜像并自动送审；可选上传新程序包。' : '保存时构建镜像并自动送审。'}</p></div><button ref={editorCloseRef} className="vibe-modal-close" type="button" onClick={() => {editorRequestRef.current?.abort(); setEditorOpen(false)}} aria-label="关闭"><i className="fas fa-xmark" /></button></header><form encType="multipart/form-data" onSubmit={(event: FormEvent) => {event.preventDefault(); saveProject.mutate()}}>
+    <dialog ref={editorDialogRef} className="vibe-modal" aria-labelledby="vibeProjectModalTitle" onCancel={(event) => {event.preventDefault(); editorRequestRef.current?.abort(); setEditorOpen(false)}} onClose={() => setEditorOpen(false)}><section className="vibe-modal-panel"><header><div><h2 id="vibeProjectModalTitle">{editorMode === 'edit' ? '编辑作品' : '创建作品'}</h2><p>{editorMode === 'edit' ? '保存修改时构建镜像并自动送审，可选 ZIP 或 Git 更新源码。' : '保存时构建镜像并自动送审。'}</p></div><button ref={editorCloseRef} className="vibe-modal-close" type="button" onClick={() => {editorRequestRef.current?.abort(); setEditorOpen(false)}} aria-label="关闭"><i className="fas fa-xmark" /></button></header><form encType="multipart/form-data" onSubmit={(event: FormEvent) => {event.preventDefault(); saveProject.mutate()}}>
       {editorMode === 'edit' && editorReview ? <aside className="vibe-review-note" aria-label="管理员审核意见"><strong>管理员审核意见{editorReview.version ? ` · v${editorReview.version}` : ''}</strong><p>{editorReview.note}</p></aside> : null}
-      <label className="vibe-form-field"><span>游戏名称</span><input ref={titleRef} name="title" required maxLength={120} autoComplete="off" placeholder="给作品起个名字" value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="vibe-package-field"><input type="file" name="package" required={editorMode === 'create'} accept=".zip,application/zip" onChange={(event) => setPackageFile(event.target.files?.[0] || null)} /><i className="fas fa-file-zipper" /><span><strong>{packageFile?.name || (editorMode === 'edit' ? '保留现有程序包' : '选择 ZIP 程序包')}</strong><small>ZIP ≤ 5 GiB，解压合计 ≤ 8 GiB；单文件无独立上限。必须包含 Dockerfile 与 vibehub.json</small></span><b>选择文件</b></label>
+      <label className="vibe-form-field"><span>游戏名称</span><input ref={titleRef} name="title" required maxLength={120} autoComplete="off" placeholder="给作品起个名字" value={title} onChange={(event) => setTitle(event.target.value)} /></label><div className="vibe-form-field vibe-source-choice"><span id="vibeSourceLabel">提交方式</span><ChoicePicker name="source_type" value={sourceType} onChange={(value) => setSourceType(value as 'zip' | 'git')} label="提交方式" disabled={saveProject.isPending || editorLoading} options={[{value: 'zip', label: 'ZIP 压缩包', icon: 'fa-file-archive'}, {value: 'git', label: 'Git 仓库', icon: 'fa-code-branch'}]} /></div>
+      {sourceType === 'git' ? <div className="vibe-git-fields"><label className="vibe-form-field"><span><i className="fas fa-code-branch" /> Git 仓库地址</span><input className="form-control" name="git_url" required maxLength={2048} autoComplete="off" spellCheck={false} placeholder="gitea@10.72.190.121:username/project.git" value={gitUrl} onChange={(event) => setGitUrl(event.target.value)} /></label><label className="vibe-form-field"><span>分支或标签（可选）</span><input className="form-control" name="git_ref" maxLength={200} autoComplete="off" spellCheck={false} placeholder="留空使用默认分支" value={gitRef} onChange={(event) => setGitRef(event.target.value)} /></label><p className="vibe-source-hint">服务器拉取指定分支或标签，固定提交版本后构建。仓库根目录须包含 Dockerfile 与 vibehub.json。</p></div> : <label className="vibe-package-field"><input type="file" name="package" required={editorMode === 'create' && sourceType === 'zip'} accept=".zip,application/zip" onChange={(event) => setPackageFile(event.target.files?.[0] || null)} /><i className="fas fa-file-zipper" /><span><strong>{packageFile?.name || (editorMode === 'edit' ? '保留现有程序包' : '选择 ZIP 程序包')}</strong><small>ZIP ≤ 5 GiB，解压合计 ≤ 8 GiB；单文件无独立上限。必须包含 Dockerfile 与 vibehub.json</small></span><b>选择文件</b></label>}
       <VibeHubGpuControl value={gpuMemory} onChange={setGpuMemory} label="申请显存" disabled={editorLoading || saveProject.isPending} />
       <p className={`vibe-form-status${editorError ? ' is-error' : ''}`} aria-live="polite">{editorStatus}</p><footer>{editorMode === 'edit' ? <button className="vibe-modal-danger" type="button" disabled={editorLoading || !originalTitle} onClick={() => {editorRequestRef.current?.abort(); setEditorOpen(false); setDeleteText(''); setDeleteStatus(''); setDeleteOpen(true)}}>删除作品</button> : <span />}<button className="vibe-modal-primary" type="submit" disabled={saveProject.isPending || editorLoading || (editorMode === 'edit' && !originalTitle)}>{saveProject.isPending ? '构建并送审中…' : editorMode === 'edit' ? '保存更新并自动送审' : '创建并自动送审'}</button></footer></form></section></dialog>
     <dialog ref={deleteDialogRef} className="vibe-modal" aria-labelledby="vibeDeleteConfirmTitle" aria-describedby="vibeDeleteConfirmDescription vibeDeleteConfirmPhrase" onCancel={(event) => {event.preventDefault(); setDeleteOpen(false); setEditorOpen(true)}} onClose={() => setDeleteOpen(false)}><section className="vibe-modal-panel vibe-modal-panel--confirm"><h2 id="vibeDeleteConfirmTitle">确认删除作品</h2><p id="vibeDeleteConfirmDescription">此操作不可恢复。请输入以下文字后才能删除：</p><p className="vibe-delete-confirm-phrase" id="vibeDeleteConfirmPhrase">{deletePhrase}</p><form onSubmit={(event) => {event.preventDefault(); if (deleteText === deletePhrase) deleteProject.mutate()}}><label className="vibe-form-field vibe-delete-confirm-field"><span>确认文字</span><input type="text" autoComplete="off" required value={deleteText} onChange={(event) => setDeleteText(event.target.value)} /></label><p className={`vibe-form-status${deleteProject.isError ? ' is-error' : ''}`} aria-live="polite">{deleteStatus}</p><footer><button className="vibe-modal-secondary" type="button" onClick={() => {setDeleteOpen(false); setEditorOpen(true)}}>返回编辑</button><button className="vibe-modal-danger vibe-modal-danger--confirm" type="submit" disabled={deleteText !== deletePhrase || deleteProject.isPending}>{deleteProject.isPending ? '删除中…' : '删除作品'}</button></footer></form></section></dialog>

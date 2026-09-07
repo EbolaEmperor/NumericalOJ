@@ -259,3 +259,19 @@ Use the code repository:
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" repository files
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" repository save --filename helper.hpp --content-file helper.hpp
 ```
+
+## VibeHub Git sources
+
+`vibehub create` and `vibehub update` accept either a ZIP positional path or
+`--git-url <repository>`, with optional `--git-ref <branch-or-tag>`. Never supply
+both sources. Git is fetched by the server using its existing repository access,
+and the resulting commit is recorded in the version's `source` field. The root
+must contain `Dockerfile` and `vibehub.json`. Read `vibehub guide` for supported
+transports, limits and dependency/model layer caching.
+
+```bash
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" vibehub create \
+  --git-url git@example.org:owner/project.git --git-ref main --title "我的作品"
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" vibehub update my-project \
+  --git-url git@example.org:owner/project.git --git-ref main
+```

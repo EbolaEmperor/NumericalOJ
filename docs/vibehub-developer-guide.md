@@ -174,9 +174,39 @@ python3 scripts/numoj_user.py vibehub create ./my-vibe.zip \
 可用 `--slug` 指定稳定地址；只允许小写字母、数字和连字符，长度为 3–63。未指定时平台自动生成。
 `--description @README.md` 可从文件读取详细说明，`--cover-image` 可覆盖清单中的包内封面路径。
 
+### 从 Git 仓库提交
+
+创建和编辑作品页面都可选择「ZIP 文件」或「Git 仓库」。Git 模式填写仓库地址，可选填分支或标签；留空使用远端默认分支。提交后由服务器浅克隆并固定为一个 commit，再进入与 ZIP 相同的校验、构建和审核流程。
+
+```bash
+python3 scripts/numoj_user.py vibehub create --git-url git@example.org:owner/project.git \
+  --git-ref main --title "我的作品"
+python3 scripts/numoj_user.py vibehub update <slug> --git-url git@example.org:owner/project.git --git-ref main
+```
+
+管理员 CLI 的参数相同。ZIP 路径与 `--git-url` 必须二选一。仓库根目录需包含 `Dockerfile` 和 `vibehub.json`；支持 HTTPS、HTTP、SSH 及 SCP 风格地址，不支持本地路径、子模块或自动拉取 Git LFS 对象。地址不能包含密码或查询参数。私有仓库需预先允许服务器部署用户的 SSH 身份只读访问；客户端本机能访问并不代表服务器能访问。Git 操作限时 180 秒，对象与源码归档各限制 5 GiB，解压限制沿用 8 GiB。
+
+每次提交仅固定当时的 commit，不会自动跟随分支变化。作者和管理员可在作品详情 API 的 `source` 中查看仓库、分支和 commit；公开接口不暴露私有仓库地址。
+
+### 缓存依赖和模型下载
+
+平台构建使用持久化 BuildKit 步骤缓存。把变化较少的依赖清单、下载脚本和模型哈希清单单独复制并执行，再复制业务源码；不要把 `COPY .` 放在安装或下载之前。只有对应输入或基础镜像变化才需要重做相应步骤。
+
+```dockerfile
+FROM numericaloj-vibehub-runtime:1
+ENV PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+COPY --chown=65532:65532 requirements.txt /app/requirements.txt
+RUN python -m pip install --target /app/vendor -r /app/requirements.txt
+COPY --chown=65532:65532 download_model.py model-files.json /app/
+RUN python /app/download_model.py
+COPY --chown=65532:65532 . /app
+```
+
+权重和安装包无需提交到 Git。中国大陆部署可用清华 PyPI 镜像安装 Python 包，用 ModelScope 下载模型；下载脚本应固定版本、校验大小与 SHA-256，并支持失败重试。构建成功后模型保存在作品镜像中，运行时无需再次下载。缓存属于宿主持久构建缓存，管理员清理缓存、替换构建器或更换基础镜像后可能重新执行；运行时的 JIT 缓存另写入 `/data`。
+
 ### 更新并自动重新送审
 
-上传新 ZIP 会构建递增的不可变版本、更新 `latest` 并自动重新送审，不会覆盖旧版本：
+提交新 ZIP 或 Git 仓库会构建递增的不可变版本、更新 `latest` 并自动重新送审，不会覆盖旧版本：
 
 ```bash
 python3 scripts/numoj_user.py vibehub update <slug> ./my-vibe-v2.zip

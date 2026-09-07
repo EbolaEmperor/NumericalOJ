@@ -10,7 +10,7 @@ from PIL import Image, UnidentifiedImageError
 
 from backend.oj_modules.api.helpers import json_error, json_success, public_user
 from backend.oj_modules.security.auth import current_user
-from backend.oj_modules.vibehub import quotas, services, storage
+from backend.oj_modules.vibehub import git_source, quotas, services, storage
 from backend.oj_modules.vibehub.guide import DEVELOPER_GUIDE_PATH, render_developer_guide
 from backend.oj_modules.vibehub.runtime import (
     VibeHubCapacityError,
@@ -29,7 +29,7 @@ def _set_package_upload_request_limit():
     if request.method == "POST" and request.endpoint in {
         "vibehub_api.create_project", "vibehub_api.upload_version",
     }:
-        request.max_content_length = storage.MAX_UPLOAD_REQUEST_BYTES
+        request.max_content_length = 65536 if request.is_json else storage.MAX_UPLOAD_REQUEST_BYTES
 
 
 def _upload_root():
@@ -57,6 +57,25 @@ def _uploaded_package():
     if not upload or not getattr(upload, "filename", ""):
         raise services.VibeHubError("请上传 ZIP 格式的完整作品包")
     return upload
+
+
+@contextmanager
+def _submission_package(payload):
+    if payload.get("source_type") not in (None, "", "zip", "git"):
+        raise services.VibeHubError("提交方式须为 ZIP 或 Git")
+    git_url = payload.get("git_url")
+    if git_url or payload.get("source_type") == "git":
+        if request.files:
+            raise services.VibeHubError("Git 仓库与 ZIP 文件不能同时提交")
+        try:
+            with git_source.git_package(git_url, payload.get("git_ref"), upload_root=_upload_root()) as result:
+                yield result
+        except git_source.GitSourceError as exc:
+            raise services.VibeHubError(str(exc), code="invalid_git_source") from exc
+    else:
+        if payload.get("git_ref"):
+            raise services.VibeHubError("填写 Git 分支时必须提供仓库地址")
+        yield _uploaded_package(), None
 
 
 def _close_parsed_uploads() -> None:
@@ -238,11 +257,12 @@ def create_project():
     with _storage_mutation_request_slot():
         # 预检位于槽内但仍先于 request.files/form；事务内会最终重检。
         services.preflight_create_project(user)
-        upload = _uploaded_package()
         payload = _payload()
-        project = services.create_project(
-            user, upload, payload, upload_root=_upload_root(),
-        )
+        with _submission_package(payload) as (upload, source):
+            project = services.create_project(
+                user, upload, payload, upload_root=_upload_root(),
+                **({"source": source} if source else {}),
+            )
     return json_success(project=project), 201
 
 
@@ -275,11 +295,12 @@ def upload_version(slug):
     user = _require_user()
     with _storage_mutation_request_slot():
         services.preflight_upload_project(user, slug)
-        upload = _uploaded_package()
         payload = _payload()
-        project = services.upload_new_version(
-            user, slug, upload, payload, upload_root=_upload_root(),
-        )
+        with _submission_package(payload) as (upload, source):
+            project = services.upload_new_version(
+                user, slug, upload, payload, upload_root=_upload_root(),
+                **({"source": source} if source else {}),
+            )
     return json_success(project=project), 201
 
 

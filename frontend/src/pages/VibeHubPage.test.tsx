@@ -84,3 +84,23 @@ it('审核驳回复用弹窗并提交意见', async () => {
   await waitFor(() => expect(writes.length).toBe(1))
   expect(JSON.parse(writes[0].init.body as string)).toMatchObject({decision: 'reject', note: '请修复启动错误'})
 })
+
+it('创建时可用共享自定义选择器选择 Git，隐藏 ZIP 并提交仓库地址', async () => {
+  renderPage()
+  fireEvent.click(await screen.findByRole('button', {name: '创建作品'}))
+  const dialog = screen.getByRole('dialog', {name: '创建作品'})
+  fireEvent.click(within(dialog).getByRole('button', {name: '提交方式'}))
+  fireEvent.click(within(dialog).getByRole('option', {name: 'Git 仓库'}))
+  expect(dialog.querySelector('select')).toBeNull()
+  expect(dialog.querySelector('input[type="file"]')).toBeNull()
+  fireEvent.change(within(dialog).getByLabelText('游戏名称'), {target: {value: 'Git 作品'}})
+  fireEvent.change(within(dialog).getByLabelText('Git 仓库地址'), {target: {value: 'gitea@10.72.190.121:ebola/shot-cut-llm.git'}})
+  fireEvent.change(within(dialog).getByLabelText('分支或标签（可选）'), {target: {value: 'main'}})
+  fireEvent.submit(dialog.querySelector('form')!)
+  await waitFor(() => expect(writes.length).toBe(1))
+  const form = writes[0].init.body as FormData
+  expect(writes[0].url).toBe('/api/vibehub/projects')
+  expect(form.get('git_url')).toBe('gitea@10.72.190.121:ebola/shot-cut-llm.git')
+  expect(form.get('git_ref')).toBe('main')
+  expect(form.get('package')).toBeNull()
+})

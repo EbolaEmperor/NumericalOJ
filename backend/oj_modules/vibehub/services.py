@@ -36,6 +36,7 @@ _PRIVATE_WORKFLOW_FIELDS = frozenset(
         "last_review_note",
         "review_requested_at",
         "updated_at",
+        "source",
     }
 )
 
@@ -381,6 +382,14 @@ def _serialize_project(row, *, audience: str, include_workflow=False, actor=None
         "review_requested_at": row.get("review_requested_at"),
         "play_url": play_url,
     }
+    if audience != "public" or include_workflow:
+        try:
+            manifest = json.loads(row.get(f"{prefix}_manifest_json") or "{}")
+            source = manifest.get("source")
+            if isinstance(source, dict) and source.get("kind") == "git":
+                project["source"] = source
+        except (TypeError, ValueError, AttributeError):
+            pass
     if audience == "public" and not include_workflow:
         return _without_private_workflow(project)
     return project
@@ -944,7 +953,7 @@ def get_project(slug: str, *, actor=None, audience=None) -> dict:
         conn.close()
 
 
-def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
+def create_project(actor, upload, metadata=None, *, upload_root=None, source=None) -> dict:
     actor_id = _actor_id(actor)
     metadata = dict(metadata or {})
     slug = _requested_slug(metadata.pop("slug", None))
@@ -986,6 +995,8 @@ def create_project(actor, upload, metadata=None, *, upload_root=None) -> dict:
                         )
                     except storage.PackageValidationError as exc:
                         raise VibeHubError(str(exc), code="invalid_package") from exc
+                    if source:
+                        prepared.manifest["source"] = dict(source)
                     normalized = _metadata(
                         metadata,
                         manifest=prepared.manifest,
@@ -1095,6 +1106,7 @@ def _create_next_version(
     *,
     upload=None,
     upload_root=None,
+    source=None,
 ) -> dict:
     actor_id = _actor_id(actor)
     normalized_slug = str(slug or "").strip().lower()
@@ -1141,6 +1153,8 @@ def _create_next_version(
                             raise VibeHubError(str(exc), code="invalid_package") from exc
                         app_dir = prepared.snapshot_dir / "app"
                         manifest = prepared.manifest
+                        if source:
+                            manifest["source"] = dict(source)
                         package_sha256 = prepared.package_sha256
                         package_size = prepared.package_size
                         normalized = _metadata(
@@ -1334,9 +1348,9 @@ def _create_next_version(
         conn.close()
 
 
-def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=None) -> dict:
+def upload_new_version(actor, slug: str, upload, metadata=None, *, upload_root=None, source=None) -> dict:
     return _create_next_version(
-        actor, slug, metadata or {}, upload=upload, upload_root=upload_root,
+        actor, slug, metadata or {}, upload=upload, upload_root=upload_root, source=source,
     )
 
 

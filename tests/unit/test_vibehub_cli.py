@@ -157,3 +157,33 @@ def test_cli_common_streams_all_file_uploads_and_preserves_headers(tmp_path, mon
         finally:
             common.close_files(files)
         assert all(handle.closed for _, handle in files.values())
+
+
+def test_both_clis_submit_git_as_json_and_reject_ambiguous_sources(monkeypatch):
+    import pytest
+    for skill, package in [("numoj-admin", "numoj_admin_cli"), ("numoj-user", "numoj_user_cli")]:
+        monkeypatch.syspath_prepend(str(ROOT / "skills" / skill / "scripts"))
+        module = importlib.import_module(f"{package}.vibehub")
+        calls = []
+        class Client:
+            def request(self, *args, **kwargs):
+                calls.append((args, kwargs))
+        monkeypatch.setattr(module, 'client_from_args', lambda _args: Client())
+        monkeypatch.setattr(module, '_output', lambda *_args: None)
+        monkeypatch.setattr(module.common, 'require_file', lambda *_args: pytest.fail('Git must not open an upload'))
+        args = Namespace(package=None, git_url='git@example.org:a/b.git', git_ref='main', title='测试', slug='demo')
+        module.project_create(args)
+        module.project_update(args)
+        assert [args[1] for args, _ in calls] == ['/api/vibehub/projects', '/api/vibehub/projects/demo/versions']
+        for _, kwargs in calls:
+            assert list(kwargs) == ['json']
+            assert kwargs['json']['git_url'] == 'git@example.org:a/b.git'
+            assert kwargs['json']['git_ref'] == 'main'
+            assert kwargs['json']['source_type'] == 'git'
+        args.package = 'also.zip'
+        with pytest.raises(module.common.CliError):
+            module.project_create(args)
+        args.package = args.git_url = None
+        with pytest.raises(module.common.CliError):
+            module.project_update(args)
+        assert len(calls) == 2

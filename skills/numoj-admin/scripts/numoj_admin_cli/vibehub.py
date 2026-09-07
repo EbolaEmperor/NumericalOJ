@@ -10,6 +10,7 @@ client_from_args = common.client_from_args
 
 
 PROJECT_FIELDS = (
+    "source",
     "gpu_memory_mib", "gpu_approved_memory_mib", "runtime_blocked_reason",
     "id", "slug", "title", "summary", "description", "owner_username",
     "latest_version", "public_version", "submitted_version", "has_pending_review",
@@ -95,26 +96,35 @@ def project_detail(args):
     )
 
 
-def project_create(args):
-    files = {"package": common.require_file(args.package)}
-    try:
-        resp = client_from_args(args).request(
-            "POST", "/api/vibehub/projects", data=_metadata(args, creating=True), files=files,
-        )
-    finally:
-        common.close_files(files)
+def _submit_source(args, path, *, creating=False):
+    package = getattr(args, "package", None)
+    git_url = getattr(args, "git_url", None)
+    git_ref = getattr(args, "git_ref", None)
+    if bool(package) == bool(git_url):
+        raise common.CliError("请选择一个 ZIP 文件或 --git-url，不能同时提供。")
+    if git_ref and not git_url:
+        raise common.CliError("--git-ref 必须与 --git-url 一起使用。")
+    data = _metadata(args, creating=creating)
+    if git_url:
+        data.update(source_type="git", git_url=git_url)
+        if git_ref:
+            data["git_ref"] = git_ref
+        resp = client_from_args(args).request("POST", path, json=data)
+    else:
+        files = {"package": common.require_file(package)}
+        try:
+            resp = client_from_args(args).request("POST", path, data=data, files=files)
+        finally:
+            common.close_files(files)
     _output(resp, necessary_project_payload)
+
+
+def project_create(args):
+    _submit_source(args, "/api/vibehub/projects", creating=True)
 
 
 def project_update(args):
-    files = {"package": common.require_file(args.package)}
-    try:
-        resp = client_from_args(args).request(
-            "POST", f"/api/vibehub/projects/{args.slug}/versions", data=_metadata(args), files=files,
-        )
-    finally:
-        common.close_files(files)
-    _output(resp, necessary_project_payload)
+    _submit_source(args, f"/api/vibehub/projects/{args.slug}/versions")
 
 
 def project_edit(args):
@@ -195,13 +205,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("slug")
     parser.add_argument("--view", choices=["public", "latest", "review"])
     parser.set_defaults(func=project_detail)
-    parser = common.add_cli_parser(commands, "create", "Create a VibeHub project from ZIP.")
-    parser.add_argument("package")
+    parser = common.add_cli_parser(commands, "create", "Create a VibeHub project from ZIP or a Git repository.")
+    parser.add_argument("package", nargs="?", help="ZIP 作品包；与 --git-url 二选一。")
+    parser.add_argument("--git-url", help="由服务器拉取的 Git 仓库地址。")
+    parser.add_argument("--git-ref", help="可选分支或标签；省略使用仓库默认分支。")
     _add_metadata_args(parser, include_slug=True, require_title=True)
     parser.set_defaults(func=project_create)
     parser = common.add_cli_parser(commands, "update", "Upload a new immutable package version.")
     parser.add_argument("slug")
-    parser.add_argument("package")
+    parser.add_argument("package", nargs="?", help="ZIP 作品包；与 --git-url 二选一。")
+    parser.add_argument("--git-url", help="由服务器拉取的 Git 仓库地址。")
+    parser.add_argument("--git-ref", help="可选分支或标签；省略使用仓库默认分支。")
     _add_metadata_args(parser)
     parser.set_defaults(func=project_update)
     parser = common.add_cli_parser(commands, "edit", "Edit metadata as a new immutable version.")

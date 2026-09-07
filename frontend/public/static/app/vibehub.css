@@ -447,3 +447,10 @@ body.vibe-modal-open { overflow: hidden; }
   .vibehub-page *::before,
   .vibehub-page *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+.vibe-source-choice .rk-choice { width: 100%; }
+.vibe-source-choice .rk-choice-trigger { min-height: 42px; }
+.vibe-git-fields { display: grid; gap: 14px; }
+.vibe-git-fields input[name="git_url"],
+.vibe-git-fields input[name="git_ref"] { font-family: var(--font-mono, ui-monospace, monospace); }
+.vibe-source-hint { margin: 0; color: #71717a; font-size: .68rem; line-height: 1.7; }
