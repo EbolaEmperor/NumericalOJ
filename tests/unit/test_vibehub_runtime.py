@@ -1580,7 +1580,7 @@ def test_project_image_tags_are_stable_and_review_reuses_latest():
     assert runtime.image_reference_for("other@v3", channel="public") != public
 
 
-def test_build_latest_image_always_rebuilds_the_stable_latest_tag(short_tmp):
+def test_build_latest_image_reuses_unchanged_image_across_versions(short_tmp):
     package = _write_package(short_tmp / "package")
 
     class BuildDocker(_FakeDocker):
@@ -1621,7 +1621,7 @@ def test_build_latest_image_always_rebuilds_the_stable_latest_tag(short_tmp):
     )
 
     assert first.image_ref == second.image_ref
-    assert docker.builds == 2
+    assert docker.builds == 1
 
 
 def test_promote_latest_to_public_only_tags_the_latest_image(short_tmp):
@@ -2148,3 +2148,69 @@ def test_suspended_gpu_does_not_trigger_device_monitoring(monkeypatch, short_tmp
     monkeypatch.setattr(runtime.gpu, 'usage', lambda *_: pytest.fail('stopped GPU must not be monitored'))
     assert manager._reap_gpu() == 0
     assert manager._gpu_polling is False
+
+
+@pytest.mark.parametrize("change", [
+    "none", "missing", "source", "dockerfile", "base", "package", "unmanaged",
+    "volume", "oversize", "inspect_error",
+])
+def test_finished_image_cache_checks_inputs_and_current_policy(tmp_path, change):
+    package = _write_package(tmp_path / "package")
+    source = runtime._effective_source_digest(
+        runtime._scan_context(package)[0], [(runtime.DEFAULT_BASE_IMAGE, _BASE_ID)],
+    )
+    labels = {
+        runtime.MANAGED_IMAGE_LABEL: "1",
+        runtime.PACKAGE_DIGEST_LABEL: _PACKAGE_DIGEST,
+        runtime.SOURCE_DIGEST_LABEL: source,
+    }
+    if change == "source":
+        (package / "app.py").write_text("print('changed')\n")
+    if change == "dockerfile":
+        with (package / "Dockerfile").open("a") as file:
+            file.write('ENV CHANGED=yes\n')
+    if change == "unmanaged":
+        labels.pop(runtime.MANAGED_IMAGE_LABEL)
+
+    class CachedDocker:
+        builds = 0
+        image = runtime.ImageInfo(
+            "numoj-vibehub:test", _APP_ID,
+            41 * 1024**3 if change == "oversize" else 1024,
+            labels, ("/data",) if change == "volume" else (),
+        )
+
+        def inspect_image(self, reference):
+            if reference == runtime.DEFAULT_BASE_IMAGE:
+                base_id = "sha256:" + "3" * 64 if change == "base" else _BASE_ID
+                return runtime.ImageInfo(reference, base_id, 1024, {})
+            return self.image
+
+        def find_image(self, reference):
+            if change == "inspect_error":
+                raise runtime.VibeHubImageError("Docker unavailable")
+            return None if change == "missing" else self.image
+
+        def build(self, root, reference, *, source_digest, package_digest, **kwargs):
+            self.builds += 1
+            self.image = runtime.ImageInfo(reference, _APP_ID, 1024, {
+                runtime.MANAGED_IMAGE_LABEL: "1",
+                runtime.SOURCE_DIGEST_LABEL: source_digest,
+                runtime.PACKAGE_DIGEST_LABEL: package_digest,
+            })
+
+    docker = CachedDocker()
+    events = []
+    with runtime.build_progress.capture(events.append):
+        if change in {"volume", "oversize", "inspect_error"}:
+            with pytest.raises(runtime.VibeHubImageError):
+                runtime.build_image(package, "numoj-vibehub:test",
+                    package_digest=_PACKAGE_DIGEST, docker_client=docker)
+            assert docker.builds == 0
+        else:
+            result = runtime.build_image(package, "numoj-vibehub:test",
+                package_digest="b" * 64 if change == "package" else _PACKAGE_DIGEST,
+                docker_client=docker)
+            assert result.image_id == _APP_ID
+            assert docker.builds == (0 if change == "none" else 1)
+            assert any(event.get("phase") == "cache" for event in events) == (change == "none")

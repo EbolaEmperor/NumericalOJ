@@ -190,7 +190,7 @@ python3 scripts/numoj_user.py vibehub update <slug> --git-url git@example.org:ow
 
 ### 实时构建进度
 
-创建作品、提交新 ZIP/Git 版本以及保存作品编辑时，网页会打开构建进度弹窗，实时显示准备阶段、BuildKit 输出（包括 `CACHED`）和最终成功或失败结果。依赖和模型缓存命中后仍需导出、加载完整镜像；日志间歇没有新行时，连接仍通过心跳保持，不表示构建卡住。
+创建作品、提交新 ZIP/Git 版本以及保存作品编辑时，网页会打开构建进度弹窗，实时显示准备阶段、BuildKit 输出（包括 `CACHED`）和最终成功或失败结果。作品包、构建上下文（含 Dockerfile）和基础镜像 ID 均未变化，且对应成品镜像仍存在时，会显示“复用已有镜像”，直接跳过构建、导出和加载。需要构建时，日志间歇没有新行的连接仍通过心跳保持。
 
 两个 CLI 的 `vibehub create`、`update`、`edit` 默认消费同一进度流。进度立即写入 **stderr**，最终作品 JSON 写入 **stdout**，可以使用 `> result.json` 保存结果而继续在终端查看构建过程。进度流中断时不会自动重复提交；请先用 `vibehub detail <slug> --view latest` 核对最终版本。
 
@@ -200,7 +200,9 @@ python3 scripts/numoj_user.py vibehub update <slug> --git-url git@example.org:ow
 
 ### 缓存依赖和模型下载
 
-平台构建使用持久化 BuildKit 步骤缓存。把变化较少的依赖清单、下载脚本和模型哈希清单单独复制并执行，再复制业务源码；不要把 `COPY .` 放在安装或下载之前。只有对应输入或基础镜像变化才需要重做相应步骤。
+平台先检查 Docker Engine 中已有的成品镜像，核对受管标签、作品包摘要、构建上下文摘要和基础镜像不可变 ID；全部一致时直接复用，仍校验当前镜像大小预算与 VOLUME 限制。此机制同样适用于部署时同步的预置作品。只有内容或基础镜像变化、镜像丢失时才进入构建；Docker 查询失败会明确报错，不会被当成缓存缺失。
+
+需要构建时使用持久化 BuildKit 步骤缓存。把变化较少的依赖清单、下载脚本和模型哈希清单单独复制并执行，再复制业务源码；不要把 `COPY .` 放在安装或下载之前。只有对应输入或基础镜像变化才需要重做相应步骤。
 
 ```dockerfile
 FROM numericaloj-vibehub-runtime:1

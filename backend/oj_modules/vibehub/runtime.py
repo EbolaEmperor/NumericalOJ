@@ -1823,17 +1823,28 @@ def build_image(
     resolved_bases = _inspect_build_bases(docker, bases)
     source_digest = _effective_source_digest(context_digest, resolved_bases)
     limits = limits_for(featured)
-    docker.build(
-        root,
-        image_ref,
-        package_digest=package_digest,
-        source_digest=source_digest,
-        resolved_bases=resolved_bases,
-        limits=limits,
-        timeout=float(timeout_seconds),
-    )
-    build_progress.emit("inspection", "镜像构建完成，正在校验镜像及资源限制。")
-    image = docker.inspect_image(image_ref)
+    image = docker.find_image(image_ref)
+    if (
+        image is not None
+        and image.labels.get(MANAGED_IMAGE_LABEL) == "1"
+        and image.labels.get(SOURCE_DIGEST_LABEL) == source_digest
+        and image.labels.get(PACKAGE_DIGEST_LABEL) == package_digest
+    ):
+        # 成品镜像已经加载到 Docker Engine；不进入 BuildKit，避免重复导出大镜像。
+        # 复用仍走下方的 VOLUME 和当前资源预算校验。
+        build_progress.emit("cache", "作品内容及基础镜像未变化，复用已有镜像，跳过构建和导出。")
+    else:
+        docker.build(
+            root,
+            image_ref,
+            package_digest=package_digest,
+            source_digest=source_digest,
+            resolved_bases=resolved_bases,
+            limits=limits,
+            timeout=float(timeout_seconds),
+        )
+        build_progress.emit("inspection", "镜像构建完成，正在校验镜像及资源限制。")
+        image = docker.inspect_image(image_ref)
     if image.labels.get(MANAGED_IMAGE_LABEL) != "1":
         raise VibeHubImageError("构建结果缺少 VibeHub 受管镜像标签")
     if image.labels.get(SOURCE_DIGEST_LABEL) != source_digest:
