@@ -77,6 +77,39 @@ Dockerfile 只允许一个位于首行的固定 `FROM`，以及 `RUN`、`COPY`�
 非 root 用户运行；Python 依赖可安装到 `/app/vendor` 并用 `PYTHONPATH` 引用。基础镜像仍由
 平台预置；建议使用 lockfile 和精确版本，保证重建结果可复现。
 
+### 基础镜像预装环境
+
+`numericaloj-vibehub-runtime:1` 预装 Python 3.12。普通作品直接使用 `python`，无需重复安装下表中的库：
+
+| 用途 | 预装库与版本 |
+| --- | --- |
+| 数值、图像与 ARC | NumPy 2.5.0、Pillow 12.2.0、arcengine 0.9.3 |
+| Web 框架 | Flask 3.1.2、FastAPI 0.141.1 |
+| HTTP 服务 | Gunicorn 23.0.0、Uvicorn 0.52.4、Waitress 3.0.2 |
+| HTTP 客户端 | Requests 2.34.2、HTTPX 0.28.1 |
+| 模板、数据校验与存储 | Jinja2 3.1.6、Pydantic 2.13.5、SQLAlchemy 2.0.48 |
+| 表单、WebSocket 与配置 | python-multipart 0.0.32、websockets 17.1、PyYAML 6.0.3 |
+
+GPU 推理依赖预装在独立环境 `/opt/vibehub-gpu`：vLLM 0.18.0（CUDA 12.6 源码构建）、PyTorch 2.10.0+cu126、
+Transformers 4.57.6、huggingface-hub 0.36.0，以及宿主缺少的 cuDNN 9.10.2.21、
+NCCL 2.27.5、cuSPARSELT 0.7.1、NVSHMEM 3.4.5。
+该环境的 NumPy 为 2.2.6，以满足 vLLM 的版本约束；普通 `python` 的 NumPy 2.5.0 不变。
+GPU 环境可以使用上表中的 Web 库。GPU 作品显式选择它的解释器，例如：
+
+```dockerfile
+FROM numericaloj-vibehub-runtime:1
+COPY --chown=65532:65532 . /app
+ENV PATH=/opt/vibehub-gpu/bin:/usr/local/cuda-12.6/bin:$PATH
+ENV TRITON_CACHE_DIR=/data/triton-cache
+CMD ["/opt/vibehub-gpu/bin/python", "/app/serve.py"]
+```
+
+仅对缺少的作品依赖追加安装步骤，不要重复下载 PyTorch、vLLM、cuBLAS 或 cuDNN。
+预装环境不包含模型权重；权重和测试集由作品自行提供。依赖的完整版本与 SHA-256 锁文件位于
+`docker/vibehub-runtime/requirements-web.lock` 和 `requirements-gpu.lock`。后者保留完整依赖图；
+构建脚本排除宿主已提供的 CUDA 发行包，并从固定源码提交编译 vLLM。不会下载预编译 vLLM
+或重复安装 Toolkit。构建记录位于镜像内 `/opt/vibehub-runtime/gpu-build.json`。
+
 ## 容器运行协议
 
 镜像默认命令必须以前台进程启动 HTTP/1.1 服务，并监听环境变量 `VIBEHUB_SOCKET`，当前固定为
@@ -171,9 +204,22 @@ python3 scripts/numoj_user.py vibehub edit <slug> \
 
 ## GPU
 
+生产环境最近核验于 **2026-09-07**：RTX 3090 Ti，NVIDIA 驱动 **560.35.05**，
+宿主机 CUDA Toolkit **12.6**（`/usr/local/cuda-12.6`，nvcc **12.6.85**）。平台为获得
+GPU 额度的容器将这个固定目录只读挂载到同一路径；CPU 容器没有此挂载。CUDA Runtime、
+cuBLAS、cuFFT、cuRAND、cuSOLVER、cuSPARSE、NVRTC、nvJitLink 等复用宿主库。
+NVIDIA Container Toolkit 注入宿主驱动和 NVML，作品无需安装驱动或另一套 CUDA。
+平台设置 `CUDA_HOME`、`LD_LIBRARY_PATH` 和 `TRITON_PTXAS_PATH`，不会加载 Toolkit 的驱动桩库。
+
+共享 vLLM 使用 PyTorch cu126 和宿主 nvcc 从源码编译，目标为当前 RTX 3090 Ti 的 SM 8.6。
+管理员通过 `deploy.sh` 传入 `host_cuda=/usr/local/cuda-12.6` 构建上下文；该目录只在受信基础
+镜像编译时临时挂载，既不复制进镜像，也不开放给作品构建步骤。更换 GPU 架构或宿主 Toolkit
+需要同步重建基础镜像、更新平台挂载及本文记录。CUDA 版本不能仅靠更改环境变量切换。
+运行时 JIT 缓存应放到 `/data` 下（如 `TRITON_CACHE_DIR=/data/triton-cache`），因为 `/tmp` 禁止执行。
+
 - 创建或编辑作品时开启 GPU 并申请显存，管理员创建作品也一样。每次保存的新版本重新送审；普通作者审核前不能运行 GPU 版本，管理员可以试玩，包括自己的作品。旧公开版本不受待审核修改影响。
 - 审核可批准或下调显存，也可只发布 CPU 版本；意见在作者的编辑弹窗中查看。CLI 使用 `--gpu-memory-mib`（256–24576 MiB），`0` 关闭 GPU；省略时创建默认关闭，更新沿用申请值。
-- 当前使用 RTX 3090 Ti（24 GiB），仅开放 CUDA 计算。容器自行安装兼容驱动的 CUDA 用户态依赖；构建阶段不使用 GPU。运行时 `VIBEHUB_GPU_MEMORY_MIB` 表示当前显存额度。
+- 当前使用 RTX 3090 Ti（24 GiB），仅开放 CUDA 计算。优先使用基础镜像中的 GPU 环境，仅对缺失库追加兼容依赖；构建阶段不使用 GPU。运行时 `VIBEHUB_GPU_MEMORY_MIB` 表示当前显存额度。
 - 显存为超限回收，非硬隔离。同一作品的多进程、多容器合计计量；新旧额度并存时总量取较高的有效额度，各容器仍受自身额度约束。目标采样间隔为 1 秒，超限或监测失败会停止该作品的 GPU 容器，60 秒后可重试。额度不保证设备空闲显存。
 
 ## 提交前检查

@@ -553,6 +553,7 @@ rm -rf -- "$CANDIDATE_VENV"
 phase='构建 VibeHub 受信基础候选镜像'
 DOCKER_BUILDKIT=1 docker build \
   --provenance=false \
+  --build-context host_cuda=/usr/local/cuda-12.6 \
   --label "$MANAGED_IMAGE_LABEL" \
   --tag "$VIBEHUB_RUNTIME_CANDIDATE" \
   docker/vibehub-runtime

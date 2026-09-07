@@ -2050,7 +2050,13 @@ def test_gpu_reaper_stops_all_project_containers_and_blocks_restart(monkeypatch,
         manager.acquire('gpu-demo', gpu_allocation=allocation)
     gpu_cmd = manager.docker.run_commands[0]
     assert gpu_cmd[gpu_cmd.index('--gpus') + 1] == 'device=GPU-12345678-1234-1234-1234-123456789abc'
-    assert 'NVIDIA_DRIVER_CAPABILITIES=compute' in gpu_cmd
+    assert 'NVIDIA_DRIVER_CAPABILITIES=compute,utility' in gpu_cmd
+    assert ('type=bind,source=/usr/local/cuda-12.6,target=/usr/local/cuda-12.6,'
+            'readonly,bind-propagation=rprivate') in gpu_cmd
+    assert 'CUDA_HOME=/usr/local/cuda-12.6' in gpu_cmd
+    assert 'TRITON_PTXAS_PATH=/usr/local/cuda-12.6/bin/ptxas' in gpu_cmd
+    assert not any('stubs' in arg for arg in gpu_cmd)
+    assert not any('cuda-12.6' in arg for arg in manager.docker.run_commands[2])
     assert 'NVIDIA_VISIBLE_DEVICES=void' in manager.docker.run_commands[2]
 
 

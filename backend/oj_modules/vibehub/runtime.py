@@ -51,7 +51,7 @@ SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
 PACKAGE_DIGEST_LABEL = "com.numericaloj.vibehub.package-sha256"
 MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
 DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
-RUNTIME_ABI = "network-bridge-v1"
+RUNTIME_ABI = "network-bridge-host-cuda126-v2"
 
 DEFAULT_BASE_IMAGE = "numericaloj-vibehub-runtime:1"
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "tmp" / "vibehub_runtime"
@@ -2411,7 +2411,22 @@ class VibeHubRuntimeManager:
             args.extend([
                 "--gpus", f"device={device}",
                 "--env", f"NVIDIA_VISIBLE_DEVICES={device}",
-                "--env", "NVIDIA_DRIVER_CAPABILITIES=compute",
+                "--env", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                # 固定的平台路径，不接受作品传入宿主目录；缺失时 Docker 拒绝启动。
+                "--mount", (
+                    "type=bind,source=/usr/local/cuda-12.6,"
+                    "target=/usr/local/cuda-12.6,readonly,bind-propagation=rprivate"
+                ),
+                "--env", "CUDA_HOME=/usr/local/cuda-12.6",
+                "--env", "TRITON_PTXAS_PATH=/usr/local/cuda-12.6/bin/ptxas",
+                "--env", (
+                    "LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:"
+                    "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/cudnn/lib:"
+                    "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/nccl/lib:"
+                    "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/cusparselt/lib:"
+                    "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/nvshmem/lib:"
+                    "/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+                ),
                 "--env", f"VIBEHUB_GPU_MEMORY_MIB={gpu_allocation['memory_mib']}",
             ])
         else:

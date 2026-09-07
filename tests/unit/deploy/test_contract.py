@@ -25,7 +25,7 @@ def test_vibehub_trusted_runtime_pins_the_upstream_base_digest():
     )
 
     assert first_from.startswith("FROM python:3.12-slim-bookworm@sha256:")
-    assert len(first_from.rsplit("@sha256:", 1)[1]) == 64
+    assert len(first_from.split()[1].rsplit("@sha256:", 1)[1]) == 64
     assert dockerfile.index("RUN python -m pip install") < dockerfile.index(
         "COPY uds_relay.py"
     )

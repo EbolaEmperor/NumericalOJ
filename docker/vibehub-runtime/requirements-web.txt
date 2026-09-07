@@ -1,0 +1,14 @@
+# 普通作品共用的 Python Web 库；保留基础镜像已有 numpy / pillow / arcengine。
+Flask==3.1.2
+fastapi==0.141.1
+gunicorn==23.0.0
+uvicorn==0.52.4
+waitress==3.0.2
+requests==2.34.2
+httpx==0.28.1
+Jinja2==3.1.6
+pydantic==2.13.5
+python-multipart==0.0.32
+websockets==17.1
+PyYAML==6.0.3
+SQLAlchemy==2.0.48

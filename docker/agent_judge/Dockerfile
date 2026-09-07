@@ -134,6 +134,15 @@ RUN chmod 0755 /usr/local/bin/lean \
     && lean --version \
     && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
+# C/C++ 数值计算开发库：补齐 FFT、稀疏求解（含 CHOLMOD）、通用数值分析、
+# Boost、高精度浮点、非线性优化和矩阵接口。放在 TeX/Lean 之后、高频变动的
+# Harness 文件之前，保留前面重依赖层的缓存。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libfftw3-dev libsuitesparse-dev libgsl-dev \
+        libboost-dev libboost-math-dev libmpfr-dev \
+        libnlopt-dev libnlopt-cxx-dev libceres-dev libarmadillo-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # 共用 Harness 入口
 COPY run_harness /usr/local/bin/run_harness
 COPY pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
