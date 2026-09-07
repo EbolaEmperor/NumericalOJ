@@ -51,7 +51,7 @@ SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
 PACKAGE_DIGEST_LABEL = "com.numericaloj.vibehub.package-sha256"
 MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
 DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
-RUNTIME_ABI = "network-bridge-host-cuda126-cdi-suspend-v4"
+RUNTIME_ABI = "network-bridge-host-cuda126-cdi-user-suspend-v5"
 
 DEFAULT_BASE_IMAGE = "numericaloj-vibehub-runtime:1"
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "tmp" / "vibehub_runtime"
@@ -2410,6 +2410,9 @@ class VibeHubRuntimeManager:
             "--env", f"VIBEHUB_SOCKET={APP_SOCKET_PATH}",
             "--env", f"VIBEHUB_HEALTH_PATH={HEALTH_PATH}",
             "--env", "HOME=/data/home",
+            # 数值 UID 无需 /etc/passwd 条目；为 getpass.getuser() 等库补齐身份环境。
+            "--env", "USER=vibehub",
+            "--env", "LOGNAME=vibehub",
             "--env", "TMPDIR=/tmp",
             # 作品输出可能包含用户源码、答案或凭据，不得由 Docker 持久写入
             # 宿主日志。平台只记录受控的生命周期与代理元数据。
