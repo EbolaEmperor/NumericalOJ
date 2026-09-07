@@ -63,7 +63,8 @@ def main() -> None:
               for name in ("cudnn", "nccl", "cusparselt", "nvshmem")),
         ]),
         "TORCH_CUDA_ARCH_LIST": "8.6",
-        "MAX_JOBS": "8",
+        # 上游以 MAX_JOBS / NVCC_THREADS 设置 Ninja 并发；生产 40 线程保留余量。
+        "MAX_JOBS": "32",
         "NVCC_THREADS": "2",
         "VLLM_TARGET_DEVICE": "cuda",
         "VLLM_USE_PRECOMPILED": "0",
