@@ -2,37 +2,49 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
+import tarfile
+import time
+from urllib.request import urlopen
 
-CUDA_ROOT = Path("/usr/local/cuda-12.6")
-GPU_ENV = Path("/opt/vibehub-gpu")
+from install_gpu import CUDA_ROOT, GPU_ENV, HOST_PACKAGES
+
 VLLM_COMMIT = "bcf2be96120005e9aea171927f85055a6a5c0cf6"
-# 这些发行包的原生库/工具由宿主 Toolkit 提供。保留完整解析图供审计，
-# 安装时使用 --no-deps，防止 pip 再沿 PyTorch 依赖链下载另一份 CUDA。
-HOST_PACKAGES = frozenset({
-    "nvidia-cublas-cu12", "nvidia-cuda-cupti-cu12", "nvidia-cuda-nvdisasm",
-    "nvidia-cuda-nvrtc-cu12", "nvidia-cuda-runtime-cu12", "nvidia-cufft-cu12",
-    "nvidia-cufile-cu12", "nvidia-curand-cu12", "nvidia-cusolver-cu12",
-    "nvidia-cusparse-cu12", "nvidia-nvjitlink-cu12", "nvidia-nvtx-cu12",
-})
 
 
-def installation_lock(text: str) -> str:
-    """只剔除宿主提供的发行包及即将从源码编译的 vLLM，保留其余哈希。"""
-    output = []
-    include = True
-    for line in text.splitlines(keepends=True):
-        if re.match(r"^[A-Za-z0-9]", line):
-            name = re.split(r"[= @\[]", line, maxsplit=1)[0].lower().replace("_", "-")
-            include = name not in HOST_PACKAGES | {"vllm"}
-        if include:
-            output.append(line)
-    return "".join(output)
+def fetch_source(record: dict, destination: Path) -> Path:
+    """流式下载官方归档并校验；仅网络失败重试，哈希不符立即停止。"""
+    destination.mkdir()
+    archive = destination / "source.tar.gz"
+    for attempt in range(5):
+        try:
+            digest = hashlib.sha256()
+            with urlopen(record["url"], timeout=120) as response, archive.open("wb") as target:
+                while chunk := response.read(1024 * 1024):
+                    digest.update(chunk)
+                    target.write(chunk)
+            break
+        except (OSError, TimeoutError):
+            if attempt == 4:
+                raise
+            time.sleep(2 ** attempt)
+    if digest.hexdigest() != record["sha256"]:
+        raise RuntimeError(f"源码归档 SHA-256 不符：{record['url']}")
+    with tarfile.open(archive) as source:
+        source.extractall(destination, filter="data")
+    archive.unlink()
+    extracted, = destination.iterdir()
+    if not extracted.is_dir():
+        raise RuntimeError("源码归档必须包含一个根目录")
+    print(f"源码校验通过：{record['revision']}", flush=True)
+    return extracted
 
 
 def main() -> None:
@@ -61,21 +73,23 @@ def main() -> None:
         subprocess.run(args, check=True, env=env, cwd=cwd)
 
     root = Path(__file__).parent
-    run("python", "-m", "venv", "--system-site-packages", str(GPU_ENV))
     python = str(GPU_ENV / "bin/python")
-    lock = root / "requirements-gpu-install.lock"
-    lock.write_text(installation_lock((root / "requirements-gpu.lock").read_text()))
-    run(python, "-m", "pip", "install", "--no-cache-dir", "--no-deps",
-        "--require-hashes", "-r", str(lock))
+    records = json.loads((root / "sources-gpu.json").read_text())
     with tempfile.TemporaryDirectory(prefix="vibehub-vllm-") as temporary:
-        source = Path(temporary)
-        run("git", "init", str(source))
-        run("git", "remote", "add", "origin", "https://github.com/vllm-project/vllm.git", cwd=source)
-        run("git", "fetch", "--depth=1", "origin", VLLM_COMMIT, cwd=source)
-        run("git", "checkout", "--detach", "FETCH_HEAD", cwd=source)
+        directory = Path(temporary)
+        sources = {name: fetch_source(record, directory / name) for name, record in records.items()}
+        source = sources["vllm"]
+        env["VLLM_CUTLASS_SRC_DIR"] = str(sources["cutlass"])
+        env["VLLM_FLASH_ATTN_SRC_DIR"] = str(sources["flash-attention"])
+        env["TRITON_KERNELS_SRC_DIR"] = str(sources["triton-kernels"] / "python/triton_kernels/triton_kernels")
+        env["FLASH_MLA_SRC_DIR"] = str(sources["flashmla"])
+        env["QUTLASS_SRC_DIR"] = str(sources["qutlass"])
+        # GitHub 归档不含子模块；沿用 FlashAttention 固定的 CUTLASS 提交。
+        shutil.copytree(sources["flash-cutlass"], sources["flash-attention"] / "csrc/cutlass",
+                        dirs_exist_ok=True)
         # 官方脚本移除 torch/vision/audio 固定约束，沿用已锁定的 cu126 环境。
         run(python, "use_existing_torch.py", "--prefix", cwd=source)
-        run(python, "-m", "pip", "wheel", ".", "--no-deps", "--no-build-isolation",
+        run(python, "-m", "pip", "wheel", ".", "--verbose", "--no-deps", "--no-build-isolation",
             "--wheel-dir", str(source / "wheels"), cwd=source)
         wheel, = (source / "wheels").glob("vllm-*.whl")
         run(python, "-m", "pip", "install", "--no-deps", "--no-cache-dir", str(wheel))

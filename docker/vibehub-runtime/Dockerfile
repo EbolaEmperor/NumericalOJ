@@ -30,7 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential git ca-certificates libnuma-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements-gpu.txt requirements-gpu.lock /opt/vibehub-runtime/
+COPY install_gpu.py /opt/vibehub-runtime/install_gpu.py
+RUN python /opt/vibehub-runtime/install_gpu.py
 COPY build_gpu.py /opt/vibehub-runtime/build_gpu.py
+COPY sources-gpu.json /opt/vibehub-runtime/sources-gpu.json
 RUN --mount=type=bind,from=host_cuda,target=/usr/local/cuda-12.6 \
     python /opt/vibehub-runtime/build_gpu.py
 

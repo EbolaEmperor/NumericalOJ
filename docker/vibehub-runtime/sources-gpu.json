@@ -1,0 +1,37 @@
+{
+  "vllm": {
+    "url": "https://codeload.github.com/vllm-project/vllm/tar.gz/bcf2be96120005e9aea171927f85055a6a5c0cf6",
+    "sha256": "897a15d7394623e4efc08f9e02fc856374d16bff98121378066da11e1f679c0d",
+    "revision": "bcf2be96120005e9aea171927f85055a6a5c0cf6"
+  },
+  "cutlass": {
+    "url": "https://codeload.github.com/NVIDIA/cutlass/tar.gz/v4.2.1",
+    "sha256": "a4513ba33ae82fd754843c6d8437bee1ac71a6ef1c74df886de2338e3917d4df",
+    "revision": "v4.2.1"
+  },
+  "flash-attention": {
+    "url": "https://codeload.github.com/vllm-project/flash-attention/tar.gz/1488682bb545f7d020e958a33116b1419d1cfc83",
+    "sha256": "629cb7cc1b67812a9ef28b5a2bbe8cddcc0c69ee769a464f33bc2bea67ae4f49",
+    "revision": "1488682bb545f7d020e958a33116b1419d1cfc83"
+  },
+  "flash-cutlass": {
+    "url": "https://codeload.github.com/NVIDIA/cutlass/tar.gz/62750a2b75c802660e4894434dc55e839f322277",
+    "sha256": "78816d6c6d97793b5b59ef2a702174cb85b78dfcefc8fe2489964de2e42f17d2",
+    "revision": "62750a2b75c802660e4894434dc55e839f322277"
+  },
+  "triton-kernels": {
+    "url": "https://codeload.github.com/triton-lang/triton/tar.gz/v3.6.0",
+    "sha256": "be270ed11ca5a8fbd9d7941c5bbe9a23a9f6e2ffd372c8398346928bee464774",
+    "revision": "v3.6.0"
+  },
+  "flashmla": {
+    "url": "https://codeload.github.com/vllm-project/FlashMLA/tar.gz/692917b1cda61b93ac9ee2d846ec54e75afe87b1",
+    "sha256": "c2fb17e91c516c4145739e78a09e7933bd2d7f8b1b54409bb8c9e99709138fff",
+    "revision": "692917b1cda61b93ac9ee2d846ec54e75afe87b1"
+  },
+  "qutlass": {
+    "url": "https://codeload.github.com/IST-DASLab/qutlass/tar.gz/830d2c4537c7396e14a02a46fbddd18b5d107c65",
+    "sha256": "6b431aa10fbc6b288564c820658aed685641678903e128e7b0a958b8757b5d0c",
+    "revision": "830d2c4537c7396e14a02a46fbddd18b5d107c65"
+  }
+}

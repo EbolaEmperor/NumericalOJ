@@ -108,7 +108,9 @@ CMD ["/opt/vibehub-gpu/bin/python", "/app/serve.py"]
 预装环境不包含模型权重；权重和测试集由作品自行提供。依赖的完整版本与 SHA-256 锁文件位于
 `docker/vibehub-runtime/requirements-web.lock` 和 `requirements-gpu.lock`。后者保留完整依赖图；
 构建脚本排除宿主已提供的 CUDA 发行包，并从固定源码提交编译 vLLM。不会下载预编译 vLLM
-或重复安装 Toolkit。构建记录位于镜像内 `/opt/vibehub-runtime/gpu-build.json`。
+或重复安装 Toolkit。源码归档及子模块由 `sources-gpu.json` 固定版本和 SHA-256，
+网络下载支持重试；GPU 依赖安装与源码编译分层缓存。构建记录位于镜像内
+`/opt/vibehub-runtime/gpu-build.json`。
 
 ## 容器运行协议
 

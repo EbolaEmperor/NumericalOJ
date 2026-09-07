@@ -1,11 +1,17 @@
 """共享 GPU 镜像不能经传递依赖重新下载 CUDA 或预编译 vLLM。"""
 
 import importlib.util
+import hashlib
+import io
 from pathlib import Path
+import sys
+import tarfile
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
-    "vibehub_build_gpu", ROOT / "docker/vibehub-runtime/build_gpu.py",
+    "vibehub_build_gpu", ROOT / "docker/vibehub-runtime/install_gpu.py",
 )
 BUILD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD)
@@ -53,3 +59,49 @@ def test_only_trusted_base_build_receives_host_cuda_context():
     assert "--mount=type=bind,from=host_cuda,target=/usr/local/cuda-12.6" in dockerfile
     assert "COPY --from=gpu-builder /opt/vibehub-gpu /opt/vibehub-gpu" in dockerfile
     assert "COPY --from=host_cuda" not in dockerfile
+
+
+def load_compiler(monkeypatch):
+    monkeypatch.setitem(sys.modules, "install_gpu", BUILD)
+    spec = importlib.util.spec_from_file_location(
+        "gpu_compiler", ROOT / "docker/vibehub-runtime/build_gpu.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_source_download_retries_network_failure_then_verifies_archive(monkeypatch, tmp_path):
+    compiler = load_compiler(monkeypatch)
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        member = tarfile.TarInfo("source/README")
+        member.size = 2
+        archive.addfile(member, io.BytesIO(b"ok"))
+    payload = stream.getvalue()
+    attempts = []
+
+    def download(*args, **kwargs):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise OSError("TLS connection terminated")
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(compiler, "urlopen", download)
+    monkeypatch.setattr(compiler.time, "sleep", lambda _: None)
+    source = compiler.fetch_source(
+        {"url": "https://example.org/source", "sha256": hashlib.sha256(payload).hexdigest(), "revision": "fixed"},
+        tmp_path / "download",
+    )
+    assert len(attempts) == 2
+    assert (source / "README").read_text() == "ok"
+
+
+def test_source_hash_mismatch_stops_before_extraction(monkeypatch, tmp_path):
+    compiler = load_compiler(monkeypatch)
+    monkeypatch.setattr(compiler, "urlopen", lambda *_, **__: io.BytesIO(b"wrong"))
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        compiler.fetch_source(
+            {"url": "https://example.org/source", "sha256": "0" * 64}, tmp_path / "download",
+        )
+    assert list((tmp_path / "download").iterdir()) == [tmp_path / "download/source.tar.gz"]
