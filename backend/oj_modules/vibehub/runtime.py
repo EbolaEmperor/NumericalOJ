@@ -2421,6 +2421,7 @@ class VibeHubRuntimeManager:
                 "--env", "TRITON_PTXAS_PATH=/usr/local/cuda-12.6/bin/ptxas",
                 "--env", (
                     "LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:"
+                    "/usr/local/cuda-12.6/extras/CUPTI/lib64:"
                     "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/cudnn/lib:"
                     "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/nccl/lib:"
                     "/opt/vibehub-gpu/lib/python3.12/site-packages/nvidia/cusparselt/lib:"

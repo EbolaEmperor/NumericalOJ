@@ -58,6 +58,7 @@ def main() -> None:
         "PATH": f"{GPU_ENV}/bin:{CUDA_ROOT}/bin:{env['PATH']}",
         "LD_LIBRARY_PATH": ":".join([
             f"{CUDA_ROOT}/lib64",
+            f"{CUDA_ROOT}/extras/CUPTI/lib64",
             *(f"{GPU_ENV}/lib/python3.12/site-packages/nvidia/{name}/lib"
               for name in ("cudnn", "nccl", "cusparselt", "nvshmem")),
         ]),
