@@ -456,3 +456,18 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-source-hint { margin: 0; color: #71717a; font-size: .68rem; line-height: 1.7; }
 
 .vibe-git-retry {border:0; background:none; padding:0; color:inherit; text-decoration:underline; cursor:pointer; font:inherit;}
+
+.vibe-build-panel{width:min(100%,760px)}
+.vibe-build-content{padding:18px 24px 8px}
+.vibe-build-panel>footer{padding:8px 24px 24px}
+.vibe-build-state{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;font-size:13px}
+.vibe-build-state p{margin:0 0 14px;overflow-wrap:anywhere}
+.vibe-build-state>span{white-space:nowrap;color:var(--muted-color,#77808b);font-variant-numeric:tabular-nums}
+.vibe-build-log{height:clamp(180px,40vh,400px);margin:0;padding:16px;border:1px solid var(--border-color,#e1e4e8);border-radius:10px;background:var(--bg-secondary,#f7f8fa);color:var(--text-color,#303540);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:left}
+.vibe-build-indicator{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:#f0ebfa;color:#7c59b9;flex:none}
+.vibe-build-indicator.is-running i{animation:vibe-build-spin 1s linear infinite}
+.vibe-build-indicator.is-done{background:#edf7ef;color:#388357}
+.vibe-build-indicator.is-error{background:#fff0e9;color:#b85d36}
+@keyframes vibe-build-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.vibe-build-indicator.is-running i{animation:none}}
+@media(max-width:520px){.vibe-build-content{padding:0 16px 8px}.vibe-build-log{font-size:11px;padding:12px}}

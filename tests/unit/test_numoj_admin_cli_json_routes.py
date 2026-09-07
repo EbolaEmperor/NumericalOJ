@@ -1665,7 +1665,7 @@ class _HygieneClient:
 
     def request(self, method, path, **kwargs):
         self.requests.append((method, path, kwargs))
-        if kwargs.get("stream"):
+        if kwargs.get("stream") and not path.startswith("/api/vibehub/"):
             return _StreamResponse()
         if path == "/" or path.endswith("/logout"):
             return _RedirectResponse("/problem_list")

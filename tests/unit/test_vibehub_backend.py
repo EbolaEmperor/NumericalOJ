@@ -1221,9 +1221,7 @@ def test_every_storage_mutation_route_uses_one_shared_gate_before_preflight_and_
     monkeypatch,
 ):
     route_functions = (
-        vibehub_api.create_project,
-        vibehub_api.upload_version,
-        vibehub_api.edit_project,
+        vibehub_api._save_submission,
         vibehub_api.delete_project,
         vibehub_api.review_project,
     )

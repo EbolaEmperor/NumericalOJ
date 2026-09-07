@@ -10,7 +10,8 @@ from PIL import Image, UnidentifiedImageError
 
 from backend.oj_modules.api.helpers import json_error, json_success, public_user
 from backend.oj_modules.security.auth import current_user
-from backend.oj_modules.vibehub import git_source, quotas, services, storage
+from backend.oj_modules.vibehub import build_progress, git_source, quotas, services, storage
+from backend.oj_modules.api.vibehub_build_stream import submission_stream
 from backend.oj_modules.vibehub.guide import DEVELOPER_GUIDE_PATH, render_developer_guide
 from backend.oj_modules.vibehub.runtime import (
     VibeHubCapacityError,
@@ -68,6 +69,7 @@ def _submission_package(payload):
         if request.files:
             raise services.VibeHubError("Git 仓库与 ZIP 文件不能同时提交")
         try:
+            build_progress.emit("source", "正在拉取 Git 仓库并固定提交版本。")
             with git_source.git_package(git_url, payload.get("git_ref"), upload_root=_upload_root()) as result:
                 yield result
         except git_source.GitSourceError as exc:
@@ -75,6 +77,7 @@ def _submission_package(payload):
     else:
         if payload.get("git_ref"):
             raise services.VibeHubError("填写 Git 分支时必须提供仓库地址")
+        build_progress.emit("source", "ZIP 已接收，正在准备源码。")
         yield _uploaded_package(), None
 
 
@@ -264,31 +267,41 @@ def acquire_runtime_lease(slug):
     )
 
 
+def _save_submission(user, slug=None, *, metadata_only=False):
+    build_progress.emit("queued", "正在等待构建资源。")
+    with _storage_mutation_request_slot():
+        if slug is None:
+            services.preflight_create_project(user)
+        else:
+            services.preflight_upload_project(user, slug)
+        build_progress.emit("receiving", "正在接收并校验提交内容。")
+        payload = _payload()
+        if metadata_only:
+            return services.edit_project(user, slug, payload, upload_root=_upload_root())
+        with _submission_package(payload) as (upload, source):
+            build_progress.emit("validation", "正在检查作品包、Dockerfile 和存储配额。")
+            options = {"upload_root": _upload_root(), **({"source": source} if source else {})}
+            if slug is None:
+                return services.create_project(user, upload, payload, **options)
+            return services.upload_new_version(user, slug, upload, payload, **options)
+
+
+def _submission_response(user, slug=None, *, metadata_only=False):
+    operation = lambda: _save_submission(user, slug, metadata_only=metadata_only)
+    if "application/x-ndjson" in request.headers.get("Accept", ""):
+        return submission_stream(operation)
+    project = operation()
+    return json_success(project=project), 200 if metadata_only else 201
+
+
 @vibehub_api_bp.route("/projects", methods=["POST"])
 def create_project():
-    user = _require_user()
-    with _storage_mutation_request_slot():
-        # 预检位于槽内但仍先于 request.files/form；事务内会最终重检。
-        services.preflight_create_project(user)
-        payload = _payload()
-        with _submission_package(payload) as (upload, source):
-            project = services.create_project(
-                user, upload, payload, upload_root=_upload_root(),
-                **({"source": source} if source else {}),
-            )
-    return json_success(project=project), 201
+    return _submission_response(_require_user())
 
 
 @vibehub_api_bp.route("/projects/<slug>", methods=["PATCH"])
 def edit_project(slug):
-    user = _require_user()
-    with _storage_mutation_request_slot():
-        services.preflight_upload_project(user, slug)
-        payload = _payload()
-        project = services.edit_project(
-            user, slug, payload, upload_root=_upload_root(),
-        )
-    return json_success(project=project)
+    return _submission_response(_require_user(), slug, metadata_only=True)
 
 
 @vibehub_api_bp.route("/projects/<slug>", methods=["DELETE"])
@@ -305,16 +318,7 @@ def delete_project(slug):
 
 @vibehub_api_bp.route("/projects/<slug>/versions", methods=["POST"])
 def upload_version(slug):
-    user = _require_user()
-    with _storage_mutation_request_slot():
-        services.preflight_upload_project(user, slug)
-        payload = _payload()
-        with _submission_package(payload) as (upload, source):
-            project = services.upload_new_version(
-                user, slug, upload, payload, upload_root=_upload_root(),
-                **({"source": source} if source else {}),
-            )
-    return json_success(project=project), 201
+    return _submission_response(_require_user(), slug)
 
 
 @vibehub_api_bp.route("/projects/<slug>/cover", methods=["GET"])

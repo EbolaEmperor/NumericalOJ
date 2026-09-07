@@ -169,14 +169,15 @@ def test_both_clis_submit_git_as_json_and_reject_ambiguous_sources(monkeypatch):
             def request(self, *args, **kwargs):
                 calls.append((args, kwargs))
         monkeypatch.setattr(module, 'client_from_args', lambda _args: Client())
-        monkeypatch.setattr(module, '_output', lambda *_args: None)
+        monkeypatch.setattr(module, '_build_output', lambda *_args: None)
         monkeypatch.setattr(module.common, 'require_file', lambda *_args: pytest.fail('Git must not open an upload'))
         args = Namespace(package=None, git_url='git@example.org:a/b.git', git_ref='main', title='测试', slug='demo')
         module.project_create(args)
         module.project_update(args)
         assert [args[1] for args, _ in calls] == ['/api/vibehub/projects', '/api/vibehub/projects/demo/versions']
         for _, kwargs in calls:
-            assert list(kwargs) == ['json']
+            assert kwargs['headers']['Accept'] == 'application/x-ndjson'
+            assert kwargs['stream'] is True
             assert kwargs['json']['git_url'] == 'git@example.org:a/b.git'
             assert kwargs['json']['git_ref'] == 'main'
             assert kwargs['json']['source_type'] == 'git'

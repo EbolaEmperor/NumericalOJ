@@ -314,7 +314,6 @@ def test_build_is_networked_bounded_and_inspects_final_image(tmp_path):
         ("--cpu-quota", "200000"),
         ("--pull=false", None),
         ("--force-rm", None),
-        ("--quiet", None),
     ):
         assert flag in build
         if value is not None:

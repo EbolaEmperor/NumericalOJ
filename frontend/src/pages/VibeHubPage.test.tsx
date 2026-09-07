@@ -49,7 +49,7 @@ it('管理员创建时 GPU 默认关闭，申请随原表单提交，使用自�
   fireEvent.submit(dialog.querySelector('form')!)
   await waitFor(() => expect(writes.length).toBe(1))
   expect((writes[0].init.body as FormData).get('gpu_memory_mib')).toBe('4096')
-  expect(view.container.querySelectorAll('dialog').length).toBe(4)
+  expect(view.container.querySelectorAll('dialog').length).toBe(5)
 })
 
 it('编辑弹窗回填 GPU 并显示审核意见，重新创建时清空', async () => {
@@ -132,4 +132,29 @@ it('切换仓库时取消旧查询，并忽略晚到的分支结果', async () =
   resolveOld(new Response(JSON.stringify({success: true, default_ref: 'stale', refs: [{value: 'stale', name: 'stale', kind: 'branch'}]}), {headers: {'Content-Type': 'application/json'}}))
   await new Promise((resolve) => setTimeout(resolve, 0))
   expect(within(dialog).getByRole('button', {name: '分支或标签'}).textContent).toContain('main（默认分支）')
+})
+
+it('提交后弹窗实时显示构建日志，并保留成功结果供用户查看', async () => {
+  const originalFetch = globalThis.fetch
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  vi.stubGlobal('fetch', vi.fn((input: string, init?: RequestInit) => {
+    if (input === '/api/vibehub/projects' && init?.method === 'POST') {
+      expect(new Headers(init.headers).get('Accept')).toBe('application/x-ndjson')
+      return Promise.resolve(new Response(new ReadableStream<Uint8Array>({start(value) {controller = value}}), {headers: {'Content-Type': 'application/x-ndjson'}}))
+    }
+    return originalFetch(input, init)
+  }))
+  renderPage()
+  fireEvent.click(await screen.findByRole('button', {name: '创建作品'}))
+  const editor = screen.getByRole('dialog', {name: '创建作品'})
+  fireEvent.change(within(editor).getByLabelText('游戏名称'), {target: {value: '流式作品'}})
+  fireEvent.change(editor.querySelector('input[type="file"]')!, {target: {files: [new File(['zip'], 'demo.zip')]}})
+  fireEvent.submit(editor.querySelector('form')!)
+  const progress = await screen.findByRole('dialog', {name: '正在构建镜像'})
+  expect(within(progress).getByRole('button', {name: '正在构建…'}).hasAttribute('disabled')).toBe(true)
+  controller.enqueue(new TextEncoder().encode('{"event":"log","message":"#3 CACHED"}\n'))
+  await waitFor(() => expect(within(progress).getByLabelText('镜像构建日志').textContent).toContain('#3 CACHED'))
+  controller.enqueue(new TextEncoder().encode('{"event":"result","success":true,"project":{"latest_version":4}}\n'))
+  const completed = await screen.findByRole('dialog', {name: '构建完成'})
+  expect(within(completed).getByRole('button', {name: '关闭'}).hasAttribute('disabled')).toBe(false)
 })

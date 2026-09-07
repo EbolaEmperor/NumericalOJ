@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from typing import Any, Dict
 
 from . import common
@@ -60,6 +62,46 @@ def _output(resp, projector) -> None:
     print(resp.text.strip())
 
 
+def _build_output(resp):
+    """进度流写 stderr 并立即 flush；stdout 仅保留最终 JSON 以兼容脚本。"""
+    try:
+        common.ensure_ok(resp, allow_redirect=False)
+        if "application/x-ndjson" not in (resp.headers.get("Content-Type") or ""):
+            _output(resp, necessary_project_payload)
+            return
+        for raw in resp.iter_lines(chunk_size=1024):
+            if not raw:
+                continue
+            if len(raw) > 256 * 1024:
+                raise common.CliError("构建进度响应过长，请先查询作品最新版本。")
+            try:
+                event = json.loads(raw)
+            except (ValueError, UnicodeError) as exc:
+                raise common.CliError("构建进度响应无效，请先查询作品最新版本。") from exc
+            if not isinstance(event, dict):
+                raise common.CliError("构建进度响应格式无效。")
+            kind = event.get("event")
+            if kind == "result":
+                if not event.get("success"):
+                    raise common.CliError(event.get("message") or "作品构建失败")
+                common.output_json(necessary_project_payload(event))
+                return
+            if kind == "error":
+                raise common.CliHttpError(int(event.get("http_status") or 500), event)
+            if kind in ("progress", "log"):
+                # 防止仓库构建输出把终端控制序列作为命令或超链接解释。
+                message = str(event.get("message") or "")
+                message = "".join(c for c in message if ord(c) >= 32 and ord(c) != 127)
+                print(message, file=sys.stderr, flush=True)
+            elif kind == "heartbeat":
+                print(f"构建仍在进行（{event.get('elapsed_seconds', 0)} 秒）…", file=sys.stderr, flush=True)
+        raise common.CliError("构建进度连接已断开，最终结果尚未确认；请先查询作品最新版本，勿重复提交。")
+    finally:
+        close = getattr(resp, "close", None)
+        if close:
+            close()
+
+
 def _metadata(args, *, creating=False) -> Dict[str, str]:
     data: Dict[str, str] = {}
     for name in ("slug", "title", "summary", "tags", "cover_image", "gpu_memory_mib"):
@@ -109,14 +151,14 @@ def _submit_source(args, path, *, creating=False):
         data.update(source_type="git", git_url=git_url)
         if git_ref:
             data["git_ref"] = git_ref
-        resp = client_from_args(args).request("POST", path, json=data)
+        resp = client_from_args(args).request("POST", path, json=data, headers={"Accept": "application/x-ndjson"}, stream=True)
     else:
         files = {"package": common.require_file(package)}
         try:
-            resp = client_from_args(args).request("POST", path, data=data, files=files)
+            resp = client_from_args(args).request("POST", path, data=data, files=files, headers={"Accept": "application/x-ndjson"}, stream=True)
         finally:
             common.close_files(files)
-    _output(resp, necessary_project_payload)
+    _build_output(resp)
 
 
 def project_create(args):
@@ -129,9 +171,9 @@ def project_update(args):
 
 def project_edit(args):
     resp = client_from_args(args).request(
-        "PATCH", f"/api/vibehub/projects/{args.slug}", json=_metadata(args),
+        "PATCH", f"/api/vibehub/projects/{args.slug}", json=_metadata(args), headers={"Accept": "application/x-ndjson"}, stream=True,
     )
-    _output(resp, necessary_project_payload)
+    _build_output(resp)
 
 
 def project_delete(args):

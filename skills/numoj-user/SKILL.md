@@ -179,3 +179,7 @@ python3 "$NUMOJ_USER_SKILL_ROOT/scripts/numoj_user.py" vibehub create \
 python3 "$NUMOJ_USER_SKILL_ROOT/scripts/numoj_user.py" vibehub update my-project \
   --git-url git@example.org:owner/project.git --git-ref main
 ```
+
+### VibeHub build progress
+
+`vibehub create`, `update`, and `edit` consume the server build stream by default. Progress is flushed to stderr while the final project JSON is written to stdout. Wait for that final result; HTTP 200 alone is not build success. If the stream disconnects, inspect `vibehub detail <slug> --view latest` before retrying to avoid duplicate versions. ZIP request bodies remain streamed, and Git submissions send only the repository URL and ref.

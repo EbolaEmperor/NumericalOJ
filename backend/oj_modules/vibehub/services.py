@@ -8,7 +8,7 @@ import re
 import secrets
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection
-from backend.oj_modules.vibehub import gpu, quotas, storage
+from backend.oj_modules.vibehub import build_progress, gpu, quotas, storage
 from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
@@ -67,6 +67,7 @@ def _prepare_latest_image(
     package_digest: str,
     featured=False,
 ):
+    build_progress.emit("preflight", "正在检查基础镜像和构建环境。")
     manager = get_runtime_manager()
     previous_image_id = None
     captured = False
@@ -87,6 +88,7 @@ def _prepare_latest_image(
             status_code=503,
             code="image_build_failed",
         ) from exc
+    build_progress.emit("saving", "镜像已完成，正在保存不可变版本并自动送审。")
     return previous_image_id
 
 

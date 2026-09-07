@@ -188,6 +188,16 @@ python3 scripts/numoj_user.py vibehub update <slug> --git-url git@example.org:ow
 
 每次提交仅固定当时的 commit，不会自动跟随分支变化。作者和管理员可在作品详情 API 的 `source` 中查看仓库、分支和 commit；公开接口不暴露私有仓库地址。
 
+### 实时构建进度
+
+创建作品、提交新 ZIP/Git 版本以及保存作品编辑时，网页会打开构建进度弹窗，实时显示准备阶段、BuildKit 输出（包括 `CACHED`）和最终成功或失败结果。依赖和模型缓存命中后仍需导出、加载完整镜像；日志间歇没有新行时，连接仍通过心跳保持，不表示构建卡住。
+
+两个 CLI 的 `vibehub create`、`update`、`edit` 默认消费同一进度流。进度立即写入 **stderr**，最终作品 JSON 写入 **stdout**，可以使用 `> result.json` 保存结果而继续在终端查看构建过程。进度流中断时不会自动重复提交；请先用 `vibehub detail <slug> --view latest` 核对最终版本。
+
+自定义客户端可在创建、版本更新或编辑请求中设置 `Accept: application/x-ndjson`。每行是一个独立 JSON 事件：`progress`（`phase`、`message`）、`log`（`message`）、`heartbeat`（`elapsed_seconds`）、`result`（`success: true`、`project`）或 `error`（`success: false`、`message`、`code`/`http_status`）。流式响应开始后业务错误通过 `error` 事件返回，不能仅按 HTTP 200 判断成功；必须收到 `result`。未请求该格式的客户端仍收到原有 JSON 响应。
+
+进度只返回本次已鉴权请求，不公开日志；输出经过脱敏及长度限制。关闭页面或断开 CLI 不会撤销已经开始的构建事务。重新连接后先查看最新版本，避免重复创建。
+
 ### 缓存依赖和模型下载
 
 平台构建使用持久化 BuildKit 步骤缓存。把变化较少的依赖清单、下载脚本和模型哈希清单单独复制并执行，再复制业务源码；不要把 `COPY .` 放在安装或下载之前。只有对应输入或基础镜像变化才需要重做相应步骤。

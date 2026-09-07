@@ -4,6 +4,7 @@ import {useEffect, useMemo, useRef, useState, type FormEvent} from 'react'
 import {useLocation} from 'react-router-dom'
 
 import {apiFetch, errorMessage} from '../api/client'
+import {submitVibeHubBuild} from '../api/vibehubBuild'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {Identicon} from '../components/Identicon'
 import {Link} from '../components/PageNavigation'
@@ -26,6 +27,20 @@ export default function VibeHubPage() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState(() => initialParams.get('view') || 'all')
   const [editorOpen, setEditorOpen] = useState(false)
+  const [build, setBuild] = useState<{title: string; status: 'running' | 'done' | 'error'; message: string; logs: string[]; started: number} | null>(null)
+  const [buildElapsed, setBuildElapsed] = useState(0)
+  const buildLogRef = useRef<HTMLPreElement>(null)
+  const buildDialogRef = useNativeDialog(Boolean(build))
+  useEffect(() => {
+    if (build?.status !== 'running') return
+    const update = () => setBuildElapsed(Math.floor((Date.now() - build.started) / 1000))
+    update(); const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [build?.status, build?.started])
+  useEffect(() => {
+    const log = buildLogRef.current
+    if (log) log.scrollTop = log.scrollHeight
+  }, [build?.logs])
   const [editorMode, setEditorMode] = useState<EditorMode>('create')
   const [editorSlug, setEditorSlug] = useState('')
   const [title, setTitle] = useState('')
@@ -67,7 +82,7 @@ export default function VibeHubPage() {
   const approveDialogRef = useNativeDialog(Boolean(approveProject), () => approveConfirmRef.current?.focus())
   const featuredDialogRef = useNativeDialog(Boolean(featuredProject), () => featuredConfirmRef.current?.focus())
 
-  const anyModalOpen = editorOpen || deleteOpen || Boolean(approveProject) || Boolean(featuredProject)
+  const anyModalOpen = Boolean(build) || editorOpen || deleteOpen || Boolean(approveProject) || Boolean(featuredProject)
   useEffect(() => {
     document.body.classList.toggle('vibe-modal-open', anyModalOpen)
     return () => document.body.classList.remove('vibe-modal-open')
@@ -126,11 +141,19 @@ export default function VibeHubPage() {
       const encoded = encodeURIComponent(editorSlug)
       const url = editorMode === 'create' ? '/api/vibehub/projects' : newSource ? `/api/vibehub/projects/${encoded}/versions` : `/api/vibehub/projects/${encoded}`
       const method = editorMode === 'create' || newSource ? 'POST' : 'PATCH'
-      return apiFetch<ApiEnvelope>(url, {method, body})
+      setBuild({title, status: 'running', message: '正在上传并准备构建…', logs: [], started: Date.now()})
+      setEditorOpen(false)
+      return submitVibeHubBuild(url, {method, body}, (event) => {
+        if (event.event !== 'progress' && event.event !== 'log') return
+        setBuild((current) => current ? {...current,
+          message: event.event === 'progress' ? event.message || current.message : current.message,
+          logs: [...current.logs, event.message || ''].slice(-500),
+        } : current)
+      })
     },
     onMutate: () => {setEditorError(false); setEditorStatus(editorMode === 'edit' ? '正在构建更新并自动送审…' : '正在构建作品并自动送审…')},
-    onSuccess: async () => {setEditorStatus('latest 镜像已构建并进入审核队列，正在刷新我的作品…'); await refresh(); setEditorOpen(false); setFilter('mine')},
-    onError: (error) => {setEditorError(true); setEditorStatus(errorMessage(error))},
+    onSuccess: async () => {setEditorStatus('镜像已构建并进入审核队列'); setBuild((current) => current ? {...current, status: 'done', message: '镜像构建完成，新版本已保存并自动送审。'} : current); await refresh(); setEditorOpen(false); setFilter('mine')},
+    onError: (error) => {setEditorError(true); setEditorStatus(errorMessage(error)); setBuild((current) => current ? {...current, status: 'error', message: errorMessage(error)} : current)},
   })
   const deleteProject = useMutation({
     mutationFn: () => apiFetch<ApiEnvelope>(`/api/vibehub/projects/${encodeURIComponent(editorSlug)}`, {method: 'DELETE'}),
@@ -223,6 +246,7 @@ export default function VibeHubPage() {
       {!projects.length ? <div className="vibe-empty-state"><i className="fas fa-shapes" /><h2>{result.data?.projects?.length ? '没有找到相符的作品' : '还没有作品'}</h2><p>{result.data?.projects?.length ? '换个关键词或筛选条件再试试。' : '审核通过的作品会出现在这里。'}</p></div> : null}
     </section>
 
+    <dialog ref={buildDialogRef} className="vibe-modal" aria-labelledby="vibeBuildTitle" onCancel={(event) => {event.preventDefault(); if (build?.status !== 'running') setBuild(null)}} onClose={() => {if (build?.status !== 'running') setBuild(null)}}><section className="vibe-modal-panel vibe-build-panel"><header><div><h2 id="vibeBuildTitle">{build?.status === 'done' ? '构建完成' : build?.status === 'error' ? '构建未完成' : '正在构建镜像'}</h2><p>{build?.title}</p></div><span className={`vibe-build-indicator is-${build?.status || 'running'}`} aria-hidden="true"><i className={`fas ${build?.status === 'done' ? 'fa-check' : build?.status === 'error' ? 'fa-exclamation' : 'fa-circle-notch'}`} /></span></header><div className="vibe-build-content"><div className="vibe-build-state"><p role={build?.status === 'error' ? 'alert' : 'status'}>{build?.message}</p><span>{buildElapsed} 秒</span></div><pre ref={buildLogRef} className="vibe-build-log" aria-label="镜像构建日志">{build?.logs.join('\n') || '等待服务器返回构建进度…'}</pre><p className="vibe-source-hint">日志实时更新；CACHED 表示该步骤直接复用缓存。导出及加载完整镜像可能需要数分钟。</p></div><footer>{build?.status === 'error' ? <button className="vibe-modal-secondary" type="button" onClick={() => {setBuild(null); setEditorOpen(true)}}>返回编辑</button> : <span />}<button className="vibe-modal-primary" type="button" disabled={build?.status === 'running'} onClick={() => setBuild(null)}>{build?.status === 'running' ? '正在构建…' : '关闭'}</button></footer></section></dialog>
     <dialog ref={editorDialogRef} className="vibe-modal" aria-labelledby="vibeProjectModalTitle" onCancel={(event) => {event.preventDefault(); editorRequestRef.current?.abort(); setEditorOpen(false)}} onClose={() => setEditorOpen(false)}><section className="vibe-modal-panel"><header><div><h2 id="vibeProjectModalTitle">{editorMode === 'edit' ? '编辑作品' : '创建作品'}</h2><p>{editorMode === 'edit' ? '保存修改时构建镜像并自动送审，可选 ZIP 或 Git 更新源码。' : '保存时构建镜像并自动送审。'}</p></div><button ref={editorCloseRef} className="vibe-modal-close" type="button" onClick={() => {editorRequestRef.current?.abort(); setEditorOpen(false)}} aria-label="关闭"><i className="fas fa-xmark" /></button></header><form encType="multipart/form-data" onSubmit={(event: FormEvent) => {event.preventDefault(); saveProject.mutate()}}>
       {editorMode === 'edit' && editorReview ? <aside className="vibe-review-note" aria-label="管理员审核意见"><strong>管理员审核意见{editorReview.version ? ` · v${editorReview.version}` : ''}</strong><p>{editorReview.note}</p></aside> : null}
       <label className="vibe-form-field"><span>游戏名称</span><input ref={titleRef} name="title" required maxLength={120} autoComplete="off" placeholder="给作品起个名字" value={title} onChange={(event) => setTitle(event.target.value)} /></label><div className="vibe-form-field vibe-source-choice"><span id="vibeSourceLabel">提交方式</span><ChoicePicker name="source_type" value={sourceType} onChange={(value) => setSourceType(value as 'zip' | 'git')} label="提交方式" disabled={saveProject.isPending || editorLoading} options={[{value: 'zip', label: 'ZIP 压缩包', icon: 'fa-file-archive'}, {value: 'git', label: 'Git 仓库', icon: 'fa-code-branch'}]} /></div>

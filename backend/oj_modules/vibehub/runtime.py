@@ -41,6 +41,7 @@ from urllib.parse import quote, urljoin, urlsplit
 from backend.oj_modules.observability import redact_text
 from backend.oj_modules.project_paths import PROJECT_ROOT
 from backend.oj_modules.vibehub import gpu, storage
+from backend.oj_modules.vibehub import build_progress
 
 
 MANAGED_IMAGE_LABEL = "com.numericaloj.vibehub.image"
@@ -596,6 +597,7 @@ def _run_binary_command(
         env=dict(env) if env is not None else None,
         start_new_session=True,
     )
+    build_output = build_progress.BuildOutput() if list(command[:3]) == ["docker", "buildx", "build"] or list(command[:2]) == ["docker", "build"] else None
     stdout = _BoundedBytes(stdout_limit)
     stderr = _BoundedBytes(stderr_limit)
     selector = selectors.DefaultSelector()
@@ -644,6 +646,8 @@ def _run_binary_command(
                     continue
                 except OSError:
                     chunk = b""
+                if build_output is not None:
+                    build_output.feed(pipe.fileno(), chunk)
                 if chunk:
                     key.data.append(chunk)
                 else:
@@ -1494,6 +1498,7 @@ class DockerCLI:
                 "docker", "buildx", "build",
                 "--builder", self.build_builder,
                 "--load",
+                "--progress", "plain",
             ]
             for context in self._base_oci_build_contexts(resolved_bases):
                 command.extend(["--build-context", context])
@@ -1524,11 +1529,12 @@ class DockerCLI:
             "--label", f"{SOURCE_DIGEST_LABEL}={source_digest}",
             "--tag", image_ref,
             "--file", str(package_dir / storage.DOCKERFILE_NAME),
-            "--quiet",
             str(package_dir),
         ])
         environment = os.environ.copy()
         environment["DOCKER_BUILDKIT"] = "1"
+        environment["BUILDKIT_PROGRESS"] = "plain"
+        build_progress.emit("build", "正在构建镜像；命中缓存的步骤会显示 CACHED。")
         result = self._run(command, timeout=timeout, env=environment)
         initial_detail = f"{result.stdout}\n{result.stderr}".strip()
         # Docker Desktop/Colima 可能启用了 BuildKit 却没有可用 buildx 插件。仅对
@@ -1826,6 +1832,7 @@ def build_image(
         limits=limits,
         timeout=float(timeout_seconds),
     )
+    build_progress.emit("inspection", "镜像构建完成，正在校验镜像及资源限制。")
     image = docker.inspect_image(image_ref)
     if image.labels.get(MANAGED_IMAGE_LABEL) != "1":
         raise VibeHubImageError("构建结果缺少 VibeHub 受管镜像标签")
