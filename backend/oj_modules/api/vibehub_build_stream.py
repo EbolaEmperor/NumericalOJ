@@ -9,6 +9,7 @@ import time
 from flask import Response, copy_current_request_context, current_app, stream_with_context
 from werkzeug.exceptions import HTTPException
 
+from backend.oj_modules.api.helpers import to_jsonable
 from backend.oj_modules.vibehub import build_progress, services
 
 
@@ -19,6 +20,9 @@ def submission_stream(operation):
     started = time.monotonic()
 
     def publish(event):
+        # 与普通 JSON API 共用 DB 日期/Decimal 转换；不能在事务成功后
+        # 因最终结果的 datetime 序列化失败而截断响应。
+        event = to_jsonable(event)
         with condition:
             pending.append(event)
             condition.notify()

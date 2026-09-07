@@ -1,4 +1,6 @@
 from io import BytesIO
+from datetime import datetime
+from decimal import Decimal
 import importlib
 import json
 from pathlib import Path
@@ -22,7 +24,7 @@ def test_progress_arrives_before_result_and_upload_stays_open(monkeypatch, metho
         build_progress.emit('build','开始构建')
         entered.set();assert release.wait(3)
         assert not upload.closed
-        return {'slug':'demo','latest_version':2}
+        return {'slug':'demo','latest_version':2,'created_at':datetime(2026,9,8,0,15),'size':Decimal('1.5')}
     monkeypatch.setattr(vibehub_api,'_save_submission',operation)
     response=app.test_client().open(path,method=method,data={'package':(BytesIO(b'zip-data'),'app.zip')},headers={'Accept':'application/x-ndjson'},buffered=False)
     try:
@@ -32,6 +34,8 @@ def test_progress_arrives_before_result_and_upload_stays_open(monkeypatch, metho
         release.set()
         result=[json.loads(line) for chunk in response.response for line in chunk.splitlines()]
         assert result[-1]['event']=='result' and result[-1]['project']['latest_version']==2
+        assert result[-1]['project']['created_at']=='2026-09-08 00:15:00'
+        assert result[-1]['project']['size']==1.5
         assert response.headers['X-Accel-Buffering']=='no'
     finally:
         release.set();response.close()
