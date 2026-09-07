@@ -2069,7 +2069,9 @@ def test_gpu_reaper_stops_all_project_containers_and_blocks_restart(monkeypatch,
     with pytest.raises(runtime.VibeHubGPUError, match='60 秒'):
         manager.acquire('gpu-demo', gpu_allocation=allocation)
     gpu_cmd = manager.docker.run_commands[0]
-    assert gpu_cmd[gpu_cmd.index('--gpus') + 1] == 'device=GPU-12345678-1234-1234-1234-123456789abc'
+    assert gpu_cmd[gpu_cmd.index('--device') + 1] == 'nvidia.com/gpu=GPU-12345678-1234-1234-1234-123456789abc'
+    assert '--gpus' not in gpu_cmd
+    assert '--device' not in manager.docker.run_commands[2]
     assert 'NVIDIA_DRIVER_CAPABILITIES=compute,utility' in gpu_cmd
     assert ('type=bind,source=/usr/local/cuda-12.6,target=/usr/local/cuda-12.6,'
             'readonly,bind-propagation=rprivate') in gpu_cmd

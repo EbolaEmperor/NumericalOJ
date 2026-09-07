@@ -203,7 +203,7 @@ python3 scripts/numoj_user.py vibehub edit <slug> \
 - 精品作品运行上限为 8 GiB 内存、4 CPU、512 PID 和 40 GiB 镜像。
 - `/tmp` 和 `/run/vibehub` 是有界 tmpfs；`/data` 持久保存，但当前没有可移植的硬配额。
 - 首位玩家打开作品时按需启动已构建的作品。最后一位玩家离开、在途请求结束后，默认立即停止容器，释放 CPU、内存和显存；保留停止的容器、镜像及 `/data`。下一位玩家访问同一版本时重新启动该容器，无需重新构建或下载。断网等未正常退出的情况在访问租约过期后处理；平台可配置关闭宽限。停止会结束进程，应用内存状态不会保留，需恢复的数据和缓存应写入 `/data`。
-- GPU 宿主通过 NVIDIA Container Toolkit Base 1.20.0 的 CDI 描述将现有显卡与驱动接入 Docker；部署脚本固定安装包 SHA-256，并核验 GPU UUID。该组件不安装 CUDA Toolkit 或显卡驱动，也不要求重启 Docker。
+- GPU 宿主通过 NVIDIA Container Toolkit Base 1.20.0 的 CDI 描述将现有显卡与驱动接入 Docker；部署脚本固定安装包 SHA-256，并核验 GPU UUID。运行时使用 `--device nvidia.com/gpu=<GPU UUID>` 显式选择 NVIDIA 设备。该组件不安装 CUDA Toolkit 或显卡驱动，也不要求重启 Docker。
 
 ## GPU
 

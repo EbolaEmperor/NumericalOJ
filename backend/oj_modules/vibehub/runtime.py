@@ -51,7 +51,7 @@ SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
 PACKAGE_DIGEST_LABEL = "com.numericaloj.vibehub.package-sha256"
 MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
 DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
-RUNTIME_ABI = "network-bridge-host-cuda126-suspend-v3"
+RUNTIME_ABI = "network-bridge-host-cuda126-cdi-suspend-v4"
 
 DEFAULT_BASE_IMAGE = "numericaloj-vibehub-runtime:1"
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "tmp" / "vibehub_runtime"
@@ -2421,7 +2421,8 @@ class VibeHubRuntimeManager:
             if not gpu.GPU_UUID_RE.fullmatch(device):
                 raise VibeHubRuntimeError("GPU 设备标识无效")
             args.extend([
-                "--gpus", f"device={device}",
+                # 显式选择 NVIDIA CDI，避免 Docker 通用 GPU 驱动的厂商自动发现。
+                "--device", f"nvidia.com/gpu={device}",
                 "--env", f"NVIDIA_VISIBLE_DEVICES={device}",
                 "--env", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
                 # 固定的平台路径，不接受作品传入宿主目录；缺失时 Docker 拒绝启动。
