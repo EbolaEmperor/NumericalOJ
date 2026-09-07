@@ -37,9 +37,10 @@ HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 IMAGE_REF_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,191}:[A-Za-z0-9_.-]{1,63}$")
 BUILDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-MAX_ARCHIVE_BYTES = 8 * 1024**3
+# 受信基础镜像包含 PyTorch/vLLM；容量独立于用户作品 ZIP 的上传限制。
+MAX_ARCHIVE_BYTES = 32 * 1024**3
 MAX_ARCHIVE_MEMBERS = 4096
-MAX_MEMBER_BYTES = 4 * 1024**3
+MAX_MEMBER_BYTES = 16 * 1024**3
 MAX_CONFIG_BYTES = 16 * 1024**2
 MAX_JSON_BYTES = 2 * 1024**2
 MAX_LAYERS = 256

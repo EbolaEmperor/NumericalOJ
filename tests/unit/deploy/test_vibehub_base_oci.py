@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -37,6 +38,7 @@ def _docker_archive(
     diff_id: str | None = None,
     extra=None,
     config_marker: str = "fixture",
+    compressed: bool = False,
 ):
     layer_raw = _layer_bytes()
     actual_diff_id = "sha256:" + hashlib.sha256(layer_raw).hexdigest()
@@ -61,7 +63,7 @@ def _docker_archive(
     with tarfile.open(path, mode="w") as archive:
         for name, raw in (
             (config_name, config_raw),
-            (layer_name, layer_raw),
+            (layer_name, gzip.compress(layer_raw) if compressed else layer_raw),
             ("manifest.json", manifest_raw),
         ):
             member = tarfile.TarInfo(name)
@@ -134,6 +136,32 @@ def test_convert_docker_archive_produces_verified_oci_layout(tmp_path):
     }
     assert (release / "blobs" / "sha256" / info.manifest_digest[7:]).is_file()
     assert oci.verify_release(release) == info
+
+
+@pytest.mark.parametrize("within_limit", [True, False])
+def test_compressed_layer_limit_uses_expanded_size(tmp_path, monkeypatch, within_limit):
+    archive = tmp_path / "image.tar"
+    image_id = _docker_archive(archive, compressed=True)
+    expanded_size = len(_layer_bytes())
+    monkeypatch.setattr(oci, "MAX_MEMBER_BYTES", expanded_size if within_limit else expanded_size - 1)
+    releases = tmp_path / "releases"
+    releases.mkdir(mode=0o700)
+    release = releases / image_id.removeprefix("sha256:")
+
+    def convert():
+        return oci.convert_docker_archive(
+            archive, release,
+            engine_image_ref="numericaloj-vibehub-runtime:1",
+            engine_image_id=image_id,
+        )
+
+    if within_limit:
+        info = convert()
+        assert oci.verify_release(release) == info
+        assert expanded_size in dict(info.blobs).values()
+    else:
+        with pytest.raises(oci.OCIExportError, match="解压后大小越界"):
+            convert()
 
 
 def test_verify_release_rejects_unknown_metadata_schema(tmp_path):
