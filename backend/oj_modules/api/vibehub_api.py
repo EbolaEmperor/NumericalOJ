@@ -27,7 +27,7 @@ vibehub_api_bp = Blueprint("vibehub_api", __name__, url_prefix="/api/vibehub")
 def _set_package_upload_request_limit():
     # 必须先于 request.files/form 解析；不放宽其他接口的全站限制。
     if request.method == "POST" and request.endpoint in {
-        "vibehub_api.create_project", "vibehub_api.upload_version",
+        "vibehub_api.create_project", "vibehub_api.upload_version", "vibehub_api.git_refs",
     }:
         request.max_content_length = 65536 if request.is_json else storage.MAX_UPLOAD_REQUEST_BYTES
 
@@ -176,6 +176,19 @@ def developer_guide():
 def rendered_developer_guide():
     guide_html, toc_html = render_developer_guide()
     return json_success(html=guide_html, toc_html=toc_html)
+
+
+@vibehub_api_bp.post("/git-refs")
+def git_refs():
+    _require_user()
+    with _storage_mutation_request_slot():
+        try:
+            refs = git_source.list_remote_refs(_payload().get("git_url"), upload_root=_upload_root())
+        except git_source.GitSourceError as exc:
+            raise services.VibeHubError(str(exc), code="invalid_git_source") from exc
+    response = json_success(**refs)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @vibehub_api_bp.route("/projects", methods=["GET"])

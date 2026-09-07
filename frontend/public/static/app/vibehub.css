@@ -454,3 +454,5 @@ body.vibe-modal-open { overflow: hidden; }
 .vibe-git-fields input[name="git_url"],
 .vibe-git-fields input[name="git_ref"] { font-family: var(--font-mono, ui-monospace, monospace); }
 .vibe-source-hint { margin: 0; color: #71717a; font-size: .68rem; line-height: 1.7; }
+
+.vibe-git-retry {border:0; background:none; padding:0; color:inherit; text-decoration:underline; cursor:pointer; font:inherit;}

@@ -28,6 +28,7 @@ beforeEach(() => {
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable: true, value: function (this: HTMLDialogElement) {this.open = true}})
   Object.defineProperty(HTMLDialogElement.prototype, 'close', {configurable: true, value: function (this: HTMLDialogElement) {this.open = false}})
   vi.stubGlobal('fetch', vi.fn((input: string, init?: RequestInit) => {
+    if (String(input) === '/api/vibehub/git-refs') return Promise.resolve(new Response(JSON.stringify({success: true, default_ref: 'main', refs: [{value: 'main', name: 'main', kind: 'branch'}, {value: 'dev', name: 'dev', kind: 'branch'}, {value: 'refs/tags/v1', name: 'v1', kind: 'tag'}]}), {headers: {'Content-Type': 'application/json'}}))
     if (init?.method && init.method !== 'GET') writes.push({url: String(input), init})
     return Promise.resolve(new Response(JSON.stringify({success: true, projects: [project], project}), {headers: {'Content-Type': 'application/json'}}))
   }))
@@ -95,12 +96,40 @@ it('创建时可用共享自定义选择器选择 Git，隐藏 ZIP 并提交仓�
   expect(dialog.querySelector('input[type="file"]')).toBeNull()
   fireEvent.change(within(dialog).getByLabelText('游戏名称'), {target: {value: 'Git 作品'}})
   fireEvent.change(within(dialog).getByLabelText('Git 仓库地址'), {target: {value: 'gitea@10.72.190.121:ebola/shot-cut-llm.git'}})
-  fireEvent.change(within(dialog).getByLabelText('分支或标签（可选）'), {target: {value: 'main'}})
+  await waitFor(() => expect(within(dialog).getByRole('button', {name: '分支或标签'}).textContent).toContain('main（默认分支）'))
+  expect(within(dialog).getByLabelText('Git 仓库地址').hasAttribute('placeholder')).toBe(false)
+  fireEvent.click(within(dialog).getByRole('button', {name: '分支或标签'}))
+  expect(within(dialog).getByRole('option', {name: 'dev'})).toBeTruthy()
+  fireEvent.click(within(dialog).getByRole('option', {name: 'v1（标签）'}))
   fireEvent.submit(dialog.querySelector('form')!)
   await waitFor(() => expect(writes.length).toBe(1))
   const form = writes[0].init.body as FormData
   expect(writes[0].url).toBe('/api/vibehub/projects')
   expect(form.get('git_url')).toBe('gitea@10.72.190.121:ebola/shot-cut-llm.git')
-  expect(form.get('git_ref')).toBe('main')
+  expect(form.get('git_ref')).toBe('refs/tags/v1')
   expect(form.get('package')).toBeNull()
+})
+
+
+it('切换仓库时取消旧查询，并忽略晚到的分支结果', async () => {
+  let resolveOld: (value: Response) => void = () => {}
+  const baseFetch = globalThis.fetch
+  vi.stubGlobal('fetch', vi.fn((input: string, init?: RequestInit) => {
+    if (String(input) === '/api/vibehub/git-refs' && JSON.parse(init?.body as string).git_url === 'git@example.org:old.git') {
+      return new Promise<Response>((resolve) => {resolveOld = resolve})
+    }
+    return baseFetch(input, init)
+  }))
+  renderPage()
+  fireEvent.click(await screen.findByRole('button', {name: '创建作品'}))
+  const dialog = screen.getByRole('dialog', {name: '创建作品'})
+  fireEvent.click(within(dialog).getByRole('button', {name: '提交方式'}))
+  fireEvent.click(within(dialog).getByRole('option', {name: 'Git 仓库'}))
+  fireEvent.change(within(dialog).getByLabelText('Git 仓库地址'), {target: {value: 'git@example.org:old.git'}})
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === '/api/vibehub/git-refs')).toBe(true))
+  fireEvent.change(within(dialog).getByLabelText('Git 仓库地址'), {target: {value: 'git@example.org:new.git'}})
+  await waitFor(() => expect(within(dialog).getByRole('button', {name: '分支或标签'}).textContent).toContain('main（默认分支）'))
+  resolveOld(new Response(JSON.stringify({success: true, default_ref: 'stale', refs: [{value: 'stale', name: 'stale', kind: 'branch'}]}), {headers: {'Content-Type': 'application/json'}}))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(within(dialog).getByRole('button', {name: '分支或标签'}).textContent).toContain('main（默认分支）')
 })

@@ -41,7 +41,8 @@ def test_git_environment_does_not_inherit_git_overrides(monkeypatch):
     assert env['GIT_TERMINAL_PROMPT'] == '0'
 
 
-def test_snapshot_is_a_fixed_commit_without_git_metadata_and_is_cleaned(tmp_path, monkeypatch):
+@pytest.mark.parametrize('ref', ['', 'refs/tags/checkpoint'])
+def test_snapshot_is_a_fixed_commit_without_git_metadata_and_is_cleaned(tmp_path, monkeypatch, ref):
     source = tmp_path / 'source'
     source.mkdir()
     def git(*args):
@@ -52,17 +53,25 @@ def test_snapshot_is_a_fixed_commit_without_git_metadata_and_is_cleaned(tmp_path
     git('add', '.')
     git('-c', 'user.name=Test', '-c', 'user.email=test@example.org', 'commit', '-qm', 'source')
     expected = git('rev-parse', 'HEAD')
+    if ref:
+        git('tag', 'checkpoint')
+        (source / 'app.py').write_text('new default branch content')
+        git('add', '.')
+        git('-c', 'user.name=Test', '-c', 'user.email=test@example.org', 'commit', '-qm', 'new default')
     real_run = git_source._run
     def fake_network(args, **kwargs):
         if args[0] == 'clone':
             assert '--bare' in args and '--depth' in args and '--' in args
             shutil.copytree(source / '.git', args[-1])
             (source / 'app.py').write_text('uncommitted change')
+        elif args[2] == 'fetch':
+            assert args[3:] == ['--depth', '1', '--no-tags', '--', 'git@example.org:owner/repo.git', ref]
+            (Path(args[1]) / 'FETCH_HEAD').write_text(expected + '\n')
         else:
             real_run(args, **kwargs)
     monkeypatch.setattr(git_source, '_run', fake_network)
     uploads = tmp_path / 'uploads'
-    with git_source.git_package('git@example.org:owner/repo.git', upload_root=uploads) as (stream, info):
+    with git_source.git_package('git@example.org:owner/repo.git', ref, upload_root=uploads) as (stream, info):
         assert info['commit'] == expected
         with zipfile.ZipFile(stream) as archive:
             assert archive.read('app.py') == b'print("original")\n'
@@ -161,3 +170,33 @@ def test_running_git_is_killed_when_budget_is_exhausted(tmp_path, monkeypatch, e
         git_source._run(['clone'], root=tmp_path, output=tmp_path / 'out', limit=1)
     assert killed == [(process.pid, git_source.signal.SIGKILL)]
     assert process.waited
+
+
+def test_ref_discovery_parses_default_branch_tags_and_cleans_staging(tmp_path, monkeypatch):
+    def remote(arguments, **kwargs):
+        assert arguments == ['ls-remote', '--symref', '--', 'git@example.org:a/b.git', 'HEAD', 'refs/heads/*', 'refs/tags/*']
+        assert kwargs['limit'] == 1024**2 and kwargs['timeout_seconds'] == 20
+        kwargs['output'].write_text('ref: refs/heads/main\tHEAD\n' + 'a'*40 + '\tHEAD\n' +
+            'b'*40 + '\trefs/heads/dev\n' + 'a'*40 + '\trefs/heads/main\n' +
+            'c'*40 + '\trefs/tags/main\n' + 'd'*40 + '\trefs/tags/main^{}\n')
+    monkeypatch.setattr(git_source, '_run', remote)
+    refs = git_source.list_remote_refs('git@example.org:a/b.git', upload_root=tmp_path)
+    assert refs == {'default_ref': 'main', 'refs': [
+        {'value': 'main', 'name': 'main', 'kind': 'branch'},
+        {'value': 'dev', 'name': 'dev', 'kind': 'branch'},
+        {'value': 'refs/tags/main', 'name': 'main', 'kind': 'tag'}]}
+    assert list((tmp_path / '.staging').iterdir()) == []
+
+
+def test_ref_discovery_api_requires_login_and_never_caches_private_refs(tmp_path, monkeypatch):
+    app = Flask(__name__)
+    app.config['VIBEHUB_UPLOAD_ROOT'] = tmp_path
+    app.register_blueprint(vibehub_api.vibehub_api_bp)
+    monkeypatch.setattr(vibehub_api, 'current_user', lambda: None)
+    monkeypatch.setattr(git_source, 'list_remote_refs', lambda *_a, **_kw: pytest.fail('must authenticate first'))
+    assert app.test_client().post('/api/vibehub/git-refs', json={'git_url': 'https://example.org/repo'}).status_code == 401
+    monkeypatch.setattr(vibehub_api, 'current_user', lambda: {'id': 1})
+    monkeypatch.setattr(git_source, 'list_remote_refs', lambda *_a, **_kw: {'default_ref': 'main', 'refs': []})
+    response = app.test_client().post('/api/vibehub/git-refs', json={'git_url': 'https://example.org/repo'})
+    assert response.status_code == 200 and response.json['default_ref'] == 'main'
+    assert response.headers['Cache-Control'] == 'no-store'

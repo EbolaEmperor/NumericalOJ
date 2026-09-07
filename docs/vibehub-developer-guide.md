@@ -176,7 +176,7 @@ python3 scripts/numoj_user.py vibehub create ./my-vibe.zip \
 
 ### 从 Git 仓库提交
 
-创建和编辑作品页面都可选择「ZIP 文件」或「Git 仓库」。Git 模式填写仓库地址，可选填分支或标签；留空使用远端默认分支。提交后由服务器浅克隆并固定为一个 commit，再进入与 ZIP 相同的校验、构建和审核流程。
+创建和编辑作品页面都可选择「ZIP 文件」或「Git 仓库」。Git 模式填写仓库地址后自动读取远端默认分支，使用自定义下拉菜单选择其他分支或标签；切换地址会取消旧查询，读取失败可重试。CLI 的分支参数仍可省略，默认使用远端默认分支。提交后由服务器浅克隆并固定为一个 commit，再进入与 ZIP 相同的校验、构建和审核流程。
 
 ```bash
 python3 scripts/numoj_user.py vibehub create --git-url git@example.org:owner/project.git \
