@@ -154,6 +154,8 @@ class _FakeDocker:
         self.stopped: list[str] = []
         self.orphans: dict[str, dict[str, str]] = {}
         self.data_volumes: dict[str, tuple[str, str]] = {}
+        self.containers: dict[str, dict[str, str]] = {}
+        self.resumed: list[str] = []
 
     def inspect_image(self, reference):
         return runtime.ImageInfo(
@@ -178,6 +180,16 @@ class _FakeDocker:
         self.run_commands.append(args)
         name = args[args.index("--name") + 1]
         self.running.add(name)
+        self.containers[name] = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "--label")
+
+    def stop_container(self, name):
+        self.stopped.append(name)
+        self.running.discard(name)
+
+    def start_container(self, name):
+        assert name in self.containers
+        self.resumed.append(name)
+        self.running.add(name)
 
     def ensure_data_volume(self, name, *, scope, storage_key):
         identity = (scope, storage_key)
@@ -190,6 +202,7 @@ class _FakeDocker:
             self.stopped.append(name)
         self.running.discard(name)
         self.orphans.pop(name, None)
+        self.containers.pop(name, None)
 
     def container_running(self, name):
         return name in self.running
@@ -198,7 +211,7 @@ class _FakeDocker:
         return tuple(self.orphans)
 
     def container_labels(self, name):
-        return self.orphans.get(name)
+        return self.orphans.get(name, self.containers.get(name))
 
     def relay_http(self, *_args, **_kwargs):
         raise AssertionError("lifecycle test must not proxy")
@@ -748,7 +761,7 @@ def test_data_volume_persists_after_container_recreation(monkeypatch, short_tmp)
     assert len(docker.data_volumes) == 1
 
 
-def test_zero_idle_grace_starts_once_and_last_release_removes_container(
+def test_zero_idle_grace_starts_once_and_last_release_suspends_container(
     monkeypatch,
     short_tmp,
 ):
@@ -769,6 +782,13 @@ def test_zero_idle_grace_starts_once_and_last_release_removes_container(
     assert docker.stopped == []
     assert manager.release(second.token) is True
     assert docker.stopped == [first.container_name]
+    assert first.container_name in docker.containers
+    assert first.container_name not in docker.running
+    third = manager.acquire("demo@v1")
+    assert third.container_name == first.container_name
+    assert docker.resumed == [first.container_name]
+    assert len(docker.run_commands) == 1
+    assert "--rm" not in docker.run_commands[0]
 
 
 def test_acquire_replaces_dead_runtime_instead_of_returning_stale_lease(
@@ -850,7 +870,7 @@ def test_idle_grace_reuses_container_and_cancels_scheduled_cleanup(
     now[0] = 700.0
     assert manager.reap_expired() >= 1
     assert docker.stopped == [first.container_name]
-    assert manager._load_state()["runtimes"] == {}
+    assert {item["status"] for item in manager._load_state()["runtimes"].values()} == {"suspended"}
 
 
 def test_active_runtime_limit_is_global_but_allows_existing_runtime_reuse(
@@ -1290,7 +1310,7 @@ def test_active_runtime_limit_default_and_maximum(short_tmp):
     })
 
     assert defaults["max_active_runtimes"] == 8
-    assert defaults["idle_grace_seconds"] == 300
+    assert defaults["idle_grace_seconds"] == 0
     assert maximum["max_active_runtimes"] == 64
 
 
@@ -1632,7 +1652,7 @@ def test_promote_rejects_a_latest_image_from_another_package(short_tmp):
         manager.promote_latest_to_public("demo", package_digest="b" * 64)
 
 
-def test_last_release_removes_container_and_runtime_state(
+def test_last_release_stops_container_and_retains_suspended_state(
     monkeypatch,
     short_tmp,
 ):
@@ -1647,7 +1667,7 @@ def test_last_release_removes_container_and_runtime_state(
 
     assert docker.stopped == [lease.container_name]
     assert lease.container_name not in docker.running
-    assert manager._load_state()["runtimes"] == {}
+    assert {item["status"] for item in manager._load_state()["runtimes"].values()} == {"suspended"}
 
 
 def test_concurrent_version_switch_does_not_block_release(
@@ -2084,3 +2104,44 @@ def test_first_gpu_acquire_wakes_existing_slow_reaper(monkeypatch, tmp_path):
     manager.acquire('gpu-demo', gpu_allocation={'memory_mib': 4096, 'version_id': 12})
     assert manager._gpu_polling
     assert manager._reaper_wakeup.is_set()
+
+
+def test_suspended_runtime_releases_capacity_and_survives_manager_restart(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker, max_active_runtimes=1)
+    first = manager.acquire('demo@v1')
+    manager.release(first.token)
+    other = manager.acquire('other@v1', storage_key='project-2-public')
+    with pytest.raises(runtime.VibeHubCapacityError):
+        manager.acquire('demo@v1')
+    manager.release(other.token)
+    replacement = _manager(monkeypatch, short_tmp, docker=docker, max_active_runtimes=1)
+    restarted = replacement.acquire('demo@v1')
+    assert restarted.container_name == first.container_name
+    assert docker.resumed == [first.container_name]
+    assert len(docker.run_commands) == 2
+
+
+def test_missing_suspended_container_is_recreated_without_losing_volume(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    first = manager.acquire('demo@v1')
+    manager.release(first.token)
+    docker.containers.pop(first.container_name)
+    restarted = manager.acquire('demo@v1')
+    assert restarted.container_name == first.container_name
+    assert len(docker.run_commands) == 2
+    assert len(docker.data_volumes) == 1
+
+
+def test_suspended_gpu_does_not_trigger_device_monitoring(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    first = manager.acquire('demo@v1')
+    manager.release(first.token)
+    with manager._locked_state() as state:
+        item = next(iter(state['runtimes'].values()))
+        item['gpu'] = {'memory_mib': 8192}
+    monkeypatch.setattr(runtime.gpu, 'usage', lambda *_: pytest.fail('stopped GPU must not be monitored'))
+    assert manager._reap_gpu() == 0
+    assert manager._gpu_polling is False

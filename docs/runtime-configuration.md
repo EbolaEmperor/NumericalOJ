@@ -182,7 +182,7 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | 开发 `false`；生产 `true` | 正式部署始终拒绝复用普通 builder。 |
 | `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
 | `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
-| `VIBEHUB_IDLE_GRACE_SECONDS` | float | `300` | 最后一个玩家离开后的容器空闲宽限，范围 0–3600 秒；宽限内同版本玩家返回会复用容器并取消原回收截止时间。 |
+| `VIBEHUB_IDLE_GRACE_SECONDS` | float | `0` | 最后一个玩家离开后的关闭宽限，范围 0–3600 秒；默认为立即停止容器并释放内存/显存，保留容器和数据，下次访问重新启动。非零宽限内返回会取消关闭计划。 |
 | `VIBEHUB_REAPER_INTERVAL_SECONDS` | float | `15` | 后台过期回收间隔，必须小于 lease TTL。 |
 | `VIBEHUB_STORAGE_GC_INTERVAL_SECONDS` | float | `900` | 退役版本快照与过期上传暂存的后台回收周期，范围 60–86400 秒；Web worker 启动后会先立即执行一轮。 |
 | `VIBEHUB_REQUEST_TIMEOUT_SECONDS` | float | `15` | relay HTTP 端到端单请求总时限，范围 0.1–120 秒。 |

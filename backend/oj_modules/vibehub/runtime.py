@@ -51,7 +51,7 @@ SOURCE_DIGEST_LABEL = "com.numericaloj.vibehub.source-sha256"
 PACKAGE_DIGEST_LABEL = "com.numericaloj.vibehub.package-sha256"
 MANAGED_DATA_VOLUME_LABEL = "com.numericaloj.vibehub.data-volume"
 DATA_STORAGE_KEY_LABEL = "com.numericaloj.vibehub.storage-key"
-RUNTIME_ABI = "network-bridge-host-cuda126-v2"
+RUNTIME_ABI = "network-bridge-host-cuda126-suspend-v3"
 
 DEFAULT_BASE_IMAGE = "numericaloj-vibehub-runtime:1"
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "tmp" / "vibehub_runtime"
@@ -70,7 +70,7 @@ STANDARD_PIDS = 256
 FEATURED_PIDS = 512
 
 DEFAULT_LEASE_TTL_SECONDS = 90.0
-DEFAULT_IDLE_GRACE_SECONDS = 300.0
+DEFAULT_IDLE_GRACE_SECONDS = 0.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
 DEFAULT_REQUEST_MAX_BYTES = 16 * 1024 * 1024
 DEFAULT_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
@@ -1604,6 +1604,18 @@ class DockerCLI:
             last_detail = detail or f"docker rm exited {result.returncode}"
         raise VibeHubRuntimeError(f"无法确认 VibeHub 容器已删除：{last_detail[:500]}")
 
+    def stop_container(self, name: str) -> None:
+        self._close_relay_pool(name)
+        result = self._run(["docker", "stop", "--time", "1", name], timeout=15)
+        detail = f"{result.stdout}\n{result.stderr}".strip()
+        if result.returncode != 0 and "no such container" not in detail.lower():
+            raise VibeHubRuntimeError(f"无法停止 VibeHub 容器：{detail[:500]}")
+
+    def start_container(self, name: str) -> None:
+        result = self._run(["docker", "start", name], timeout=45)
+        if result.returncode != 0:
+            raise VibeHubRuntimeError("无法重新启动 VibeHub 容器")
+
     def _close_relay_pool(self, container_name: str) -> None:
         with self._relay_pools_lock:
             pool = self._relay_pools.pop(container_name, None)
@@ -2365,7 +2377,7 @@ class VibeHubRuntimeManager:
         limits = limits_for(featured)
         name = self._container_name(runtime_id)
         args = [
-            "docker", "run", "--detach", "--rm", "--init",
+            "docker", "run", "--detach", "--init",
             "--name", name,
             "--pull", "never",
             "--label", f"{MANAGED_CONTAINER_LABEL}=1",
@@ -2440,7 +2452,10 @@ class VibeHubRuntimeManager:
         expected_name = self._container_name(runtime_id)
         if runtime.get("container_name") != expected_name:
             raise VibeHubRuntimeError("VibeHub state 中的容器名不可信")
-        self.docker.remove_container(expected_name)
+        if runtime.get("suspend_after_stop"):
+            self.docker.stop_container(expected_name)
+        else:
+            self.docker.remove_container(expected_name)
 
     def _runtime_http_request(
         self,
@@ -2508,20 +2523,36 @@ class VibeHubRuntimeManager:
         featured: bool,
         storage_key: str,
         gpu_allocation: dict | None = None,
+        resume: bool = False,
     ) -> dict:
         name = self._container_name(runtime_id)
         data_volume = self._data_volume_name(storage_key)
         self.docker.ensure_data_volume(
             data_volume, scope=self.scope, storage_key=storage_key,
         )
+        reuse = False
+        if resume:
+            labels = self.docker.container_labels(name)
+            if labels is not None:
+                expected = {
+                    MANAGED_CONTAINER_LABEL: "1",
+                    MANAGER_SCOPE_LABEL: self.scope,
+                    RUNTIME_ID_LABEL: runtime_id,
+                }
+                if any(labels.get(key) != value for key, value in expected.items()):
+                    raise VibeHubRuntimeError("休眠容器身份不一致，拒绝启动")
+                reuse = True
         try:
-            self.docker.run_container(self._container_args(
-                runtime_id=runtime_id,
-                image_id=image.image_id,
-                featured=featured,
-                data_volume=data_volume,
-                gpu_allocation=gpu_allocation,
-            ))
+            if reuse:
+                self.docker.start_container(name)
+            else:
+                self.docker.run_container(self._container_args(
+                    runtime_id=runtime_id,
+                    image_id=image.image_id,
+                    featured=featured,
+                    data_volume=data_volume,
+                    gpu_allocation=gpu_allocation,
+                ))
             self._wait_ready(name)
         except Exception:
             self.docker.remove_container(name)
@@ -2553,7 +2584,8 @@ class VibeHubRuntimeManager:
 
         # ready、starting 与 stopping 都占一个物理容器槽；reservation 先落盘再
         # docker run，保证 worker 崩溃也不会绕过跨进程上限。
-        if len(state["runtimes"]) >= self.max_active_runtimes:
+        active = sum(self._runtime_status(item) != "suspended" for item in state["runtimes"].values())
+        if active >= self.max_active_runtimes:
             raise VibeHubCapacityError(
                 "VibeHub 活跃运行容器已达宿主上限，清理空闲作品后重试"
             )
@@ -2561,7 +2593,7 @@ class VibeHubRuntimeManager:
     @staticmethod
     def _runtime_status(runtime: Mapping[str, object]) -> str:
         status = str(runtime.get("status") or "ready")
-        if status not in {"starting", "ready", "stopping"}:
+        if status not in {"starting", "ready", "stopping", "suspended"}:
             raise VibeHubRuntimeError("VibeHub runtime status 无效")
         return status
 
@@ -2581,6 +2613,8 @@ class VibeHubRuntimeManager:
         state: dict,
         runtime_id: str,
         runtime: Mapping[str, object],
+        *,
+        suspend: bool = False,
     ) -> tuple[str, str, dict]:
         operation_id = secrets.token_hex(16)
         stopping = dict(runtime)
@@ -2588,6 +2622,7 @@ class VibeHubRuntimeManager:
             "status": "stopping",
             "operation_id": operation_id,
             "stop_deadline": float(self._clock()) + STOP_RESERVATION_TTL_SECONDS,
+            "suspend_after_stop": suspend,
         })
         stopping.setdefault("inflight", {})
         for digest in self._leases_for_runtime(state, runtime_id):
@@ -2606,7 +2641,7 @@ class VibeHubRuntimeManager:
         if self._runtime_status(runtime) != "ready":
             raise VibeHubRuntimeError("只有 ready runtime 可以进入空闲宽限")
         if self.idle_grace_seconds <= 0:
-            return self._mark_stopping_locked(state, runtime_id, runtime)
+            return self._mark_stopping_locked(state, runtime_id, runtime, suspend=True)
         idle = dict(runtime)
         idle["idle_deadline"] = (
             float(self._clock()) + self.idle_grace_seconds
@@ -2615,7 +2650,7 @@ class VibeHubRuntimeManager:
         return None
 
     def _stop_and_finalize(self, action: tuple[str, str, dict]) -> None:
-        """锁外删除闲置容器，再用 operation_id 做短锁 CAS 提交。"""
+        """锁外停止或删除容器，再用 operation_id 做短锁 CAS 提交。"""
 
         runtime_id, operation_id, runtime = action
         self._stop_runtime(runtime_id, runtime)
@@ -2626,7 +2661,14 @@ class VibeHubRuntimeManager:
                 and self._runtime_status(current) == "stopping"
                 and current.get("operation_id") == operation_id
             ):
-                state["runtimes"].pop(runtime_id, None)
+                if runtime.get("suspend_after_stop"):
+                    suspended = dict(current)
+                    for key in ("operation_id", "stop_deadline", "idle_deadline", "suspend_after_stop"):
+                        suspended.pop(key, None)
+                    suspended.update(status="suspended", inflight={})
+                    state["runtimes"][runtime_id] = suspended
+                else:
+                    state["runtimes"].pop(runtime_id, None)
 
     def _collect_cleanup_locked(
         self,
@@ -2650,6 +2692,8 @@ class VibeHubRuntimeManager:
             inflight = runtime.get("inflight")
             if not isinstance(inflight, dict):
                 raise VibeHubRuntimeError("VibeHub runtime inflight state 无效")
+            if status == "suspended":
+                continue
             for request_id, expires_at in list(inflight.items()):
                 try:
                     expired = float(expires_at) <= now
@@ -2671,7 +2715,10 @@ class VibeHubRuntimeManager:
                 except (KeyError, TypeError, ValueError):
                     stop_expired = True
                 if stop_expired:
-                    actions.append(self._mark_stopping_locked(state, runtime_id, runtime))
+                    actions.append(self._mark_stopping_locked(
+                        state, runtime_id, runtime,
+                        suspend=bool(runtime.get("suspend_after_stop")),
+                    ))
             else:
                 has_leases = bool(self._leases_for_runtime(state, runtime_id))
                 if has_leases or inflight:
@@ -2692,7 +2739,7 @@ class VibeHubRuntimeManager:
                     idle_expired = True
                 if idle_expired:
                     actions.append(
-                        self._mark_stopping_locked(state, runtime_id, runtime)
+                        self._mark_stopping_locked(state, runtime_id, runtime, suspend=True)
                     )
                     removed += 1
         return removed, actions
@@ -2903,6 +2950,7 @@ class VibeHubRuntimeManager:
         )
         reservation_id = ""
         ready_probe = None
+        resume = False
         with self._locked_state() as state:
             if selected_gpu:
                 if any(item.get("gpu") and item.get("project_key") == key and self._runtime_status(item) == "stopping" for item in state["runtimes"].values()):
@@ -2913,6 +2961,9 @@ class VibeHubRuntimeManager:
                 if blocked and float(blocked["until"]) > float(self._clock()):
                     raise VibeHubGPUError(str(blocked["reason"]))
             runtime = state["runtimes"].get(runtime_id)
+            if isinstance(runtime, dict) and self._runtime_status(runtime) == "suspended":
+                resume = True
+                runtime = None
             if isinstance(runtime, dict):
                 if self._runtime_status(runtime) == "ready":
                     ready_probe = (
@@ -2995,6 +3046,7 @@ class VibeHubRuntimeManager:
                 featured=bool(featured),
                 storage_key=selected_storage_key,
                 gpu_allocation=selected_gpu,
+                resume=resume,
             )
         except Exception:
             action = None
@@ -3161,7 +3213,7 @@ class VibeHubRuntimeManager:
             snapshots = {
                 runtime_id: dict(item)
                 for runtime_id, item in state["runtimes"].items()
-                if item.get("gpu") and self._runtime_status(item) != "stopping"
+                if item.get("gpu") and self._runtime_status(item) in {"starting", "ready"}
             }
             self._gpu_polling = bool(snapshots)
             state["gpu_blocks"] = {
@@ -3188,7 +3240,7 @@ class VibeHubRuntimeManager:
                     "until": float(self._clock()) + 60, "reason": reason,
                 }
             for runtime_id, item in list(state["runtimes"].items()):
-                if not item.get("gpu") or self._runtime_status(item) == "stopping":
+                if not item.get("gpu") or self._runtime_status(item) not in {"starting", "ready"}:
                     continue
                 old = snapshots.get(runtime_id)
                 stale = runtime_id in invalid and old and self._runtime_instance_key(old) == self._runtime_instance_key(item)
