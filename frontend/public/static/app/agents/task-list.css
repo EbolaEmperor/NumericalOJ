@@ -234,7 +234,7 @@
   background-size: contain;
 }
 
-.agent-choice--endpoint .agent-endpoint-option-name {
+.agent-composer-choice--endpoint .agent-endpoint-option-name {
   display: flex;
   max-width: 100%;
   align-items: center;
