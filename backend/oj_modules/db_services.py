@@ -38,6 +38,11 @@ from backend.oj_modules.problems.llm_bindings import (
     normalize_problem_llm_bindings,
     serialize_problem_llm_bindings,
 )
+from backend.oj_modules.problems.written_vote import (
+    deserialize_written_vote_config,
+    normalize_written_vote_config,
+    serialize_written_vote_config,
+)
 from backend.oj_modules.infrastructure.redis import (
     RedisClientProfile,
     create_optional_redis_client,
@@ -1374,7 +1379,7 @@ def get_all_problems():
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,"
                 "written_grading_mode,written_grading_prompt,"
                 "programming_grading_mode,output_image_filename,programming_grading_prompt,"
-                "llm_endpoint_bindings "
+                "llm_endpoint_bindings,written_vote_config "
                 "FROM problems ORDER BY id ASC"
             )
             cursor.execute(sql)
@@ -1382,6 +1387,9 @@ def get_all_problems():
             for row in rows:
                 row["llm_endpoint_bindings"] = deserialize_problem_llm_bindings(
                     row.get("llm_endpoint_bindings")
+                )
+                row["written_vote_config"] = deserialize_written_vote_config(
+                    row.get("written_vote_config")
                 )
             return rows
     finally:
@@ -1396,7 +1404,7 @@ def get_problem(problem_id):
                 "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,"
                 "time_limit_ms,submission_limit,written_grading_mode,written_grading_prompt,"
                 "programming_grading_mode,output_image_filename,programming_grading_prompt,"
-                "llm_endpoint_bindings "
+                "llm_endpoint_bindings,written_vote_config "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
@@ -1404,6 +1412,9 @@ def get_problem(problem_id):
             if row:
                 row["llm_endpoint_bindings"] = deserialize_problem_llm_bindings(
                     row.get("llm_endpoint_bindings")
+                )
+                row["written_vote_config"] = deserialize_written_vote_config(
+                    row.get("written_vote_config")
                 )
             return row
     finally:
@@ -1418,7 +1429,7 @@ def get_problem_title(problem_id):
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,"
                 "written_grading_mode,written_grading_prompt,"
                 "programming_grading_mode,output_image_filename,programming_grading_prompt,"
-                "llm_endpoint_bindings "
+                "llm_endpoint_bindings,written_vote_config "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
@@ -1426,6 +1437,9 @@ def get_problem_title(problem_id):
             if row:
                 row["llm_endpoint_bindings"] = deserialize_problem_llm_bindings(
                     row.get("llm_endpoint_bindings")
+                )
+                row["written_vote_config"] = deserialize_written_vote_config(
+                    row.get("written_vote_config")
                 )
             return row
     finally:
@@ -1448,6 +1462,7 @@ def create_problem(
     written_grading_mode=1,
     written_grading_prompt='',
     llm_endpoint_bindings=None,
+    written_vote_config=None,
 ):
     conn = get_db_connection()
     try:
@@ -1483,12 +1498,18 @@ def create_problem(
             problem_type=type,
             programming_grading_mode=use_programming_mode,
         )
+        normalized_vote_config = (
+            normalize_written_vote_config(written_vote_config)
+            if int(type) == 2 and use_written_mode != 4
+            else []
+        )
         with conn.cursor() as cursor:
             sql = """INSERT INTO problems
                      (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit,
                       programming_grading_mode, output_image_filename, programming_grading_prompt,
-                      written_grading_mode, written_grading_prompt, llm_endpoint_bindings)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                      written_grading_mode, written_grading_prompt, llm_endpoint_bindings,
+                      written_vote_config)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
                 sql,
                 (
@@ -1508,6 +1529,7 @@ def create_problem(
                     use_written_mode,
                     use_written_prompt,
                     serialize_problem_llm_bindings(normalized_llm_bindings),
+                    serialize_written_vote_config(normalized_vote_config),
                 ),
             )
             problem_id = cursor.lastrowid
@@ -1599,6 +1621,7 @@ def update_problem(
     new_written_grading_mode=None,
     new_written_grading_prompt=None,
     new_llm_endpoint_bindings=_UNSET,
+    new_written_vote_config=_UNSET,
 ):
     conn = get_db_connection()
     try:
@@ -1695,6 +1718,15 @@ def update_problem(
                 )
                 assignments.append("llm_endpoint_bindings=%s")
                 values.append(serialize_problem_llm_bindings(normalized_llm_bindings))
+
+            if new_written_vote_config is not _UNSET:
+                normalized_vote_config = (
+                    normalize_written_vote_config(new_written_vote_config)
+                    if mode_val != 4
+                    else []
+                )
+                assignments.append("written_vote_config=%s")
+                values.append(serialize_written_vote_config(normalized_vote_config))
 
             values.append(problem_id)
             cursor.execute(

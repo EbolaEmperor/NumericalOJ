@@ -95,6 +95,21 @@ def test_create_problem_persists_written_llm_endpoint_bindings_as_json():
     assert raw['llm_endpoint_bindings'] is not None
 
 
+def test_create_problem_persists_written_vote_config_as_json():
+    config = [
+        {'endpoint_id': 101, 'count': 2},
+        {'endpoint_id': 102, 'count': 1},
+    ]
+    pid = db.create_problem(
+        title='书面题 Vote 配置',
+        content='w',
+        type=2,
+        lang='matlab',
+        written_vote_config=config,
+    )
+    assert db.get_problem(pid)['written_vote_config'] == config
+
+
 # --------------------------------------------------------------------------
 # get_problem
 # --------------------------------------------------------------------------
@@ -120,6 +135,7 @@ def test_get_problem_returns_full_row():
         'programming_grading_mode',
         'output_image_filename', 'programming_grading_prompt',
         'llm_endpoint_bindings',
+        'written_vote_config',
     ):
         assert col in row, f"缺少列: {col}"
     assert row['id'] == pid

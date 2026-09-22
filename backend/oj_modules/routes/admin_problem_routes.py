@@ -22,6 +22,10 @@ from backend.oj_modules.problems.llm_bindings import (
     ProblemLlmBindingsError,
     problem_llm_bindings_from_form,
 )
+from backend.oj_modules.problems.written_vote import (
+    WrittenVoteConfigError,
+    written_vote_config_from_form,
+)
 from backend.oj_modules.problems.testdata import TestdataValidationError, import_testdata_zip
 from backend.oj_modules.problems.lean_package import LeanPackageError, load_lean_package_zip
 from backend.oj_modules.problems.lean_workspace import (
@@ -220,7 +224,8 @@ def add_problem():
                 problem_type=problem_type,
                 programming_grading_mode=programming_grading_mode,
             )
-        except ProblemLlmBindingsError as exc:
+            written_vote_config = written_vote_config_from_form(request.form)
+        except (ProblemLlmBindingsError, WrittenVoteConfigError) as exc:
             return jsonify(success=False, message=str(exc)), 400
 
         if not title or not content:
@@ -242,6 +247,7 @@ def add_problem():
             written_grading_mode=written_grading_mode,
             written_grading_prompt=written_grading_prompt,
             llm_endpoint_bindings=llm_endpoint_bindings,
+            written_vote_config=written_vote_config,
         )
         if _wants_json_response():
             return jsonify(success=True, problem_id=problem_id, message="题目创建成功")
@@ -299,7 +305,11 @@ def edit_problem(problem_id):
                 programming_grading_mode=new_programming_grading_mode,
                 existing=problem.get('llm_endpoint_bindings'),
             )
-        except ProblemLlmBindingsError as exc:
+            new_written_vote_config = written_vote_config_from_form(
+                request.form,
+                existing=problem.get('written_vote_config'),
+            )
+        except (ProblemLlmBindingsError, WrittenVoteConfigError) as exc:
             return jsonify(success=False, message=str(exc)), 400
 
         if not new_title or not new_content:
@@ -321,6 +331,7 @@ def edit_problem(problem_id):
             new_written_grading_mode=new_written_grading_mode,
             new_written_grading_prompt=new_written_grading_prompt,
             new_llm_endpoint_bindings=new_llm_endpoint_bindings,
+            new_written_vote_config=new_written_vote_config,
         )
         if _wants_json_response():
             return jsonify(

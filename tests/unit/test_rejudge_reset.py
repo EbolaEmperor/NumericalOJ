@@ -86,6 +86,7 @@ def test_enqueue_rejudge_resets_before_scheduling(monkeypatch):
         "reset_submission_for_rejudge",
         lambda sid, problem_type=None: reset_calls.append((sid, problem_type)),
     )
+    monkeypatch.setattr(rejudge_routes, "supersede_latest_attempt", lambda _sid: None)
 
     submissions = [
         {"id": 101, "problem_type": 1, "status": "Accepted"},

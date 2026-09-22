@@ -31,6 +31,7 @@ def _run_tex_task(monkeypatch, tmp_path, scenario):
     }
     monkeypatch.delenv('NUMOJ_FAKE_WRITTEN_HOMEWORK_SCORE', raising=False)
     monkeypatch.setattr(written_tasks, 'get_submission_by_id', lambda _sid: submission.copy())
+    monkeypatch.setattr(written_tasks, 'get_latest_attempt', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         written_tasks,
         'acquire_submission_lock',
@@ -47,6 +48,26 @@ def _run_tex_task(monkeypatch, tmp_path, scenario):
         written_tasks,
         'resolve_problem_llm_endpoint_snapshot',
         lambda _problem, binding_key: ('snapshot', binding_key),
+    )
+    monkeypatch.setattr(
+        written_tasks,
+        '_resolve_written_vote_plan',
+        lambda _problem, _mode: ([{'endpoint_id': 1, 'count': 1}], [
+            {'vote_index': 1, 'endpoint_id': 1, 'endpoint_revision': 1,
+             'model': 'test-model', 'endpoint': 'snapshot'},
+        ]),
+    )
+    monkeypatch.setattr(
+        written_tasks,
+        'create_attempt',
+        lambda _sid, _mode, _config, votes: (
+            votes[0].update(id=1) or {'id': 1, 'votes': votes}
+        ),
+    )
+    monkeypatch.setattr(
+        written_tasks,
+        '_evaluate_written_votes',
+        lambda attempt, plan, evaluator: evaluator(plan[0]['endpoint']),
     )
     monkeypatch.setattr(
         written_tasks,

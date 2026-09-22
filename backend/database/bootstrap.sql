@@ -359,6 +359,7 @@ CREATE TABLE `problems` (
   `written_grading_model` varchar(32) NOT NULL DEFAULT '',
   `written_grading_prompt` text,
   `llm_endpoint_bindings` json DEFAULT NULL,
+  `written_vote_config` json DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
@@ -408,6 +409,53 @@ CREATE TABLE `submissions` (
   `ai_code_marks_json` longtext,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=12497 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Auditable written-homework vote batches and individual judge results.
+-- A submission may have multiple attempts after administrator rejudging.
+--
+
+CREATE TABLE `written_grading_attempts` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `submission_id` int NOT NULL,
+  `attempt_token` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `grading_mode` tinyint NOT NULL,
+  `status` varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'queued',
+  `config_json` json NOT NULL,
+  `consensus_score` int DEFAULT NULL,
+  `manual_override` tinyint(1) NOT NULL DEFAULT '0',
+  `manual_score` int DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `completed_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_written_grading_attempt_token` (`attempt_token`),
+  KEY `idx_written_grading_attempt_submission` (`submission_id`,`id`),
+  KEY `idx_written_grading_attempt_status` (`status`,`updated_at`),
+  CONSTRAINT `fk_written_grading_attempt_submission` FOREIGN KEY (`submission_id`) REFERENCES `submissions` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `chk_written_grading_attempt_manual_override` CHECK (`manual_override` IN (0,1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `written_grading_votes` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `attempt_id` bigint unsigned NOT NULL,
+  `vote_index` int NOT NULL,
+  `endpoint_id` bigint NOT NULL,
+  `endpoint_revision` bigint NOT NULL DEFAULT '1',
+  `model` varchar(255) NOT NULL,
+  `status` varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'queued',
+  `score` int DEFAULT NULL,
+  `comment` text,
+  `error_message` text,
+  `call_attempts` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_written_grading_vote_index` (`attempt_id`,`vote_index`),
+  KEY `idx_written_grading_vote_attempt_status` (`attempt_id`,`status`),
+  CONSTRAINT `fk_written_grading_vote_attempt` FOREIGN KEY (`attempt_id`) REFERENCES `written_grading_attempts` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --

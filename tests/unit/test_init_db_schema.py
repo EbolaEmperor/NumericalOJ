@@ -168,6 +168,9 @@ def test_dynamic_site_config_schema_is_fully_declared():
     assert specs["problems"].columns["llm_endpoint_bindings"].lower() == (
         "json default null"
     )
+    assert specs["problems"].columns["written_vote_config"].lower() == (
+        "json default null"
+    )
     assert specs["ranking_agent_judge_endpoints"].columns["protocol"].lower() == (
         "varchar(16) default null"
     )
@@ -224,6 +227,21 @@ def test_dynamic_site_config_schema_is_fully_declared():
     grants = specs["dynamic_config_test_grants"]
     assert grants.columns["token_hash"].lower() == "char(64) not null"
     assert "uq_dynamic_config_test_token" in grants.indexes
+
+
+def test_written_grading_vote_schema_is_fully_declared():
+    from scripts import init_db_schema
+
+    specs = init_db_schema._load_schema_specs()
+    attempts = specs["written_grading_attempts"]
+    votes = specs["written_grading_votes"]
+    assert attempts.columns["config_json"].lower() == "json not null"
+    assert attempts.columns["manual_override"].lower() == (
+        "tinyint(1) not null default '0'"
+    )
+    assert "idx_written_grading_attempt_submission" in attempts.indexes
+    assert votes.columns["model"].lower() == "varchar(255) not null"
+    assert "uq_written_grading_vote_index" in votes.indexes
 
 
 def test_ranking_submissions_covering_index_declared_in_create_table():

@@ -900,6 +900,71 @@ html.is-submission-detail-resizing * {
   white-space: normal;
 }
 
+.submission-vote-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.submission-vote-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--submission-line);
+  border-radius: 8px;
+  background: var(--submission-paper-soft);
+}
+
+.submission-vote-identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.submission-vote-identity span,
+.submission-vote-position {
+  color: var(--submission-ink-3);
+  font: 10px/1.4 var(--numoj-mono, monospace);
+  letter-spacing: .09em;
+}
+
+.submission-vote-identity strong {
+  overflow: hidden;
+  color: var(--submission-ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-vote-score {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  color: var(--submission-ink-3);
+  white-space: nowrap;
+}
+
+.submission-vote-score strong {
+  color: var(--submission-accent, #b7654c);
+  font: 700 20px/1 var(--numoj-mono, monospace);
+}
+
+.submission-vote-position {
+  text-align: center;
+}
+
+@media (max-width: 575.98px) {
+  .submission-vote-toolbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .submission-vote-score {
+    grid-column: 2;
+    grid-row: 2;
+  }
+}
+
 .monaco-ai-issue-underline {
   text-decoration-line: underline;
   text-decoration-style: wavy;

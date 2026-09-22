@@ -253,6 +253,11 @@ def test_panel_status_stream_omits_written_content(monkeypatch):
             "last_updated": "2026-07-23 12:00:00",
         },
     )
+    monkeypatch.setattr(
+        submission_routes,
+        "get_latest_written_vote_attempt",
+        lambda _submission_id: None,
+    )
 
     with app.test_request_context("/submission_status_stream/9?view=panel"):
         response = submission_routes.submission_status_stream(9)

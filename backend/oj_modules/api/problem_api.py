@@ -316,6 +316,7 @@ def problem_create_form():
             "promptly_review_config": _promptly_review_config_from_prompt(""),
             "written_grading_mode": 1,
             "written_grading_prompt": _DEFAULT_WRITTEN_GRADING_PROMPT,
+            "written_vote_config": [],
             "llm_endpoint_bindings": {},
         },
         options=_problem_form_options(),
@@ -351,6 +352,7 @@ def problem_edit_form(problem_id):
         "promptly_review_config": _promptly_review_config_from_prompt(problem.get("programming_grading_prompt") or ""),
         "written_grading_mode": problem.get("written_grading_mode") or 1,
         "written_grading_prompt": problem.get("written_grading_prompt") or "",
+        "written_vote_config": problem.get("written_vote_config") or [],
         "llm_endpoint_bindings": bindings,
     }
     form.update({key: value for key, value in bindings.items()})

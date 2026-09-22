@@ -33,6 +33,10 @@ from backend.oj_modules.submissions.presentation import (
     load_written_submission_latex_and_error as _load_written_submission_latex_and_error,
     render_written_markdown_to_html as _render_written_markdown_to_html,
 )
+from backend.oj_modules.submissions.written_voting import (
+    get_latest_attempt as get_latest_written_vote_attempt,
+    public_attempt_payload,
+)
 
 
 submission_api_bp = Blueprint("submission_api", __name__, url_prefix="/api")
@@ -248,6 +252,7 @@ def submission_detail(submission_id):
     submission_latex_error = ""
     submission_latex_html = ""
     written_grading_mode = 1
+    written_vote = None
     if raw_problem and raw_problem.get("type") == 2:
         try:
             written_grading_mode = int(raw_problem.get("written_grading_mode") or 1)
@@ -256,6 +261,9 @@ def submission_detail(submission_id):
         if written_grading_mode == 1:
             submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
             submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
+        written_vote = public_attempt_payload(
+            get_latest_written_vote_attempt(submission_id)
+        )
 
     return json_success(
         user=public_user(user),
@@ -270,5 +278,6 @@ def submission_detail(submission_id):
         submission_latex_html=submission_latex_html,
         written_submission={
             "show_latex_transcription": bool(raw_problem and raw_problem.get("type") == 2 and written_grading_mode == 1),
+            "vote": written_vote,
         },
     )

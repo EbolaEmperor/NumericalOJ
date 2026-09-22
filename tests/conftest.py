@@ -40,6 +40,7 @@ REDIS_DB = int(getattr(config, 'REDIS_DB', 0))
 
 # 需要 truncate 的核心业务表（动态班级表 ^C\w+ 另行 DROP）
 CORE_TABLES = [
+    'written_grading_votes', 'written_grading_attempts',
     'submission_test_points', 'submission_repository_snapshots',
     'repository_delete_confirmations', 'repository_upload_sessions',
     'repository_fs_journal', 'repository_chunk_embeddings',

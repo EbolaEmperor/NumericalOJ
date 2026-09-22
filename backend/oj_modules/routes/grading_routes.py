@@ -18,6 +18,7 @@ from backend.oj_modules.submissions.grading import (
     invalidate_previous_pending_submissions,
     update_submission_score_and_comment,
 )
+from backend.oj_modules.submissions.written_voting import mark_latest_attempt_manual
 from backend.oj_modules.submissions.faithsieve import (
     finish_run,
     latest_submissions_for_problem,
@@ -181,6 +182,8 @@ def submit_grading(submission_id):
         return jsonify(success=False, message="提交记录不存在"), 404
 
     update_submission_score_and_comment(submission_id, score, comment)
+    if int(submission.get('problem_type') or 0) == 2:
+        mark_latest_attempt_manual(submission_id, score)
 
     new_status = 'Accepted' if score == 5 else 'Unaccepted'
     update_submission_status(submission_id, new_status)
@@ -293,11 +296,18 @@ def get_next_pending_submission(submission_id):
         try:
             with conn.cursor() as cursor:
                 sql = """
-                    SELECT id
-                    FROM submissions
-                    WHERE status = 'Pending' AND problem_type = 2
-                    AND id > %s
-                    ORDER BY id ASC
+                    SELECT s.id
+                    FROM submissions s
+                    JOIN problems p ON p.id=s.problem_id
+                    LEFT JOIN written_grading_attempts wga ON wga.id=(
+                        SELECT latest.id FROM written_grading_attempts latest
+                        WHERE latest.submission_id=s.id
+                        ORDER BY latest.id DESC LIMIT 1
+                    )
+                    WHERE s.status = 'Pending' AND s.problem_type = 2
+                    AND (p.written_grading_mode=4 OR wga.status IN ('needs_manual_review','failed'))
+                    AND s.id > %s
+                    ORDER BY s.id ASC
                     LIMIT 1
                 """
                 cursor.execute(sql, (submission_id,))
@@ -313,10 +323,17 @@ def get_next_pending_submission(submission_id):
 
             with conn.cursor() as cursor:
                 sql = """
-                    SELECT id
-                    FROM submissions
-                    WHERE status = 'Pending' AND problem_type = 2
-                    ORDER BY id ASC
+                    SELECT s.id
+                    FROM submissions s
+                    JOIN problems p ON p.id=s.problem_id
+                    LEFT JOIN written_grading_attempts wga ON wga.id=(
+                        SELECT latest.id FROM written_grading_attempts latest
+                        WHERE latest.submission_id=s.id
+                        ORDER BY latest.id DESC LIMIT 1
+                    )
+                    WHERE s.status = 'Pending' AND s.problem_type = 2
+                    AND (p.written_grading_mode=4 OR wga.status IN ('needs_manual_review','failed'))
+                    ORDER BY s.id ASC
                     LIMIT 1
                 """
                 cursor.execute(sql)

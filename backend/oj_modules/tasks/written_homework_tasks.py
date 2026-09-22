@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pymysql
 
@@ -23,6 +24,13 @@ from backend.oj_modules.ai.transcription import (
     save_transcribed_latex,
 )
 from backend.oj_modules.ai.client import resolve_problem_llm_endpoint_snapshot
+from backend.oj_modules.problems.llm_bindings import (
+    DIRECT_IMAGE_GRADING_ENDPOINT_ID,
+    TEXT_GRADING_ENDPOINT_ID,
+    deserialize_problem_llm_bindings,
+)
+from backend.oj_modules.problems.written_vote import normalize_written_vote_config
+from backend.oj_modules.site_config.services import get_llm_endpoint
 from backend.oj_modules.db_services import (
     get_problem,
     get_submission_by_id,
@@ -35,6 +43,12 @@ from backend.oj_modules.submissions.grading import (
     update_submission_score_and_comment,
 )
 from backend.oj_modules.submissions.locks import acquire_submission_lock, release_submission_lock
+from backend.oj_modules.submissions.written_voting import (
+    create_attempt,
+    finish_attempt,
+    get_latest_attempt,
+    update_vote,
+)
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
@@ -54,6 +68,9 @@ _TEX_HAS_CJK_SETUP_PATTERN = re.compile(
 )
 _TEX_MISSING_CHAR_PATTERN = re.compile(r"Missing character: There is no .*?\(U\+([0-9A-Fa-f]{4,6})\)")
 _WRITTEN_PDF_MAX_BYTES = 64 * 1024 * 1024
+_VOTE_MAX_WORKERS = 3
+_VOTE_CALL_ATTEMPTS = 3
+_VOTE_CALL_TIMEOUT_SECONDS = 45
 _TEX_COMPILE_SCRIPT = r'''
 set -u
 source_path="$1"
@@ -140,6 +157,101 @@ def _is_deterministic_written_input_error(error):
         "转写得到的 LaTeX 为空",
     )
     return any(marker in text for marker in markers)
+
+
+def _written_vote_endpoint_key(written_mode):
+    return (
+        DIRECT_IMAGE_GRADING_ENDPOINT_ID
+        if int(written_mode) == 2
+        else TEXT_GRADING_ENDPOINT_ID
+    )
+
+
+def _resolve_written_vote_plan(problem, written_mode):
+    """在批改开始时冻结所有评委端点；旧题的单端点绑定自动视为 1 票。"""
+
+    config = normalize_written_vote_config((problem or {}).get("written_vote_config"))
+    binding_key = _written_vote_endpoint_key(written_mode)
+    if not config:
+        endpoint_id = deserialize_problem_llm_bindings(
+            (problem or {}).get("llm_endpoint_bindings")
+        ).get(binding_key)
+        if endpoint_id is None:
+            # 复用既有诊断文本。
+            resolve_problem_llm_endpoint_snapshot(problem, binding_key)
+        config = [{"endpoint_id": int(endpoint_id), "count": 1}]
+
+    plan = []
+    vote_index = 1
+    for item in config:
+        raw_endpoint = get_llm_endpoint(item["endpoint_id"], include_secret=True)
+        endpoint = resolve_problem_llm_endpoint_snapshot(
+            problem,
+            binding_key,
+            endpoint=raw_endpoint,
+        )
+        revision = max(1, int(raw_endpoint.get("revision") or 1))
+        for _ in range(int(item["count"])):
+            plan.append({
+                "vote_index": vote_index,
+                "endpoint_id": int(item["endpoint_id"]),
+                "endpoint_revision": revision,
+                "model": endpoint.model,
+                "endpoint": endpoint,
+            })
+            vote_index += 1
+    return config, plan
+
+
+def _run_written_vote(attempt_id, vote, evaluator):
+    last_error = None
+    for call_attempt in range(1, _VOTE_CALL_ATTEMPTS + 1):
+        update_vote(vote["id"], status="running", call_attempts=call_attempt)
+        try:
+            score, comment = evaluator(vote["endpoint"])
+        except Exception as exc:  # 每一票独立重试，不重跑已经成功的票。
+            last_error = exc
+            continue
+        update_vote(
+            vote["id"],
+            status="completed",
+            score=int(score),
+            comment=str(comment or ""),
+            call_attempts=call_attempt,
+        )
+        return {"score": int(score), "comment": str(comment or "")}
+    update_vote(
+        vote["id"],
+        status="failed",
+        error_message=str(last_error or "模型调用失败"),
+        call_attempts=_VOTE_CALL_ATTEMPTS,
+    )
+    return {"error": str(last_error or "模型调用失败")}
+
+
+def _evaluate_written_votes(attempt, vote_plan, evaluator):
+    results = [None] * len(vote_plan)
+    with ThreadPoolExecutor(max_workers=min(_VOTE_MAX_WORKERS, len(vote_plan))) as executor:
+        future_map = {
+            executor.submit(_run_written_vote, attempt["id"], vote, evaluator): index
+            for index, vote in enumerate(vote_plan)
+        }
+        for future in as_completed(future_map):
+            results[future_map[future]] = future.result()
+
+    if any(result is None or result.get("error") for result in results):
+        finish_attempt(attempt["id"], status="needs_manual_review")
+        return None, "部分 AI 评委连续重试后仍未完成，已转人工复核。"
+
+    scores = {int(result["score"]) for result in results}
+    if len(scores) != 1:
+        finish_attempt(attempt["id"], status="needs_manual_review")
+        return None, "AI 评委给分不一致，已转人工复核。"
+
+    score = scores.pop()
+    finish_attempt(attempt["id"], status="consensus", consensus_score=score)
+    # 兼容既有列表、导出及详情中的单评语字段；完整评语仍以逐票记录为准。
+    return score, results[0]["comment"]
 
 
 def _read_text_file_safe(path, max_chars=300000):
@@ -449,10 +561,23 @@ def register_written_homework_task(celery_app):
             )
             release_submission_lock(lock_client, lock_key, lock_token)
             return
+        previous_vote_attempt = get_latest_attempt(submission_id, include_votes=False)
+        if (
+            submission.get('status') == 'Pending'
+            and previous_vote_attempt
+            and str(previous_vote_attempt.get('status') or '') == 'needs_manual_review'
+        ):
+            print(
+                f"[Idempotency] Skip written grading awaiting manual review "
+                f"for submission_id={submission_id}"
+            )
+            release_submission_lock(lock_client, lock_key, lock_token)
+            return
 
         upload_folder = ""
         uploaded_filename = f"submission_{submission_id}"
         tex_extract_dir = None
+        vote_attempt = None
         try:
             update_submission_status(submission_id, 'Running')
 
@@ -491,40 +616,50 @@ def register_written_homework_task(celery_app):
             # 任务开始时把本次实际会使用的题目软链接解析成快照；OCR、编译或
             # 图片渲染耗时期间发生的全局配置修改不会影响本次任务。
             ocr_endpoint = None
-            text_grading_endpoint = None
-            direct_image_endpoint = None
-            if written_mode == 2:
-                direct_image_endpoint = resolve_problem_llm_endpoint_snapshot(
-                    problem,
-                    "direct_image_grading_endpoint_id",
-                )
-            elif written_mode == 3:
-                text_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
-                    problem,
-                    "text_grading_endpoint_id",
-                )
-            elif written_mode == 1:
+            if written_mode == 1:
                 ocr_endpoint = resolve_problem_llm_endpoint_snapshot(
                     problem,
                     "ocr_endpoint_id",
                 )
-                text_grading_endpoint = resolve_problem_llm_endpoint_snapshot(
-                    problem,
-                    "text_grading_endpoint_id",
-                )
-            else:
+            elif written_mode == 4:
                 # 纯人工批改不应进入本任务；若模式在排队期间被切换，恢复为待
                 # 人工处理状态并停止，不能误用 OCR/评分端点。
                 update_submission_status(submission_id, 'Pending')
                 refresh_submission_status_snapshot(submission_id)
                 return
 
+            vote_config, vote_plan = _resolve_written_vote_plan(problem, written_mode)
+
+            def grade_with_votes(evaluator):
+                nonlocal vote_attempt
+                public_votes = [
+                    {key: value for key, value in vote.items() if key != "endpoint"}
+                    for vote in vote_plan
+                ]
+                vote_attempt = create_attempt(
+                    submission_id,
+                    written_mode,
+                    {
+                        "judges": vote_config,
+                        "grading_prompt": str(problem.get("written_grading_prompt") or ""),
+                    },
+                    public_votes,
+                )
+                # create_attempt 将行 ID 写回 public_votes；同步到带端点快照的执行计划。
+                for vote, persisted in zip(vote_plan, public_votes):
+                    vote["id"] = persisted["id"]
+                return _evaluate_written_votes(vote_attempt, vote_plan, evaluator)
+
             if written_mode == 2:
                 image_paths = render_pdf_to_images(file_path, upload_folder)
-                score, ai_comment = evaluate_written_homework_with_ai_from_images(
-                    problem,
-                    image_paths,
-                    endpoint=direct_image_endpoint,
+                score, ai_comment = grade_with_votes(
+                    lambda endpoint: evaluate_written_homework_with_ai_from_images(
+                        problem,
+                        image_paths,
+                        endpoint=endpoint,
+                        timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
+                        repair_invalid_json=False,
+                    )
                 )
             elif written_mode == 3:
                 if not str(file_path).lower().endswith('.zip'):
@@ -626,10 +761,14 @@ def register_written_homework_task(celery_app):
 
                     # TeX 成功编译后先推送一次快照，前端可立刻渲染 PDF。
                     refresh_submission_status_snapshot(submission_id)
-                    score, ai_comment = evaluate_written_homework_with_ai(
-                        problem,
-                        tex_text,
-                        endpoint=text_grading_endpoint,
+                    score, ai_comment = grade_with_votes(
+                        lambda endpoint: evaluate_written_homework_with_ai(
+                            problem,
+                            tex_text,
+                            endpoint=endpoint,
+                            timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
+                            repair_invalid_json=False,
+                        )
                     )
                 except Exception as tex_error:
                     score = 0
@@ -660,12 +799,21 @@ def register_written_homework_task(celery_app):
                     raise RuntimeError("转写得到的 LaTeX 为空。")
                 # OCR 已完成，立即发布一次实时状态，供前端渲染 LaTeX 转写结果。
                 refresh_submission_status_snapshot(submission_id)
-                score, ai_comment = evaluate_written_homework_with_ai(
-                    problem,
-                    latex_text,
-                    endpoint=text_grading_endpoint,
+                score, ai_comment = grade_with_votes(
+                    lambda endpoint: evaluate_written_homework_with_ai(
+                        problem,
+                        latex_text,
+                        endpoint=endpoint,
+                        timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
+                        repair_invalid_json=False,
+                    )
                 )
 
+            if score is None:
+                update_submission_comment(submission_id, ai_comment)
+                update_submission_status(submission_id, 'Pending')
+                refresh_submission_status_snapshot(submission_id)
+                return
             update_submission_score_and_comment(submission_id, score, ai_comment)
             new_status = 'Accepted' if score == 5 else 'Unaccepted'
             update_submission_status(submission_id, new_status)
@@ -705,6 +853,8 @@ def register_written_homework_task(celery_app):
                     )
                     update_submission_status(submission_id, 'Unaccepted')
                 else:
+                    if vote_attempt is not None:
+                        finish_attempt(vote_attempt["id"], status="needs_manual_review")
                     update_submission_comment(submission_id, f"AI 自动评分失败：{str(e)}")
                     update_submission_status(submission_id, 'Pending')
             except Exception:

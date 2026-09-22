@@ -13,6 +13,7 @@ from backend.oj_modules.db_services import (
     reset_submission_for_rejudge,
 )
 from backend.oj_modules.submissions.locks import clear_submission_lock
+from backend.oj_modules.submissions.written_voting import supersede_latest_attempt
 
 
 rejudge_bp = Blueprint('rejudge', __name__)
@@ -64,6 +65,8 @@ def _enqueue_rejudge(submissions, progress_key, clear_running_lock=False):
     for sub in submissions:
         if clear_running_lock and sub.get("status") == "Running":
             clear_submission_lock(sub["id"])
+        if int(sub.get("problem_type") or 0) == 2:
+            supersede_latest_attempt(sub["id"])
         reset_submission_for_rejudge(sub["id"], sub.get("problem_type"))
 
     for idx, sub in enumerate(submissions):

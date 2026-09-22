@@ -230,6 +230,8 @@ def evaluate_written_homework_with_ai(
     *,
     endpoint=None,
     endpoint_id=None,
+    timeout_seconds=300,
+    repair_invalid_json=True,
 ):
     del grading_model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
     use_endpoint = resolve_problem_llm_endpoint_snapshot(
@@ -267,11 +269,11 @@ def evaluate_written_homework_with_ai(
     response_text = _call_llm_text(
         prompt,
         use_endpoint,
-        timeout=300,
+        timeout=int(timeout_seconds),
     )
     score, deductions, comment = _parse_written_homework_grading_result(
         response_text,
-        repair_endpoint=use_endpoint,
+        repair_endpoint=use_endpoint if repair_invalid_json else None,
     )
     final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment
@@ -284,6 +286,8 @@ def evaluate_written_homework_with_ai_from_images(
     *,
     endpoint=None,
     endpoint_id=None,
+    timeout_seconds=360,
+    repair_invalid_json=True,
 ):
     if not image_paths:
         raise RuntimeError("未找到可用于图片批改的页面图片。")
@@ -322,11 +326,11 @@ def evaluate_written_homework_with_ai_from_images(
         prompt,
         image_data_urls,
         use_endpoint,
-        timeout=360,
+        timeout=int(timeout_seconds),
     )
     score, deductions, comment = _parse_written_homework_grading_result(
         response_text,
-        repair_endpoint=use_endpoint,
+        repair_endpoint=use_endpoint if repair_invalid_json else None,
     )
     final_comment = _format_written_homework_comment(score, deductions, comment)
     return score, final_comment

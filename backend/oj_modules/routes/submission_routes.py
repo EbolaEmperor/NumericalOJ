@@ -28,6 +28,11 @@ from backend.oj_modules.submissions.presentation import (
     render_written_markdown_to_html as _render_written_markdown_to_html,
     summarize_panel_test_points as _summarize_panel_test_points,
 )
+from backend.oj_modules.submissions.written_voting import (
+    REVIEW_REQUIRED_STATES,
+    get_latest_attempt as get_latest_written_vote_attempt,
+    public_attempt_payload,
+)
 from backend.oj_modules.shared.sse import (
     guard_sse_stream,
     sse_capacity_response,
@@ -53,6 +58,21 @@ def _get_authorized_submission_snapshot(submission_id, user):
     return snapshot
 
 
+def _written_vote_state(submission_id, problem_type):
+    if int(problem_type or 0) != 2:
+        return None
+    return get_latest_written_vote_attempt(submission_id)
+
+
+def _snapshot_is_judging(snapshot, vote_attempt=None):
+    if vote_attempt and str(vote_attempt.get('status') or '') in REVIEW_REQUIRED_STATES:
+        return False
+    return (
+        snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
+        or snapshot.get('score') is None
+    )
+
+
 @submission_bp.route('/submission_detail/<int:submission_id>')
 def submission_detail(submission_id):
     return redirect(f'/submissions/{submission_id}')
@@ -72,10 +92,8 @@ def submission_status(submission_id):
     if snapshot.get('username') != user['username'] and not is_admin(user):
         return jsonify({'error': 'Access denied'}), 403
 
-    is_judging = (
-        snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
-        or snapshot.get('score') is None
-    )
+    vote_attempt = _written_vote_state(submission_id, snapshot.get('problem_type'))
+    is_judging = _snapshot_is_judging(snapshot, vote_attempt)
     promptly_review_reply = str(
         snapshot.get('promptly_review_reply') or snapshot.get('prompt_generation_error') or ''
     ).strip()
@@ -89,6 +107,7 @@ def submission_status(submission_id):
         'test_points_count': snapshot.get('test_points_count', 0),
         'test_points': snapshot.get('test_points', []),
         'last_updated': snapshot.get('last_updated', ''),
+        'written_vote': public_attempt_payload(vote_attempt),
     }
     if 'generated_from_prompt' in snapshot:
         payload['generated_from_prompt'] = bool(snapshot.get('generated_from_prompt'))
@@ -117,10 +136,10 @@ def submission_status_stream(submission_id):
         return jsonify({'error': 'Access denied'}), 403
 
     def _build_payload(snapshot, *, include_prompt_code=False):
-        is_judging = (
-            snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
-            or snapshot.get('score') is None
+        vote_attempt = _written_vote_state(
+            snapshot.get('id'), snapshot.get('problem_type'),
         )
+        is_judging = _snapshot_is_judging(snapshot, vote_attempt)
         if panel_view:
             test_points = _summarize_panel_test_points(
                 snapshot.get('test_points')
@@ -133,6 +152,7 @@ def submission_status_stream(submission_id):
                 'test_points_count': len(test_points),
                 'test_points': test_points,
                 'last_updated': snapshot.get('last_updated', ''),
+                'written_vote': public_attempt_payload(vote_attempt),
             }
 
         payload = {
@@ -147,6 +167,7 @@ def submission_status_stream(submission_id):
             'test_points_count': snapshot.get('test_points_count', 0),
             'test_points': snapshot.get('test_points', []),
             'last_updated': snapshot.get('last_updated', ''),
+            'written_vote': public_attempt_payload(vote_attempt),
         }
         if 'generated_from_prompt' in snapshot:
             payload['generated_from_prompt'] = bool(snapshot.get('generated_from_prompt'))
@@ -200,6 +221,7 @@ def submission_status_stream(submission_id):
                 first_payload.get('score'),
                 first_payload.get('test_points_count'),
                 first_payload.get('last_updated'),
+                (first_payload.get('written_vote') or {}).get('status'),
             )
             last_ping = start_ts
             while True:
@@ -218,6 +240,7 @@ def submission_status_stream(submission_id):
                     payload.get('score'),
                     payload.get('test_points_count'),
                     payload.get('last_updated'),
+                    (payload.get('written_vote') or {}).get('status'),
                 )
                 if marker != last_marker:
                     yield _encode_sse("status", payload)
