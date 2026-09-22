@@ -129,8 +129,8 @@ def test_disagreement_runs_second_round_with_only_other_judges(monkeypatch):
             prompt=f"prompt-{endpoint}",
         )
 
-    def second_round(endpoint, own_round, peers):
-        reconsidered.append((endpoint, own_round, peers))
+    def second_round(endpoint, own_round, peers, round_number):
+        reconsidered.append((endpoint, own_round, peers, round_number))
         return WrittenGradingRound(
             score=5,
             comment=f"终轮 {endpoint}",
@@ -149,7 +149,8 @@ def test_disagreement_runs_second_round_with_only_other_judges(monkeypatch):
     assert message == "终轮 a"
     assert finished == [(11, {"status": "consensus", "consensus_score": 5})]
     assert len(reconsidered) == 3
-    for endpoint, own_round, peers in reconsidered:
+    for endpoint, own_round, peers, round_number in reconsidered:
+        assert round_number == 2
         assert own_round.prompt == f"prompt-{endpoint}"
         assert {peer["vote_index"] for peer in peers} == {
             vote["vote_index"] for vote in plan if vote["endpoint"] != endpoint
@@ -184,8 +185,9 @@ def test_first_round_failure_does_not_start_reconsideration(monkeypatch):
     assert finished == [(12, {"status": "needs_manual_review"})]
 
 
-def test_second_round_disagreement_requires_manual_review(monkeypatch):
+def test_second_round_disagreement_triggers_third_round(monkeypatch):
     finished = []
+    reconsidered = []
     monkeypatch.setattr(tasks, "update_vote", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tasks, "finish_attempt", lambda attempt_id, **values: finished.append((attempt_id, values)))
 
@@ -198,6 +200,11 @@ def test_second_round_disagreement_requires_manual_review(monkeypatch):
             f"prompt-{endpoint}",
         )
 
+    def reconsider(endpoint, own_round, peers, round_number):
+        reconsidered.append((endpoint, round_number, {peer["vote_index"] for peer in peers}))
+        scores = {"a": 3, "b": 5} if round_number == 2 else {"a": 5, "b": 5}
+        return round_result(endpoint, scores, f"第{round_number}轮")
+
     score, message = tasks._evaluate_written_votes(
         {"id": 13},
         [
@@ -205,14 +212,55 @@ def test_second_round_disagreement_requires_manual_review(monkeypatch):
             {"id": 2, "vote_index": 2, "endpoint": "b"},
         ],
         lambda endpoint: round_result(endpoint, {"a": 4, "b": 5}, "首轮"),
-        lambda endpoint, _own, _peers: round_result(
+        reconsider,
+    )
+
+    assert score == 5
+    assert message == "第3轮 a"
+    assert finished == [(13, {"status": "consensus", "consensus_score": 5})]
+    # 第二轮每位评委各一次，仍分歧后第三轮每位评委再各一次。
+    assert sorted((item[0], item[1]) for item in reconsidered) == [
+        ("a", 2), ("a", 3), ("b", 2), ("b", 3),
+    ]
+    for endpoint, round_number, peer_indexes in reconsidered:
+        assert peer_indexes == {2 if endpoint == "a" else 1}
+
+
+def test_third_round_disagreement_requires_manual_review(monkeypatch):
+    finished = []
+    rounds_seen = []
+    monkeypatch.setattr(tasks, "update_vote", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks, "finish_attempt", lambda attempt_id, **values: finished.append((attempt_id, values)))
+
+    def round_result(endpoint, scores, label):
+        score = scores[endpoint]
+        return WrittenGradingRound(
+            score,
+            f"{label} {endpoint}",
+            f'{{"score":{score}}}',
+            f"prompt-{endpoint}",
+        )
+
+    def reconsider(endpoint, _own, _peers, round_number):
+        rounds_seen.append(round_number)
+        return round_result(
             endpoint,
             {"a": 3, "b": 5},
-            "第二轮",
-        ),
+            f"第{round_number}轮",
+        )
+
+    score, message = tasks._evaluate_written_votes(
+        {"id": 14},
+        [
+            {"id": 1, "vote_index": 1, "endpoint": "a"},
+            {"id": 2, "vote_index": 2, "endpoint": "b"},
+        ],
+        lambda endpoint: round_result(endpoint, {"a": 4, "b": 5}, "首轮"),
+        reconsider,
     )
 
     assert score is None
-    assert "第二轮" in message
+    assert "第三轮" in message
     assert "仍不一致" in message
-    assert finished == [(13, {"status": "needs_manual_review"})]
+    assert rounds_seen == [2, 2, 3, 3]
+    assert finished == [(14, {"status": "needs_manual_review"})]

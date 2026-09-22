@@ -73,6 +73,8 @@ _WRITTEN_PDF_MAX_BYTES = 64 * 1024 * 1024
 _VOTE_MAX_WORKERS = 3
 _VOTE_CALL_ATTEMPTS = 3
 _VOTE_CALL_TIMEOUT_SECONDS = 45
+# 首轮分歧后的复评轮次编号 → 日志/评语中的中文轮次标签。
+_RECONSIDERATION_ROUND_LABELS = {2: "第二轮", 3: "第三轮"}
 _TEX_COMPILE_SCRIPT = r'''
 set -u
 source_path="$1"
@@ -269,7 +271,12 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
         return None, "部分 AI 评委连续重试后仍未完成，已转人工复核。"
 
     scores = {int(result["score"]) for result in results}
-    if len(scores) != 1:
+    round_label = ""
+    # 首轮分歧后最多追加两轮复评（第二轮、第三轮），每轮每位评委只发起一次。
+    for round_number in sorted(_RECONSIDERATION_ROUND_LABELS):
+        if len(scores) == 1:
+            break
+        round_label = _RECONSIDERATION_ROUND_LABELS[round_number]
         can_reconsider = (
             callable(reconsider_evaluator)
             and all(result.get("round") is not None for result in results)
@@ -278,21 +285,22 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
             finish_attempt(attempt["id"], status="needs_manual_review")
             return None, "AI 评委给分不一致，已转人工复核。"
 
-        first_round_results = results
+        previous_results = results
 
-        def evaluate_reconsideration(index, endpoint):
+        def evaluate_reconsideration(index, endpoint, _previous=previous_results, _round_number=round_number):
             peers = [
                 {
                     "vote_index": int(vote_plan[peer_index]["vote_index"]),
                     "round": peer_result["round"],
                 }
-                for peer_index, peer_result in enumerate(first_round_results)
+                for peer_index, peer_result in enumerate(_previous)
                 if peer_index != index
             ]
             return reconsider_evaluator(
                 endpoint,
-                first_round_results[index]["round"],
+                _previous[index]["round"],
                 peers,
+                _round_number,
             )
 
         results = _run_written_vote_round(
@@ -302,11 +310,12 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
         )
         if any(result is None or result.get("error") for result in results):
             finish_attempt(attempt["id"], status="needs_manual_review")
-            return None, "第二轮 AI 评委连续重试后仍未完成，已转人工复核。"
+            return None, f"{round_label} AI 评委连续重试后仍未完成，已转人工复核。"
         scores = {int(result["score"]) for result in results}
-        if len(scores) != 1:
-            finish_attempt(attempt["id"], status="needs_manual_review")
-            return None, "第二轮 AI 评委给分仍不一致，已转人工复核。"
+
+    if len(scores) != 1:
+        finish_attempt(attempt["id"], status="needs_manual_review")
+        return None, f"{round_label} AI 评委给分仍不一致，已转人工复核。"
 
     score = scores.pop()
     finish_attempt(attempt["id"], status="consensus", consensus_score=score)
@@ -712,12 +721,13 @@ def register_written_homework_task(celery_app):
                     vote_attempt,
                     vote_plan,
                     evaluator,
-                    lambda endpoint, first_round, peers: reconsider_written_homework_with_ai(
-                        first_round,
+                    lambda endpoint, previous_round, peers, round_number: reconsider_written_homework_with_ai(
+                        previous_round,
                         peers,
                         endpoint=endpoint,
                         timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
                         repair_invalid_json=False,
+                        round_number=round_number,
                     ),
                 )
 

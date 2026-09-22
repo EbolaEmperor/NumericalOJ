@@ -40,6 +40,9 @@ class WrittenGradingRound:
     raw_response: str
     prompt: str
     image_data_urls: tuple[str, ...] = ()
+    # 生成本轮回复时实际发送的续聊消息（不含首轮 prompt）；下一轮续聊时
+    # 原样前缀累积，保证同一评委的会话历史逐轮完整。
+    continuation_messages: tuple = ()
 
 
 def _written_grading_round_result(
@@ -47,6 +50,7 @@ def _written_grading_round_result(
     *,
     prompt,
     image_data_urls=(),
+    continuation_messages=(),
     repair_endpoint=None,
 ):
     score, deductions, comment = _parse_written_homework_grading_result(
@@ -59,10 +63,11 @@ def _written_grading_round_result(
         raw_response=str(response_text or ""),
         prompt=str(prompt or ""),
         image_data_urls=tuple(str(item) for item in image_data_urls),
+        continuation_messages=tuple(continuation_messages),
     )
 
 
-def _written_reconsideration_prompt(peer_rounds):
+def _written_reconsideration_prompt(peer_rounds, round_number=2):
     sections = ["下面是其余几位评委的评分结果："]
     for peer in peer_rounds:
         sections.extend([
@@ -73,16 +78,24 @@ def _written_reconsideration_prompt(peer_rounds):
             "回复：",
             peer["round"].raw_response,
         ])
-    sections.extend([
-        "",
-        "---",
-        "",
-        "请你结合其他评委的意见，重新仔细阅读学生的答案，尤其注意你们意见不一致的地方。"
-        "形成一个最终的评分结果。还是按刚才告诉你的格式来返回 json。",
-        "",
-        "特别的，如果学生答案是以图片形式给你的，那你要注意你的识图结果或者其他评委的识图结果"
-        "都有可能是错的，你需要仔细地重新读一遍图。",
-    ])
+    if int(round_number) >= 3:
+        sections.extend([
+            "",
+            "---",
+            "",
+            "这是第二轮讨论的结果，请再核对一轮，解决争议的问题。还是用一样的 json 格式回复我",
+        ])
+    else:
+        sections.extend([
+            "",
+            "---",
+            "",
+            "请你结合其他评委的意见，重新仔细阅读学生的答案，尤其注意你们意见不一致的地方。"
+            "形成一个最终的评分结果。还是按刚才告诉你的格式来返回 json。",
+            "",
+            "特别的，如果学生答案是以图片形式给你的，那你要注意你的识图结果或者其他评委的识图结果"
+            "都有可能是错的，你需要仔细地重新读一遍图。",
+        ])
     return "\n".join(sections)
 
 
@@ -403,26 +416,28 @@ def evaluate_written_homework_with_ai_from_images(
 
 
 def reconsider_written_homework_with_ai(
-    first_round,
+    previous_round,
     peer_rounds,
     *,
     endpoint,
     timeout_seconds=300,
     repair_invalid_json=False,
+    round_number=2,
 ):
-    """沿用首轮完整前缀，让同一评委参考其他评委后进行最终复评。"""
+    """沿用本评委此前完整会话前缀，参考其他评委最新一轮结果后继续复评。"""
 
-    if not isinstance(first_round, WrittenGradingRound):
-        raise RuntimeError("缺少评委首轮会话，无法发起第二轮评分。")
-    followup = _written_reconsideration_prompt(peer_rounds)
+    if not isinstance(previous_round, WrittenGradingRound):
+        raise RuntimeError("缺少评委上一轮会话，无法发起下一轮评分。")
+    followup = _written_reconsideration_prompt(peer_rounds, round_number=round_number)
     continuation_messages = [
-        {"role": "assistant", "content": first_round.raw_response},
+        *previous_round.continuation_messages,
+        {"role": "assistant", "content": previous_round.raw_response},
         {"role": "user", "content": followup},
     ]
-    if first_round.image_data_urls:
+    if previous_round.image_data_urls:
         response_text = _call_llm_vision(
-            first_round.prompt,
-            first_round.image_data_urls,
+            previous_round.prompt,
+            previous_round.image_data_urls,
             endpoint,
             timeout=int(timeout_seconds),
             stream=True,
@@ -431,7 +446,7 @@ def reconsider_written_homework_with_ai(
         )
     else:
         response_text = _call_llm_text(
-            first_round.prompt,
+            previous_round.prompt,
             endpoint,
             timeout=int(timeout_seconds),
             stream=True,
@@ -440,7 +455,8 @@ def reconsider_written_homework_with_ai(
         )
     return _written_grading_round_result(
         response_text,
-        prompt=first_round.prompt,
-        image_data_urls=first_round.image_data_urls,
+        prompt=previous_round.prompt,
+        image_data_urls=previous_round.image_data_urls,
+        continuation_messages=continuation_messages,
         repair_endpoint=endpoint if repair_invalid_json else None,
     )

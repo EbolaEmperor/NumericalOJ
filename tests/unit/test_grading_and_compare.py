@@ -224,6 +224,64 @@ def test_written_homework_reconsideration_preserves_first_round_prefix(
     assert "仔细地重新读一遍图" in followup
 
 
+def test_written_homework_third_round_keeps_full_transcript(monkeypatch):
+    from backend.oj_modules.ai import grading
+
+    captured = []
+
+    def fake_call(*args, **kwargs):
+        captured.append((args, kwargs))
+        return '{"score":5,"deductions":[],"comment":"复评"}'
+
+    monkeypatch.setattr(grading, "_call_llm_text", fake_call)
+    first_round = grading.WrittenGradingRound(
+        score=4,
+        comment="首轮评语",
+        raw_response='{"score":4,"deductions":["缺一步"],"comment":"首轮"}',
+        prompt="完全相同的首轮请求",
+    )
+    peers_second = [{
+        "vote_index": 2,
+        "round": grading.WrittenGradingRound(
+            score=3, comment="第二轮分歧", raw_response='{"score":3}', prompt="peer",
+        ),
+    }]
+
+    second_round = grading.reconsider_written_homework_with_ai(
+        first_round,
+        peers_second,
+        endpoint=object(),
+        timeout_seconds=45,
+    )
+    third_round = grading.reconsider_written_homework_with_ai(
+        second_round,
+        peers_second,
+        endpoint=object(),
+        timeout_seconds=45,
+        round_number=3,
+    )
+
+    assert third_round.score == 5
+    second_args, second_kwargs = captured[0]
+    third_args, third_kwargs = captured[1]
+    assert second_args[0] == third_args[0] == "完全相同的首轮请求"
+
+    second_continuation = second_kwargs["continuation_messages"]
+    third_continuation = third_kwargs["continuation_messages"]
+    # 第三轮在前两轮完整对话基础上追加「本轮回复 + 本轮指令」。
+    assert third_continuation[:2] == second_continuation
+    assert [message["role"] for message in third_continuation] == [
+        "assistant", "user", "assistant", "user",
+    ]
+    assert third_continuation[2]["content"] == second_round.raw_response
+
+    followup = third_continuation[3]["content"]
+    assert peers_second[0]["round"].raw_response in followup
+    assert "这是第二轮讨论的结果" in followup
+    assert "请再核对一轮，解决争议的问题" in followup
+    assert "还是用一样的 json 格式回复我" in followup
+
+
 def test_parse_low_score_without_deductions_gets_default():
     parse = _parse()
     score, deductions, _ = parse('{"score": 3, "deductions": [], "comment": ""}')
