@@ -1,5 +1,7 @@
 # 启动配置参考
 
+## 配置来源与生效规则
+
 NumericalOJ 把配置分成两类：
 
 - `.env.tmpl` 只列出新部署必须明确填写的九项启动配置：`SECRET_KEY`、五项
@@ -16,6 +18,8 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 
 ## Web、日志与数据库连接
 
+### Web 安全与日志
+
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `FLASK_DEBUG` | bool | `false` | 本地调试开关；生产必须关闭。 |
@@ -24,10 +28,20 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 | `CSRF_TRUSTED_ORIGINS` | string[] | `[]` | 反向代理造成内外 Origin 不同时的可信公开 Origin。 |
 | `LOG_LEVEL` | string | `INFO` | 应用日志级别。 |
 | `LOG_TRUSTED_PROXY_CIDRS` | string[] | `[]` | 唯一可信反向代理网段；空值不信任转发 IP。 |
+
+### Web 连接与 SSE 容量
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
 | `WEB_GUNICORN_THREADS` | int | `256` | 单个 gthread worker 的请求线程数，服务 256 常态、512 峰值在线用户产生的 SSE 与短时点击突发；在线用户不等于同时请求。有效范围 128–512。 |
 | `WEB_GUNICORN_CONNECTIONS` | int | `1024` | gthread worker 同时维护的客户端连接上限；按 512 峰值在线浏览器各一条 SSE 和一条 HTTP keep-alive 预留，有效范围 256–4096，且不得小于 `WEB_GUNICORN_THREADS`。 |
 | `WEB_GUNICORN_BACKLOG` | int | `512` | worker 繁忙时的监听队列上限，实际还受内核 `somaxconn` 限制；有效范围 128–8192。 |
 | `WEB_SSE_MAX_CONNECTIONS` | int | `192` | 单 Web 进程允许的页面 SSE 长连接数，必须满足 `1 <= WEB_SSE_MAX_CONNECTIONS <= min(WEB_GUNICORN_THREADS, WEB_GUNICORN_CONNECTIONS) - 64`，显式保留至少 64 个普通请求槽位。 |
+
+### 数据库连接池
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
 | `MYSQL_CONNECT_TIMEOUT` | int | `5` | MySQL 建连超时，单位秒。 |
 | `MYSQL_POOL_MIN_SIZE` | int | `2` | 每进程连接池最小连接数。 |
 | `MYSQL_POOL_MAX_SIZE` | int | `6` | 每进程连接池最大连接数。 |
@@ -35,6 +49,8 @@ LLM、Embedding、SMTP 与 WebSearch MCP 的地址、密钥和模型不属于启
 | `MYSQL_POOL_RECYCLE_SECONDS` | int | `1200` | 连接回收周期，单位秒。 |
 | `MYSQL_WEB_POOL_MAX_SIZE` | int | `24` | Web 进程的连接池上限；Celery 等进程仍使用通用上限。 |
 | `MYSQL_WEB_POOL_WAIT_TIMEOUT_SECONDS` | float | `0.05` | Web 连接池耗尽时的短等待上限；超时返回带 `Retry-After` 的 503，保护 100ms 交互目标。 |
+
+### 连接管理与文件描述符
 
 生产 Web Supervisor 固定设置 `minfds=8192`，覆盖 1024 个客户端连接、MySQL/Redis、
 日志 socket、语言服务子进程与文件响应所需描述符，并为短时峰值保留余量。Gunicorn 的
@@ -45,6 +61,8 @@ keep-alive 等待为 5 秒；gthread 会把空闲 keep-alive 放回事件循环�
 打榜赛正向/反向评测六类流。容量满时新流立即收到 `503` 与 `Retry-After: 1`；已有流结束、异常或
 客户端断开时归还槽位，避免长连接把普通页面和健康检查的线程全部占满。
 
+### 静态资源预压缩
+
 生产 `deploy.sh` 会在停服前为 `frontend/public/static/`、`frontend/dist/assets/`，以及存在时的生产根目录
 `static/` 下不小于 100 KiB 的 JS/CSS/HTML/JSON/SVG 同时生成 Brotli 与 Gzip 旁路文件；本地需要验证时可在 `frontend/` 内显式运行
 `npm run build:precompress`。
@@ -53,6 +71,8 @@ keep-alive 等待为 5 秒；gthread 会把空闲 keep-alive 放回事件循环�
 identity，并始终返回 `Vary: Accept-Encoding`。部署清单位于
 `.deploy/static-precompression/manifest.json`，只用于清理脚本此前生成、现已失去对应大文件源的旁路；
 未记录在清单中的生产额外资产不会被删除。
+
+### 只读 HTTP 基准
 
 只读 HTTP 基准脚本默认使用 256 条并发连接。256/512 指这里刻意制造的“同时请求”，不能把结果
 直接等同于在线用户数；实际 256 常态、512 峰值在线用户通常只有一部分人在同一瞬间点击或保持 SSE。
@@ -78,19 +98,33 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 
 这些参数只控制资源和工作流边界，不选择模型或供应商。
 
+### 代码批注与 LaTeX OCR
+
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
 | `AI_CODE_MARKS_IMAGE_ANALYSIS_TIMEOUT` | int | `180` |
 | `LATEX_OCR_MAX_IMAGES_PER_REQUEST` | int | `20` |
 | `LATEX_OCR_STREAM_EMIT_INTERVAL` | float | `0.6` |
 | `LATEX_OCR_STREAM_EMIT_MIN_DELTA` | int | `60` |
+
+### Agent 检索与工作区
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `AGENT_REPOSITORY_KNN_TOP_K` | int | `5` |
 | `AGENT_REPOSITORY_KNN_SCORE_THRESHOLD` | float | `0.08` |
 | `AGENT_WORKSPACE_ROOT` | string | `tmp/agent_workspaces` |
 | `AGENT_WORKSPACE_MAX_BYTES` | int | `4294967296` |
 | `AGENT_WORKSPACE_QUOTA_CHECK_INTERVAL_SECONDS` | float | `2.0` |
 | `AGENT_CONTAINER_SITE_URL` | string | `http://host.docker.internal:2025` |
+
+### WebSearch 超时
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `MODELSCOPE_WEB_SEARCH_TIMEOUT_SECONDS` | int | `90` |
+
+### 工作区配额与会话恢复
 
 每个持久 Agent workspace 只受总数据量限制；不会因为文件数量、目录数量、目录深度、
 文件名、硬链接、符号链接或运行期特殊节点而阻止或终止 Harness。总量统计不跟随符号链接，
@@ -100,6 +134,8 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 私有 Runtime 和原生会话恢复点；新版本部署并重启 Worker 后，可以在原会话直接发送下一条消息继续。直接续聊
 不会回滚 Runtime，也不会重新执行上一条消息；新轮次会先按 4 GiB 配额校验保留下来的 Workspace。
 
+### Harness 与 WebSearch 凭据
+
 通用 Agent 任务（包括解题与造数据兼容入口）启动时会读取全站 WebSearch MCP 的 URL 和 Authorization，
 并注入管理员在弹窗中选择的 Harness。Claude Code 使用远程 MCP 配置；Pi 通过镜像内
 受信任扩展注册同一个 `web_search` 工具。模型 API Key
@@ -107,6 +143,8 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 隔离、随 relay 关闭立即失效的临时凭据，生成到任务工作区的配置文件仅引用变量名。
 
 ## 代码仓库与向量索引
+
+### 仓库存储与上传限制
 
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
@@ -117,6 +155,11 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `REPOSITORY_MAX_DEPTH` | int | `32` |
 | `REPOSITORY_MAX_PATH_BYTES` | int | `1024` |
 | `REPOSITORY_UPLOAD_SESSION_TTL_SECONDS` | int | `86400` |
+
+### 结构化与向量索引
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `REPOSITORY_EMBEDDING_DIM` | int | `1024` |
 | `REPOSITORY_STRUCTURED_TIMEOUT` | int | `240` |
 | `REPOSITORY_STRUCTURED_MAX_INPUT_CHARS` | int | `120000` |
@@ -130,6 +173,8 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 
 ## 普通判题与通用 Agent 容器
 
+### Agent Judge 容器
+
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
 | `AGENT_JUDGE_DOCKER_IMAGE` | string | `numericaloj-agent-judge:latest` |
@@ -139,11 +184,21 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `AGENT_JUDGE_CPU_LIMIT` | string | `2` |
 | `AGENT_JUDGE_PIDS_LIMIT` | string | `512` |
 | `AGENT_JUDGE_PROGRESS_TTL` | int | `21600` |
+
+### ELO 隔离评测
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `ELO_ISOLATED_WORKER_NETWORK` | string | `none` |
 | `ELO_ISOLATED_JUDGE_NETWORK` | string | `bridge` |
 | `ELO_ISOLATED_WORKER_STARTUP_GRACE_SECONDS` | float | `30` |
 | `ELO_ISOLATED_CALL_GRACE_MS` | int | `2000` |
 | `ELO_ISOLATED_EXEC_GRACE_MS` | int | `5000` |
+
+### 普通判题容器与输入输出限制
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `JUDGER_DOCKER_IMAGE` | string | `numericaloj-judger:latest` |
 | `JUDGER_DOCKER_MEM_LIMIT` | string | `1g` |
 | `JUDGER_DOCKER_CPU_LIMIT` | string | `2` |
@@ -156,6 +211,11 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `JUDGER_CASE_INPUT_MAX_BYTES` | int | `67108864` |
 | `JUDGER_STDOUT_MAX_BYTES` | int | `1048576` |
 | `JUDGER_STDERR_MAX_BYTES` | int | `1048576` |
+
+### Lean 4 评测与交互会话
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `LEAN4_DOCKER_IMAGE` | string | `numericaloj-lean4:latest` |
 | `LEAN4_JUDGE_MEM_LIMIT` | string | `4g` |
 | `LEAN4_INTERACTIVE_MEM_LIMIT` | string | `4g` |
@@ -164,6 +224,11 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `LEAN4_INTERACTIVE_MAX_SESSIONS` | int | `8` |
 | `LEAN4_INTERACTIVE_IDLE_SECONDS` | int | `600` |
 | `LEAN4_INTERACTIVE_TIMEOUT_SECONDS` | int | `180` |
+
+### 判题路径与数值后端
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `OJ_ROOT_PATH` | string/空 | 空 |
 | `JUDGER_RUN_ROOT` | string/空 | 空 |
 | `JUDGER_TIMEOUT_KILL_AFTER_SEC` | float | `1.0` |
@@ -172,79 +237,7 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live -n 5120 -c 5
 | `JUDGER_NUMERIC_BACKEND` | string/空 | 空 |
 | `JUDGER_ENABLE_MKL` | bool/空 | 空 |
 
-## VibeHub 作品容器
-
-| 配置项 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `VIBEHUB_RUNTIME_ROOT` | string | `tmp/vibehub_runtime` | 权限为 0700 的跨 worker 状态与锁目录；不会挂入作品容器。 |
-| `VIBEHUB_ALLOWED_BASE_IMAGES` | string[] | `["numericaloj-vibehub-runtime:1"]` | 唯一允许出现在用户 Dockerfile 外部 `FROM` 中、且必须已在本机预置的镜像。 |
-| `VIBEHUB_BUILD_BUILDER` | string/空 | 开发为空；生产 `numoj-vibehub-online` | 正式部署自动创建缺失的 VibeHub 专属 Buildx builder；已有实例只校验、不替换。 |
-| `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | 开发 `false`；生产 `true` | 正式部署始终拒绝复用普通 builder。 |
-| `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
-| `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
-| `VIBEHUB_IDLE_GRACE_SECONDS` | float | `0` | 最后一个玩家离开后的关闭宽限，范围 0–3600 秒；默认为立即停止容器并释放内存/显存，保留容器和数据，下次访问重新启动。非零宽限内返回会取消关闭计划。 |
-| `VIBEHUB_REAPER_INTERVAL_SECONDS` | float | `15` | 后台过期回收间隔，必须小于 lease TTL。 |
-| `VIBEHUB_STORAGE_GC_INTERVAL_SECONDS` | float | `900` | 退役版本快照与过期上传暂存的后台回收周期，范围 60–86400 秒；Web worker 启动后会先立即执行一轮。 |
-| `VIBEHUB_REQUEST_TIMEOUT_SECONDS` | float | `15` | relay HTTP 端到端单请求总时限，范围 0.1–120 秒。 |
-| `VIBEHUB_REQUEST_MAX_BYTES` | int | `16777216` | 单请求体上限；硬上限 64 MiB。 |
-| `VIBEHUB_RESPONSE_MAX_BYTES` | int | `16777216` | 单响应体上限；硬上限 64 MiB。 |
-| `VIBEHUB_PROXY_TRANSPORT` | string | `docker-exec` | 只允许有界、可复用的 `docker exec` relay；`auto` 是兼容别名，`host-uds` 被拒绝。 |
-| `VIBEHUB_BUILD_TIMEOUT_SECONDS` | float | `480` | 创建或更新作品时的单次镜像构建时限，范围 1–540 秒；硬上限低于 Gunicorn 的 600 秒请求超时。 |
-| `VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS` | float | `0.25` | 等待宿主 8 个代理槽之一的最长时间；范围 0–10 秒，超时返回 429。 |
-| `VIBEHUB_MAX_ACTIVE_RUNTIMES` | int | `8` | 单台宿主同时运行的作品容器总上限，范围 1–64；容量满时新作品返回 429，已有同版本容器仍可共享。 |
-| `VIBEHUB_STORAGE_MUTATION_SLOTS` | int | `2` | 全宿主同时处理 VibeHub 持久变更的上限，严格范围 1–8；同一槽覆盖 DB 预检、multipart spool 和全局存储锁等待，跨 gthread/worker 共享。 |
-| `VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS` | float | `0.1` | 持久变更槽等待上限，范围 0–1 秒；容量满时快速返回 429 和 `Retry-After`。 |
-
-VibeHub 用户镜像构建和运行容器都使用 Docker bridge 联网，作品可以主动访问外部网络。
-运行时不发布端口，使用只读根文件系统，也不允许作品选择宿主路径或 Docker volume。平台按数据库
-project id 与 `public/latest/review` 通道创建受管 local volume，唯一挂到 `/data`，因此容器重建后数据仍保留。
-
-`/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
-`docker exec` relay 访问 `app.sock`。同一 Web worker 会为活跃容器复用最多 4 个固定命令、固定用户的
-relay 进程，避免每个静态资源和游戏操作都重新启动 Python 与 `docker exec`；协议仍逐请求执行完整
-长度、超时和响应上限校验。容器回收或 relay 异常时进程池立即失效，各 worker 的 reaper 也会清理
-已不在共享 runtime state 中的本地池。普通作品另限制为 20 GiB 完整镜像、4 GiB 内存和 2 CPU；
-精品翻倍。每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
-跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
-TTL 回收旧容器。每个作品只维护 `latest`、`public` 两个受管镜像别名；保存时构建 `latest` 并
-自动送审，`review` 复用其 image ID。审核通过让 `public` 指向已确认的 `latest`，不重新构建。
-玩家访问用同一次镜像 inspect 核验受管标记和当前包摘要，再启动或复用容器；缺失或不匹配时
-失败关闭，不扫描作品目录。最后一个玩家离开后进入默认
-5 分钟空闲宽限；同版本玩家返回会复用容器，宽限到期仍无人使用才由 reaper 删除。稳定镜像
-别名和 Docker 构建缓存由 Docker 自身管理；进入作品始终不构建镜像。宽限到期后无人游玩时
-没有作品容器占用 CPU 或内存，磁盘缓存与运行
-资源的生命周期彼此独立。运行容器使用 Docker `none`
-日志驱动，不会把不可信作品的 stdout/stderr 持久写入宿主日志；平台只记录受控的生命周期
-与代理元数据。运行容器总上限和代理槽通过 runtime root 中的 `flock` 与
-原子 state 跨 worker 共享，不会因增加 Web worker 而成倍放大宿主资源占用。
-创建、上传、元数据编辑和管理员审核共用私有 `flock` 持久变更槽。保存路径先预检，再解析
-multipart/form、构建并自动送审；审核路径先验证管理员。事务最终重检作者、版本与配额。
-存储 GC 始终按“全局 `storage_mutation_lock` → 数据库作品/版本
-`FOR UPDATE` live-set → 存储层 device/inode/ctime_ns 绑定回收”的顺序执行。超过 1 小时的退役
-marker 不再依赖作者后续写入才删除；同一轮还会回收超过 1 小时的受管上传
-staging。安装快照后、DB commit 前崩溃所留的未提交 `vN`、clone 或完全无 DB 行的
-社区项目也会先写入根级严格 marker；只有同一 device/inode/ctime_ns 连续超过 1 小时才会
-删除，同路径目录被替换后即使文件系统复用了 inode，也会重新开始宽限。旧格式 marker 会先
-安全刷新为新身份格式，不会沿用旧时间删除目录。控制锁和上传 staging 不会被当成
-项目孤儿。启动在单进程内幂等，生产保持
-单 worker；单轮 DB 或存储异常只记录日志并在
-下一周期重试，不会终止 Web 服务。
-作品的 `/tmp` 与 `/run/vibehub` 都是内存与容器资源限制内的有界 tmpfs，不存在可借 Unix socket
-目录消耗宿主文件系统的 bind 窗口；持久数据只进入平台命名并核验 label 的 local volume。
-生产构建只接受全部 node 都为 running、
-`docker-container` driver 且 builder 容器 `HostConfig.NetworkMode=bridge` 的专属 builder；已核验的
-daemon base image 通过本地受管 OCI layout named context 注入。玩家访问、
-作品构建和容器回收都不会自动清理受管镜像或专属 builder 缓存；如未来需要释放磁盘，只能由
-显式运维操作按 VibeHub label 与专属 builder 范围清理，绝不执行全局
-`docker builder prune`。
-生产 `deploy.sh` 会在停服前只读核验 builder 的 driver、全部节点状态及其容器
-`NetworkMode=bridge`，再把候选 daemon image 通过 `docker image save` 流式转换为标准 OCI
-layout；转换器不解包路径、不导入模块、不运行镜像内容，并复核 config ID、每层 diff-id、全部
-blob 的 SHA-256 与大小。候选 release 此时不会出现在 `current` 下；数据库回滚点成功后才与
-stable tag 一起切换 `current`，失败时两者一并恢复，成功后保留 current 和上一代 release。
-部署流程遵守生产禁测规则，不运行临时 Dockerfile、构建 probe 或候选容器；部署后的下一次作品
-创建或更新构建仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
-完整作品接口见 `docs/vibehub-developer-guide.md`。
+### Judge 队列、端点池与压缩包边界
 
 Judge 的模型轮次通过唯一 `agent` 队列执行，使用通用 `AGENT_WORKSPACE_ROOT`。比赛侧短编排和端点池探活使用 `celery` 队列，已投递的轮次在排队期间仍保留池名额。`REVERSE_JUDGE_WORKSPACE_ROOT` 只保存标准答案自检、脚本评分及导出结果的业务副本。
 
@@ -263,7 +256,165 @@ Judge 业务编排、端点池和压缩包边界：
 | `AGENT_JUDGE_HELLO_RETRY_SLEEP_SECONDS` | float | `1.0` |
 | `AGENT_JUDGE_PAUSED_PROBE_INTERVAL_SECONDS` | int | `3600` |
 
+## VibeHub 作品容器
+
+### 配置项
+
+#### 构建与运行目录
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `VIBEHUB_RUNTIME_ROOT` | string | `tmp/vibehub_runtime` | 权限为 0700 的跨 worker 状态与锁目录；不会挂入作品容器。 |
+| `VIBEHUB_ALLOWED_BASE_IMAGES` | string[] | `["numericaloj-vibehub-runtime:1"]` | 唯一允许出现在用户 Dockerfile 外部 `FROM` 中、且必须已在本机预置的镜像。 |
+| `VIBEHUB_BUILD_BUILDER` | string/空 | 开发为空；生产 `numoj-vibehub-online` | 正式部署自动创建缺失的 VibeHub 专属 Buildx builder；已有实例只校验、不替换。 |
+| `VIBEHUB_REQUIRE_DEDICATED_BUILDER` | bool | 开发 `false`；生产 `true` | 正式部署始终拒绝复用普通 builder。 |
+| `VIBEHUB_BASE_OCI_LAYOUT_ROOT` | string | `.deploy/vibehub-base-oci` | deploy 原子发布的受管基础镜像 OCI layout 根；生产通过 `current` 指向与 daemon base image ID 一致的 release。 |
+
+#### 租约与后台回收
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `VIBEHUB_LEASE_TTL_SECONDS` | float | `90` | 玩家 heartbeat 租约 TTL，范围 10–3600 秒。 |
+| `VIBEHUB_IDLE_GRACE_SECONDS` | float | `0` | 最后一个玩家离开后的关闭宽限，范围 0–3600 秒；默认为立即停止容器并释放内存/显存，保留容器和数据，下次访问重新启动。非零宽限内返回会取消关闭计划。 |
+| `VIBEHUB_REAPER_INTERVAL_SECONDS` | float | `15` | 后台过期回收间隔，必须小于 lease TTL。 |
+| `VIBEHUB_STORAGE_GC_INTERVAL_SECONDS` | float | `900` | 退役版本快照与过期上传暂存的后台回收周期，范围 60–86400 秒；Web worker 启动后会先立即执行一轮。 |
+
+#### 请求代理、构建时限与容量限制
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `VIBEHUB_REQUEST_TIMEOUT_SECONDS` | float | `15` | relay HTTP 端到端单请求总时限，范围 0.1–120 秒。 |
+| `VIBEHUB_REQUEST_MAX_BYTES` | int | `16777216` | 单请求体上限；硬上限 64 MiB。 |
+| `VIBEHUB_RESPONSE_MAX_BYTES` | int | `16777216` | 单响应体上限；硬上限 64 MiB。 |
+| `VIBEHUB_PROXY_TRANSPORT` | string | `docker-exec` | 只允许有界、可复用的 `docker exec` relay；`auto` 是兼容别名，`host-uds` 被拒绝。 |
+| `VIBEHUB_BUILD_TIMEOUT_SECONDS` | float | `480` | 创建或更新作品时的单次镜像构建时限，范围 1–540 秒；硬上限低于 Gunicorn 的 600 秒请求超时。 |
+| `VIBEHUB_PROXY_SLOT_TIMEOUT_SECONDS` | float | `0.25` | 等待宿主 8 个代理槽之一的最长时间；范围 0–10 秒，超时返回 429。 |
+| `VIBEHUB_MAX_ACTIVE_RUNTIMES` | int | `8` | 单台宿主同时运行的作品容器总上限，范围 1–64；容量满时新作品返回 429，已有同版本容器仍可共享。 |
+
+#### 持久变更并发限制
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `VIBEHUB_STORAGE_MUTATION_SLOTS` | int | `2` | 全宿主同时处理 VibeHub 持久变更的上限，严格范围 1–8；同一槽覆盖 DB 预检、multipart spool 和全局存储锁等待，跨 gthread/worker 共享。 |
+| `VIBEHUB_STORAGE_MUTATION_SLOT_WAIT_SECONDS` | float | `0.1` | 持久变更槽等待上限，范围 0–1 秒；容量满时快速返回 429 和 `Retry-After`。 |
+
+### 容器运行与代理
+
+#### 容器网络与持久数据
+
+VibeHub 用户镜像构建和运行容器都使用 Docker bridge 联网，作品可以主动访问外部网络。
+运行时不发布端口，使用只读根文件系统，也不允许作品选择宿主路径或 Docker volume。平台按数据库
+project id 与 `public/latest/review` 通道创建受管 local volume，唯一挂到 `/data`，因此容器重建后数据仍保留。
+
+#### 容器代理与 relay 复用
+
+`/run/vibehub` 是容器内 16 MiB 有界 tmpfs，宿主只通过受信基础镜像内的有界
+`docker exec` relay 访问 `app.sock`。同一 Web worker 会为活跃容器复用最多 4 个固定命令、固定用户的
+relay 进程，避免每个静态资源和游戏操作都重新启动 Python 与 `docker exec`；协议仍逐请求执行完整
+长度、超时和响应上限校验。容器回收或 relay 异常时进程池立即失效，各 worker 的 reaper 也会清理
+已不在共享 runtime state 中的本地池。
+
+#### 容器资源配额
+
+普通作品另限制为 20 GiB 完整镜像、4 GiB 内存和 2 CPU；
+精品翻倍。
+
+### 发布、访问与生命周期
+
+#### 后台回收与跨进程协调
+
+每个 Web worker 启动时都会显式启动容器 reaper 与存储 GC daemon，
+跨进程通过同一宿主 `flock` 和原子 state 协调，因此 Web 重启后即使无人再次访问，也会按
+TTL 回收旧容器。
+
+#### 镜像发布与玩家访问
+
+每个作品只维护 `latest`、`public` 两个受管镜像别名；保存时构建 `latest` 并
+自动送审，`review` 复用其 image ID。审核通过让 `public` 指向已确认的 `latest`，不重新构建。
+玩家访问用同一次镜像 inspect 核验受管标记和当前包摘要，再启动或复用容器；缺失或不匹配时
+失败关闭，不扫描作品目录。
+
+#### 空闲回收与缓存生命周期
+
+最后一个玩家离开后进入默认
+5 分钟空闲宽限；同版本玩家返回会复用容器，宽限到期仍无人使用才由 reaper 删除。稳定镜像
+别名和 Docker 构建缓存由 Docker 自身管理；进入作品始终不构建镜像。宽限到期后无人游玩时
+没有作品容器占用 CPU 或内存，磁盘缓存与运行
+资源的生命周期彼此独立。
+
+#### 日志与宿主容量控制
+
+运行容器使用 Docker `none`
+日志驱动，不会把不可信作品的 stdout/stderr 持久写入宿主日志；平台只记录受控的生命周期
+与代理元数据。运行容器总上限和代理槽通过 runtime root 中的 `flock` 与
+原子 state 跨 worker 共享，不会因增加 Web worker 而成倍放大宿主资源占用。
+
+### 存储管理与隔离
+
+#### 持久变更与事务校验
+
+创建、上传、元数据编辑和管理员审核共用私有 `flock` 持久变更槽。保存路径先预检，再解析
+multipart/form、构建并自动送审；审核路径先验证管理员。事务最终重检作者、版本与配额。
+
+#### 存储 GC 与孤儿目录回收
+
+存储 GC 始终按“全局 `storage_mutation_lock` → 数据库作品/版本
+`FOR UPDATE` live-set → 存储层 device/inode/ctime_ns 绑定回收”的顺序执行。
+
+- 超过 1 小时的退役
+  marker 不再依赖作者后续写入才删除；同一轮还会回收超过 1 小时的受管上传
+  staging。
+
+- 安装快照后、DB commit 前崩溃所留的未提交 `vN`、clone 或完全无 DB 行的
+  社区项目也会先写入根级严格 marker；只有同一 device/inode/ctime_ns 连续超过 1 小时才会
+  删除，同路径目录被替换后即使文件系统复用了 inode，也会重新开始宽限。
+
+- 旧格式 marker 会先
+  安全刷新为新身份格式，不会沿用旧时间删除目录。
+
+- 控制锁和上传 staging 不会被当成
+  项目孤儿。
+
+启动在单进程内幂等，生产保持
+单 worker；单轮 DB 或存储异常只记录日志并在
+下一周期重试，不会终止 Web 服务。
+
+#### 临时目录与存储隔离
+
+作品的 `/tmp` 与 `/run/vibehub` 都是内存与容器资源限制内的有界 tmpfs，不存在可借 Unix socket
+目录消耗宿主文件系统的 bind 窗口；持久数据只进入平台命名并核验 label 的 local volume。
+
+### 生产构建与部署
+
+#### 生产 builder 与缓存清理边界
+
+生产构建只接受全部 node 都为 running、
+`docker-container` driver 且 builder 容器 `HostConfig.NetworkMode=bridge` 的专属 builder；已核验的
+daemon base image 通过本地受管 OCI layout named context 注入。玩家访问、
+作品构建和容器回收都不会自动清理受管镜像或专属 builder 缓存；如未来需要释放磁盘，只能由
+显式运维操作按 VibeHub label 与专属 builder 范围清理，绝不执行全局
+`docker builder prune`。
+
+#### 生产部署与 OCI 发布校验
+
+生产 `deploy.sh` 会在停服前只读核验 builder 的 driver、全部节点状态及其容器
+`NetworkMode=bridge`，再把候选 daemon image 通过 `docker image save` 流式转换为标准 OCI
+layout；转换器不解包路径、不导入模块、不运行镜像内容，并复核 config ID、每层 diff-id、全部
+blob 的 SHA-256 与大小。
+
+候选 release 此时不会出现在 `current` 下；数据库回滚点成功后才与
+stable tag 一起切换 `current`，失败时两者一并恢复，成功后保留 current 和上一代 release。
+
+部署流程遵守生产禁测规则，不运行临时 Dockerfile、构建 probe 或候选容器；部署后的下一次作品
+创建或更新构建仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
+
+### 作品接口参考
+
+完整作品接口见 `docs/vibehub-developer-guide.md`。
+
 ## 上传、批量打榜与反向评测
+
+### 批量打榜与重新评测
 
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
@@ -281,15 +432,27 @@ Judge 业务编排、端点池和压缩包边界：
 
 `RANKING_BATCH_DEFAULT_TEMPLATE` 是界面消费处的产品文案常量，不是配置项。
 
+### 反向评测工作区与超时
+
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
 | `REVERSE_JUDGE_PROGRESS_TTL` | int | `21600` |
 | `REVERSE_JUDGE_WORKSPACE_ROOT` | string | `ranking_uploads/reverse_judge_workspace` |
 | `REVERSE_JUDGE_SCRIPT_TIMEOUT` | int | `300` |
 | `REVERSE_JUDGE_STREAM_TIMEOUT_BUFFER_SECONDS` | int | `1200` |
+
+### 反向评测质量门槛
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `REVERSE_QUALITY_GATE_TIMEOUT_SECONDS` | int | `300` |
 | `REVERSE_QUALITY_GATE_MAX_PROMPT_CHARS` | int | `20000` |
 | `REVERSE_QUALITY_GATE_RESULT_MAX_BYTES` | int | `2097152` |
+
+### 反向评测压缩包与答案限制
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `REVERSE_PACKAGE_MAX_MEMBERS` | int | `4096` |
 | `REVERSE_PACKAGE_MAX_FILE_BYTES` | int | `268435456` |
 | `REVERSE_PACKAGE_MAX_TOTAL_BYTES` | int | `536870912` |
@@ -297,6 +460,11 @@ Judge 业务编排、端点池和压缩包边界：
 | `REVERSE_ANSWER_MAX_FILES` | int | `4096` |
 | `REVERSE_ANSWER_MAX_FILE_BYTES` | int | `268435456` |
 | `REVERSE_ANSWER_MAX_TOTAL_BYTES` | int | `536870912` |
+
+### 反向评测轨迹保留
+
+| 配置项 | 类型 | 默认值 |
+| --- | --- | --- |
 | `REVERSE_TRACE_RETENTION_SECONDS` | int | `1209600` |
 | `REVERSE_TRACE_MAX_ATTEMPTS` | int | `8` |
 | `REVERSE_TRACE_MIN_DELETE_AGE_SECONDS` | int | `21600` |
