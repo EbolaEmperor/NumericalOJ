@@ -25,6 +25,17 @@
   color: var(--submission-ink);
 }
 
+/* ReactModal 通过 Portal 挂载到 body，不会继承 .submission-page 的变量。 */
+.submission-rejudge-modal {
+  --submission-ink: #111111;
+  --submission-ink-2: #303030;
+  --submission-line: #e9e9e7;
+  --submission-paper: #ffffff;
+  --submission-paper-soft: #fafaf8;
+  --submission-accent: #d97706;
+  --submission-accent-dark: #92400e;
+}
+
 .numoj-content.submission-page-shell {
   padding-top: 16px;
   padding-right: 0;

@@ -165,6 +165,7 @@ def _call_llm_text(
     endpoint,
     *,
     timeout=300,
+    stream=False,
     system_prompt=None,
     on_delta=None,
     on_reasoning_delta=None,
@@ -174,6 +175,7 @@ def _call_llm_text(
         str(prompt_text or ""),
         system_prompt=system_prompt,
         timeout=timeout,
+        stream=stream,
         on_text_delta=_safe_delta_callback(on_delta),
         on_reasoning_delta=_safe_delta_callback(on_reasoning_delta),
     )
@@ -189,6 +191,7 @@ def _call_llm_vision(
     endpoint,
     *,
     timeout=300,
+    stream=False,
     system_prompt=None,
     on_delta=None,
     on_reasoning_delta=None,
@@ -199,6 +202,7 @@ def _call_llm_vision(
         list(image_data_urls or []),
         system_prompt=system_prompt,
         timeout=timeout,
+        stream=stream,
         on_text_delta=_safe_delta_callback(on_delta),
         on_reasoning_delta=_safe_delta_callback(on_reasoning_delta),
     )

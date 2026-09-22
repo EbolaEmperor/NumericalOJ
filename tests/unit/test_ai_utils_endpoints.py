@@ -140,6 +140,7 @@ def test_generic_text_and_vision_helpers_forward_snapshot(monkeypatch):
         "prompt",
         text_endpoint,
         timeout=12,
+        stream=True,
         system_prompt="system",
     ) == "text result"
     assert client._call_llm_vision(
@@ -147,10 +148,13 @@ def test_generic_text_and_vision_helpers_forward_snapshot(monkeypatch):
         ["https://images.example.test/a.png"],
         vision_endpoint,
         timeout=13,
+        stream=True,
     ) == "vision result"
     assert calls[0][1] is text_endpoint
     assert calls[0][3]["system_prompt"] == "system"
+    assert calls[0][3]["stream"] is True
     assert calls[1][1] is vision_endpoint
+    assert calls[1][4]["stream"] is True
 
 
 def test_code_marks_resolves_global_text_endpoint_once(monkeypatch):

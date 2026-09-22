@@ -930,11 +930,28 @@ html.is-submission-detail-resizing * {
 }
 
 .submission-vote-identity strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   overflow: hidden;
   color: var(--submission-ink-2);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.submission-vote-identity strong > span {
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-overflow: ellipsis;
+}
+
+.submission-vote-identity [data-model-family-logo] {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 
 .submission-vote-score {

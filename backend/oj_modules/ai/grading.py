@@ -270,6 +270,7 @@ def evaluate_written_homework_with_ai(
         prompt,
         use_endpoint,
         timeout=int(timeout_seconds),
+        stream=True,
     )
     score, deductions, comment = _parse_written_homework_grading_result(
         response_text,
@@ -327,6 +328,7 @@ def evaluate_written_homework_with_ai_from_images(
         image_data_urls,
         use_endpoint,
         timeout=int(timeout_seconds),
+        stream=True,
     )
     score, deductions, comment = _parse_written_homework_grading_result(
         response_text,

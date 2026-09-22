@@ -109,6 +109,47 @@ def test_parse_full_marks_with_deductions_downgraded_to_4():
     assert deductions
 
 
+@pytest.mark.parametrize("from_images", [False, True])
+def test_written_homework_grading_uses_streaming_response(monkeypatch, from_images):
+    from backend.oj_modules.ai import grading
+
+    endpoint = object()
+    captured = {}
+
+    def fake_resolve(_problem, _binding_key, **_kwargs):
+        return endpoint
+
+    def fake_call(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return '{"score": 5, "deductions": [], "comment": "正确"}'
+
+    monkeypatch.setattr(grading, "resolve_problem_llm_endpoint_snapshot", fake_resolve)
+    if from_images:
+        monkeypatch.setattr(grading, "_build_image_data_url", lambda _path: "data:image/png;base64,AA==")
+        monkeypatch.setattr(grading, "_call_llm_vision", fake_call)
+        result = grading.evaluate_written_homework_with_ai_from_images(
+            {"title": "题目", "content": "内容"},
+            ["answer.png"],
+            endpoint=endpoint,
+            timeout_seconds=45,
+            repair_invalid_json=False,
+        )
+    else:
+        monkeypatch.setattr(grading, "_call_llm_text", fake_call)
+        result = grading.evaluate_written_homework_with_ai(
+            {"title": "题目", "content": "内容"},
+            "学生答案",
+            endpoint=endpoint,
+            timeout_seconds=45,
+            repair_invalid_json=False,
+        )
+
+    assert result[0] == 5
+    assert captured["kwargs"]["stream"] is True
+    assert captured["kwargs"]["timeout"] == 45
+
+
 def test_parse_low_score_without_deductions_gets_default():
     parse = _parse()
     score, deductions, _ = parse('{"score": 3, "deductions": [], "comment": ""}')
