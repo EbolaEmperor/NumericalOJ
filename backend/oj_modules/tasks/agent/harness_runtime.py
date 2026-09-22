@@ -1258,6 +1258,7 @@ def _runtime_env(
     web_search_settings=None,
     interactive=False,
     reasoning_effort="default",
+    source_skill=None,
 ):
     protocol = str(endpoint.get("protocol") or "").strip().lower()
     # 长期密钥和真实上游地址不得进入容器；这里只接受本轮宿主 relay
@@ -1291,7 +1292,9 @@ def _runtime_env(
         thinking_format = (
             "thinking_type" if protocol == "anthropic" else "enable_thinking"
         ) if thinking_enabled else "none"
-    skill_name = skill_for_agent_task(task_kind, access_role)
+    skill_name = str(source_skill or "").strip() or skill_for_agent_task(
+        task_kind, access_role,
+    )
     resume_session_id = normalize_native_session_id(resume_session_id, harness)
 
     env = {
@@ -1324,8 +1327,10 @@ def _runtime_env(
         "AJ_RUNTIME_ROOT": "/workspace/.runtime",
         "AJ_PROMPT_STDIN": "1",
         "AJ_WORKSPACE": "/workspace",
-        _SKILL_CONFIG_ENV[skill_name]: _IDENTITY_CONFIG_PATH,
     }
+    skill_config_env = _SKILL_CONFIG_ENV.get(skill_name)
+    if skill_config_env:
+        env[skill_config_env] = _IDENTITY_CONFIG_PATH
     if resume_session_id:
         env["AJ_RESUME_SESSION_ID"] = resume_session_id
         # 真正的“继续会话”必须复用同一个原生 session；Claude Code 的
@@ -1561,6 +1566,7 @@ def run_agent_harness(
     reasoning_effort="default",
     timeout_seconds=None,
     enable_site_identity=True,
+    source_skill=None,
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
 
@@ -1589,7 +1595,9 @@ def run_agent_harness(
                 stdout="",
                 stderr="Agent task canceled before harness startup",
             )
-    skill_name = skill_for_agent_task(task_kind, access_role)
+    skill_name = str(source_skill or "").strip() or skill_for_agent_task(
+        task_kind, access_role,
+    )
     normalized_session_id = str(session_id or task_id or "").strip()
     workspace = _ensure_stable_workspace(normalized_session_id)
     last_published_native_session_id = resume_session_id
@@ -1767,6 +1775,7 @@ def run_agent_harness(
                     web_search_settings=relayed_web_search_settings,
                     interactive=callable(control_source),
                     reasoning_effort=reasoning_effort,
+                    source_skill=skill_name,
                 )
                 docker_args = _docker_args(
                     container_name=container_name,

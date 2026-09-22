@@ -71,6 +71,9 @@ _HARNESS_LABELS = {
 _TASK_SKILLS = {
     AGENT_TASK_SOLVE: "numoj-user",
 }
+_JUDGE_SKILLS = {
+    "faithsieve": "faithsieve",
+}
 _ACCESS_ROLE_SKILLS = {
     AGENT_ACCESS_ROLE_USER: "numoj-user",
     AGENT_ACCESS_ROLE_ADMIN: "numoj-admin",
@@ -213,8 +216,15 @@ def normalize_agent_access_role(value, *, task_kind=AGENT_TASK_CUSTOM):
     return access_role
 
 
-def skill_for_agent_task(task_kind, access_role=AGENT_ACCESS_ROLE_USER):
+def skill_for_agent_task(
+    task_kind,
+    access_role=AGENT_ACCESS_ROLE_USER,
+    *,
+    judge_kind=None,
+):
     normalized_task_kind = normalize_agent_task_kind(task_kind)
+    if normalized_task_kind == AGENT_TASK_JUDGE and judge_kind in _JUDGE_SKILLS:
+        return _JUDGE_SKILLS[judge_kind]
     if normalized_task_kind in _TASK_SKILLS:
         return _TASK_SKILLS[normalized_task_kind]
     normalized_role = normalize_agent_access_role(

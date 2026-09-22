@@ -16,7 +16,7 @@ from backend.oj_modules.project_paths import PROJECT_ROOT
 
 
 _SKILLS_ROOT = PROJECT_ROOT / "skills"
-_ALLOWED_SOURCE_SKILLS = frozenset({"numoj-user", "numoj-admin"})
+_ALLOWED_SOURCE_SKILLS = frozenset({"numoj-user", "numoj-admin", "faithsieve"})
 _ALLOWED_HARNESSES = frozenset({"claude_code", "pi"})
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER_KEY_RE = re.compile(

@@ -56,6 +56,25 @@ def test_numoj_user_skill_documents_lean4_agent_workflow(tmp_path):
         assert forbidden in reference
 
 
+@pytest.mark.parametrize("harness", ["claude_code", "pi"])
+def test_materialize_faithsieve_skill_with_pipeline_references(tmp_path, harness):
+    target = skill_runtime.materialize_skill(tmp_path, harness, "faithsieve")
+
+    rendered = (target / "SKILL.md").read_text(encoding="utf-8")
+    agent_prompts = target / "references" / "agents"
+    assert "name: faithsieve" in rendered
+    assert "faithsieve_result.json" in rendered
+    assert "## 1. 提取原稿" in rendered
+    assert "## 8. 评分并写结果" in rendered
+    assert "references/agents/decomposer.md" in rendered
+    assert "references/agents/proof-searcher.md" in rendered
+    assert len(list(agent_prompts.glob("*.md"))) >= 10
+    assert "SymPy" in (agent_prompts / "numeric-evaluator.md").read_text(
+        encoding="utf-8",
+    )
+    assert "check_numeric.py" not in rendered
+
+
 def _write_synthetic_skill(root, frontmatter, body="# First\n"):
     source = root / "numoj-user"
     source.mkdir(parents=True, exist_ok=True)

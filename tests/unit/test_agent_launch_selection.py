@@ -245,6 +245,18 @@ def test_button_tasks_pin_their_skill_while_custom_sessions_follow_role():
     # user 仅用于恢复升级前已落库的造数据会话；新版按钮固定持久化 admin。
     assert agent_launch.skill_for_agent_task("testdata", "user") == "numoj-user"
     assert agent_launch.skill_for_agent_task("testdata", "admin") == "numoj-admin"
+    assert (
+        agent_launch.skill_for_agent_task(
+            "judge", "user", judge_kind="faithsieve",
+        )
+        == "faithsieve"
+    )
+    assert (
+        agent_launch.skill_for_agent_task(
+            "judge", "user", judge_kind="agent_judge",
+        )
+        == "numoj-user"
+    )
 
     with pytest.raises(
         agent_launch.AgentLaunchValidationError,

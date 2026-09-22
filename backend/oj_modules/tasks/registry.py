@@ -3,6 +3,7 @@
 
 from backend.oj_modules.tasks.evaluate_tasks import register_evaluate_submission_task
 from backend.oj_modules.tasks.written_homework_tasks import register_written_homework_task
+from backend.oj_modules.tasks.faithsieve_tasks import register_faithsieve_grading_task
 from backend.oj_modules.tasks.homework_admin_tasks import (
     HomeworkTaskOperations,
     build_homework_task_operations,
@@ -68,6 +69,7 @@ from backend.oj_modules.tasks.ranking.bulk_rejudge import (
 __all__ = [
     "register_evaluate_submission_task",
     "register_written_homework_task",
+    "register_faithsieve_grading_task",
     "HomeworkTaskOperations",
     "build_homework_task_operations",
     "register_homework_admin_tasks",

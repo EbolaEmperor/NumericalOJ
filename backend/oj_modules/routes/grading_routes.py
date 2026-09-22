@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import logging
 
 from flask import Blueprint, flash, jsonify, request, send_file, session, url_for
 
@@ -17,12 +18,77 @@ from backend.oj_modules.submissions.grading import (
     invalidate_previous_pending_submissions,
     update_submission_score_and_comment,
 )
+from backend.oj_modules.submissions.faithsieve import (
+    finish_run,
+    latest_submissions_for_problem,
+    queue_runs,
+    set_run_task_id,
+)
+from backend.oj_modules.problems.agent_launch import (
+    AgentLaunchValidationError,
+    normalize_launch_harness,
+    resolve_launch_endpoint,
+)
+from backend.oj_modules.problems.agent_preferences import save_agent_launch_preference
 
 
 grading_bp = Blueprint('grading', __name__)
+logger = logging.getLogger(__name__)
+_faithsieve_grading_task = None
 
 
 from backend.oj_modules.security.auth import current_user, is_admin
+
+
+def init_grading_routes(faithsieve_grading_task):
+    global _faithsieve_grading_task
+    _faithsieve_grading_task = faithsieve_grading_task
+
+
+def _manual_written_problem(problem):
+    return bool(
+        problem
+        and int(problem.get('type') or 0) == 2
+        and int(problem.get('written_grading_mode') or 1) == 4
+    )
+
+
+def _faithsieve_runtime(user):
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        raise AgentLaunchValidationError('请求参数格式无效')
+    harness = normalize_launch_harness(payload.get('harness'))
+    endpoint = resolve_launch_endpoint(
+        harness, payload.get('endpoint_id'), include_secret=False,
+    )
+    save_agent_launch_preference(user['id'], harness, int(endpoint['id']))
+    return harness, int(endpoint['id'])
+
+
+def _enqueue_faithsieve(submissions, *, user, harness, endpoint_id):
+    queued, skipped = queue_runs(
+        submissions,
+        requested_by=user['username'],
+        harness=harness,
+        endpoint_id=endpoint_id,
+    )
+    accepted = []
+    failed = []
+    for item in queued:
+        try:
+            result = _faithsieve_grading_task.apply_async(
+                args=(item['attempt_id'],), queue='celery',
+            )
+            set_run_task_id(item['attempt_id'], result.id)
+            accepted.append(item)
+        except Exception as exc:
+            logger.exception(
+                'FaithSieve 控制任务入队失败',
+                extra={'submission_id': item['submission_id']},
+            )
+            finish_run(item['attempt_id'], 'failed', f'任务入队失败：{exc}')
+            failed.append(item['submission_id'])
+    return accepted, skipped, failed
 
 
 def _find_written_submission_pdf(submission, problem):
@@ -121,6 +187,93 @@ def submit_grading(submission_id):
 
     flash('批改结果提交成功', 'success')
     return jsonify(success=True, message="批改结果已提交")
+
+
+@grading_bp.post('/api/admin/problems/<int:problem_id>/faithsieve')
+def faithsieve_grade_problem(problem_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限启动 FaithSieve'), 403
+    if _faithsieve_grading_task is None:
+        return jsonify(success=False, message='FaithSieve 任务未初始化'), 500
+    problem = get_problem(problem_id)
+    if not problem:
+        return jsonify(success=False, message='题目不存在'), 404
+    if not _manual_written_problem(problem):
+        return jsonify(success=False, message='仅支持纯人工批改的书面题'), 400
+    try:
+        harness, endpoint_id = _faithsieve_runtime(user)
+        submissions = latest_submissions_for_problem(problem_id)
+        queued, skipped, failed = _enqueue_faithsieve(
+            submissions,
+            user=user,
+            harness=harness,
+            endpoint_id=endpoint_id,
+        )
+    except AgentLaunchValidationError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        logger.exception('创建 FaithSieve 批量任务失败', extra={'problem_id': problem_id})
+        return jsonify(success=False, message='无法创建 FaithSieve 批量任务'), 500
+    if failed:
+        return jsonify(
+            success=False,
+            message=f'已加入 {len(queued)} 条，另有 {len(failed)} 条入队失败',
+            queued=len(queued),
+            skipped=len(skipped),
+            failed=len(failed),
+            submission_ids=[item['submission_id'] for item in queued],
+        ), 500
+    return jsonify(
+        success=True,
+        message=f'已加入 {len(queued)} 条 FaithSieve 评测',
+        queued=len(queued),
+        skipped=len(skipped),
+        submission_ids=[item['submission_id'] for item in queued],
+    )
+
+
+@grading_bp.post('/api/admin/submissions/<int:submission_id>/faithsieve')
+def faithsieve_grade_submission(submission_id):
+    user = current_user()
+    if not is_admin(user):
+        return jsonify(success=False, message='无权限启动 FaithSieve'), 403
+    if _faithsieve_grading_task is None:
+        return jsonify(success=False, message='FaithSieve 任务未初始化'), 500
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return jsonify(success=False, message='提交记录不存在'), 404
+    problem = get_problem(submission.get('problem_id'))
+    if not _manual_written_problem(problem) or int(submission.get('problem_type') or 0) != 2:
+        return jsonify(success=False, message='仅支持纯人工批改的书面题'), 400
+    try:
+        harness, endpoint_id = _faithsieve_runtime(user)
+        queued, skipped, failed = _enqueue_faithsieve(
+            [submission],
+            user=user,
+            harness=harness,
+            endpoint_id=endpoint_id,
+        )
+    except AgentLaunchValidationError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        logger.exception('创建 FaithSieve 单条任务失败', extra={'submission_id': submission_id})
+        return jsonify(success=False, message='无法创建 FaithSieve 任务'), 500
+    if failed:
+        return jsonify(success=False, message='FaithSieve 任务入队失败'), 500
+    if skipped:
+        return jsonify(
+            success=True,
+            message='这条提交已有 FaithSieve 任务在排队或运行',
+            queued=0,
+            skipped=1,
+        )
+    return jsonify(
+        success=True,
+        message='已加入 FaithSieve 评测',
+        queued=len(queued),
+        skipped=0,
+    )
 
 
 @grading_bp.get('/api/admin/submissions/<int:submission_id>/next-pending')

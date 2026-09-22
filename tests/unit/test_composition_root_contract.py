@@ -25,6 +25,7 @@ EXPECTED_TASK_QUEUES = {
     "oj.ai_detection.detect_user": "celery",
     "oj.evaluate_ranking_submission": "celery",
     "oj.evaluate_submission": "celery",
+    "oj.faithsieve_grade_submission": "celery",
     "oj.homework.export_codes_with_plagiarism_check_task": "celery",
     "oj.homework.mark_plagiarism_task": "celery",
     "oj.pending_requeue_watchdog": "celery",

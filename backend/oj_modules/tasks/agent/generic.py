@@ -32,6 +32,7 @@ from backend.oj_modules.problems.agent_launch import (
     normalize_launch_harness,
     resolve_launch_endpoint,
     token_pricing_from_endpoint,
+    skill_for_agent_task,
 )
 from backend.oj_modules.site_config.services import (
     DEFAULT_LLM_CONTEXT_WINDOW_TOKENS,
@@ -698,6 +699,11 @@ def register_agent_run_turn_task(celery_app):
             )
 
         try:
+            source_skill = skill_for_agent_task(
+                session_task_kind,
+                normalized_role,
+                judge_kind=session.get("judge_kind"),
+            )
             run_result = run_agent_harness(
                 task_id=task_id,
                 session_id=normalized_session_id,
@@ -730,6 +736,7 @@ def register_agent_run_turn_task(celery_app):
                 usage_callback=usage_callback,
                 native_session_callback=preserve_native_session,
                 reset_trace=False,
+                source_skill=source_skill,
                 **({
                     "timeout_seconds": runtime_config.get("timeout_seconds"),
                     "enable_site_identity": False,

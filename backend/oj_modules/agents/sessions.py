@@ -284,12 +284,16 @@ def create_agent_session(
     )
 
     if task_kind == "judge":
-        if judge_kind not in {"agent_judge", "reverse_quality", "reverse_answer"}:
+        if judge_kind not in {"agent_judge", "reverse_quality", "reverse_answer", "faithsieve"}:
             raise ValueError("Judge 会话类别无效")
         if access_role != "user":
             raise ValueError("Judge 会话只能使用 user 身份")
         historical = isinstance(runtime_config, dict) and runtime_config.get("historical_import") is True
-        if not submission_id or not competition_id or (not historical and not str(attempt_id or "").strip()):
+        if (
+            not submission_id
+            or (judge_kind != "faithsieve" and not competition_id)
+            or (not historical and not str(attempt_id or "").strip())
+        ):
             raise ValueError("Judge 会话必须关联评测提交和轮次")
     elif judge_kind or submission_id or attempt_id or competition_id or runtime_config:
         raise ValueError("普通 Agent 会话不能指定 Judge 参数")

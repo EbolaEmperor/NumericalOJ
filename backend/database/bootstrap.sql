@@ -2146,6 +2146,34 @@ CREATE TABLE `site_web_search_settings` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
+-- FaithSieve 手动书面题评测请求。推理细节留在只读 Judge 会话中；本表只保存
+-- 队列状态、选择的运行时和最终机器回传，便于并发控制与幂等恢复。
+--
+
+CREATE TABLE `faithsieve_grading_runs` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `attempt_id` char(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `submission_id` int NOT NULL,
+  `problem_id` int NOT NULL,
+  `requested_by` varchar(50) NOT NULL,
+  `harness` varchar(32) NOT NULL,
+  `endpoint_id` bigint NOT NULL,
+  `status` varchar(16) NOT NULL DEFAULT 'queued',
+  `task_id` varchar(64) DEFAULT NULL,
+  `session_id` varchar(64) DEFAULT NULL,
+  `message` text,
+  `result_json` text,
+  `started_at` datetime DEFAULT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_faithsieve_attempt` (`attempt_id`),
+  KEY `idx_faithsieve_submission` (`submission_id`,`created_at`),
+  KEY `idx_faithsieve_status` (`status`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+--
 -- Table structure for table `vibehub_projects`
 --
 

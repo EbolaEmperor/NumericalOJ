@@ -616,6 +616,7 @@ def initialize_agent_task_workspace(
     *,
     harness,
     access_role,
+    source_skill=None,
 ) -> Path:
     """初始化新建 Agent 会话的 workspace 与 harness 长期记忆文件。
 
@@ -627,7 +628,7 @@ def initialize_agent_task_workspace(
     workspace = ensure_agent_workspace(session_id)
     normalized_harness = str(harness or "").strip().lower().replace("-", "_")
     filename = "CLAUDE.md" if normalized_harness == "claude_code" else "AGENTS.md"
-    skill_name = (
+    skill_name = str(source_skill or "").strip() or (
         "numoj-admin"
         if str(access_role or "").strip().lower() == "admin"
         else "numoj-user"

@@ -1252,7 +1252,7 @@ def charge_agent_usage(
                     "JOIN users u ON u.username=s.requested_by "
                     "WHERE s.session_id=%s AND t.task_id=%s AND u.id=%s "
                     "AND s.task_kind='judge' AND s.judge_kind IN "
-                    "('agent_judge','reverse_quality','reverse_answer') LIMIT 1",
+                    "('agent_judge','reverse_quality','reverse_answer','faithsieve') LIMIT 1",
                     (session_id, task_id, user_id),
                 )
                 if not cursor.fetchone():

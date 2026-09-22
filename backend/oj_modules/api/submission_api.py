@@ -38,6 +38,17 @@ from backend.oj_modules.submissions.presentation import (
 submission_api_bp = Blueprint("submission_api", __name__, url_prefix="/api")
 
 
+def _submission_problem_payload(problem, user):
+    payload = public_problem(problem)
+    # 书面批改模式不属于公开题面契约；仅管理员详情页需要它决定是否展示
+    # FaithSieve 的人工操作入口。
+    if payload is not None and is_admin(user):
+        payload["written_grading_mode"] = int(
+            (problem or {}).get("written_grading_mode") or 1
+        )
+    return payload
+
+
 def _decorate_submission_summary(row):
     out = dict(row or {})
     out["display_problem_title"] = _strip_problem_title_tags(out.get("problem_title"))
@@ -222,7 +233,7 @@ def submission_detail(submission_id):
             **_submission_panel_payload(submission, raw_problem, user)
         )
 
-    problem = public_problem(raw_problem)
+    problem = _submission_problem_payload(raw_problem, user)
     plang = ((raw_problem or {}).get("lang") or "matlab").lower()
     lean_workspace = (
         get_submission_lean_workspace(submission_id)

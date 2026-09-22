@@ -45,7 +45,7 @@ from backend.oj_modules.routes.submission_routes import submission_bp
 from backend.oj_modules.routes.admin_problem_routes import admin_problem_bp
 from backend.oj_modules.routes.repository_routes import repository_bp, init_repository_index_module
 from backend.oj_modules.routes.forum_routes import forum_bp
-from backend.oj_modules.routes.grading_routes import grading_bp
+from backend.oj_modules.routes.grading_routes import grading_bp, init_grading_routes
 from backend.oj_modules.routes.ai_routes import ai_bp, init_ai_module
 from backend.oj_modules.routes.class_management_routes import class_management_bp
 from backend.oj_modules.routes.rejudge_routes import rejudge_bp, init_rejudge_module
@@ -127,6 +127,7 @@ from backend.oj_modules.tasks.registry import (
     register_promptly_generate_submission_task,
     register_rejudge_task,
     register_written_homework_task,
+    register_faithsieve_grading_task,
     register_ai_detection_tasks,
     register_class_activity_refresh_task,
     seed_class_activity_refresh,
@@ -465,6 +466,7 @@ celery.conf.task_routes = {
     'oj.ranking_agent_judge': {'queue': 'celery'},
     'oj.ranking_agent_judge_paused_probe': {'queue': 'celery'},
     'oj.ranking_reverse_judge': {'queue': 'celery'},
+    'oj.faithsieve_grade_submission': {'queue': 'celery'},
 }
 # Redis broker 默认只会保留 late-ack 消息一小时。Agent 长任务超过该窗口时，
 # 同一 task_id 会被第二个 worker 重投并与原容器并发。该设置作用于共享 Redis
@@ -499,6 +501,7 @@ promptly_generate_submission = register_promptly_generate_submission_task(celery
 agent_solve_problem = register_agent_solve_problem_task(celery)
 agent_generate_testdata = register_agent_generate_testdata_task(celery)
 agent_run_turn = register_agent_run_turn_task(celery)
+faithsieve_grade_submission = register_faithsieve_grading_task(celery)
 agent_queue_dispatch, agent_queue_recovery = register_agent_queue_tasks(
     celery,
     agent_run_turn,
@@ -544,6 +547,7 @@ class_activity_refresh = register_class_activity_refresh_task(celery, rds)
 
 # 初始化重测模块（依赖 Redis 与已注册的分派任务）
 init_rejudge_module(rds, rejudge_submission_and_update)
+init_grading_routes(faithsieve_grade_submission)
 # 初始化作业管理模块（依赖 Redis 与已注册的导出/查重任务）
 init_homework_module(
     rds,
