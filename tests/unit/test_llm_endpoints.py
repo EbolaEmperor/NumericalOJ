@@ -620,6 +620,46 @@ def test_anthropic_stream_parsing_and_delta_callback(monkeypatch):
     assert result.usage == adapter.LLMUsage(6, 4, 10)
 
 
+@pytest.mark.parametrize("vision", [False, True])
+def test_continuation_messages_are_appended_after_unchanged_first_request(
+    monkeypatch,
+    vision,
+):
+    response = FakeResponse({
+        "choices": [{"message": {"content": "最终结果"}}],
+    })
+    calls = install_post(monkeypatch, response)
+    continuation = [
+        {"role": "assistant", "content": "首轮原始回复"},
+        {"role": "user", "content": "参考其他评委后重评"},
+    ]
+
+    if vision:
+        adapter.call_vision(
+            endpoint(category="vision"),
+            "首轮图片请求",
+            [adapter.LLMImage.from_bytes(b"image", "image/png")],
+            continuation_messages=continuation,
+        )
+    else:
+        adapter.call_text(
+            endpoint(),
+            "首轮文本请求",
+            continuation_messages=continuation,
+        )
+
+    messages = calls[0][1]["json"]["messages"]
+    assert messages[-2:] == continuation
+    assert messages[0]["role"] == "user"
+    if vision:
+        assert messages[0]["content"][-1] == {
+            "type": "text",
+            "text": "首轮图片请求",
+        }
+    else:
+        assert messages[0]["content"] == "首轮文本请求"
+
+
 def test_streaming_timeout_disables_read_deadline(monkeypatch):
     response = FakeResponse(
         content_type="text/event-stream",

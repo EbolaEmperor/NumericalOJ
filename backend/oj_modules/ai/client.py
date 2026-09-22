@@ -166,7 +166,9 @@ def _call_llm_text(
     *,
     timeout=300,
     stream=False,
+    preserve_whitespace=False,
     system_prompt=None,
+    continuation_messages=None,
     on_delta=None,
     on_reasoning_delta=None,
 ):
@@ -174,15 +176,16 @@ def _call_llm_text(
         endpoint,
         str(prompt_text or ""),
         system_prompt=system_prompt,
+        continuation_messages=continuation_messages,
         timeout=timeout,
         stream=stream,
         on_text_delta=_safe_delta_callback(on_delta),
         on_reasoning_delta=_safe_delta_callback(on_reasoning_delta),
     )
-    text = str(result.text or "").strip()
-    if not text:
+    text = str(result.text or "")
+    if not text.strip():
         raise RuntimeError("模型未返回可用文本。")
-    return text
+    return text if preserve_whitespace else text.strip()
 
 
 def _call_llm_vision(
@@ -192,7 +195,9 @@ def _call_llm_vision(
     *,
     timeout=300,
     stream=False,
+    preserve_whitespace=False,
     system_prompt=None,
+    continuation_messages=None,
     on_delta=None,
     on_reasoning_delta=None,
 ):
@@ -201,12 +206,13 @@ def _call_llm_vision(
         str(prompt_text or ""),
         list(image_data_urls or []),
         system_prompt=system_prompt,
+        continuation_messages=continuation_messages,
         timeout=timeout,
         stream=stream,
         on_text_delta=_safe_delta_callback(on_delta),
         on_reasoning_delta=_safe_delta_callback(on_reasoning_delta),
     )
-    text = str(result.text or "").strip()
-    if not text:
+    text = str(result.text or "")
+    if not text.strip():
         raise RuntimeError("模型未返回可用文本。")
-    return text
+    return text if preserve_whitespace else text.strip()

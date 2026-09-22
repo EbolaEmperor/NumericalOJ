@@ -157,6 +157,21 @@ def test_generic_text_and_vision_helpers_forward_snapshot(monkeypatch):
     assert calls[1][4]["stream"] is True
 
 
+def test_generic_helpers_can_preserve_exact_streamed_response(monkeypatch):
+    snapshot = LLMEndpointSnapshot.from_mapping(endpoint_mapping())
+    monkeypatch.setattr(
+        client,
+        "call_text",
+        lambda *_args, **_kwargs: SimpleNamespace(text="  exact response\n"),
+    )
+
+    assert client._call_llm_text(
+        "prompt",
+        snapshot,
+        preserve_whitespace=True,
+    ) == "  exact response\n"
+
+
 def test_code_marks_resolves_global_text_endpoint_once(monkeypatch):
     snapshot = LLMEndpointSnapshot.from_mapping(endpoint_mapping())
     resolved = []

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+from dataclasses import dataclass
 
 from backend.oj_modules.ai.client import (
     _call_llm_text,
@@ -30,6 +31,60 @@ DEFAULT_WRITTEN_GRADING_RULES_TEXT = (
     "3) 若存在实质性逻辑错误/结论错误，分数应 <= 2。\n"
     "4) 若 score < 5，deductions 必须至少包含 1 条具体扣分点。"
 )
+
+
+@dataclass(frozen=True)
+class WrittenGradingRound:
+    score: int
+    comment: str
+    raw_response: str
+    prompt: str
+    image_data_urls: tuple[str, ...] = ()
+
+
+def _written_grading_round_result(
+    response_text,
+    *,
+    prompt,
+    image_data_urls=(),
+    repair_endpoint=None,
+):
+    score, deductions, comment = _parse_written_homework_grading_result(
+        response_text,
+        repair_endpoint=repair_endpoint,
+    )
+    return WrittenGradingRound(
+        score=score,
+        comment=_format_written_homework_comment(score, deductions, comment),
+        raw_response=str(response_text or ""),
+        prompt=str(prompt or ""),
+        image_data_urls=tuple(str(item) for item in image_data_urls),
+    )
+
+
+def _written_reconsideration_prompt(peer_rounds):
+    sections = ["下面是其余几位评委的评分结果："]
+    for peer in peer_rounds:
+        sections.extend([
+            "",
+            "---",
+            f"## 评委 {int(peer['vote_index'])}",
+            f"给分：{int(peer['round'].score)}/5",
+            "回复：",
+            peer["round"].raw_response,
+        ])
+    sections.extend([
+        "",
+        "---",
+        "",
+        "请你结合其他评委的意见，重新仔细阅读学生的答案，尤其注意你们意见不一致的地方。"
+        "形成一个最终的评分结果。还是按刚才告诉你的格式来返回 json。",
+        "",
+        "特别的，如果学生答案是以图片形式给你的，那你要注意你的识图结果或者其他评委的识图结果"
+        "都有可能是错的，你需要仔细地重新读一遍图。",
+    ])
+    return "\n".join(sections)
+
 
 def _repair_grading_json_text_locally(raw_text):
     text = str(raw_text or "").strip()
@@ -232,6 +287,7 @@ def evaluate_written_homework_with_ai(
     endpoint_id=None,
     timeout_seconds=300,
     repair_invalid_json=True,
+    return_round=False,
 ):
     del grading_model_spec  # 兼容旧调用签名；模型选择只来自端点快照。
     use_endpoint = resolve_problem_llm_endpoint_snapshot(
@@ -271,13 +327,16 @@ def evaluate_written_homework_with_ai(
         use_endpoint,
         timeout=int(timeout_seconds),
         stream=True,
+        preserve_whitespace=True,
     )
-    score, deductions, comment = _parse_written_homework_grading_result(
+    round_result = _written_grading_round_result(
         response_text,
+        prompt=prompt,
         repair_endpoint=use_endpoint if repair_invalid_json else None,
     )
-    final_comment = _format_written_homework_comment(score, deductions, comment)
-    return score, final_comment
+    if return_round:
+        return round_result
+    return round_result.score, round_result.comment
 
 
 def evaluate_written_homework_with_ai_from_images(
@@ -289,6 +348,7 @@ def evaluate_written_homework_with_ai_from_images(
     endpoint_id=None,
     timeout_seconds=360,
     repair_invalid_json=True,
+    return_round=False,
 ):
     if not image_paths:
         raise RuntimeError("未找到可用于图片批改的页面图片。")
@@ -329,10 +389,58 @@ def evaluate_written_homework_with_ai_from_images(
         use_endpoint,
         timeout=int(timeout_seconds),
         stream=True,
+        preserve_whitespace=True,
     )
-    score, deductions, comment = _parse_written_homework_grading_result(
+    round_result = _written_grading_round_result(
         response_text,
+        prompt=prompt,
+        image_data_urls=image_data_urls,
         repair_endpoint=use_endpoint if repair_invalid_json else None,
     )
-    final_comment = _format_written_homework_comment(score, deductions, comment)
-    return score, final_comment
+    if return_round:
+        return round_result
+    return round_result.score, round_result.comment
+
+
+def reconsider_written_homework_with_ai(
+    first_round,
+    peer_rounds,
+    *,
+    endpoint,
+    timeout_seconds=300,
+    repair_invalid_json=False,
+):
+    """沿用首轮完整前缀，让同一评委参考其他评委后进行最终复评。"""
+
+    if not isinstance(first_round, WrittenGradingRound):
+        raise RuntimeError("缺少评委首轮会话，无法发起第二轮评分。")
+    followup = _written_reconsideration_prompt(peer_rounds)
+    continuation_messages = [
+        {"role": "assistant", "content": first_round.raw_response},
+        {"role": "user", "content": followup},
+    ]
+    if first_round.image_data_urls:
+        response_text = _call_llm_vision(
+            first_round.prompt,
+            first_round.image_data_urls,
+            endpoint,
+            timeout=int(timeout_seconds),
+            stream=True,
+            preserve_whitespace=True,
+            continuation_messages=continuation_messages,
+        )
+    else:
+        response_text = _call_llm_text(
+            first_round.prompt,
+            endpoint,
+            timeout=int(timeout_seconds),
+            stream=True,
+            preserve_whitespace=True,
+            continuation_messages=continuation_messages,
+        )
+    return _written_grading_round_result(
+        response_text,
+        prompt=first_round.prompt,
+        image_data_urls=first_round.image_data_urls,
+        repair_endpoint=endpoint if repair_invalid_json else None,
+    )

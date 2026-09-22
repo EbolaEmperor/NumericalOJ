@@ -148,6 +148,80 @@ def test_written_homework_grading_uses_streaming_response(monkeypatch, from_imag
     assert result[0] == 5
     assert captured["kwargs"]["stream"] is True
     assert captured["kwargs"]["timeout"] == 45
+    assert captured["kwargs"]["preserve_whitespace"] is True
+
+
+@pytest.mark.parametrize("from_images", [False, True])
+def test_written_homework_reconsideration_preserves_first_round_prefix(
+    monkeypatch,
+    from_images,
+):
+    from backend.oj_modules.ai import grading
+
+    captured = {}
+    first_round = grading.WrittenGradingRound(
+        score=4,
+        comment="首轮评语",
+        raw_response='{"score":4,"deductions":["缺一步"],"comment":"首轮"}',
+        prompt="完全相同的首轮请求",
+        image_data_urls=("data:image/png;base64,AA==",) if from_images else (),
+    )
+    peers = [
+        {
+            "vote_index": 1,
+            "round": grading.WrittenGradingRound(
+                score=5,
+                comment="评委一",
+                raw_response='{"score":5,"deductions":[],"comment":"正确"}',
+                prompt="peer",
+            ),
+        },
+        {
+            "vote_index": 3,
+            "round": grading.WrittenGradingRound(
+                score=3,
+                comment="评委三",
+                raw_response='{"score":3,"deductions":["识图不同"],"comment":"复查图片"}',
+                prompt="peer",
+            ),
+        },
+    ]
+
+    def fake_call(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return '{"score":5,"deductions":[],"comment":"最终一致"}'
+
+    monkeypatch.setattr(
+        grading,
+        "_call_llm_vision" if from_images else "_call_llm_text",
+        fake_call,
+    )
+    result = grading.reconsider_written_homework_with_ai(
+        first_round,
+        peers,
+        endpoint=object(),
+        timeout_seconds=45,
+    )
+
+    assert result.score == 5
+    assert captured["args"][0] == "完全相同的首轮请求"
+    if from_images:
+        assert captured["args"][1] == first_round.image_data_urls
+    continuation = captured["kwargs"]["continuation_messages"]
+    assert captured["kwargs"]["preserve_whitespace"] is True
+    assert continuation[0] == {
+        "role": "assistant",
+        "content": first_round.raw_response,
+    }
+    followup = continuation[1]["content"]
+    assert continuation[1]["role"] == "user"
+    assert "## 评委 1" in followup
+    assert "## 评委 3" in followup
+    assert "给分：5/5" in followup
+    assert peers[0]["round"].raw_response in followup
+    assert peers[1]["round"].raw_response in followup
+    assert "仔细地重新读一遍图" in followup
 
 
 def test_parse_low_score_without_deductions_gets_default():

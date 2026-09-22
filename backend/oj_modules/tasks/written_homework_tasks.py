@@ -16,8 +16,10 @@ from backend.oj_modules.shared.archive import (
     extract_zip,
 )
 from backend.oj_modules.ai.grading import (
+    WrittenGradingRound,
     evaluate_written_homework_with_ai,
     evaluate_written_homework_with_ai_from_images,
+    reconsider_written_homework_with_ai,
 )
 from backend.oj_modules.ai.transcription import (
     render_pdf_to_images,
@@ -208,18 +210,27 @@ def _run_written_vote(attempt_id, vote, evaluator):
     for call_attempt in range(1, _VOTE_CALL_ATTEMPTS + 1):
         update_vote(vote["id"], status="running", call_attempts=call_attempt)
         try:
-            score, comment = evaluator(vote["endpoint"])
+            evaluated = evaluator(vote["endpoint"])
+            if isinstance(evaluated, WrittenGradingRound):
+                score = int(evaluated.score)
+                comment = str(evaluated.comment or "")
+                round_result = evaluated
+            else:
+                score, comment = evaluated
+                score = int(score)
+                comment = str(comment or "")
+                round_result = None
         except Exception as exc:  # 每一票独立重试，不重跑已经成功的票。
             last_error = exc
             continue
         update_vote(
             vote["id"],
             status="completed",
-            score=int(score),
-            comment=str(comment or ""),
+            score=score,
+            comment=comment,
             call_attempts=call_attempt,
         )
-        return {"score": int(score), "comment": str(comment or "")}
+        return {"score": score, "comment": comment, "round": round_result}
     update_vote(
         vote["id"],
         status="failed",
@@ -229,15 +240,29 @@ def _run_written_vote(attempt_id, vote, evaluator):
     return {"error": str(last_error or "模型调用失败")}
 
 
-def _evaluate_written_votes(attempt, vote_plan, evaluator):
+def _run_written_vote_round(attempt, vote_plan, evaluator_for_vote):
     results = [None] * len(vote_plan)
     with ThreadPoolExecutor(max_workers=min(_VOTE_MAX_WORKERS, len(vote_plan))) as executor:
         future_map = {
-            executor.submit(_run_written_vote, attempt["id"], vote, evaluator): index
+            executor.submit(
+                _run_written_vote,
+                attempt["id"],
+                vote,
+                lambda endpoint, index=index: evaluator_for_vote(index, endpoint),
+            ): index
             for index, vote in enumerate(vote_plan)
         }
         for future in as_completed(future_map):
             results[future_map[future]] = future.result()
+    return results
+
+
+def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=None):
+    results = _run_written_vote_round(
+        attempt,
+        vote_plan,
+        lambda _index, endpoint: evaluator(endpoint),
+    )
 
     if any(result is None or result.get("error") for result in results):
         finish_attempt(attempt["id"], status="needs_manual_review")
@@ -245,8 +270,43 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator):
 
     scores = {int(result["score"]) for result in results}
     if len(scores) != 1:
-        finish_attempt(attempt["id"], status="needs_manual_review")
-        return None, "AI 评委给分不一致，已转人工复核。"
+        can_reconsider = (
+            callable(reconsider_evaluator)
+            and all(result.get("round") is not None for result in results)
+        )
+        if not can_reconsider:
+            finish_attempt(attempt["id"], status="needs_manual_review")
+            return None, "AI 评委给分不一致，已转人工复核。"
+
+        first_round_results = results
+
+        def evaluate_reconsideration(index, endpoint):
+            peers = [
+                {
+                    "vote_index": int(vote_plan[peer_index]["vote_index"]),
+                    "round": peer_result["round"],
+                }
+                for peer_index, peer_result in enumerate(first_round_results)
+                if peer_index != index
+            ]
+            return reconsider_evaluator(
+                endpoint,
+                first_round_results[index]["round"],
+                peers,
+            )
+
+        results = _run_written_vote_round(
+            attempt,
+            vote_plan,
+            evaluate_reconsideration,
+        )
+        if any(result is None or result.get("error") for result in results):
+            finish_attempt(attempt["id"], status="needs_manual_review")
+            return None, "第二轮 AI 评委连续重试后仍未完成，已转人工复核。"
+        scores = {int(result["score"]) for result in results}
+        if len(scores) != 1:
+            finish_attempt(attempt["id"], status="needs_manual_review")
+            return None, "第二轮 AI 评委给分仍不一致，已转人工复核。"
 
     score = scores.pop()
     finish_attempt(attempt["id"], status="consensus", consensus_score=score)
@@ -648,7 +708,18 @@ def register_written_homework_task(celery_app):
                 # create_attempt 将行 ID 写回 public_votes；同步到带端点快照的执行计划。
                 for vote, persisted in zip(vote_plan, public_votes):
                     vote["id"] = persisted["id"]
-                return _evaluate_written_votes(vote_attempt, vote_plan, evaluator)
+                return _evaluate_written_votes(
+                    vote_attempt,
+                    vote_plan,
+                    evaluator,
+                    lambda endpoint, first_round, peers: reconsider_written_homework_with_ai(
+                        first_round,
+                        peers,
+                        endpoint=endpoint,
+                        timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
+                        repair_invalid_json=False,
+                    ),
+                )
 
             if written_mode == 2:
                 image_paths = render_pdf_to_images(file_path, upload_folder)
@@ -659,6 +730,7 @@ def register_written_homework_task(celery_app):
                         endpoint=endpoint,
                         timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
                         repair_invalid_json=False,
+                        return_round=True,
                     )
                 )
             elif written_mode == 3:
@@ -768,6 +840,7 @@ def register_written_homework_task(celery_app):
                             endpoint=endpoint,
                             timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
                             repair_invalid_json=False,
+                            return_round=True,
                         )
                     )
                 except Exception as tex_error:
@@ -806,6 +879,7 @@ def register_written_homework_task(celery_app):
                         endpoint=endpoint,
                         timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
                         repair_invalid_json=False,
+                        return_round=True,
                     )
                 )
 

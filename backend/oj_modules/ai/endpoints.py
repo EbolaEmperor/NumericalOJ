@@ -1342,6 +1342,7 @@ def call_text(
     prompt,
     *,
     system_prompt=None,
+    continuation_messages=None,
     tools=None,
     tool_choice=None,
     temperature=None,
@@ -1356,6 +1357,8 @@ def call_text(
     if system_prompt:
         messages.append({"role": "system", "content": str(system_prompt)})
     messages.append({"role": "user", "content": str(prompt or "")})
+    if continuation_messages:
+        messages.extend(continuation_messages)
     return call_chat(
         endpoint,
         messages,
@@ -1377,6 +1380,7 @@ def call_vision(
     images,
     *,
     system_prompt=None,
+    continuation_messages=None,
     temperature=None,
     max_tokens=None,
     timeout=300,
@@ -1402,6 +1406,8 @@ def call_vision(
     ]
     content.append({"type": "text", "text": str(prompt or "")})
     messages.append({"role": "user", "content": content})
+    if continuation_messages:
+        messages.extend(continuation_messages)
 
     timeout_value = None if timeout is None else _positive_float(timeout, "timeout")
     use_stream = bool(
