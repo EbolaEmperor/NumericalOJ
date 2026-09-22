@@ -4,7 +4,7 @@
 from flask import Blueprint, request
 
 from backend.oj_modules.api.helpers import apply_limit, clamp_limit, json_error, json_success, public_problem, public_user, to_jsonable
-from backend.oj_modules.security.auth import current_user
+from backend.oj_modules.security.auth import current_user, is_admin
 from backend.oj_modules.problems.promptly import parse_promptly_review_config
 from backend.oj_modules.problems.grading import (
     DEFAULT_WRITTEN_GRADING_PROMPT as _DEFAULT_WRITTEN_GRADING_PROMPT,
@@ -180,6 +180,8 @@ def problem_detail(problem_id):
     problem_type = int(raw_problem.get("type") or 1)
     written_mode = int(raw_problem.get("written_grading_mode") or 1)
     programming_mode = int(raw_problem.get("programming_grading_mode") or 1)
+    if is_admin(user):
+        problem["written_grading_mode"] = written_mode
     is_lean4 = (
         problem_type == 1
         and str(raw_problem.get("lang") or "").strip().lower() in {"lean", "lean4"}

@@ -8,6 +8,22 @@
   --agent-surface: #fafafa;
 }
 
+.agent-launch-modal.faithsieve-launch-modal {
+  --agent-accent: #18181b;
+  --agent-accent-dark: #000;
+  --agent-accent-soft: #f4f4f5;
+}
+
+.faithsieve-launch-modal .agent-launch-heading-icon {
+  border-color: #d4d4d8;
+  background: #f4f4f5;
+  color: #09090b;
+}
+
+.faithsieve-launch-modal .agent-launch-eyebrow {
+  color: #71717a;
+}
+
 .agent-launch-modal .modal-dialog {
   max-width: 660px;
 }

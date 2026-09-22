@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from flask import Flask
 import pytest
 
+from backend.oj_modules.api import problem_api
 from backend.oj_modules.routes import grading_routes
 from backend.oj_modules.api.submission_api import _submission_problem_payload
 from backend.oj_modules.submissions import faithsieve
@@ -46,6 +47,51 @@ def test_public_problem_exposes_written_grading_mode_for_button_visibility():
         problem,
         {"is_admin": 0},
     )
+
+
+@pytest.mark.parametrize(
+    ("user", "expected_mode"),
+    [
+        ({"id": 1, "username": "admin", "is_admin": 1}, 4),
+        ({"id": 2, "username": "student", "is_admin": 0}, None),
+    ],
+)
+def test_problem_detail_exposes_written_grading_mode_only_to_admin(
+    monkeypatch,
+    user,
+    expected_mode,
+):
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    monkeypatch.setattr(problem_api, "current_user", lambda: user)
+    monkeypatch.setattr(
+        problem_api,
+        "build_problem_detail_context",
+        lambda *_args: ({
+            "problem": {
+                "id": 7,
+                "title": "证明题",
+                "type": 2,
+                "written_grading_mode": 4,
+            },
+            "rendered_content": "",
+            "last_submissions": [],
+            "initial_code": "",
+            "remaining_submissions": 10,
+            "can_submit": True,
+            "submit_block_code": "",
+            "submit_block_reason": "",
+        }, None),
+    )
+
+    response = app.test_client().get("/api/problems/7")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    if expected_mode is None:
+        assert "written_grading_mode" not in payload["problem"]
+    else:
+        assert payload["problem"]["written_grading_mode"] == expected_mode
 
 
 def test_queue_runs_uses_named_lock_and_skips_active_submission(monkeypatch):
