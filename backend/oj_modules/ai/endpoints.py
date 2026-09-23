@@ -1086,7 +1086,7 @@ def _response_json(response):
 def _iter_sse_json(response):
     data_lines = []
     try:
-        for raw_line in response.iter_lines(decode_unicode=True):
+        for raw_line in response.iter_lines(decode_unicode=False):
             if isinstance(raw_line, bytes):
                 line = raw_line.decode("utf-8", errors="replace")
             else:

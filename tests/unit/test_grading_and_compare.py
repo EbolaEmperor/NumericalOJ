@@ -2,7 +2,7 @@
 """判分核心纯函数单测（对应路线图 quick-win）。
 
 - compare_float_strings：决定 AC vs Wrong Answer 的数值比较（容差、长度不一致、NaN、解析失败回退）
-- _parse_written_homework_grading_result：书面作业评分 JSON 解析 + 分数夹取 + 5分有扣分降4 + <5无扣分补默认
+- _parse_written_homework_grading_result：书面作业评分 JSON 解析 + 分数 0..5 夹取（信任模型给分，不再做降分/补扣分后处理）
 """
 import pytest
 
@@ -102,11 +102,11 @@ def test_parse_full_marks_no_deductions():
     assert comment == "很好"
 
 
-def test_parse_full_marks_with_deductions_downgraded_to_4():
+def test_parse_full_marks_with_deductions_kept():
     parse = _parse()
     score, deductions, _ = parse('{"score": 5, "deductions": ["第二步跳步"], "comment": "x"}')
-    assert score == 4                       # 5 分但有扣分 → 降为 4
-    assert deductions
+    assert score == 5                       # 信任模型给分，5 分即便有扣分也不再降为 4
+    assert deductions == ["第二步跳步"]
 
 
 @pytest.mark.parametrize("from_images", [False, True])
@@ -282,15 +282,15 @@ def test_written_homework_third_round_keeps_full_transcript(monkeypatch):
     assert "还是用一样的 json 格式回复我" in followup
 
 
-def test_parse_low_score_without_deductions_gets_default():
+def test_parse_low_score_without_deductions_kept_empty():
     parse = _parse()
     score, deductions, _ = parse('{"score": 3, "deductions": [], "comment": ""}')
     assert score == 3
-    assert deductions                        # <5 分且无扣分 → 补默认扣分
+    assert deductions == []                  # 不再补默认扣分，信任模型输出
 
 
 def test_parse_clamps_out_of_range():
     parse = _parse()
-    # 用空 deductions 避免触发「5分有扣分降4」，单纯验证 0..5 夹取
+    # 单纯验证 0..5 夹取
     assert parse('{"score": 9, "deductions": []}')[0] == 5
     assert parse('{"score": -2, "deductions": []}')[0] == 0

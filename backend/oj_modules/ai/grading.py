@@ -178,11 +178,6 @@ def _parse_written_homework_grading_result(response_text, repair_endpoint=None):
         deductions = [deductions]
     deductions = [_repair_latex_escape_artifacts(str(x).strip()) for x in (deductions or []) if str(x).strip()]
 
-    if score == 5 and deductions:
-        score = 4
-    if score < 5 and not deductions:
-        deductions = ["解答存在步骤不严谨或论证不完整，未达到满分标准。"]
-
     comment = data.get('comment')
     if comment is None:
         comment = data.get('评语') or ""
