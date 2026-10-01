@@ -4,10 +4,12 @@
 import os
 import re
 import shutil
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pymysql
+from celery.exceptions import SoftTimeLimitExceeded
 
 from backend.oj_modules.config import EVALUATE_SUBMISSION_LOCK_TTL_SECONDS
 from backend.oj_modules.shared.archive import (
@@ -16,10 +18,15 @@ from backend.oj_modules.shared.archive import (
     extract_zip,
 )
 from backend.oj_modules.ai.grading import (
+    WrittenGradingJSONRepairError,
     WrittenGradingRound,
     evaluate_written_homework_with_ai,
     evaluate_written_homework_with_ai_from_images,
     reconsider_written_homework_with_ai,
+)
+from backend.oj_modules.ai.written_retry import (
+    WRITTEN_GRADING_CALL_ATTEMPTS,
+    WRITTEN_GRADING_RETRY_DELAYS_SECONDS,
 )
 from backend.oj_modules.ai.transcription import (
     render_pdf_to_images,
@@ -31,7 +38,7 @@ from backend.oj_modules.problems.llm_bindings import (
     TEXT_GRADING_ENDPOINT_ID,
     deserialize_problem_llm_bindings,
 )
-from backend.oj_modules.problems.written_vote import normalize_written_vote_config
+from backend.oj_modules.problems.written_vote import MAX_TOTAL_VOTES, normalize_written_vote_config
 from backend.oj_modules.site_config.services import get_llm_endpoint
 from backend.oj_modules.db_services import (
     get_problem,
@@ -54,10 +61,31 @@ from backend.oj_modules.submissions.written_voting import (
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
-# 硬超时必须小于幂等锁 TTL（EVALUATE_SUBMISSION_LOCK_TTL_SECONDS），否则锁会先于任务过期，
-# 导致重投的副本拿到锁并重复评分（重复计费 AI）。这里预留 120s，使「锁存活 > 任务时限」。
-_WRITTEN_TASK_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS) - 120)
-_WRITTEN_TASK_SOFT_TIME_LIMIT = max(30, _WRITTEN_TASK_TIME_LIMIT - 60)
+_VOTE_MAX_WORKERS = 3
+_VOTE_CALL_ATTEMPTS = WRITTEN_GRADING_CALL_ATTEMPTS
+_VOTE_CALL_TIMEOUT_SECONDS = 45
+# 首轮分歧后的复评轮次编号 → 日志/评语中的中文轮次标签。
+_RECONSIDERATION_ROUND_LABELS = {2: "第二轮", 3: "第三轮"}
+_VOTE_BATCHES = (MAX_TOTAL_VOTES + _VOTE_MAX_WORKERS - 1) // _VOTE_MAX_WORKERS
+_VOTE_CALL_BUDGET_SECONDS = (
+    _VOTE_CALL_ATTEMPTS * _VOTE_CALL_TIMEOUT_SECONDS
+    + sum(WRITTEN_GRADING_RETRY_DELAYS_SECONDS)
+)
+# 3 轮 × 最多 4 批评委 ×（评分 + 独立 JSON 修复）×（5 次调用 + 4 次退避）
+# = 8880s；另保留原有 OCR/编译预算。HTTP 超时限制连接/读取空闲时间，
+# 不是请求墙钟上限；这里是 Celery 总时限的保护预算估算。
+_WRITTEN_VOTE_BUDGET_SECONDS = (
+    (1 + len(_RECONSIDERATION_ROUND_LABELS))
+    * _VOTE_BATCHES * 2 * _VOTE_CALL_BUDGET_SECONDS
+)
+_WRITTEN_PROCESSING_TIME_LIMIT = max(60, int(EVALUATE_SUBMISSION_LOCK_TTL_SECONDS) - 120)
+_WRITTEN_TASK_TIME_LIMIT = _WRITTEN_PROCESSING_TIME_LIMIT + _WRITTEN_VOTE_BUDGET_SECONDS
+_WRITTEN_TASK_SOFT_TIME_LIMIT = (
+    max(30, _WRITTEN_PROCESSING_TIME_LIMIT - 60) + _WRITTEN_VOTE_BUDGET_SECONDS
+)
+# 书面流程仍占用同一个提交锁，仅本任务延长 TTL。锁须严格超过 hard + 120s，
+# 防止任务存活期间副本拿到已过期的锁并重复评分、重复计费。
+_WRITTEN_LOCK_TTL_SECONDS = _WRITTEN_TASK_TIME_LIMIT + 121
 _MYSQL_RETRY_ERRORS = (
     pymysql.err.OperationalError,
     pymysql.err.InterfaceError,
@@ -70,11 +98,6 @@ _TEX_HAS_CJK_SETUP_PATTERN = re.compile(
 )
 _TEX_MISSING_CHAR_PATTERN = re.compile(r"Missing character: There is no .*?\(U\+([0-9A-Fa-f]{4,6})\)")
 _WRITTEN_PDF_MAX_BYTES = 64 * 1024 * 1024
-_VOTE_MAX_WORKERS = 3
-_VOTE_CALL_ATTEMPTS = 3
-_VOTE_CALL_TIMEOUT_SECONDS = 45
-# 首轮分歧后的复评轮次编号 → 日志/评语中的中文轮次标签。
-_RECONSIDERATION_ROUND_LABELS = {2: "第二轮", 3: "第三轮"}
 _TEX_COMPILE_SCRIPT = r'''
 set -u
 source_path="$1"
@@ -222,8 +245,15 @@ def _run_written_vote(attempt_id, vote, evaluator):
                 score = int(score)
                 comment = str(comment or "")
                 round_result = None
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:  # 每一票独立重试，不重跑已经成功的票。
             last_error = exc
+            # 格式修复已经用完独立的五次机会，不能再重跑评分、倍增修复调用。
+            if isinstance(exc, WrittenGradingJSONRepairError):
+                break
+            if call_attempt < _VOTE_CALL_ATTEMPTS:
+                time.sleep(WRITTEN_GRADING_RETRY_DELAYS_SECONDS[call_attempt - 1])
             continue
         update_vote(
             vote["id"],
@@ -237,7 +267,7 @@ def _run_written_vote(attempt_id, vote, evaluator):
         vote["id"],
         status="failed",
         error_message=str(last_error or "模型调用失败"),
-        call_attempts=_VOTE_CALL_ATTEMPTS,
+        call_attempts=call_attempt,
     )
     return {"error": str(last_error or "模型调用失败")}
 
@@ -263,12 +293,12 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
     results = _run_written_vote_round(
         attempt,
         vote_plan,
-        lambda _index, endpoint: evaluator(endpoint),
+        lambda index, endpoint: evaluator(endpoint, int(vote_plan[index]["vote_index"])),
     )
 
     if any(result is None or result.get("error") for result in results):
         finish_attempt(attempt["id"], status="needs_manual_review")
-        return None, "部分 AI 评委连续重试后仍未完成，已转人工复核。"
+        return None, "部分 AI 评委按间隔重试后仍未完成，已转人工复核。"
 
     scores = {int(result["score"]) for result in results}
     round_label = ""
@@ -296,6 +326,17 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
                 for peer_index, peer_result in enumerate(_previous)
                 if peer_index != index
             ]
+            if _round_number >= 3:
+                own_vote_index = int(vote_plan[index]["vote_index"])
+                for peer in peers:
+                    peer["reply_to_current_judge"] = next(
+                        (
+                            reply["reply"]
+                            for reply in peer["round"].peer_replies
+                            if reply["vote_index"] == own_vote_index
+                        ),
+                        "",
+                    )
             return reconsider_evaluator(
                 endpoint,
                 _previous[index]["round"],
@@ -310,7 +351,7 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
         )
         if any(result is None or result.get("error") for result in results):
             finish_attempt(attempt["id"], status="needs_manual_review")
-            return None, f"{round_label} AI 评委连续重试后仍未完成，已转人工复核。"
+            return None, f"{round_label} AI 评委按间隔重试后仍未完成，已转人工复核。"
         scores = {int(result["score"]) for result in results}
 
     if len(scores) != 1:
@@ -608,7 +649,10 @@ def register_written_homework_task(celery_app):
         if not submission or submission.get('problem_type') != 2:
             return
 
-        lock_client, lock_key, lock_token = acquire_submission_lock(submission_id)
+        lock_client, lock_key, lock_token = acquire_submission_lock(
+            submission_id,
+            ttl_seconds=_WRITTEN_LOCK_TTL_SECONDS,
+        )
         if lock_client is not None and lock_token is None:
             print(f"[Idempotency] Skip duplicate written grading for submission_id={submission_id}")
             return
@@ -726,7 +770,7 @@ def register_written_homework_task(celery_app):
                         peers,
                         endpoint=endpoint,
                         timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
-                        repair_invalid_json=False,
+                        repair_invalid_json=True,
                         round_number=round_number,
                     ),
                 )
@@ -734,13 +778,14 @@ def register_written_homework_task(celery_app):
             if written_mode == 2:
                 image_paths = render_pdf_to_images(file_path, upload_folder)
                 score, ai_comment = grade_with_votes(
-                    lambda endpoint: evaluate_written_homework_with_ai_from_images(
+                    lambda endpoint, vote_index: evaluate_written_homework_with_ai_from_images(
                         problem,
                         image_paths,
                         endpoint=endpoint,
                         timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
-                        repair_invalid_json=False,
+                        repair_invalid_json=True,
                         return_round=True,
+                        vote_index=vote_index,
                     )
                 )
             elif written_mode == 3:
@@ -844,15 +889,19 @@ def register_written_homework_task(celery_app):
                     # TeX 成功编译后先推送一次快照，前端可立刻渲染 PDF。
                     refresh_submission_status_snapshot(submission_id)
                     score, ai_comment = grade_with_votes(
-                        lambda endpoint: evaluate_written_homework_with_ai(
+                        lambda endpoint, vote_index: evaluate_written_homework_with_ai(
                             problem,
                             tex_text,
                             endpoint=endpoint,
                             timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
-                            repair_invalid_json=False,
+                            repair_invalid_json=True,
                             return_round=True,
+                            vote_index=vote_index,
                         )
                     )
+                except (SoftTimeLimitExceeded, *_MYSQL_RETRY_ERRORS):
+                    # 超时应转人工复核，数据库异常交给 Celery 重试；不能误记为编译失败 0 分。
+                    raise
                 except Exception as tex_error:
                     score = 0
                     ai_comment = _build_tex_compile_fail_comment(str(tex_error))
@@ -883,13 +932,14 @@ def register_written_homework_task(celery_app):
                 # OCR 已完成，立即发布一次实时状态，供前端渲染 LaTeX 转写结果。
                 refresh_submission_status_snapshot(submission_id)
                 score, ai_comment = grade_with_votes(
-                    lambda endpoint: evaluate_written_homework_with_ai(
+                    lambda endpoint, vote_index: evaluate_written_homework_with_ai(
                         problem,
                         latex_text,
                         endpoint=endpoint,
                         timeout_seconds=_VOTE_CALL_TIMEOUT_SECONDS,
-                        repair_invalid_json=False,
+                        repair_invalid_json=True,
                         return_round=True,
+                        vote_index=vote_index,
                     )
                 )
 

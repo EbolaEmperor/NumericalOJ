@@ -4,6 +4,8 @@
 - compare_float_strings：决定 AC vs Wrong Answer 的数值比较（容差、长度不一致、NaN、解析失败回退）
 - _parse_written_homework_grading_result：书面作业评分 JSON 解析 + 分数 0..5 夹取（信任模型给分，不再做降分/补扣分后处理）
 """
+import json
+
 import pytest
 
 
@@ -190,7 +192,15 @@ def test_written_homework_reconsideration_preserves_first_round_prefix(
     def fake_call(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return '{"score":5,"deductions":[],"comment":"最终一致"}'
+        return json.dumps({
+            "score": 5,
+            "deductions": [],
+            "comment": "最终一致",
+            "peer_replies": [
+                {"vote_index": 1, "reply": "已核对评委一的推导。"},
+                {"vote_index": 3, "reply": "已复查评委三指出的图片。"},
+            ],
+        }, ensure_ascii=False)
 
     monkeypatch.setattr(
         grading,
@@ -205,6 +215,10 @@ def test_written_homework_reconsideration_preserves_first_round_prefix(
     )
 
     assert result.score == 5
+    assert result.peer_replies == (
+        {"vote_index": 1, "reply": "已核对评委一的推导。"},
+        {"vote_index": 3, "reply": "已复查评委三指出的图片。"},
+    )
     assert captured["args"][0] == "完全相同的首轮请求"
     if from_images:
         assert captured["args"][1] == first_round.image_data_urls
@@ -222,6 +236,9 @@ def test_written_homework_reconsideration_preserves_first_round_prefix(
     assert peers[0]["round"].raw_response in followup
     assert peers[1]["round"].raw_response in followup
     assert "仔细地重新读一遍图" in followup
+    assert "peer_replies" in followup
+    assert "vote_index" in followup
+    assert "reply" in followup
 
 
 def test_written_homework_third_round_keeps_full_transcript(monkeypatch):
@@ -231,7 +248,7 @@ def test_written_homework_third_round_keeps_full_transcript(monkeypatch):
 
     def fake_call(*args, **kwargs):
         captured.append((args, kwargs))
-        return '{"score":5,"deductions":[],"comment":"复评"}'
+        return '{"score":5,"deductions":[],"comment":"复评", "peer_replies":[{"vote_index":2,"reply":"已检查对方提出的争议。"}]}'
 
     monkeypatch.setattr(grading, "_call_llm_text", fake_call)
     first_round = grading.WrittenGradingRound(
@@ -255,7 +272,7 @@ def test_written_homework_third_round_keeps_full_transcript(monkeypatch):
     )
     third_round = grading.reconsider_written_homework_with_ai(
         second_round,
-        peers_second,
+        [{**peers_second[0], "reply_to_current_judge": "评委二针对我的解释"}],
         endpoint=object(),
         timeout_seconds=45,
         round_number=3,
@@ -277,9 +294,10 @@ def test_written_homework_third_round_keeps_full_transcript(monkeypatch):
 
     followup = third_continuation[3]["content"]
     assert peers_second[0]["round"].raw_response in followup
-    assert "这是第二轮讨论的结果" in followup
+    assert "第二轮评分（第一轮讨论）" in followup
     assert "请再核对一轮，解决争议的问题" in followup
-    assert "还是用一样的 json 格式回复我" in followup
+    assert "评委二针对我的解释" in followup
+    assert "peer_replies" in followup
 
 
 def test_parse_low_score_without_deductions_kept_empty():

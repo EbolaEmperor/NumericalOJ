@@ -25,15 +25,18 @@ def submission_lock_key(submission_id):
     return f"submission:{submission_id}:lock"
 
 
-def acquire_submission_lock(submission_id):
+def acquire_submission_lock(submission_id, *, ttl_seconds=None):
+    """领取同一个提交锁；长流程可显式延长 TTL，普通评测沿用默认值。"""
+
     client = _get_lock_redis_client()
     if client is None:
         return None, None, None
 
     key = submission_lock_key(submission_id)
     token = uuid.uuid4().hex
+    lock_ttl = LOCK_TTL_SECONDS if ttl_seconds is None else max(60, int(ttl_seconds))
     try:
-        acquired = client.set(key, token, nx=True, ex=LOCK_TTL_SECONDS)
+        acquired = client.set(key, token, nx=True, ex=lock_ttl)
     except Exception:
         return None, None, None
 
