@@ -34,6 +34,7 @@ def _navigation_items(user):
         items.extend([
             {"id": "admin", "label": "用户管理", "path": "/admin", "icon": "users", "group": "admin", "spa": True},
             {"id": "admin_homework", "label": "作业管理", "path": "/admin/homework", "icon": "admin-homework", "group": "admin", "spa": True},
+            {"id": "faithsieve", "label": "Faith Sieve", "path": "/admin/faithsieve", "icon": "faithsieve", "group": "admin", "spa": True},
             {"id": "ai_detection", "label": "AI 检测", "path": "/admin/ai-detection", "icon": "ai", "group": "admin", "spa": True},
             {"id": "site_config", "label": "全站配置", "path": "/admin/site-config", "icon": "site-config", "group": "admin", "spa": True},
         ])

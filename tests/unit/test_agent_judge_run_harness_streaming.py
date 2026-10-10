@@ -274,8 +274,9 @@ def test_claude_relay_only_overrides_main_streaming_messages_request():
     ("thinking_format", "enabled", "expected"),
     [
         ("thinking_type", True, {"thinking": {"type": "adaptive"}}),
-        ("thinking_type", False, {}),
-        ("none", False, {}),
+        ("thinking_type", False, {"thinking": {"type": "disabled"}}),
+        ("none", False, {"thinking": {"type": "disabled"}}),
+        ("none", True, {"thinking": {"type": "disabled"}}),
     ],
 )
 def test_claude_messages_rewrite_uses_frozen_thinking_format(
@@ -298,8 +299,22 @@ def test_claude_messages_rewrite_uses_frozen_thinking_format(
 
     assert "enable_thinking" not in rewritten
     assert {key: rewritten[key] for key in expected} == expected
-    if thinking_format == "none":
-        assert "thinking" not in rewritten
+    assert "effort" not in json.dumps(rewritten)
+    assert "budget" not in json.dumps(rewritten)
+
+
+def test_unconfigured_endpoint_thinking_keeps_legacy_request_fields():
+    module = _load_run_harness()
+    payload = {"thinking": {"type": "enabled"}, "enable_thinking": True}
+
+    module._apply_endpoint_thinking_fields(
+        payload,
+        protocol="anthropic",
+        thinking_format=None,
+        thinking_enabled=False,
+    )
+
+    assert payload == {"thinking": {"type": "enabled"}, "enable_thinking": True}
 
 
 @pytest.mark.parametrize(
@@ -307,10 +322,17 @@ def test_claude_messages_rewrite_uses_frozen_thinking_format(
     [
         ("openai", "/v1/chat/completions", "enable_thinking", True,
          {"enable_thinking": True}),
+        ("openai", "/v1/chat/completions", "enable_thinking", False,
+         {"enable_thinking": False}),
         ("openai", "/v1/chat/completions", "none", False, {}),
+        ("openai", "/v1/chat/completions", "none", True, {}),
+        ("openai", "/v1/chat/completions", "thinking_type", False, {}),
         ("anthropic", "/v1/messages", "thinking_type", True,
          {"thinking": {"type": "adaptive"}}),
-        ("anthropic", "/v1/messages", "thinking_type", False, {}),
+        ("anthropic", "/v1/messages", "thinking_type", False,
+         {"thinking": {"type": "disabled"}}),
+        ("anthropic", "/v1/messages", "none", False,
+         {"thinking": {"type": "disabled"}}),
     ],
 )
 def test_pi_dual_protocol_relay_rewrites_real_request_shape(
@@ -712,6 +734,7 @@ def test_pi_endpoint_capabilities_are_model_agnostic_and_can_disable_thinking(
         "name": "generic-model",
         "contextWindow": 131_072,
         "maxTokens": 16_384,
+        "input": ["text"],
     }
 
 
@@ -786,6 +809,43 @@ def test_pi_thinking_config_is_model_agnostic(tmp_path):
     assert model["input"] == ["text"]
     assert "thinkingLevelMap" not in model
     assert "compat" not in model
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize("thinking", [True, False])
+@pytest.mark.parametrize("category, expected_input", [
+    ("omni", ["text", "image"]),
+    ("text", ["text"]),
+    (None, ["text"]),
+])
+def test_pi_runner_preserves_declared_image_capability_without_thinking_dependency(
+    monkeypatch, tmp_path, protocol, thinking, category, expected_input,
+):
+    module = _load_run_harness()
+    config_dir = tmp_path / "pi-agent"
+    monkeypatch.setattr(module, "PI_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(module, "PI_SESSION_DIR", str(config_dir / "sessions"))
+    _set_endpoint(monkeypatch, protocol=protocol)
+    monkeypatch.setenv("AJ_ENDPOINT_THINKING_ENABLED", str(thinking).lower())
+    monkeypatch.delenv("AJ_ENDPOINT_THINKING_FORMAT", raising=False)
+    if category is None:
+        monkeypatch.delenv("AJ_ENDPOINT_CATEGORY", raising=False)
+    else:
+        monkeypatch.setenv("AJ_ENDPOINT_CATEGORY", category)
+    observed = []
+
+    def run(args, env=None, **_kwargs):
+        # 读取 CLI 真正启动时使用的配置，不能仅验证配置函数的默认值。
+        models = json.loads((Path(env["PI_CODING_AGENT_DIR"]) / "models.json").read_text())
+        observed.append(models["providers"]["agent-judge"]["models"][0])
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "_run", run)
+    monkeypatch.setattr(module, "_record_session", lambda *_args, **_kwargs: "")
+    assert module._run_pi("读取 source-pages/page-1.png 并核对原稿") == 0
+    assert len(observed) == 1
+    assert observed[0]["input"] == expected_input
+    assert bool(observed[0].get("reasoning")) is thinking
 
 
 def test_pi_judge_uses_standard_tools_and_persistent_resume(

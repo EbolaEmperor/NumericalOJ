@@ -61,17 +61,33 @@ def test_materialize_faithsieve_skill_with_pipeline_references(tmp_path, harness
     target = skill_runtime.materialize_skill(tmp_path, harness, "faithsieve")
 
     rendered = (target / "SKILL.md").read_text(encoding="utf-8")
-    agent_prompts = target / "references" / "agents"
+    agent_prompts = target / "references" / "image-agents"
     assert "name: faithsieve" in rendered
     assert "faithsieve_result.json" in rendered
-    assert "## 1. 提取原稿" in rendered
-    assert "## 8. 评分并写结果" in rendered
-    assert "references/agents/decomposer.md" in rendered
-    assert "references/agents/proof-searcher.md" in rendered
-    assert len(list(agent_prompts.glob("*.md"))) >= 10
-    assert "SymPy" in (agent_prompts / "numeric-evaluator.md").read_text(
+    assert "## 1. 从图片直接构造 DAG" in rendered
+    assert "pages.json" in rendered
+    assert "全部原稿 PNG" in rendered
+    assert "不提取 PDF 文本或 OCR" in rendered
+    assert "pdftotext" not in rendered
+    assert "## 评分并写结果" in rendered
+    assert "references/image-agents/tree-builder.md" in rendered
+    assert "references/image-agents/local-verifier.md" in rendered
+    assert "references/image-agents/external-results.md" in rendered
+    assert {path.stem for path in agent_prompts.glob("*.md")} == {
+        "tree-builder", "tree-auditor", "local-verifier", "verification-auditor",
+        "evidence-mapper", "final-synthesizer", "consistency-auditor",
+        "node-selector", "source-conditions", "external-results",
+        "local-source-audit", "inconclusive-audit", "verification-method-audit",
+    }
+    assert "SymPy" in (agent_prompts / "local-verifier.md").read_text(
         encoding="utf-8",
     )
+    external_results = (agent_prompts / "external-results.md").read_text(
+        encoding="utf-8",
+    )
+    assert "external_results_version=1" in external_results
+    assert "当前待验证目标的证明必须完整" in external_results
+    assert "by sorry" in external_results
     assert "check_numeric.py" not in rendered
 
 

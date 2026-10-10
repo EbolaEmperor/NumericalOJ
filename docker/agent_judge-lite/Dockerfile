@@ -77,7 +77,6 @@ COPY agent_judge/lean /usr/local/bin/lean
 ENV ELAN_HOME=/opt/elan
 ENV PATH=/usr/local/bin:/opt/elan/bin:${PATH}
 RUN chmod 0755 /usr/local/bin/lean \
-    && lean --version \
     && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
 # 与完整镜像保持相同的 C/C++ 数值计算开发库（含 CHOLMOD）。放在 TeX/Lean
@@ -88,7 +87,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnlopt-dev libnlopt-cxx-dev libceres-dev libarmadillo-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# FaithSieve 原稿页图所需 PDF 工具及通用 Agent 的 OCR 工具；保留现有镜像缓存。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --no-cache-dir --break-system-packages sympy==1.14.0 mpmath==1.3.0
+
 # 与完整镜像复用同一份 Harness 入口。
+COPY agent_judge/faithsieve_tool.py /usr/local/share/numoj/faithsieve_tool.py
 COPY agent_judge/run_harness /usr/local/bin/run_harness
 COPY agent_judge/pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
 RUN chmod +x /usr/local/bin/run_harness

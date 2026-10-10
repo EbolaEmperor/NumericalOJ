@@ -22,6 +22,7 @@ from backend.oj_modules.submissions.written_voting import mark_latest_attempt_ma
 from backend.oj_modules.submissions.faithsieve import (
     finish_run,
     latest_submissions_for_problem,
+    normalize_execution_mode,
     queue_runs,
     set_run_task_id,
 )
@@ -29,6 +30,7 @@ from backend.oj_modules.problems.agent_launch import (
     AgentLaunchValidationError,
     normalize_launch_harness,
     resolve_launch_endpoint,
+    token_pricing_from_endpoint,
 )
 from backend.oj_modules.problems.agent_preferences import save_agent_launch_preference
 
@@ -58,20 +60,29 @@ def _faithsieve_runtime(user):
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         raise AgentLaunchValidationError('请求参数格式无效')
+    try:
+        execution_mode = normalize_execution_mode(payload.get('execution_mode'))
+    except ValueError as exc:
+        raise AgentLaunchValidationError(str(exc)) from exc
     harness = normalize_launch_harness(payload.get('harness'))
     endpoint = resolve_launch_endpoint(
         harness, payload.get('endpoint_id'), include_secret=False,
     )
+    if endpoint.get('category') != 'omni':
+        raise AgentLaunchValidationError('FaithSieve 原稿图像核对需要全模态 LLM 节点')
+    if token_pricing_from_endpoint(endpoint) is None:
+        raise AgentLaunchValidationError('所选 LLM 节点尚未配置完整价格')
     save_agent_launch_preference(user['id'], harness, int(endpoint['id']))
-    return harness, int(endpoint['id'])
+    return harness, int(endpoint['id']), execution_mode
 
 
-def _enqueue_faithsieve(submissions, *, user, harness, endpoint_id):
+def _enqueue_faithsieve(submissions, *, user, harness, endpoint_id, execution_mode):
     queued, skipped = queue_runs(
         submissions,
         requested_by=user['username'],
         harness=harness,
         endpoint_id=endpoint_id,
+        execution_mode=execution_mode,
     )
     accepted = []
     failed = []
@@ -205,13 +216,14 @@ def faithsieve_grade_problem(problem_id):
     if not _manual_written_problem(problem):
         return jsonify(success=False, message='仅支持纯人工批改的书面题'), 400
     try:
-        harness, endpoint_id = _faithsieve_runtime(user)
+        harness, endpoint_id, execution_mode = _faithsieve_runtime(user)
         submissions = latest_submissions_for_problem(problem_id)
         queued, skipped, failed = _enqueue_faithsieve(
             submissions,
             user=user,
             harness=harness,
             endpoint_id=endpoint_id,
+            execution_mode=execution_mode,
         )
     except AgentLaunchValidationError as exc:
         return jsonify(success=False, message=str(exc)), 400
@@ -250,12 +262,13 @@ def faithsieve_grade_submission(submission_id):
     if not _manual_written_problem(problem) or int(submission.get('problem_type') or 0) != 2:
         return jsonify(success=False, message='仅支持纯人工批改的书面题'), 400
     try:
-        harness, endpoint_id = _faithsieve_runtime(user)
+        harness, endpoint_id, execution_mode = _faithsieve_runtime(user)
         queued, skipped, failed = _enqueue_faithsieve(
             [submission],
             user=user,
             harness=harness,
             endpoint_id=endpoint_id,
+            execution_mode=execution_mode,
         )
     except AgentLaunchValidationError as exc:
         return jsonify(success=False, message=str(exc)), 400

@@ -7,6 +7,8 @@ export const routeLoaders = {
   problemEditor: () => import('./pages/ProblemEditorPage'),
   submissions: () => import('./pages/SubmissionsPage'),
   submissionDetail: () => import('./pages/SubmissionDetailPage'),
+  faithsieve: () => import('./pages/FaithSieveListPage'),
+  faithsieveDetail: () => import('./pages/FaithSieveDetailPage'),
   rankings: () => import('./pages/RankingsPage'),
   rankingDetail: () => import('./pages/RankingDetailPage'),
   rankingAppealReview: () => import('./pages/RankingAppealReviewPage'),
@@ -34,6 +36,7 @@ const navigationLoaders = {
   vibehub: routeLoaders.vibehub,
   admin: routeLoaders.admin,
   admin_homework: routeLoaders.adminHomework,
+  faithsieve: routeLoaders.faithsieve,
   ai_detection: routeLoaders.aiDetection,
   site_config: routeLoaders.siteConfig,
 } as const

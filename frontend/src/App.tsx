@@ -14,6 +14,8 @@ const ProblemDetailPage = lazy(routeLoaders.problemDetail)
 const ProblemEditorPage = lazy(routeLoaders.problemEditor)
 const SubmissionsPage = lazy(routeLoaders.submissions)
 const SubmissionDetailPage = lazy(routeLoaders.submissionDetail)
+const FaithSieveListPage = lazy(routeLoaders.faithsieve)
+const FaithSieveDetailPage = lazy(routeLoaders.faithsieveDetail)
 const RankingsPage = lazy(routeLoaders.rankings)
 const RankingDetailPage = lazy(routeLoaders.rankingDetail)
 const RankingAppealReviewPage = lazy(routeLoaders.rankingAppealReview)
@@ -48,6 +50,7 @@ const staticTitles: Record<string, string> = {
   '/vibehub': 'VibeHub - Numerical OJ',
   '/admin': '用户管理 - Numerical OJ',
   '/admin/homework': '作业管理 - Numerical OJ',
+  '/admin/faithsieve': 'Faith Sieve - Numerical OJ',
   '/admin/ai-detection': 'AI 代码检测 - Numerical OJ',
   '/admin/site-config': '全站配置 - Numerical OJ',
 }
@@ -99,6 +102,8 @@ export function App() {
           <Route path="vibehub/:slug/play" element={<VibeHubPlayerPage />} />
           <Route path="admin" element={<AdminPage />} />
           <Route path="admin/homework" element={<HomeworkAdminPage />} />
+          <Route path="admin/faithsieve" element={<FaithSieveListPage />} />
+          <Route path="admin/faithsieve/:attemptId" element={<FaithSieveDetailPage />} />
           <Route path="admin/ai-detection" element={<AiDetectionPage />} />
           <Route path="admin/ai-detection/problems/:detectionProblemId" element={<AiDetectionPage />} />
           <Route path="admin/ai-detection/students/:detectionUsername" element={<AiDetectionPage />} />

@@ -737,6 +737,7 @@ def register_agent_run_turn_task(celery_app):
                 native_session_callback=preserve_native_session,
                 reset_trace=False,
                 source_skill=source_skill,
+                **({"project_skill": False} if runtime_config.get("project_skill") is False else {}),
                 **({
                     "timeout_seconds": runtime_config.get("timeout_seconds"),
                     "enable_site_identity": False,

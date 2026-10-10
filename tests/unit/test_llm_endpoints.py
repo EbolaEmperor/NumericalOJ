@@ -1,4 +1,6 @@
+import io
 import json
+import traceback
 
 import pytest
 
@@ -187,7 +189,7 @@ def test_base_url_drops_fragment_without_guessing_provider_path_semantics():
     ("wire_format", "thinking_enabled", "expected"),
     [
         ("enable_thinking", True, {"enable_thinking": True}),
-        ("enable_thinking", False, {}),
+        ("enable_thinking", False, {"enable_thinking": False}),
         ("thinking.type", True, {"enable_thinking": True}),
         ("thinking.type", False, {}),
         ("none", True, {}),
@@ -329,7 +331,7 @@ def test_anthropic_auth_thinking_message_and_tool_translation(monkeypatch):
     payload = kwargs["json"]
     assert payload["system"] == "系统约束"
     assert payload["max_tokens"] == 123
-    assert "thinking" not in payload
+    assert payload["thinking"] == {"type": "disabled"}
     assert payload["tools"][0]["input_schema"]["required"] == ["x"]
     assert payload["tool_choice"] == {"type": "tool", "name": "lookup"}
     assert payload["messages"][0] == {
@@ -381,7 +383,122 @@ def test_anthropic_thinking_enabled_is_explicit_and_has_no_budget_or_effort(monk
     assert "budget" not in serialized
 
 
-def test_anthropic_none_omits_thinking_and_rejects_enable_thinking(monkeypatch):
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize("method", ["chat", "text", "vision"])
+def test_optional_request_reasoning_effort_maps_by_protocol_without_changing_thinking_or_limit(monkeypatch, protocol, method):
+    response = (FakeResponse({"content": [{"type": "text", "text": "OK"}], "stop_reason": "end_turn"})
+                if protocol == "anthropic" else
+                FakeResponse({"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]}))
+    calls = install_post(monkeypatch, response)
+    snapshot = endpoint(protocol=protocol, category="omni", thinking_enabled=True,
+                        thinking_format="thinking_type" if protocol == "anthropic" else "enable_thinking",
+                        max_output_tokens=2048)
+    options = {"reasoning_effort": "low", "max_tokens": 64000}
+    if method == "chat":
+        adapter.call_chat(snapshot, [{"role": "user", "content": "hello"}], **options)
+    elif method == "text":
+        adapter.call_text(snapshot, "hello", **options)
+    else:
+        adapter.call_vision(snapshot, "hello", ["https://images.example.test/a.png"], **options)
+    payload = calls[0][1]["json"]
+    assert payload["max_tokens"] == 2048
+    assert "budget" not in json.dumps(payload)
+    if protocol == "anthropic":
+        assert payload["thinking"] == {"type": "adaptive"}
+        assert payload["output_config"] == {"effort": "low"}
+        assert "reasoning_effort" not in payload
+    else:
+        assert payload["enable_thinking"] is True
+        assert payload["reasoning_effort"] == "low"
+        assert "output_config" not in payload
+
+
+@pytest.mark.parametrize("effort", ["", "none", "unknown", True, 1000, {"effort": "low"}])
+def test_invalid_request_reasoning_effort_is_rejected_before_http(monkeypatch, effort):
+    calls = install_post(monkeypatch, FakeResponse({}))
+    with pytest.raises(adapter.LLMEndpointValidationError, match="reasoning_effort"):
+        adapter.call_chat(endpoint(), [{"role": "user", "content": "hello"}], reasoning_effort=effort)
+    assert not calls
+
+
+def _invoke_chat_entry(method, snapshot, **options):
+    if method == "chat":
+        return adapter.call_chat(snapshot, [{"role": "user", "content": "返回 JSON"}], **options)
+    if method == "text":
+        return adapter.call_text(snapshot, "返回 JSON", **options)
+    return adapter.call_vision(snapshot, "返回 JSON", ["https://images.example.test/a.png"], **options)
+
+
+@pytest.mark.parametrize("method", ["chat", "text", "vision"])
+@pytest.mark.parametrize("thinking_enabled", [False, True])
+def test_json_object_response_format_uses_standard_openai_wire_without_changing_limits(monkeypatch, method, thinking_enabled):
+    calls = install_post(monkeypatch, FakeResponse({"choices": [{"message": {"content": '{"ok":true}'}}]}))
+    snapshot = endpoint(category="omni", thinking_enabled=thinking_enabled,
+                        thinking_format="enable_thinking", max_output_tokens=2048)
+    response_format = {"type": "json_object"}
+    result = _invoke_chat_entry(method, snapshot, response_format=response_format,
+                                max_tokens=64000, reasoning_effort="low")
+    assert result.text == '{"ok":true}' and len(calls) == 1
+    payload = calls[0][1]["json"]
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["response_format"] is not response_format
+    assert payload["enable_thinking"] is thinking_enabled
+    assert payload["reasoning_effort"] == "low" and payload["max_tokens"] == 2048
+    assert "tools" not in payload and "tool_choice" not in payload and "thinking" not in payload
+
+
+@pytest.mark.parametrize("method", ["chat", "text", "vision"])
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize("explicit_none", [False, True])
+def test_default_response_format_does_not_add_wire_fields(monkeypatch, method, protocol, explicit_none):
+    response = ({"choices": [{"message": {"content": "OK"}}]} if protocol == "openai"
+                else {"content": [{"type": "text", "text": "OK"}], "stop_reason": "end_turn"})
+    calls = install_post(monkeypatch, FakeResponse(response))
+    result = _invoke_chat_entry(method, endpoint(protocol=protocol, category="omni"),
+                                **({"response_format": None} if explicit_none else {}))
+    assert result.text == "OK" and len(calls) == 1
+    payload = calls[0][1]["json"]
+    assert "response_format" not in payload and "tools" not in payload and "tool_choice" not in payload
+    assert "enable_thinking" not in payload
+
+
+@pytest.mark.parametrize("method", ["chat", "text", "vision"])
+@pytest.mark.parametrize("response_format", [
+    {}, "json_object", True, [], {"type": True}, {"type": "text"},
+    {"type": "json_schema", "json_schema": {}}, {"type": "json_object", "extra": True},
+])
+def test_invalid_response_format_is_rejected_before_http(monkeypatch, method, response_format):
+    calls = install_post(monkeypatch, FakeResponse({}))
+    with pytest.raises(adapter.LLMEndpointValidationError, match="response_format"):
+        _invoke_chat_entry(method, endpoint(category="omni"), response_format=response_format)
+    assert not calls
+
+
+@pytest.mark.parametrize("method", ["chat", "text", "vision"])
+def test_anthropic_response_format_is_explicitly_rejected_without_protocol_conversion(monkeypatch, method):
+    calls = install_post(monkeypatch, FakeResponse({}))
+    with pytest.raises(adapter.LLMEndpointValidationError, match="response_format.*OpenAI"):
+        _invoke_chat_entry(method, endpoint(protocol="anthropic", category="omni"), response_format={"type": "json_object"})
+    assert not calls
+
+
+@pytest.mark.parametrize("method", ["chat", "text", "vision"])
+def test_openai_enable_thinking_off_is_explicit_for_all_chat_entries(monkeypatch, method):
+    calls = install_post(monkeypatch, FakeResponse({"choices": [{"message": {"content": "OK"}}]}))
+    _invoke_chat_entry(method, endpoint(category="omni", thinking_format="enable_thinking", thinking_enabled=False))
+    payload = calls[0][1]["json"]
+    assert payload["enable_thinking"] is False
+    assert "thinking" not in payload and "response_format" not in payload
+    assert "reasoning_effort" not in payload and "output_config" not in payload
+    assert payload["max_tokens"] == 32000
+
+
+@pytest.mark.parametrize(
+    ("thinking_format", "thinking_enabled"),
+    [("none", False), ("none", True), ("thinking_type", False)],
+)
+def test_anthropic_off_is_explicit_and_rejects_enable_thinking(
+        monkeypatch, thinking_format, thinking_enabled):
     response = FakeResponse({
         "content": [{"type": "text", "text": "OK"}],
         "stop_reason": "end_turn",
@@ -389,11 +506,36 @@ def test_anthropic_none_omits_thinking_and_rejects_enable_thinking(monkeypatch):
     })
     calls = install_post(monkeypatch, response)
 
-    adapter.call_text(endpoint(protocol="anthropic", thinking_format="none"), "hello")
+    adapter.call_text(
+        endpoint(
+            protocol="anthropic",
+            thinking_format=thinking_format,
+            thinking_enabled=thinking_enabled,
+        ),
+        "hello",
+    )
 
-    assert "thinking" not in calls[0][1]["json"]
+    payload = calls[0][1]["json"]
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "enable_thinking" not in payload
+    serialized = json.dumps(payload)
+    assert "effort" not in serialized
+    assert "budget" not in serialized
     with pytest.raises(adapter.LLMEndpointValidationError, match="enable_thinking"):
         endpoint(protocol="anthropic", thinking_format="enable_thinking")
+
+
+def test_anthropic_off_rejection_does_not_retry_with_provider_defaults(monkeypatch):
+    calls = install_post(monkeypatch, FakeResponse(
+        {"error": {"type": "invalid_request_error", "message": "thinking cannot be disabled"}},
+        status_code=400,
+    ))
+
+    with pytest.raises(adapter.LLMEndpointRequestError):
+        adapter.call_text(endpoint(protocol="anthropic"), "hello")
+
+    assert len(calls) == 1
+    assert calls[0][1]["json"]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.parametrize("protocol", ["openai", "anthropic"])
@@ -697,6 +839,273 @@ def test_http_failure_and_probe_never_expose_api_key(monkeypatch):
     assert secret not in repr(probe)
 
 
+@pytest.mark.parametrize(("exception_type", "failure", "message"), [
+    (adapter.requests.exceptions.Timeout, "timeout", "模型端点响应超时。"),
+    (adapter.requests.exceptions.ConnectTimeout, "timeout", "模型端点响应超时。"),
+    (adapter.requests.exceptions.ReadTimeout, "timeout", "模型端点响应超时。"),
+    (adapter.requests.exceptions.ConnectionError, "connection", "模型端点连接失败。"),
+    (adapter.requests.exceptions.SSLError, "connection", "模型端点连接失败。"),
+    (adapter.requests.exceptions.RequestException, "other", "模型端点请求失败。"),
+    (adapter.requests.exceptions.InvalidURL, "other", "模型端点请求失败。"),
+    (RuntimeError, "other", "模型端点请求失败。"),
+])
+def test_request_failure_classification_discards_sensitive_exception_chain(
+    monkeypatch, exception_type, failure, message,
+):
+    secret = "request-exception-secret-canary"
+    private_url = "https://private-upstream.example.test/private?token=" + secret
+    upstream_error = exception_type(f"{private_url}: rejected Authorization {secret}")
+    upstream_error.request = object()
+    upstream_error.response = object()
+
+    def fake_post(*args, **kwargs):
+        raise upstream_error
+
+    monkeypatch.setattr(adapter.requests, "post", fake_post)
+    with pytest.raises(adapter.LLMEndpointRequestError) as caught:
+        adapter.call_text(endpoint(api_key=secret), "hello", timeout=600)
+
+    error = caught.value
+    assert str(error) == message
+    assert vars(error) == {"status_code": None, "request_failure": failure, "provider_reason": None}
+    assert error.__context__ is None and error.__cause__ is None
+    public_error = "".join(traceback.format_exception(error))
+    assert secret not in public_error and private_url not in public_error
+
+
+def test_request_failure_classifier_does_not_stringify_vendor_exception(monkeypatch):
+    class UnprintableVendorError(Exception):
+        def __str__(self):
+            raise AssertionError("供应商异常原文不应被读取")
+
+    def fake_post(*args, **kwargs):
+        raise UnprintableVendorError()
+
+    monkeypatch.setattr(adapter.requests, "post", fake_post)
+    result = adapter.probe_endpoint(endpoint())
+    assert result.ok is False
+    assert result.message == "模型端点请求失败。"
+
+
+def test_request_failure_defaults_keep_existing_error_construction():
+    error = adapter.LLMEndpointRequestError("固定旧说明", status_code=402)
+    assert error.status_code == 402 and error.request_failure is None
+    assert error.provider_reason is None
+    assert str(error) == "固定旧说明"
+
+
+@pytest.mark.parametrize("failure", ["SECRET-VALUE", "Timeout", "", True, 1, [], {}])
+def test_request_failure_constructor_rejects_noncanonical_values(failure):
+    with pytest.raises(ValueError, match="分类无效") as caught:
+        adapter.LLMEndpointRequestError("固定说明", request_failure=failure)
+    assert "SECRET" not in str(caught.value)
+
+
+def test_http_error_does_not_gain_a_transport_failure_classification():
+    error = adapter._status_error(402)
+    assert error.status_code == 402 and error.request_failure is None
+    with pytest.raises(ValueError, match="分类无效"):
+        adapter.LLMEndpointRequestError("固定说明", status_code=402, request_failure="timeout")
+
+
+@pytest.mark.parametrize("timeout_type", [TimeoutError, adapter.requests.packages.urllib3.exceptions.ReadTimeoutError])
+@pytest.mark.parametrize("outer_type", [adapter.requests.exceptions.ProxyError, adapter.requests.exceptions.ConnectionError])
+def test_typed_nested_proxy_timeout_is_reported_without_exception_text(monkeypatch, timeout_type, outer_type):
+    errors = adapter.requests.packages.urllib3.exceptions
+    secret = "nested-proxy-secret"
+    timeout = (timeout_type(secret) if timeout_type is TimeoutError
+               else timeout_type(None, "https://private.example/" + secret, secret))
+    proxy = errors.ProxyError(secret, timeout)
+    retry = errors.MaxRetryError(None, "https://private.example/" + secret, proxy)
+    upstream = outer_type(retry)
+
+    def fake_post(*args, **kwargs):
+        raise upstream
+
+    monkeypatch.setattr(adapter.requests, "post", fake_post)
+    with pytest.raises(adapter.LLMEndpointRequestError) as caught:
+        adapter.call_chat(endpoint(), [{"role": "user", "content": "go"}])
+    assert caught.value.request_failure == "timeout"
+    assert caught.value.__context__ is None
+    assert secret not in "".join(traceback.format_exception(caught.value))
+
+
+def test_proxy_classification_does_not_infer_timeout_from_text_and_handles_cycles():
+    errors = adapter.requests.packages.urllib3.exceptions
+    assert adapter._request_failure_kind(adapter.requests.exceptions.ProxyError("Read timed out timeout")) == "connection"
+    retry = errors.MaxRetryError(None, "https://example.test/", None)
+    retry.reason = retry
+    assert adapter._request_failure_kind(adapter.requests.exceptions.ProxyError(retry)) == "connection"
+
+
+class StrictSSEResponse(FakeResponse):
+    def __init__(self, chunks, *, trap_after=False, error=None, content_type="text/event-stream"):
+        super().__init__(content_type=content_type)
+        self.chunks = chunks
+        self.trap_after = trap_after
+        self.error = error
+        self.consumed = 0
+
+    def iter_content(self, *, chunk_size, decode_unicode):
+        assert chunk_size == 8192 and decode_unicode is False
+        for chunk in self.chunks:
+            self.consumed += 1
+            yield chunk
+        if self.error is not None:
+            raise self.error
+        if self.trap_after:
+            raise AssertionError("不得等待终止标记之后的 EOF")
+
+
+STRICT_MESSAGES = [{"role": "user", "content": "go"}]
+
+
+def sse_chunk(event):
+    return ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode()
+
+
+def strict_text_chunks(protocol, *, finish=None, terminal=True):
+    if protocol == "openai":
+        chunks = [sse_chunk({"choices": [{"delta": {"content": "完成", "reasoning_content": "核对"},
+                                          "finish_reason": finish}]})]
+        if terminal:
+            chunks.append(b"data: [DONE]\n\n")
+        return chunks
+    chunks = [sse_chunk({"type": "message_start", "message": {"model": "model-id", "usage": {"input_tokens": 9}}}),
+              sse_chunk({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": "完成"}}),
+              sse_chunk({"type": "message_delta", "delta": {"stop_reason": finish}, "usage": {"output_tokens": 4}})]
+    if terminal:
+        chunks.append(sse_chunk({"type": "message_stop"}))
+    return chunks
+
+
+@pytest.mark.parametrize(("protocol", "finish"), [("openai", "stop"), ("anthropic", "end_turn")])
+def test_strict_stream_closes_at_terminal_without_reading_eof(monkeypatch, protocol, finish):
+    response = StrictSSEResponse(strict_text_chunks(protocol, finish=finish), trap_after=True)
+    calls = install_post(monkeypatch, response)
+    options = {"stream_options": {"include_usage": True}} if protocol == "openai" else {}
+    result = adapter.call_chat(endpoint(protocol=protocol), [{"role": "user", "content": "go"}],
+                               stream=True, require_complete_stream=True, **options)
+    assert result.text == "完成" and result.finish_reason == finish
+    assert response.closed and response.consumed == len(response.chunks)
+    assert calls[0][1]["json"]["stream"] is True
+    if protocol == "openai":
+        assert calls[0][1]["json"]["stream_options"] == {"include_usage": True}
+        assert result.reasoning == "核对"
+    else:
+        assert "stream_options" not in calls[0][1]["json"]
+        assert result.usage == adapter.LLMUsage(9, 4, 13)
+
+
+def test_strict_openai_aggregates_tool_arguments_and_usage_before_done(monkeypatch):
+    chunks = [
+        sse_chunk({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1", "function": {
+            "name": "faithsieve_result", "arguments": '{"数学":"\\\\forall '}}]}}]}),
+        sse_chunk({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'x"}'}}]},
+                                 "finish_reason": "tool_calls"}]}),
+        sse_chunk({"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 8, "total_tokens": 15}}),
+        b"data: [DONE]\n\n",
+    ]
+    response = StrictSSEResponse(chunks, trap_after=True)
+    install_post(monkeypatch, response)
+    result = adapter.call_chat(endpoint(), STRICT_MESSAGES, stream=True, require_complete_stream=True,
+                               stream_options={"include_usage": True})
+    assert result.tool_calls == (adapter.LLMToolCall("call-1", "faithsieve_result", '{"数学":"\\\\forall x"}'),)
+    assert result.usage == adapter.LLMUsage(7, 8, 15)
+
+
+@pytest.mark.parametrize(("protocol", "finish"), [("openai", "length"), ("anthropic", "max_tokens")])
+def test_strict_terminal_preserves_token_limit_finish_for_callers_existing_gate(monkeypatch, protocol, finish):
+    response = StrictSSEResponse(strict_text_chunks(protocol, finish=finish), trap_after=True)
+    install_post(monkeypatch, response)
+    result = adapter.call_chat(endpoint(protocol=protocol), STRICT_MESSAGES, stream=True, require_complete_stream=True)
+    assert result.finish_reason == finish and response.closed
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize(("finish", "terminal"), [(None, True), ("SECRET-FINISH", True), ("stop", False)])
+def test_strict_stream_requires_terminal_and_a_legal_finish(monkeypatch, protocol, finish, terminal):
+    response = StrictSSEResponse(strict_text_chunks(protocol, finish=finish, terminal=terminal))
+    install_post(monkeypatch, response)
+    with pytest.raises(adapter.LLMEndpointResponseError, match="完整结束") as caught:
+        adapter.call_chat(endpoint(protocol=protocol), STRICT_MESSAGES, stream=True, require_complete_stream=True)
+    assert "SECRET" not in str(caught.value) and response.closed
+
+
+@pytest.mark.parametrize("wire", [b'data: {"x":NaN}\n\n', b'data: {"x":1,"x":2}\n\n',
+                                 b'data: {"error":"SECRET"}\n\n', b'data: not-json-SECRET\n\n',
+                                 b'data: {"x":"\xff"}\n\n'])
+def test_strict_invalid_sse_frames_are_safe_response_errors(monkeypatch, wire):
+    response = StrictSSEResponse([wire])
+    install_post(monkeypatch, response)
+    with pytest.raises(adapter.LLMEndpointResponseError) as caught:
+        adapter.call_chat(endpoint(), STRICT_MESSAGES, stream=True, require_complete_stream=True)
+    assert "SECRET" not in str(caught.value) and response.closed
+
+
+def test_strict_stream_counts_keepalives_and_a_single_unterminated_long_line(monkeypatch):
+    response = StrictSSEResponse([b":ping\n\n" * 5, b"data: " + b"x" * 40])
+    install_post(monkeypatch, response)
+    with pytest.raises(adapter.LLMEndpointResponseError, match="字节限制"):
+        adapter.call_chat(endpoint(), STRICT_MESSAGES, stream=True, require_complete_stream=True, max_stream_bytes=50)
+    assert response.closed
+
+
+def test_strict_stream_accepts_two_mib_artifact_arguments_packaging(monkeypatch):
+    arguments = json.dumps({"artifact": "x" * (2 * 1024 * 1024 - 512)})
+    payload = sse_chunk({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {
+        "name": "faithsieve_result", "arguments": arguments}}]}, "finish_reason": "tool_calls"}]})
+    chunks = [payload[i:i + 8192] for i in range(0, len(payload), 8192)] + [b"data: [DONE]\n\n"]
+    response = StrictSSEResponse(chunks, trap_after=True)
+    install_post(monkeypatch, response)
+    result = adapter.call_chat(endpoint(), STRICT_MESSAGES, stream=True, require_complete_stream=True)
+    assert result.tool_calls[0].arguments == arguments and response.closed
+
+
+def test_strict_stream_network_error_is_classified_without_sensitive_chain(monkeypatch):
+    response = StrictSSEResponse(strict_text_chunks("openai", finish="stop", terminal=False),
+                                 error=adapter.requests.exceptions.ReadTimeout("SECRET-URL-TIMEOUT"))
+    install_post(monkeypatch, response)
+    with pytest.raises(adapter.LLMEndpointRequestError) as caught:
+        adapter.call_chat(endpoint(), STRICT_MESSAGES, stream=True, require_complete_stream=True)
+    assert caught.value.request_failure == "timeout" and response.closed
+    assert caught.value.__context__ is None and "SECRET" not in str(caught.value)
+
+
+def test_strict_stream_rejects_non_sse_without_parsing_json_fallback(monkeypatch):
+    response = StrictSSEResponse([], content_type="application/json")
+    install_post(monkeypatch, response)
+    with pytest.raises(adapter.LLMEndpointResponseError, match="SSE"):
+        adapter.call_chat(endpoint(), STRICT_MESSAGES, stream=True, require_complete_stream=True)
+    assert response.closed
+
+
+@pytest.mark.parametrize("options", [
+    {"require_complete_stream": True},
+    {"stream": True, "require_complete_stream": "yes"},
+    {"stream": True, "max_stream_bytes": 100},
+    {"stream": True, "require_complete_stream": True, "max_stream_bytes": True},
+    {"stream": True, "require_complete_stream": True, "max_stream_bytes": 0},
+    {"stream": True, "require_complete_stream": True, "max_stream_bytes": 8 * 1024 * 1024 + 1},
+    {"stream_options": {"include_usage": True}},
+    {"stream": True, "stream_options": {"include_usage": False}},
+    {"stream": True, "stream_options": {"include_usage": True, "SECRET": 1}},
+])
+def test_strict_stream_option_validation_precedes_any_http(monkeypatch, options):
+    calls = install_post(monkeypatch, FakeResponse())
+    with pytest.raises(adapter.LLMEndpointValidationError):
+        adapter.call_chat(endpoint(), STRICT_MESSAGES, **options)
+    assert calls == []
+
+
+def test_anthropic_rejects_openai_stream_options_before_http(monkeypatch):
+    calls = install_post(monkeypatch, FakeResponse())
+    with pytest.raises(adapter.LLMEndpointValidationError):
+        adapter.call_chat(endpoint(protocol="anthropic"), STRICT_MESSAGES, stream=True,
+                           stream_options={"include_usage": True})
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     ("snapshot", "response", "expected_suffix"),
     [
@@ -754,6 +1163,39 @@ def test_real_probe_shape_for_all_four_categories(
         assert len(body["input"]) == 1
         assert isinstance(body["input"][0], str)
         assert body["input"][0]
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize("category", ["text", "vision", "omni"])
+@pytest.mark.parametrize("thinking_enabled", [False, True])
+@pytest.mark.parametrize("administrator_limit", [32, 512, 64000])
+def test_probe_output_budget_preserves_thinking_mode_and_administrator_limit(
+    monkeypatch, protocol, category, thinking_enabled, administrator_limit,
+):
+    response = (
+        {"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]}
+        if protocol == "openai"
+        else {"content": [{"type": "text", "text": "OK"}], "stop_reason": "end_turn"}
+    )
+    calls = install_post(monkeypatch, FakeResponse(response))
+    snapshot = endpoint(
+        protocol=protocol, category=category, thinking_enabled=thinking_enabled,
+        thinking_format="thinking_type" if protocol == "anthropic" else "enable_thinking",
+        max_output_tokens=administrator_limit,
+    )
+
+    assert adapter.probe_endpoint(snapshot).ok is True
+    assert len(calls) == 1
+    body = calls[0][1]["json"]
+    assert body["max_tokens"] == min(2048 if thinking_enabled else 64, administrator_limit)
+    if protocol == "anthropic":
+        assert body["thinking"] == {"type": "adaptive" if thinking_enabled else "disabled"}
+    elif thinking_enabled:
+        assert body["enable_thinking"] is True
+    else:
+        assert body["enable_thinking"] is False and "thinking" not in body
+    assert "budget_tokens" not in json.dumps(body)
+    assert "reasoning_effort" not in body and "effort" not in body
 
 
 def test_dynamic_config_tester_adapter_returns_supported_shape(monkeypatch):
@@ -993,3 +1435,242 @@ def test_category_guards_are_fail_closed(monkeypatch):
         adapter.call_vision(endpoint(category="text"), "hello", ["https://images.example.test/a.png"])
     with pytest.raises(adapter.LLMEndpointValidationError, match="Embedding"):
         adapter.create_embeddings(endpoint(category="text"), ["hello"])
+
+
+class ProviderErrorResponse:
+    def __init__(self, chunks, *, status_code=403):
+        self.status_code = status_code
+        self.headers = {"Content-Type": "application/json"}
+        self.chunks = chunks
+        self.reads = 0
+        self.closed = 0
+
+    def iter_content(self, *, chunk_size, decode_unicode):
+        assert chunk_size == 1024 and decode_unicode is False
+        for chunk in self.chunks:
+            self.reads += 1
+            if isinstance(chunk, BaseException):
+                raise chunk
+            yield chunk
+
+    def close(self):
+        self.closed += 1
+
+    def json(self):
+        pytest.fail("错误分类不能用无界 json() 读取")
+
+
+def provider_http_error(monkeypatch, response, *, protocol="openai", stream=False):
+    calls = install_post(monkeypatch, response)
+    with pytest.raises(adapter.LLMEndpointRequestError) as caught:
+        adapter.call_chat(endpoint(protocol=protocol), [{"role": "user", "content": "ok"}], stream=stream)
+    assert len(calls) == 1 and response.closed == 1
+    # HTTP 客户端延迟读取与供应商是否输出 SSE 是两个独立开关。
+    assert calls[0][1]["stream"] is True
+    assert calls[0][1]["json"]["stream"] is stream
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    return caught.value
+
+
+@pytest.mark.parametrize(("code", "reason", "message"), [
+    ("AccessDenied.Unpurchased", "service_not_enabled", "模型端点服务未开通或不具备调用资格（HTTP 403）。"),
+    ("AllocationQuota.FreeTierOnly", "free_tier_exhausted", "模型端点免费额度已耗尽，当前仅允许使用免费额度（HTTP 403）。"),
+])
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_403_known_code_uses_fixed_reason_without_sensitive_body(
+    monkeypatch, code, reason, message, wrapped, protocol, stream,
+):
+    secret = "vendor-secret-canary"
+    body = {"code": code, "message": secret, "request_id": secret,
+            "url": f"https://private.example.test/{secret}"}
+    raw = json.dumps({"error": body} if wrapped else body).encode()
+    response = ProviderErrorResponse([raw[index:index + 7] for index in range(0, len(raw), 7)])
+    error = provider_http_error(monkeypatch, response, protocol=protocol, stream=stream)
+    assert error.status_code == 403 and error.request_failure is None
+    assert error.provider_reason == reason and str(error) == message
+    rendered = "".join(traceback.format_exception(error))
+    assert secret not in str(error) + repr(error) + repr(vars(error)) + rendered
+    assert "private.example.test" not in rendered
+
+
+@pytest.mark.parametrize("payload", [
+    {"code": "SECRET-CODE", "message": "AccessDenied.Unpurchased"},
+    {"code": "accessdenied.unpurchased"}, {"code": "AccessDenied.Unpurchased SECRET"},
+    {"code": "Arrearage"}, {"code": True}, {"code": 403}, {"code": None},
+    {"code": ["AccessDenied.Unpurchased"]}, {"code": {"value": "AccessDenied.Unpurchased"}},
+    {"error": "AccessDenied.Unpurchased"}, {"error": None}, {"error": []},
+    {"error": {"message": "AccessDenied.Unpurchased"}},
+    {"data": {"code": "AccessDenied.Unpurchased"}},
+    {"code": "AccessDenied.Unpurchased", "error": {"code": "AccessDenied.Unpurchased"}},
+    {"code": "AccessDenied.Unpurchased", "error": {"code": "AllocationQuota.FreeTierOnly"}},
+    None, [{"code": "AccessDenied.Unpurchased"}],
+])
+def test_403_unknown_or_ambiguous_code_keeps_legacy_classification(monkeypatch, payload):
+    response = ProviderErrorResponse([json.dumps(payload).encode()])
+    error = provider_http_error(monkeypatch, response)
+    assert error.status_code == 403 and error.provider_reason is None
+    assert str(error) == "模型端点鉴权失败（HTTP 403）。"
+    assert "SECRET" not in str(error) + repr(vars(error))
+
+
+@pytest.mark.parametrize("raw", [
+    b'{"code":"AccessDenied.Unpurchased","code":"AccessDenied.Unpurchased"}',
+    b'{"code":"AccessDenied.Unpurchased","unused":NaN}',
+    b'{"code":"AccessDenied.Unpurchased","unused":Infinity}',
+    b'{"code":"AccessDenied.Unpurchased","unused":-Infinity}',
+    b'{"code":"AccessDenied.Unpurchased"}{}',
+    b'```json\n{"code":"AccessDenied.Unpurchased"}\n```',
+    b'{"code":"AccessDenied.Unpurchased","message":"\\q"}',
+    b'{"code":"AccessDenied.Unpurchased","message":"\xff"}',
+    b'not JSON SECRET', b'',
+])
+def test_403_invalid_json_does_not_guess_or_expose_body(monkeypatch, raw):
+    error = provider_http_error(monkeypatch, ProviderErrorResponse([raw]))
+    assert error.status_code == 403 and error.provider_reason is None
+    assert "SECRET" not in str(error) + repr(vars(error))
+
+
+def test_403_reader_accepts_exact_limit_and_refuses_larger_body(monkeypatch):
+    base = b'{"code":"AccessDenied.Unpurchased","padding":""}'
+    raw = base[:-2] + b"x" * (8192 - len(base)) + base[-2:]
+    assert len(raw) == 8192
+    response = ProviderErrorResponse([raw])
+    assert provider_http_error(monkeypatch, response).provider_reason == "service_not_enabled"
+    response = ProviderErrorResponse([raw + b" ", AssertionError("不应读越界后的内容")])
+    assert provider_http_error(monkeypatch, response).provider_reason is None
+    assert response.reads == 1
+
+
+@pytest.mark.parametrize("declared", ["8193", "9" * 100, "invalid SECRET", "-1", "", "４０", 8193, True])
+@pytest.mark.parametrize("header_name", ["Content-Length", "content-length"])
+def test_403_reader_rejects_excessive_or_invalid_declared_length_without_body_reads(
+    monkeypatch, declared, header_name,
+):
+    response = ProviderErrorResponse([AssertionError("超限声明不能读取 body")])
+    response.headers[header_name] = declared
+    error = provider_http_error(monkeypatch, response)
+    assert error.status_code == 403 and error.provider_reason is None
+    assert response.reads == 0
+    assert "SECRET" not in str(error) + repr(vars(error))
+
+
+def test_403_valid_declared_length_still_uses_incremental_reader(monkeypatch):
+    raw = b'{"code":"AccessDenied.Unpurchased"}'
+    response = ProviderErrorResponse([raw[:10], raw[10:]])
+    response.headers["Content-Length"] = str(len(raw))
+    assert provider_http_error(monkeypatch, response).provider_reason == "service_not_enabled"
+    assert response.reads == 2
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+@pytest.mark.parametrize("category", ["text", "vision"])
+@pytest.mark.parametrize("failure", [None, "invalid_json", "read_error"])
+def test_deferred_http_receive_preserves_nonstream_json_and_closes_response_once(
+    protocol, category, failure,
+):
+    class LazyBody(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.reads = 0
+            self.released = 0
+
+        def read(self, size=-1):
+            self.reads += 1
+            if failure == "read_error" and self.reads > 1:
+                raise adapter.requests.exceptions.ConnectionError("SECRET response URL api-key")
+            return super().read(size)
+
+        def release_conn(self):
+            self.released += 1
+
+    class LazyResponse(adapter.requests.Response):
+        def __init__(self, raw):
+            super().__init__()
+            self.status_code = 200
+            self.headers["Content-Type"] = "application/json"
+            self.encoding = "utf-8"
+            self.raw = raw
+            self.close_count = 0
+
+        def close(self):
+            self.close_count += 1
+            super().close()
+
+    payload = ({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "model": "model-id", "usage": {"prompt_tokens": 2, "completion_tokens": 3}}
+               if protocol == "openai" else
+               {"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                "model": "model-id", "usage": {"input_tokens": 2, "output_tokens": 3}})
+    body = LazyBody(b"SECRET invalid JSON" if failure == "invalid_json" else json.dumps(payload).encode())
+    response = LazyResponse(body)
+    calls = []
+
+    def post(_url, **kwargs):
+        assert response._content is False and body.reads == 0
+        calls.append(kwargs)
+        return response
+
+    def invoke():
+        snapshot = endpoint(protocol=protocol, category=category)
+        if category == "vision":
+            return adapter.call_vision(snapshot, "ok", ["https://images.example.test/a.png"], request_post=post)
+        return adapter.call_chat(snapshot, [{"role": "user", "content": "ok"}], request_post=post)
+
+    if failure is None:
+        result = invoke()
+        assert result.text == "ok" and result.model == "model-id"
+        assert result.finish_reason == ("stop" if protocol == "openai" else "end_turn")
+        assert result.usage == adapter.LLMUsage(2, 3, 5)
+    else:
+        with pytest.raises(adapter.LLMEndpointResponseError) as caught:
+            invoke()
+        assert "SECRET" not in "".join(traceback.format_exception(caught.value))
+    assert len(calls) == 1 and calls[0]["stream"] is True
+    assert calls[0]["json"]["stream"] is False
+    assert response.close_count == 1 and body.released == 1 and body.reads > 0
+
+
+@pytest.mark.parametrize("chunk", [b": heartbeat\n", b"", "not bytes"])
+def test_403_reader_is_bounded_even_without_eof(monkeypatch, chunk):
+    monkeypatch.setattr(adapter, "_HTTP_ERROR_MAX_BYTES", 32)
+    def chunks():
+        while True:
+            yield chunk
+    response = ProviderErrorResponse(chunks())
+    assert provider_http_error(monkeypatch, response).provider_reason is None
+    assert response.reads <= 34
+
+
+@pytest.mark.parametrize("reader_error", [
+    adapter.requests.exceptions.ReadTimeout("SECRET URL api-key reader-timeout"),
+    adapter.requests.exceptions.ConnectionError("SECRET URL api-key connection"),
+    RuntimeError("SECRET URL api-key reader"),
+])
+def test_403_reader_failure_preserves_http_error_without_retry_or_exception_chain(monkeypatch, reader_error):
+    response = ProviderErrorResponse([b'{"code":"AccessDenied.Unpurchased"}', reader_error])
+    error = provider_http_error(monkeypatch, response)
+    assert error.status_code == 403 and error.provider_reason is None and error.request_failure is None
+    assert "SECRET" not in "".join(traceback.format_exception(error)) + repr(vars(error))
+
+
+@pytest.mark.parametrize("status", [400, 401, 402, 404, 429, 500, "403"])
+def test_provider_reason_requires_real_integer_403_and_other_http_paths_are_unchanged(monkeypatch, status):
+    response = ProviderErrorResponse([AssertionError("其他状态不应读供应商 body")], status_code=status)
+    error = provider_http_error(monkeypatch, response)
+    assert error.status_code == int(status) and error.provider_reason is None
+    assert response.reads == 0
+    assert str(error) == str(adapter._status_error(status))
+
+
+@pytest.mark.parametrize("reason", [True, 403, [], {}, "SECRET", "", "Service_Not_Enabled"])
+def test_provider_reason_constructor_rejects_noncanonical_values(reason):
+    with pytest.raises(ValueError, match="供应商失败分类无效"):
+        adapter.LLMEndpointRequestError("固定说明", status_code=403, provider_reason=reason)
+
+
+@pytest.mark.parametrize("status", [None, 400, 401, 402, 404, "403", 403.0, True])
+def test_provider_reason_constructor_requires_403(status):
+    with pytest.raises(ValueError, match="供应商失败分类无效"):
+        adapter.LLMEndpointRequestError("固定说明", status_code=status, provider_reason="service_not_enabled")

@@ -2206,6 +2206,7 @@ CREATE TABLE `faithsieve_grading_runs` (
   `requested_by` varchar(50) NOT NULL,
   `harness` varchar(32) NOT NULL,
   `endpoint_id` bigint NOT NULL,
+  `execution_mode` varchar(16) DEFAULT NULL COMMENT 'NULL 为历史 skill，新请求明确保存 workflow 或 skill',
   `status` varchar(16) NOT NULL DEFAULT 'queued',
   `task_id` varchar(64) DEFAULT NULL,
   `session_id` varchar(64) DEFAULT NULL,

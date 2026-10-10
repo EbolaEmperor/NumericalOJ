@@ -1,21 +1,15 @@
 # Final synthesizer
 
-任务：根据现有证明拆分、状态树和验证证据，判断学生证明是否正确；若不正确，指出最早实质错误。不要重新做一遍证明，不要给 0–5 分。
+任务：根据原稿、命题 DAG 与真实验证证据综合学生证明是否正确，不重新证明、不评分。
 
-输入是题目 `problem.md`、学生原稿 `faithsieve-work/source/submission.md`、逐步证明 `faithsieve-work/steps.md`、状态树 `faithsieve-work/tree.md`、风险扫描 `faithsieve-work/scan.md` 和最新证据映射 `faithsieve-work/evidence-map.md`。若存在 `faithsieve-work/prefix-review.md`，它必须已经反映在最新 evidence map 中。检查题目要求是否全部完成，并综合局部复核与可靠形式证据。
+读取 `problem.md`、`faithsieve-work/source/submission.md`、`faithsieve-work/steps.md`、`faithsieve-work/tree.json`、`faithsieve-work/evidence-map.md` 和代码生成的 `faithsieve-work/node-verification.json`，核对所引数学工件。独立检查每个 target statement 是否以正确对象、域、全部量词、定义和依赖关系覆盖原题目标。目标 ID 存在或传播结果为 true 不替代这种数学核对。node-verification.json 的 target_coverage 必须 matched，且 targets_established 必须 true，才允许 correct；missing/inconclusive 不能认证整证。target_coverage 只表示题目目标与作者目标匹配，不代表数学成立，仍须独立核对全部证据。
 
-先做覆盖检查：每个 EdgeUnit 必须至少有 scanner 的明确低风险理由、local review，或 evaluator 结果；所有分支必须闭合到题目目标。任何可能影响结论的 EdgeUnit 若仍只有模糊扫描、存在 unresolved obligation，或某一分支未闭合，就不能输出 `proof correct`，必须输出 `inconclusive`。
+每个 claim 的固定局部责任是所有直接前驱 statements 联合推出其完整 statement。代码只将题设 given 初始建立，claim 局部 passed 且所有直接前驱 established 才建立。若仅有局部 passed、前驱未建立或目标依赖仍 blocked/unknown，不能输出 proof correct。所有 claim 都须有实际审核记录，scanner 低风险不替代验证。逐个目标检查全部必要依赖与来源，不用图连通性或若干成立片段替代全目标覆盖。
 
-数学结论只能选一个：
+数学结论仅可为 proof correct、earliest substantive error 或 inconclusive。可靠局部 refuted 可以指出作者的这一推理关系失败；它不能直接推出该节点命题或原题定理为假。核对反证确实针对来源允许的完整局部蕴含，不能因漏题面限制、生成漂移或添加前提得到反证。在全部题目目标依赖闭包中按 nodes 原顺序定位首个可靠负面，列明祖先缺口与对实际目标依赖的影响；不能把拓扑排序当原稿顺序。缺口、超时、Lean 搜索失败或语义不明只能增加不确定性。
 
-- `proof correct`：整体论证充分，且没有未解决到足以影响正确性的缺口；
-- `earliest substantive error`：存在可靠错误，给出最早步骤、原文、原因和对后续的影响；
-- `inconclusive`：原稿不可读、关键义务无法忠实表达或证据不足以安全判断。
+写入 `faithsieve-work/final.md`：总体判断、完整目标核对、关键局部证据、未建立前提、首错或关键缺口、对原论证的影响及可给学生的修改建议。不得修正原稿来获得目标匹配，不新增事实。
 
-工具失败、Lean 搜索失败和语义漂移只能增加不确定性，不能作为学生错误。局部义务 passed 也不自动等于整份证明被 Lean 认证。
+status 仅表示综合任务完成。准确生成未知结论仍必须 status:ok, verdict:inconclusive；无法读取或写入工件才 status:failed。没有可靠反证本身不排除正确，仍须满足全部目标与证据门槛；也不能为了返回 ok 而称数学通过或存在首错。
 
-将详细结论写入 `faithsieve-work/final.md`，包括总体判断、首错或关键缺口、可靠证据、未解决不确定性和可给学生的修改建议。不要给 0–5 分，不要写最终 API JSON。
-
-这里 `status` 只表示任务是否成功完成，`verdict` 表示数学判断。成功生成“不确定”结论时必须返回 `status: ok, verdict: inconclusive`；只有无法读取或写入工件等任务失败才返回 `status: failed`。
-
-将 `{"status":"ok|failed","verdict":"correct|incorrect|inconclusive","artifact":"faithsieve-work/final.md","report":"总体判断和首错位置"}` 写入 `faithsieve-work/results/final-synthesizer.json`。确认它是可解析 JSON 且没有额外字段。完成后在对话中只简短说明两个文件已经写入。
+将 `{"status":"ok|failed","verdict":"correct|incorrect|inconclusive","artifact":"faithsieve-work/final.md","report":"总体判断、目标覆盖与证据边界"}` 写入 `faithsieve-work/results/final-synthesizer.json`。确认 JSON 可解析且字段准确。完成后简短说明文件已写入。

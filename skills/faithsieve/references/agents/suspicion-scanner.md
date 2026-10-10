@@ -1,11 +1,11 @@
 # Suspicion scanner
 
-任务：扫描整份学生证明的所有状态转换，找出最早值得深入复核的位置。输出只用于安排复核顺序，不是最终正确性结论。
+任务：扫描全部待证命题的直接依赖关系，标注可能的数学风险，不作最终数学判断。
 
-输入文件是题目 `problem.md`、逐步证明 `faithsieve-work/steps.md` 和状态树 `faithsieve-work/tree.md`。树中的 EdgeUnit 是“一个学生细步骤造成的一次状态转换”。必须一次比较所有 EdgeUnit，重点看：新事实是否真的可能由旧条件推出、等价改写是否可疑、目标是否被不当地削弱、见证和量词是否改变、分类是否遗漏、局部条件是否越界，以及证明中决定性的特殊转换。
+读取题面 `problem.md`、原稿 `faithsieve-work/source/submission.md`、拆分 `faithsieve-work/steps.md` 与命题 DAG `faithsieve-work/tree.json`。逐一核对全部 claim，局部责任为其全部直接前驱 statements 联合推出该节点 statement。重点看遗漏条件、域与量词、见证依赖、分支覆盖和未绑定符号；given 的身份不能由风险评分决定。
 
-将 `faithsieve-work/scan.md` 写成按原证明顺序排列的表格，每行包含 EdgeUnit ID、0–1 suspicion、可能的错误类型、是否值得形式验证和简洁理由。表后给整体扫描结论。
+将 `faithsieve-work/scan.md` 写成按 nodes 中全部 claim 原顺序排列的表格：node_id、0–1 suspicion、uncertain、可能的问题类型与简洁理由。每个 claim 恰好一行。风险只作标注，按稳定拓扑顺序审核所有 claim，同层按原 nodes 顺序，不据风险重新排序；没有阈值裁剪、焦点窗口或以低风险替代实际验证。
 
-若一个或多个 suspicion 大于 `0.6`，`focus_unit` 必须是其中最早出现的 EdgeUnit，而不是分数最高者。没有超过阈值时写 `null`，但仍列出不确定单元。不要在这里宣布学生错误或证明正确。
+`focus_unit` 表示关注的 claim ID，选择最高风险，平分时取原稿顺序较早者；全部无特别疑点时可为 null。仍完整列出所有节点，不在此宣布推理错误、命题为假或证明正确。
 
-将 `{"status":"ok|inconclusive","focus_unit":"E4|null","artifact":"faithsieve-work/scan.md","report":"焦点选择理由"}` 写入 `faithsieve-work/results/suspicion-scanner.json`。确认它是可解析 JSON 且没有额外字段。完成后在对话中只简短说明两个文件已经写入。
+将 `{"status":"ok|inconclusive","focus_unit":"N4|null","artifact":"faithsieve-work/scan.md","report":"风险标注与完整覆盖情况"}` 写入 `faithsieve-work/results/suspicion-scanner.json`。完整扫描可以返回 ok，即使数学仍不确定。确认 JSON 可解析且字段准确。完成后简短说明文件已写入。

@@ -150,7 +150,9 @@ def judge_session_write_lock(*session_ids):
         with conn.cursor() as cursor:
             try:
                 for session_id in sorted(set(session_ids)):
-                    name = f"agent-submit:{normalize_agent_session_id(session_id)}"
+                    # 会话编号已经唯一且至多 64 字符。MySQL 命名锁同样限制为
+                    # 64 字符，直接使用完整编号，创建和停止仍共用同一把锁。
+                    name = normalize_agent_session_id(session_id)
                     cursor.execute("SELECT GET_LOCK(%s, 10) AS acquired", (name,))
                     if not (cursor.fetchone() or {}).get("acquired"):
                         raise AgentSessionBusyError("Judge 会话正在准备材料，请稍后重试")
@@ -167,7 +169,7 @@ def submit_judge_turn(
     *, session_id, task_id, requested_by, judge_kind, submission_id,
     attempt_id, competition_id, harness, endpoint, prompt, files=None,
     title="", timeout_seconds=None, celery_app=None, dispatch_guard=None,
-    problem_id=None, problem_title=None,
+    problem_id=None, problem_title=None, project_skill=True,
 ):
     """幂等持久化首轮或内部续聊，然后唤醒唯一通用 Agent outbox。
 
@@ -180,6 +182,8 @@ def submit_judge_turn(
     harness = normalize_launch_harness(harness)
     if judge_kind not in JUDGE_KINDS:
         raise ValueError("Judge 会话类别无效")
+    if not isinstance(project_skill, bool):
+        raise ValueError("Judge skill 投影开关必须是布尔值")
     prompt = str(prompt or "").strip()
     if not prompt:
         raise ValueError("Judge 指令不能为空")
@@ -191,9 +195,13 @@ def submit_judge_turn(
         "endpoint_source": "competition" if endpoint.get("competition_id") else "global",
         "timeout_seconds": int(timeout_seconds) if timeout_seconds else None,
     }
+    if not project_skill:
+        runtime["project_skill"] = False
     with judge_session_write_lock(session_id):
         session = get_agent_session(session_id)
         if session:
+            if not project_skill and get_agent_session_runtime_config(session_id).get("project_skill") is not False:
+                raise ValueError("Judge 会话的 skill 投影设置不一致")
             expected = {
                 "task_kind": "judge", "judge_kind": judge_kind,
                 "requested_by": requested_by, "submission_id": submission_id,
@@ -228,6 +236,7 @@ def submit_judge_turn(
                 source_skill=skill_for_agent_task(
                     "judge", "user", judge_kind=judge_kind,
                 ),
+                **({"project_skill": False} if not project_skill else {}),
             )
             files = _prepare_judge_workspace_files(files, harness=harness, judge_kind=judge_kind)
             inject_agent_workspace_files(session_id, files)

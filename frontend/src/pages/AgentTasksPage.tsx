@@ -342,7 +342,8 @@ export default function AgentTasksPage() {
     if (canCreate && !create.isPending) event.currentTarget.form?.requestSubmit()
   }
   const chooseAttachments = (event: ChangeEvent<HTMLInputElement>) => {
-    setAttachments((current) => mergeFiles(current, event.target.files || []))
+    const files = Array.from(event.target.files || [])
+    setAttachments((current) => mergeFiles(current, files))
     event.target.value = ''
   }
   const dragFiles = (event: DragEvent<HTMLFormElement>, active: boolean) => {

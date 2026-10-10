@@ -335,7 +335,7 @@ export default function AgentSessionPage() {
     onSuccess: (payload) => {queryClient.setQueryData<SessionResponse>(queryKey, (current) => current ? ({...current, current_state: {...current.current_state, ...payload.state}}) : current); if (payload.session_state) applyMessageState(payload.session_state); else applyMessageState({...messageState, status: payload.state?.status, running: isRunningStatus(payload.state?.status)}); if (payload.warning) reportFeedback(String(payload.warning))},
     onError: (error) => reportFeedback(errorMessage(error)),
   })
-  const chooseFiles = (event: ChangeEvent<HTMLInputElement>) => {setAttachments((current) => mergeFiles(current, event.target.files || [])); event.target.value = ''}
+  const chooseFiles = (event: ChangeEvent<HTMLInputElement>) => {const files = Array.from(event.target.files || []); setAttachments((current) => mergeFiles(current, files)); event.target.value = ''}
   const keydown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     const action = agentComposerEnterAction({key: event.key, keyCode: event.keyCode, composing: event.nativeEvent.isComposing, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey, running})
     if (!action) return

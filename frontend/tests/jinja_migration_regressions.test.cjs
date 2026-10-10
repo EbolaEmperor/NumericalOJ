@@ -114,6 +114,7 @@ test('迁移后的辅助页面不会把失败伪装成空数据或成功状态',
   const agentSession = source('src/pages/AgentSessionPage.tsx')
   const agentTrace = source('src/pages/agent/AgentExecutionTrace.tsx')
   const submissionDetail = source('src/pages/SubmissionDetailPage.tsx')
+  const writtenPdf = source('src/components/WrittenSubmissionPdf.tsx')
   const rankingOverlays = source('src/ranking/RankingDetailOverlays.tsx')
   const admin = source('src/pages/AdminPage.tsx')
 
@@ -136,7 +137,8 @@ test('迁移后的辅助页面不会把失败伪装成空数据或成功状态',
   assert.match(agentTrace, /trace\?\.subagents/)
   assert.match(agentTrace, /className="agent-subagent-loader"/)
   assert.match(agentTrace, /className="agent-subagent-completed-dot"/)
-  assert.match(submissionDetail, /重新检查/)
+  assert.match(submissionDetail, /<WrittenSubmissionPdf submission=\{submission\}/)
+  assert.match(writtenPdf, /重新检查/)
   assert.match(rankingOverlays, /onClick=\{retry\}>重新加载/)
   assert.match(admin, /result\.refetch\(\)/)
 })

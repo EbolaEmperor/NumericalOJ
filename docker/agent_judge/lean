@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
 
-export LEAN_PATH="$PWD:$(cat /opt/numoj-lean-path)${LEAN_PATH:+:$LEAN_PATH}"
+cached_lean_path=$(python3 -I -c 'from pathlib import Path; root=Path("/opt/numoj-lean-project"); paths=Path("/opt/numoj-lean-path").read_text().strip().split(":"); print(":".join(str((root/p).resolve()) if not Path(p).is_absolute() else p for p in paths if p))')
+export LEAN_PATH="$PWD:$cached_lean_path${LEAN_PATH:+:$LEAN_PATH}"
 exec /opt/elan/bin/lean "$@"

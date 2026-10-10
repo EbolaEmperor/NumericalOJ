@@ -59,6 +59,8 @@ _PEAK_TIME_RANGE_RE = re.compile(
 DEFAULT_LLM_CONTEXT_WINDOW_TOKENS = 384_000
 DEFAULT_LLM_MAX_OUTPUT_TOKENS = 32_000
 MAX_LLM_TOKEN_COUNT = 2_147_483_647
+FAITHSIEVE_PURE_REASONING_EFFORTS = ("low", "medium")
+_FAITHSIEVE_PURE_REASONING_EFFORT_PREFIX = "FAITHSIEVE_PURE_REASONING_EFFORT:"
 LLM_CAPACITY_FIELDS = (
     "context_window_tokens",
     "max_output_tokens",
@@ -542,6 +544,61 @@ def _public_endpoint(row, *, include_secret=False, actor_user_id=None):
     for field in (*LLM_PRICE_FIELDS, *LLM_PEAK_PRICE_FIELDS):
         result[field] = _decimal_display_text(result.get(field)) or ""
     return result
+
+
+def _faithsieve_effort_setting_key(endpoint_id):
+    if type(endpoint_id) is str and re.fullmatch(r"[1-9][0-9]{0,19}", endpoint_id):
+        endpoint_id = int(endpoint_id)
+    if type(endpoint_id) is not int or endpoint_id <= 0:
+        raise DynamicConfigValidationError("端点 ID 必须是正整数")
+    return endpoint_id, f"{_FAITHSIEVE_PURE_REASONING_EFFORT_PREFIX}{endpoint_id}"
+
+
+def normalize_faithsieve_pure_reasoning_effort(value):
+    """纯 LLM 可选思考强度；None 保留端点原来的默认行为。"""
+    if value is None or (type(value) is str and value in FAITHSIEVE_PURE_REASONING_EFFORTS):
+        return value
+    raise DynamicConfigValidationError("FaithSieve 纯 LLM 思考强度必须是 low、medium 或 None")
+
+
+def get_faithsieve_pure_reasoning_effort(endpoint_id):
+    """按端点读取纯 LLM 思考强度，不影响通用 Judge 的请求配置。"""
+    _endpoint_id, key = _faithsieve_effort_setting_key(endpoint_id)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT v FROM site_settings WHERE k=%s", (key,))
+            row = cursor.fetchone()
+        return normalize_faithsieve_pure_reasoning_effort(row.get("v") if row else None)
+    finally:
+        conn.close()
+
+
+def set_faithsieve_pure_reasoning_effort(endpoint_id, effort):
+    """保存端点的纯 LLM 思考强度；None 清除此覆盖项。"""
+    endpoint_id, key = _faithsieve_effort_setting_key(endpoint_id)
+    normalized = normalize_faithsieve_pure_reasoning_effort(effort)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id FROM llm_endpoints WHERE id=%s FOR UPDATE", (endpoint_id,))
+            if not cursor.fetchone():
+                raise DynamicConfigNotFoundError("LLM 端点不存在")
+            if normalized is None:
+                cursor.execute("DELETE FROM site_settings WHERE k=%s", (key,))
+            else:
+                cursor.execute(
+                    "INSERT INTO site_settings (k, v) VALUES (%s, %s) "
+                    "ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                    (key, normalized),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return normalized
 
 
 def get_llm_endpoint(endpoint_id, *, include_secret=False, actor_user_id=None):

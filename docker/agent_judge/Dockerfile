@@ -131,7 +131,6 @@ COPY lean /usr/local/bin/lean
 ENV ELAN_HOME=/opt/elan
 ENV PATH=/usr/local/bin:/opt/elan/bin:${PATH}
 RUN chmod 0755 /usr/local/bin/lean \
-    && lean --version \
     && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
 # C/C++ 数值计算开发库：补齐 FFT、稀疏求解（含 CHOLMOD）、通用数值分析、
@@ -143,7 +142,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnlopt-dev libnlopt-cxx-dev libceres-dev libarmadillo-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# FaithSieve 的确定性检查版本固定；追加层保留前面工具链缓存。
+RUN pip3 install --no-cache-dir --break-system-packages sympy==1.14.0 mpmath==1.3.0
+
 # 共用 Harness 入口
+COPY faithsieve_tool.py /usr/local/share/numoj/faithsieve_tool.py
 COPY run_harness /usr/local/bin/run_harness
 COPY pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
 RUN chmod +x /usr/local/bin/run_harness

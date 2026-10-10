@@ -1,0 +1,18 @@
+.faithsieve-cost {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  color: var(--submission-ink-3);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.faithsieve-cost-logo {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}

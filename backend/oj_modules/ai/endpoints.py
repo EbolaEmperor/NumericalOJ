@@ -58,6 +58,24 @@ _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_CONTEXT_WINDOW_TOKENS = 384_000
 _DEFAULT_MAX_OUTPUT_TOKENS = 32_000
 _PROBE_MAX_TOKENS = 64
+_PROBE_THINKING_MAX_TOKENS = 2048
+_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+_STRICT_STREAM_MAX_BYTES = 8 * 1024 * 1024
+_HTTP_ERROR_MAX_BYTES = 8192
+_PROVIDER_403_CODES = {
+    "AccessDenied.Unpurchased": "service_not_enabled",
+    "AllocationQuota.FreeTierOnly": "free_tier_exhausted",
+}
+_PROVIDER_403_MESSAGES = {
+    "service_not_enabled": "模型端点服务未开通或不具备调用资格（HTTP 403）。",
+    "free_tier_exhausted": "模型端点免费额度已耗尽，当前仅允许使用免费额度（HTTP 403）。",
+}
+_SSE_DONE = object()
+_OPENAI_FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "content_filter", "function_call"})
+_ANTHROPIC_FINISH_REASONS = frozenset({
+    "end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal",
+    "model_context_window_exceeded",
+})
 
 _MODEL_CONTEXT_LIMIT_FIELDS = frozenset({
     "contextlength",
@@ -88,9 +106,26 @@ class LLMEndpointValidationError(LLMEndpointError, ValueError):
 
 
 class LLMEndpointRequestError(LLMEndpointError):
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(
+        self, message: str, *, status_code: int | None = None,
+        request_failure: str | None = None,
+        provider_reason: str | None = None,
+    ):
+        if request_failure is not None and (
+            type(request_failure) is not str
+            or request_failure not in {"timeout", "connection", "other"}
+            or status_code is not None
+        ):
+            raise ValueError("模型端点请求失败分类无效")
+        if provider_reason is not None and (
+            type(provider_reason) is not str or provider_reason not in _PROVIDER_403_MESSAGES
+            or type(status_code) is not int or status_code != 403 or request_failure is not None
+        ):
+            raise ValueError("模型端点供应商失败分类无效")
         super().__init__(str(message))
         self.status_code = status_code
+        self.request_failure = request_failure
+        self.provider_reason = provider_reason
 
 
 class LLMEndpointResponseError(LLMEndpointError):
@@ -291,6 +326,8 @@ class LLMUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    # 计费细分仅供宿主使用，保留原三个字段的比较与兼容接口。
+    billing_tokens: dict | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,12 +630,16 @@ def _json_copy(value, field_name):
 
 
 def _apply_thinking(endpoint, payload):
-    # 管理员只配置“是否开启思考”。关闭时不向兼容端点发送任何思考字段；
-    # 开启时只按协议选择通用 wire shape，不对具体模型厂商做分支。
+    # 管理员只配置“是否开启思考”。Anthropic 关闭时显式传达 disabled，
+    # 避免上游默认开启；开启时按协议选择通用 wire shape。
     if (
         not endpoint.thinking_enabled
         or endpoint.thinking_format is OpenAIThinkingWireFormat.NONE
     ):
+        if endpoint.protocol is LLMProtocol.ANTHROPIC:
+            payload["thinking"] = {"type": "disabled"}
+        elif endpoint.thinking_format is OpenAIThinkingWireFormat.ENABLE_THINKING:
+            payload["enable_thinking"] = False
         return
     if endpoint.protocol is LLMProtocol.ANTHROPIC:
         if endpoint.thinking_format is OpenAIThinkingWireFormat.THINKING_TYPE:
@@ -607,6 +648,33 @@ def _apply_thinking(endpoint, payload):
     # OpenAI-compatible 统一使用 enable_thinking；thinking_type 只作为旧数据
     # 的内部兼容值读取，不能改变协议层的通用请求形状。
     payload["enable_thinking"] = True
+
+
+def _apply_reasoning_effort(endpoint, payload, reasoning_effort):
+    """可选的单次请求强度；不改变端点开关或把强度当作 token 硬预算。"""
+    if reasoning_effort is None:
+        return
+    if not isinstance(reasoning_effort, str) or reasoning_effort not in _REASONING_EFFORTS:
+        raise LLMEndpointValidationError("reasoning_effort 仅支持 low、medium、high、xhigh 或 max。")
+    if endpoint.protocol is LLMProtocol.ANTHROPIC:
+        payload["output_config"] = {"effort": reasoning_effort}
+    else:
+        payload["reasoning_effort"] = reasoning_effort
+
+
+def _apply_response_format(endpoint, payload, response_format):
+    if response_format is None:
+        return
+    if endpoint.protocol is not LLMProtocol.OPENAI:
+        raise LLMEndpointValidationError("response_format 仅支持 OpenAI-compatible 协议。")
+    if (
+        not isinstance(response_format, dict)
+        or set(response_format) != {"type"}
+        or not isinstance(response_format["type"], str)
+        or response_format["type"] != "json_object"
+    ):
+        raise LLMEndpointValidationError("response_format 仅支持 {\"type\": \"json_object\"}。")
+    payload["response_format"] = {"type": "json_object"}
 
 
 def _text_from_content(content):
@@ -878,6 +946,8 @@ def _build_chat_payload(
     tool_choice=None,
     temperature=None,
     max_tokens=None,
+    reasoning_effort=None,
+    response_format=None,
     stream=False,
 ):
     requested_max_tokens = _positive_int(max_tokens, "max_tokens")
@@ -924,14 +994,20 @@ def _build_chat_payload(
             raise LLMEndpointValidationError("temperature 必须是有限数字。")
         payload["temperature"] = use_temperature
     _apply_thinking(endpoint, payload)
+    _apply_reasoning_effort(endpoint, payload, reasoning_effort)
+    _apply_response_format(endpoint, payload, response_format)
     return payload
 
 
-def _status_error(status_code):
+def _status_error(status_code, *, provider_reason=None):
     try:
         status = int(status_code)
     except (TypeError, ValueError):
         status = 0
+    if (type(status_code) is int and status_code == 403
+            and type(provider_reason) is str and provider_reason in _PROVIDER_403_MESSAGES):
+        return LLMEndpointRequestError(_PROVIDER_403_MESSAGES[provider_reason], status_code=403,
+                                       provider_reason=provider_reason)
     if status in {401, 403}:
         message = f"模型端点鉴权失败（HTTP {status}）。"
     elif status == 404:
@@ -945,28 +1021,106 @@ def _status_error(status_code):
     return LLMEndpointRequestError(message, status_code=status or None)
 
 
+def _read_403_provider_reason(response):
+    """只从小型标准错误 JSON 识别公开白名单代码；不保留供应商原文。"""
+    if type(getattr(response, "status_code", None)) is not int or response.status_code != 403:
+        return None
+    try:
+        headers = getattr(response, "headers", {})
+        declared = headers.get("Content-Length", headers.get("content-length"))
+        if declared is not None:
+            # 不解析任意对象或超长数字；明确超过上限时连 body 都不读取。
+            if (type(declared) is not str or not 1 <= len(declared) <= 20
+                    or not declared.isascii() or not declared.isdecimal()
+                    or int(declared) > _HTTP_ERROR_MAX_BYTES):
+                return None
+        data = bytearray()
+        chunks = 0
+        for chunk in response.iter_content(chunk_size=1024, decode_unicode=False):
+            chunks += 1
+            # 同时限制空片段次数，不能被无内容的无限 reader 拖住。
+            if (chunks > _HTTP_ERROR_MAX_BYTES + 1 or type(chunk) is not bytes
+                    or len(data) + len(chunk) > _HTTP_ERROR_MAX_BYTES):
+                return None
+            data.extend(chunk)
+        payload = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_sse_object,
+                             parse_constant=_strict_sse_constant)
+        if type(payload) is not dict:
+            return None
+        if "error" in payload:
+            # 两套错误封装同时给出代码时不猜测哪一套优先。
+            if "code" in payload or type(payload["error"]) is not dict:
+                return None
+            code = payload["error"].get("code")
+        else:
+            code = payload.get("code")
+        return _PROVIDER_403_CODES.get(code) if type(code) is str else None
+    except Exception:
+        # 读取/解析失败仍是原 HTTP 错误，不传播异常说明或改成网络重试。
+        return None
+
+
+def _request_failure_kind(error):
+    """只沿已知库的异常结构识别超时，不读取异常说明或任意异常链。"""
+    urllib3_errors = requests.packages.urllib3.exceptions
+    pending, seen = [error], set()
+    for _ in range(8):
+        if not pending:
+            break
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (requests.exceptions.Timeout, urllib3_errors.TimeoutError, TimeoutError)):
+            return "timeout"
+        if isinstance(current, requests.exceptions.ConnectionError):
+            pending.extend(item for item in current.args[:2]
+                           if isinstance(item, (urllib3_errors.HTTPError, TimeoutError)))
+        elif isinstance(current, urllib3_errors.MaxRetryError):
+            pending.append(current.reason)
+        elif isinstance(current, urllib3_errors.ProxyError):
+            pending.append(current.original_error)
+    return "connection" if isinstance(error, requests.exceptions.ConnectionError) else "other"
+
+
+def _request_failure_error(kind):
+    message = {
+        "timeout": "模型端点响应超时。",
+        "connection": "模型端点连接失败。",
+        "other": "模型端点请求失败。",
+    }[kind]
+    return LLMEndpointRequestError(message, request_failure=kind)
+
+
 def _post(endpoint, payload, *, timeout, stream, request_post=None):
     post = request_post or requests.post
     # 流式调用只限制建立连接的时间，不限制读取响应的时间。这样模型只要
     # 仍在持续输出，应用就不会因为固定的 read timeout 截断请求；SSE 上层
     # 另行发送心跳，避免反向代理把“首个 token 较慢”误判为僵死连接。
     request_timeout = (30.0, None) if timeout is None else float(timeout)
+    request_failure = None
     try:
         response = post(
             endpoint_request_url(endpoint, "chat"),
             headers=_request_headers(endpoint),
             json=payload,
             timeout=request_timeout,
-            stream=bool(stream),
+            # 只延迟 HTTP 客户端读取 body，供应商是否输出 SSE 仍由 payload 决定。
+            # 否则非流式请求会在检查错误状态前无界预下载整个错误响应。
+            stream=True,
         )
-    except Exception:
-        raise LLMEndpointRequestError("无法连接模型端点。") from None
+    except Exception as error:
+        request_failure = _request_failure_kind(error)
+    if request_failure is not None:
+        # 在捕获块外抛出，异常链也不保留供应商异常、请求 URL 或响应对象。
+        raise _request_failure_error(request_failure) from None
     if int(getattr(response, "status_code", 0) or 0) >= 400:
+        provider_reason = _read_403_provider_reason(response)
         try:
             response.close()
         except Exception:
             pass
-        raise _status_error(response.status_code)
+        raise _status_error(response.status_code, provider_reason=provider_reason)
     return response
 
 
@@ -990,7 +1144,45 @@ def _parse_usage(data, protocol):
         total_tokens = int(usage.get("total_tokens") or (input_tokens + output_tokens))
     except (TypeError, ValueError):
         total_tokens = input_tokens + output_tokens
-    return LLMUsage(input_tokens, output_tokens, total_tokens)
+    return LLMUsage(input_tokens, output_tokens, total_tokens, _billing_tokens(data, protocol))
+
+
+def _billing_tokens(data, protocol):
+    """缺少有效 usage 时返回 None；不能把适配层的兼容零值当成免费。"""
+    if not isinstance(data, Mapping):
+        return None
+
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 18_446_744_073_709_551_615 else None
+
+    if protocol is LLMProtocol.OPENAI:
+        inputs = count(data.get("prompt_tokens", data.get("input_tokens")))
+        outputs = count(data.get("completion_tokens", data.get("output_tokens")))
+        details = data.get("prompt_tokens_details", data.get("input_tokens_details"))
+        details = details if isinstance(details, Mapping) else {}
+        cached_raw = data.get("prompt_cache_hit_tokens", details.get("cached_tokens"))
+        estimated = cached_raw is None
+        cached = 0 if estimated else count(cached_raw)
+        written = 0
+        output_details = data.get("completion_tokens_details")
+        output_details = output_details if isinstance(output_details, Mapping) else {}
+        reasoning = count(output_details.get("reasoning_tokens", 0))
+        if inputs is None or outputs is None or cached is None or cached > inputs:
+            return None
+        uncached = inputs - cached
+    else:
+        uncached = count(data.get("input_tokens"))
+        outputs = count(data.get("output_tokens"))
+        cached = count(data.get("cache_read_input_tokens", 0))
+        written = count(data.get("cache_creation_input_tokens", 0))
+        reasoning, estimated = 0, False
+    if any(value is None for value in (uncached, cached, written, outputs, reasoning)) or reasoning > outputs:
+        return None
+    return {
+        "input_uncached_tokens": uncached, "input_cached_tokens": cached,
+        "input_cache_write_tokens": written, "output_tokens": outputs,
+        "reasoning_output_tokens": reasoning, "estimated": estimated,
+    }
 
 
 def _tool_call_from_openai(raw_call, index):
@@ -1083,12 +1275,76 @@ def _response_json(response):
             pass
 
 
-def _iter_sse_json(response):
+def _strict_sse_lines(response, max_bytes):
+    """在行缓冲之前限制 wire 总量，心跳、帧包装与单个长行均计入。"""
+    total, pending = 0, b""
+    for chunk in response.iter_content(chunk_size=8192, decode_unicode=False):
+        if not isinstance(chunk, bytes):
+            raise LLMEndpointResponseError("模型端点流式响应的字节格式无效。")
+        total += len(chunk)
+        if total > max_bytes:
+            raise LLMEndpointResponseError("模型端点流式响应超过字节限制。")
+        pending += chunk
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            yield line.removesuffix(b"\r")
+    if pending:
+        yield pending.removesuffix(b"\r")
+
+
+def _strict_sse_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("重复字段")
+        result[key] = value
+    return result
+
+
+def _strict_sse_constant(_value):
+    raise ValueError("非标准 JSON 常量")
+
+
+def _iter_sse_json(response, *, require_complete_stream=False, max_stream_bytes=None):
     data_lines = []
+    request_failure = None
+    closed = False
+
+    def close_once():
+        nonlocal closed
+        if not closed:
+            closed = True
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def decode_event(joined):
+        invalid = False
+        try:
+            event = json.loads(joined, object_pairs_hook=_strict_sse_object,
+                               parse_constant=_strict_sse_constant) if require_complete_stream else json.loads(joined)
+        except ValueError:
+            invalid = True
+        if invalid:
+            raise LLMEndpointResponseError("模型端点返回了无效的流式事件。") from None
+        if require_complete_stream and (not isinstance(event, Mapping) or "error" in event
+                                        or event.get("type") == "error"):
+            raise LLMEndpointResponseError("模型端点返回了无效的流式事件。")
+        return event
+
     try:
-        for raw_line in response.iter_lines(decode_unicode=False):
+        lines = (_strict_sse_lines(response, max_stream_bytes) if require_complete_stream
+                 else response.iter_lines(decode_unicode=False))
+        for raw_line in lines:
             if isinstance(raw_line, bytes):
-                line = raw_line.decode("utf-8", errors="replace")
+                invalid = False
+                try:
+                    line = raw_line.decode("utf-8", errors="strict" if require_complete_stream else "replace")
+                except UnicodeDecodeError:
+                    invalid = True
+                if invalid:
+                    raise LLMEndpointResponseError("模型端点流式响应的字符编码无效。") from None
             else:
                 line = str(raw_line or "")
             if not line:
@@ -1096,27 +1352,41 @@ def _iter_sse_json(response):
                     joined = "\n".join(data_lines)
                     data_lines = []
                     if joined.strip() != "[DONE]":
-                        try:
-                            yield json.loads(joined)
-                        except json.JSONDecodeError:
-                            raise LLMEndpointResponseError("模型端点返回了无效的流式事件。") from None
+                        event = decode_event(joined)
+                        terminal = require_complete_stream and event.get("type") == "message_stop"
+                        if terminal:
+                            close_once()
+                        yield event
+                        if terminal:
+                            return
                 continue
             if line.startswith(":") or line.startswith("event:") or line.startswith("id:"):
                 continue
             if line.startswith("data:"):
+                if require_complete_stream and line[5:].strip() == "[DONE]":
+                    if data_lines:
+                        raise LLMEndpointResponseError("模型端点返回了无效的流式结束标记。")
+                    close_once()
+                    yield _SSE_DONE
+                    return
                 data_lines.append(line[5:].lstrip())
         if data_lines:
             joined = "\n".join(data_lines)
             if joined.strip() != "[DONE]":
-                try:
-                    yield json.loads(joined)
-                except json.JSONDecodeError:
-                    raise LLMEndpointResponseError("模型端点返回了无效的流式事件。") from None
+                event = decode_event(joined)
+                if require_complete_stream and event.get("type") == "message_stop":
+                    close_once()
+                yield event
+    except LLMEndpointError:
+        raise
+    except Exception as error:
+        if not require_complete_stream:
+            raise
+        request_failure = _request_failure_kind(error)
     finally:
-        try:
-            response.close()
-        except Exception:
-            pass
+        close_once()
+    if request_failure is not None:
+        raise _request_failure_error(request_failure) from None
 
 
 def _emit_delta(callback, text):
@@ -1124,7 +1394,8 @@ def _emit_delta(callback, text):
         callback(text)
 
 
-def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None):
+def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None, *,
+                         require_complete_stream=False, max_stream_bytes=None):
     text_parts = []
     reasoning_parts = []
     finish_reason = None
@@ -1132,7 +1403,12 @@ def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None):
     usage = LLMUsage()
     tool_states = {}
     saw_event = False
-    for event in _iter_sse_json(response):
+    complete = False
+    for event in _iter_sse_json(response, require_complete_stream=require_complete_stream,
+                                max_stream_bytes=max_stream_bytes):
+        if event is _SSE_DONE:
+            complete = True
+            break
         if not isinstance(event, Mapping):
             continue
         saw_event = True
@@ -1141,6 +1417,8 @@ def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None):
         if event.get("usage") is not None:
             usage = _parse_usage(event.get("usage"), LLMProtocol.OPENAI)
         choices = event.get("choices") or []
+        if require_complete_stream and (not isinstance(choices, list) or len(choices) > 1):
+            raise LLMEndpointResponseError("模型端点流式响应的候选消息无效。")
         if not choices or not isinstance(choices[0], Mapping):
             continue
         choice = choices[0]
@@ -1172,6 +1450,8 @@ def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None):
                 state["name"] += str(function["name"])
             if function.get("arguments"):
                 state["arguments"].append(str(function["arguments"]))
+    if require_complete_stream and (not complete or finish_reason not in _OPENAI_FINISH_REASONS):
+        raise LLMEndpointResponseError("模型端点流式响应未完整结束或完成状态无效。")
     if not saw_event:
         raise LLMEndpointResponseError("模型端点未返回流式事件。")
     tool_calls = []
@@ -1190,25 +1470,34 @@ def _parse_openai_stream(response, on_text_delta, on_reasoning_delta=None):
     return LLMChatResult(text, reasoning, tuple(tool_calls), finish_reason, model, usage)
 
 
-def _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta=None):
+def _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta=None, *,
+                            require_complete_stream=False, max_stream_bytes=None):
     text_parts = []
     reasoning_parts = []
     finish_reason = None
     model = None
     input_tokens = 0
     output_tokens = 0
+    billing_usage = {}
     blocks = {}
     saw_event = False
-    for event in _iter_sse_json(response):
+    complete = False
+    for event in _iter_sse_json(response, require_complete_stream=require_complete_stream,
+                                max_stream_bytes=max_stream_bytes):
         if not isinstance(event, Mapping):
             continue
         saw_event = True
         event_type = str(event.get("type") or "")
+        if require_complete_stream and event_type == "message_stop":
+            complete = True
+            break
         if event_type == "message_start":
             message = event.get("message") if isinstance(event.get("message"), Mapping) else {}
             if message.get("model") is not None:
                 model = str(message["model"])
             usage = _parse_usage(message.get("usage"), LLMProtocol.ANTHROPIC)
+            if isinstance(message.get("usage"), Mapping):
+                billing_usage.update(message["usage"])
             input_tokens = usage.input_tokens
             output_tokens = usage.output_tokens
         elif event_type == "content_block_start":
@@ -1259,7 +1548,11 @@ def _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta=None):
             if delta.get("stop_reason") is not None:
                 finish_reason = str(delta["stop_reason"])
             usage = _parse_usage(event.get("usage"), LLMProtocol.ANTHROPIC)
+            if isinstance(event.get("usage"), Mapping):
+                billing_usage.update(event["usage"])
             output_tokens = max(output_tokens, usage.output_tokens)
+    if require_complete_stream and (not complete or finish_reason not in _ANTHROPIC_FINISH_REASONS):
+        raise LLMEndpointResponseError("模型端点流式响应未完整结束或完成状态无效。")
     if not saw_event:
         raise LLMEndpointResponseError("模型端点未返回流式事件。")
     tool_calls = []
@@ -1275,7 +1568,8 @@ def _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta=None):
     reasoning = "".join(reasoning_parts)
     if not text and not reasoning and not tool_calls:
         raise LLMEndpointResponseError("模型端点未返回文本、思考内容或工具调用。")
-    usage = LLMUsage(input_tokens, output_tokens, input_tokens + output_tokens)
+    usage = LLMUsage(input_tokens, output_tokens, input_tokens + output_tokens,
+                     _billing_tokens(billing_usage, LLMProtocol.ANTHROPIC))
     return LLMChatResult(text, reasoning, tuple(tool_calls), finish_reason, model, usage)
 
 
@@ -1287,8 +1581,13 @@ def call_chat(
     tool_choice=None,
     temperature=None,
     max_tokens=None,
+    reasoning_effort=None,
+    response_format=None,
     timeout=300,
     stream=False,
+    stream_options=None,
+    require_complete_stream=False,
+    max_stream_bytes=None,
     on_text_delta: Callable[[str], None] | None = None,
     on_reasoning_delta: Callable[[str], None] | None = None,
     request_post=None,
@@ -1304,6 +1603,20 @@ def call_chat(
         or on_text_delta is not None
         or on_reasoning_delta is not None
     )
+    if type(require_complete_stream) is not bool or (require_complete_stream and not use_stream):
+        raise LLMEndpointValidationError("严格流式调用必须启用流式请求。")
+    if max_stream_bytes is not None and (
+        not require_complete_stream or type(max_stream_bytes) is not int
+        or not 1 <= max_stream_bytes <= _STRICT_STREAM_MAX_BYTES
+    ):
+        raise LLMEndpointValidationError("严格流式响应的字节限制无效。")
+    stream_limit = max_stream_bytes if max_stream_bytes is not None else _STRICT_STREAM_MAX_BYTES
+    if stream_options is not None and (
+        not use_stream or use_endpoint.protocol is not LLMProtocol.OPENAI
+        or not isinstance(stream_options, Mapping) or set(stream_options) != {"include_usage"}
+        or stream_options["include_usage"] is not True
+    ):
+        raise LLMEndpointValidationError("stream_options 仅支持 OpenAI 流式请求的 include_usage=true。")
     payload = _build_chat_payload(
         use_endpoint,
         messages,
@@ -1311,8 +1624,12 @@ def call_chat(
         tool_choice=tool_choice,
         temperature=temperature,
         max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+        response_format=response_format,
         stream=use_stream,
     )
+    if stream_options is not None:
+        payload["stream_options"] = {"include_usage": True}
     response = _post(
         use_endpoint,
         payload,
@@ -1321,10 +1638,18 @@ def call_chat(
         request_post=request_post,
     )
     content_type = str(getattr(response, "headers", {}).get("Content-Type", "")).lower()
+    if require_complete_stream and "text/event-stream" not in content_type:
+        try:
+            response.close()
+        except Exception:
+            pass
+        raise LLMEndpointResponseError("模型端点未返回 SSE 流式响应。")
     if use_stream and "text/event-stream" in content_type:
         if use_endpoint.protocol is LLMProtocol.OPENAI:
-            return _parse_openai_stream(response, on_text_delta, on_reasoning_delta)
-        return _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta)
+            return _parse_openai_stream(response, on_text_delta, on_reasoning_delta,
+                                        require_complete_stream=require_complete_stream, max_stream_bytes=stream_limit)
+        return _parse_anthropic_stream(response, on_text_delta, on_reasoning_delta,
+                                       require_complete_stream=require_complete_stream, max_stream_bytes=stream_limit)
     data = _response_json(response)
     if use_endpoint.protocol is LLMProtocol.OPENAI:
         result = _parse_openai_response(data)
@@ -1347,6 +1672,8 @@ def call_text(
     tool_choice=None,
     temperature=None,
     max_tokens=None,
+    reasoning_effort=None,
+    response_format=None,
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
@@ -1366,6 +1693,8 @@ def call_text(
         tool_choice=tool_choice,
         temperature=temperature,
         max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+        response_format=response_format,
         timeout=timeout,
         stream=stream,
         on_text_delta=on_text_delta,
@@ -1383,6 +1712,8 @@ def call_vision(
     continuation_messages=None,
     temperature=None,
     max_tokens=None,
+    reasoning_effort=None,
+    response_format=None,
     timeout=300,
     stream=False,
     on_text_delta: Callable[[str], None] | None = None,
@@ -1420,6 +1751,8 @@ def call_vision(
         messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        reasoning_effort=reasoning_effort,
+        response_format=response_format,
         stream=use_stream,
     )
     response = _post(
@@ -1526,13 +1859,14 @@ def probe_endpoint(endpoint, *, timeout=30, request_post=None):
     """按声明类别执行一次真实、最小且不写外部状态的连通性测试。"""
 
     use_endpoint = _coerce_endpoint(endpoint)
+    probe_max_tokens = _PROBE_THINKING_MAX_TOKENS if use_endpoint.thinking_enabled else _PROBE_MAX_TOKENS
     started = time.monotonic()
     try:
         if use_endpoint.category is LLMEndpointCategory.TEXT:
             result = call_text(
                 use_endpoint,
                 "只回复 OK。",
-                max_tokens=_PROBE_MAX_TOKENS,
+                max_tokens=probe_max_tokens,
                 timeout=timeout,
                 request_post=request_post,
             )
@@ -1543,7 +1877,7 @@ def probe_endpoint(endpoint, *, timeout=30, request_post=None):
                 use_endpoint,
                 "只回复这张图片的主要颜色。",
                 [_probe_image()],
-                max_tokens=_PROBE_MAX_TOKENS,
+                max_tokens=probe_max_tokens,
                 timeout=timeout,
                 request_post=request_post,
             )

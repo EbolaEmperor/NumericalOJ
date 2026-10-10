@@ -20,6 +20,43 @@ def _session(kind="reverse_answer", **extra):
     }
 
 
+@pytest.mark.parametrize("session_id", [
+    "fs-" + "a" * 32 + "-source-extraction",
+    "fs-" + "a" * 32 + "-role-000001-attempt-1",
+    "x" * 64,
+])
+def test_judge_lock_accepts_full_length_session_identifiers(monkeypatch, session_id):
+    connection = _ScriptedConnection(one_values=[{"acquired": 1}])
+    monkeypatch.setattr(judge, "get_db_connection", lambda: connection)
+
+    with judge.judge_session_write_lock(session_id):
+        query, params = connection.cursor_instance.calls[0]
+        assert "GET_LOCK" in query
+        assert params == (session_id,)
+        assert len(params[0]) <= 64
+
+    assert connection.cursor_instance.calls[-1] == (
+        "SELECT RELEASE_LOCK(%s)", (session_id,),
+    )
+    assert connection.closed
+
+
+def test_judge_lock_releases_acquired_sessions_when_another_is_busy(monkeypatch):
+    connection = _ScriptedConnection(one_values=[{"acquired": 1}, {"acquired": 0}])
+    monkeypatch.setattr(judge, "get_db_connection", lambda: connection)
+
+    with pytest.raises(sessions.AgentSessionBusyError):
+        with judge.judge_session_write_lock("judge-b", "judge-a", "judge-a"):
+            pytest.fail("不能在另一会话锁繁忙时进入准备材料阶段")
+
+    assert connection.cursor_instance.calls == [
+        ("SELECT GET_LOCK(%s, 10) AS acquired", ("judge-a",)),
+        ("SELECT GET_LOCK(%s, 10) AS acquired", ("judge-b",)),
+        ("SELECT RELEASE_LOCK(%s)", ("judge-a",)),
+    ]
+    assert connection.closed
+
+
 @pytest.fixture
 def judge_workspace_submission(monkeypatch, tmp_path):
     from contextlib import nullcontext
@@ -46,16 +83,31 @@ def judge_workspace_submission(monkeypatch, tmp_path):
     monkeypatch.setattr(judge, "create_agent_session", create)
     monkeypatch.setattr(judge, "begin_agent_session_turn", begin)
 
-    def submit(kind, harness, files, *, task_id="jd-test-turn"):
+    def submit(kind, harness, files, *, task_id="jd-test-turn", **options):
         return judge.submit_judge_turn(
             session_id="jd-test", task_id=task_id, requested_by="owner", judge_kind=kind,
             submission_id=12, attempt_id="attempt-1", competition_id=3, harness=harness,
             endpoint={"id": 8, "model": "test"}, prompt="检查提交", files=files,
             celery_app=SimpleNamespace(send_task=lambda *_a, **_k: None),
+            **options,
         )
 
     state.submit = submit
     return state
+
+
+def test_workflow_judge_explicitly_disables_skill_projection_and_freezes_choice(judge_workspace_submission, monkeypatch):
+    state = judge_workspace_submission
+    state.submit("faithsieve", "pi", {"problem.md": "检查局部命题"}, project_skill=False)
+    assert state.creates[0]["task_kind"] == "judge"
+    assert state.creates[0]["judge_kind"] == "faithsieve"
+    assert state.creates[0]["runtime_config"]["project_skill"] is False
+    monkeypatch.setattr(judge, "get_agent_session_runtime_config", lambda _: {"project_skill": False})
+    state.submit("faithsieve", "pi", {}, project_skill=False)
+    assert len(state.creates) == 1
+    monkeypatch.setattr(judge, "get_agent_session_runtime_config", lambda _: {})
+    with pytest.raises(ValueError, match="skill 投影"):
+        state.submit("faithsieve", "pi", {}, project_skill=False)
 
 
 _JUDGE_MATERIAL_WARNING = (

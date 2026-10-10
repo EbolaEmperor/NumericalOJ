@@ -972,21 +972,35 @@ def test_request_limits_are_fail_closed():
     assert ambiguous_encoding.value.status == 502
 
 
-def test_total_inflight_request_body_budget_is_bounded():
+@pytest.mark.parametrize(
+    "mode, single_limit, inflight_limit",
+    [
+        ("openai", 32 * 1024 * 1024, 64 * 1024 * 1024),
+        ("anthropic", 32 * 1024 * 1024, 64 * 1024 * 1024),
+        ("mcp", 2 * 1024 * 1024, 4 * 1024 * 1024),
+    ],
+)
+def test_total_inflight_request_body_budget_is_bounded(
+    mode, single_limit, inflight_limit,
+):
     instance = relay._AgentSecretRelay(
         upstream_base_url="https://llm.example/v1",
-        mode="openai",
+        mode=mode,
         real_credential="long-lived-model-key",
     )
     with instance._state_lock:
         instance._active = True
-    one_request = relay._MAX_REQUEST_BYTES["openai"]
+    one_request = relay._MAX_REQUEST_BYTES[mode]
+    assert one_request == single_limit
+    assert relay._MAX_INFLIGHT_REQUEST_BYTES[mode] == inflight_limit
 
     assert instance._reserve_request_body(one_request) is True
     assert instance._reserve_request_body(one_request) is True
     assert instance._reserve_request_body(1) is False
     instance._release_request_body(one_request)
     assert instance._reserve_request_body(1) is True
+    instance._release_request_body(one_request + 1)
+    assert instance._inflight_request_bytes == 0
 
 
 def test_forwarding_snapshot_keeps_injection_and_redaction_credentials_together():
@@ -1545,6 +1559,156 @@ def _send(instance, raw_request):
     head, payload = bytes(request_socket.output).split(b"\r\n\r\n", 1)
     status = int(head.splitlines()[0].split()[1])
     return status, head, payload
+
+
+def _model_relay_request(instance, route, body, *, content_length=None):
+    headers = b"".join(
+        name.encode("ascii") + b": " + value.encode("ascii") + b"\r\n"
+        for name, value in instance.expected_headers.items()
+    )
+    declared_length = len(body) if content_length is None else content_length
+    return (
+        b"POST " + route.encode("ascii") + b" HTTP/1.0\r\n"
+        + headers
+        + b"Content-Type: application/json\r\nContent-Length: "
+        + str(declared_length).encode("ascii")
+        + b"\r\n\r\n" + body
+    )
+
+
+@pytest.mark.parametrize(
+    "mode, route",
+    [("openai", "/v1/chat/completions"), ("anthropic", "/v1/messages")],
+)
+def test_large_image_history_above_old_limit_is_forwarded_intact(
+    monkeypatch, mode, route,
+):
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode=mode,
+        real_credential="long-lived-model-key",
+    )
+    with instance._state_lock:
+        instance._active = True
+    image_data = "A" * (17 * 1024 * 1024)
+    image = (
+        {"type": "image_url", "image_url": {
+            "url": "data:image/png;base64," + image_data,
+        }}
+        if mode == "openai"
+        else {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": image_data,
+        }}
+    )
+    body = json.dumps({
+        "messages": [{"role": "user", "content": [image]}],
+    }, separators=(",", ":")).encode("utf-8")
+    assert 16 * 1024 * 1024 < len(body) < 32 * 1024 * 1024
+    forwarded = []
+
+    class Response:
+        status = 200
+        headers = _headers(Content_Type="application/json")
+
+        def getcode(self):
+            return self.status
+
+        def read1(self, _size):
+            return b""
+
+        def close(self):
+            return None
+
+    class Connection:
+        registered = False
+
+        def request(self, method, target, *, body, headers):
+            assert self.registered is True
+            assert method == "POST"
+            assert target == route
+            forwarded.append(body)
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream, "open_connection", lambda _self: Connection(),
+    )
+    assert _send(instance, _model_relay_request(instance, route, body))[0] == 200
+    assert forwarded == [body]
+    assert instance._inflight_request_bytes == 0
+
+
+@pytest.mark.parametrize(
+    "mode, route, limit",
+    [
+        ("openai", "/v1/chat/completions", 32 * 1024 * 1024),
+        ("anthropic", "/v1/messages", 32 * 1024 * 1024),
+        ("mcp", "/v1", 2 * 1024 * 1024),
+    ],
+)
+def test_request_limit_rejects_one_extra_byte_before_upstream(
+    monkeypatch, mode, route, limit,
+):
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode=mode,
+        real_credential="long-lived-model-key",
+    )
+    with instance._state_lock:
+        instance._active = True
+
+    def unexpected_upstream(_self):
+        pytest.fail("超限请求不得访问上游")
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream, "open_connection", unexpected_upstream,
+    )
+    assert relay._request_content_length(
+        _headers(Content_Length=limit), "POST", relay._MAX_REQUEST_BYTES[mode],
+    ) == limit
+    status, _head, payload = _send(instance, _model_relay_request(
+        instance, route, b"", content_length=limit + 1,
+    ))
+    assert status == 413
+    assert payload == b"request too large"
+    assert instance._inflight_request_bytes == 0
+
+
+@pytest.mark.parametrize(
+    "mode, route",
+    [("openai", "/v1/chat/completions"), ("anthropic", "/v1/messages")],
+)
+def test_inflight_body_limit_rejects_before_upstream_and_keeps_reservation(
+    monkeypatch, mode, route,
+):
+    instance = relay._AgentSecretRelay(
+        upstream_base_url="https://llm.example/v1",
+        mode=mode,
+        real_credential="long-lived-model-key",
+    )
+    with instance._state_lock:
+        instance._active = True
+    reserved = 64 * 1024 * 1024
+    assert instance._reserve_request_body(reserved) is True
+
+    def unexpected_upstream(_self):
+        pytest.fail("并发容量已满时不得访问上游")
+
+    monkeypatch.setattr(
+        relay._FrozenUpstream, "open_connection", unexpected_upstream,
+    )
+    status, _head, payload = _send(instance, _model_relay_request(
+        instance, route, b"{}",
+    ))
+    assert status == 503
+    assert payload == b"request budget exhausted"
+    assert instance._inflight_request_bytes == reserved
+    instance._release_request_body(reserved)
+    assert instance._inflight_request_bytes == 0
 
 
 def test_direct_endpoint_requests_are_accounted_by_relay_and_reopen_gate(

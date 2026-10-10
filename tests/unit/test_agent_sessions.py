@@ -55,6 +55,37 @@ class _ScriptedConnection:
         self.closed = True
 
 
+def test_judge_continuation_uses_its_own_timeout_without_updating_session_runtime(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {"runtime_config_json": '{"timeout_seconds":600,"project_skill":false,"endpoint_source":"global"}'},
+        {"dispatch_payload_json": '{"timeout_seconds":6000}'},
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    runtime = sessions.get_agent_session_runtime_config("judge-session", "judge-turn-c1")
+
+    assert runtime == {"timeout_seconds": 6000, "project_skill": False, "endpoint_source": "global"}
+    calls = connection.cursor_instance.calls
+    assert len(calls) == 2
+    assert calls[1][1] == ("judge-session", "judge-turn-c1")
+    assert "final_task_id=%s" in calls[1][0]
+    assert all(query.startswith("SELECT ") for query, _ in calls)
+    assert connection.commits == 0 and connection.closed
+
+
+def test_judge_original_turn_retains_session_timeout_without_override(monkeypatch):
+    connection = _ScriptedConnection(one_values=[
+        {"runtime_config_json": '{"timeout_seconds":600,"project_skill":false}'},
+        {"dispatch_payload_json": '{}'},
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: connection)
+
+    assert sessions.get_agent_session_runtime_config("judge-session", "judge-turn") == {
+        "timeout_seconds": 600, "project_skill": False,
+    }
+    assert all(query.startswith("SELECT ") for query, _ in connection.cursor_instance.calls)
+
+
 def test_only_one_continuation_can_claim_a_terminal_session(monkeypatch):
     """第一次续聊把状态切回 Pending 后，竞争者必须在行锁内被拒绝。"""
 

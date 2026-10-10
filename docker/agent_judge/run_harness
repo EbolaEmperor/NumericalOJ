@@ -1296,6 +1296,10 @@ def _apply_endpoint_thinking_fields(
     payload.pop("enable_thinking", None)
     payload.pop("thinking", None)
     if thinking_format == "none" or not thinking_enabled:
+        if protocol == "anthropic":
+            payload["thinking"] = {"type": "disabled"}
+        elif protocol == "openai" and thinking_format == "enable_thinking":
+            payload["enable_thinking"] = False
         return
     if thinking_format == "enable_thinking":
         if protocol != "openai":
@@ -1579,7 +1583,7 @@ def _endpoint_model_capabilities():
 def _write_pi_models_config(
         config_dir, base_url, model, context_window_tokens=None,
         max_output_tokens=None, thinking_compatibility=None,
-        protocol="openai"):
+        protocol="openai", category="text"):
     os.makedirs(config_dir, exist_ok=True)
     if context_window_tokens is None:
         context_window_tokens = DEFAULT_CONTEXT_WINDOW_TOKENS
@@ -1592,11 +1596,11 @@ def _write_pi_models_config(
         "name": model,
         "contextWindow": int(context_window_tokens),
         "maxTokens": int(max_output_tokens),
+        "input": ["text", "image"] if str(category).strip().lower() == "omni" else ["text"],
     }
     if thinking_compatibility:
         model_config.update({
             "reasoning": True,
-            "input": ["text"],
         })
     protocol = str(protocol or "openai").strip().lower()
     if protocol not in {"openai", "anthropic"}:
@@ -1819,6 +1823,7 @@ def _run_pi(prompt, commands=None):
             max_output_tokens=max_output_tokens,
             thinking_compatibility=thinking_compatibility,
             protocol=protocol,
+            category=os.environ.get("AJ_ENDPOINT_CATEGORY") or "text",
         )
         os.makedirs(session_dir, exist_ok=True)
         env = os.environ.copy()

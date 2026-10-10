@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
-import {cleanup, render, screen, waitFor} from '@testing-library/react'
+import {act, cleanup, render, screen, waitFor} from '@testing-library/react'
 import {MemoryRouter, Route, Routes} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -58,5 +58,40 @@ describe('Judge 会话浏览与只读交互', () => {
       expect(screen.getByRole('link', {name: '全站会话'}).getAttribute('aria-current')).toBeNull()
       expect(screen.getByRole('link', {name: '我的会话'})).toBeTruthy()
     } else expect(screen.queryByRole('link', {name: 'Judge 会话'})).toBeNull()
+  })
+})
+
+describe('Agent 附件选择', () => {
+  it.each(['create', 'resume'])('%s 在输入框清空且状态更新延后时仍保留所选附件', async (mode) => {
+    vi.stubGlobal('fetch', fetchPayloads(mode === 'create' ? {
+      success: true, user: {is_admin: 1}, agent_sessions: [], harnesses: ['claude_code'],
+      endpoints_by_harness: {claude_code: [{id: 2, model: 'deepseek-flash'}]},
+      reasoning_efforts_by_harness: {}, agent_quota_summary: {},
+    } : {
+      success: true, user: {is_admin: 1},
+      agent_session: {session_id: 'custom-session', title: '验证证明', category: 'custom', task_kind: 'custom', harness: 'claude_code'},
+      current_state: {status: 'completed'}, agent_message_state: {}, turns: [], can_resume: true,
+    }))
+    const view = mode === 'create'
+      ? show('/agents', <AgentTasksPage />, '/agents')
+      : show('/agents/custom-session', <AgentSessionPage />, '/agents/:sessionId')
+    await waitFor(() => expect(view.container.querySelector('input[type="file"]')).toBeTruthy())
+    const input = view.container.querySelector<HTMLInputElement>('input[type="file"]')!
+    const files = [new File(['题目'], 'problem.md'), ...[1, 2, 3, 4].map((page) => new File(['图片'], `page-${page}.png`, {type: 'image/png'}))]
+    let selected: File[] = []
+    let resets = 0
+    // 模拟浏览器清空 input.value 后会同步变化的 FileList；连续事件让后一次更新排队。
+    Object.defineProperty(input, 'files', {configurable: true, get: () => selected})
+    Object.defineProperty(input, 'value', {configurable: true, get: () => '', set: () => {selected.splice(0); resets += 1}})
+    act(() => {
+      selected = [files[0]]
+      input.dispatchEvent(new Event('change', {bubbles: true}))
+      selected = files.slice(1)
+      input.dispatchEvent(new Event('change', {bubbles: true}))
+    })
+    expect(resets).toBe(2)
+    expect(selected).toEqual([])
+    for (const file of files) expect(screen.getByText(file.name)).toBeTruthy()
+    expect(screen.getAllByRole('button', {name: /移除附件 /})).toHaveLength(5)
   })
 })

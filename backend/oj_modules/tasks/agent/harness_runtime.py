@@ -1259,6 +1259,7 @@ def _runtime_env(
     interactive=False,
     reasoning_effort="default",
     source_skill=None,
+    project_skill=True,
 ):
     protocol = str(endpoint.get("protocol") or "").strip().lower()
     # 长期密钥和真实上游地址不得进入容器；这里只接受本轮宿主 relay
@@ -1292,9 +1293,9 @@ def _runtime_env(
         thinking_format = (
             "thinking_type" if protocol == "anthropic" else "enable_thinking"
         ) if thinking_enabled else "none"
-    skill_name = str(source_skill or "").strip() or skill_for_agent_task(
+    skill_name = (str(source_skill or "").strip() or skill_for_agent_task(
         task_kind, access_role,
-    )
+    )) if project_skill else ""
     resume_session_id = normalize_native_session_id(resume_session_id, harness)
 
     env = {
@@ -1318,11 +1319,12 @@ def _runtime_env(
         "AJ_ENDPOINT_BASE_URL": base_url,
         "AJ_ENDPOINT_API_KEY": api_key,
         "AJ_ENDPOINT_MODEL": model,
+        "AJ_ENDPOINT_CATEGORY": str(endpoint.get("category") or "text"),
         "AJ_ENDPOINT_CONTEXT_WINDOW_TOKENS": str(context_window_tokens),
         "AJ_ENDPOINT_MAX_OUTPUT_TOKENS": str(max_output_tokens),
         "AJ_ENDPOINT_THINKING_ENABLED": "1" if thinking_enabled else "0",
         "AJ_ENDPOINT_THINKING_FORMAT": thinking_format,
-        "AJ_ENABLE_SKILLS": "1",
+        "AJ_ENABLE_SKILLS": "1" if project_skill else "0",
         "AJ_TASK_SCOPE": "problem_agent",
         "AJ_RUNTIME_ROOT": "/workspace/.runtime",
         "AJ_PROMPT_STDIN": "1",
@@ -1567,6 +1569,7 @@ def run_agent_harness(
     timeout_seconds=None,
     enable_site_identity=True,
     source_skill=None,
+    project_skill=True,
 ):
     """在稳定会话工作区内运行一轮 harness，结束后只删除容器和凭证。"""
 
@@ -1595,9 +1598,9 @@ def run_agent_harness(
                 stdout="",
                 stderr="Agent task canceled before harness startup",
             )
-    skill_name = str(source_skill or "").strip() or skill_for_agent_task(
+    skill_name = (str(source_skill or "").strip() or skill_for_agent_task(
         task_kind, access_role,
-    )
+    )) if project_skill else ""
     normalized_session_id = str(session_id or task_id or "").strip()
     workspace = _ensure_stable_workspace(normalized_session_id)
     last_published_native_session_id = resume_session_id
@@ -1730,17 +1733,15 @@ def run_agent_harness(
                     content,
                 )
 
-            # 每一轮都从仓库规范源重新投影唯一允许的 skill；会话工作区虽会
-            # 持久化，但不能信任上一轮留下的运行时配置。
-            check_agent_workspace_quota(
-                normalized_session_id,
-                additional_bytes=_SKILL_WORKSPACE_RESERVATION_BYTES,
-            )
-            materialized_skill = materialize_skill(
-                workspace,
-                harness,
-                skill_name,
-            )
+            # 普通会话每轮重新投影受信任 skill。显式工作流的独立 Judge
+            # 只接收当前角色指令，不加载含整套编排的旧 skill。
+            materialized_skill = None
+            if project_skill:
+                check_agent_workspace_quota(
+                    normalized_session_id,
+                    additional_bytes=_SKILL_WORKSPACE_RESERVATION_BYTES,
+                )
+                materialized_skill = materialize_skill(workspace, harness, skill_name)
             check_agent_workspace_quota(normalized_session_id)
             web_search_settings = get_web_search_settings(include_secret=True)
             usage_stop_event = (
@@ -1776,12 +1777,13 @@ def run_agent_harness(
                     interactive=callable(control_source),
                     reasoning_effort=reasoning_effort,
                     source_skill=skill_name,
+                    project_skill=project_skill,
                 )
                 docker_args = _docker_args(
                     container_name=container_name,
                     workspace=workspace,
                     env=env,
-                    readonly_workspace_paths=(materialized_skill,),
+                    readonly_workspace_paths=(materialized_skill,) if materialized_skill else (),
                 )
                 docker_process_env = _docker_process_env(env)
                 identity_temporary_secrets = tuple(

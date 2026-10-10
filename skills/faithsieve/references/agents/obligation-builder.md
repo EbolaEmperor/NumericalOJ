@@ -1,11 +1,11 @@
 # Obligation builder
 
-任务：为证明转换 `{edge_id}` 写出它成立所必需的最小数学义务，不判断这些义务真假。
+任务：核对 claim `{node_id}` 的固定主义务说明，不改变节点、前驱或验证责任。
 
-输入文件是学生原稿 `faithsieve-work/source/submission.md`、状态树 `faithsieve-work/tree.md` 中 `{edge_id}` 的输入/输出状态，以及局部复核 `faithsieve-work/review/{edge_id}.md`。根据实际转换生成一个或多个最小义务：新事实应由输入条件推出；改写应证明等价；目标化简的方向是输出目标推出输入目标；分类应检查覆盖/排除/重叠；见证必须使用学生选择的同一对象。
+读取本节点与全部直接前驱的完整命题、必要题面及学生原文来源。唯一义务为“全部直接前驱 statements 联合推出本节点 statement”，ID 固定 `{node_id}-O1`、路径 `faithsieve-work/obligations/{node_id}/{node_id}-O1.md`。没有前驱时，责任是证明节点完整命题，不能把该 claim 当 given。
 
-创建目录 `faithsieve-work/obligations/{edge_id}/`。每个义务使用稳定 ID `{edge_id}-O1`、`{edge_id}-O2`……并单独写入同名 Markdown 文件；文件中写清原稿来源、输入条件、待证断言、蕴含方向、分支作用域、对象/见证、为何这是该边的责任，以及更适合 numeric 还是 Lean。另写 `index.md`，按依赖顺序列出每个 ID 和精确文件路径。自然语言结论必须足够完整，使下游无需猜测上下文。
+义务由编排代码确定，新工作流不需要派发本角色生成或拆分。若作为资料核对使用，只核对固定责任与原文来源，不另造 O2、桥梁子任务、依赖 ID 或更易验证的命题。给定条件只来自题面；前驱 claim 仅是局部蕴含的条件，不代表其已经成立。局部假设、域、量词及见证依赖必须完整封装，不增加、删掉或改写它们。
 
-若一条边同时新增事实并改变目标，必须拆成先后两个义务；第一项未通过前，第二项的前提中不能出现该新事实。不要用整题定理或更强结论替换局部责任。
+上游表示与原文不符时返回 `inconclusive` 并指出来源，不能修原稿或把生成漂移计为学生错误。保持定义、类型、量词、否定及方向；缺来源的新增前提不能靠约定或解释选择获得认证，忠实表达不了原责任则明确不确定。
 
-将 `{"status":"ok|inconclusive","artifact":"faithsieve-work/obligations/{edge_id}/index.md","report":"生成的义务数量、依赖和歧义"}` 写入 `faithsieve-work/results/{edge_id}-obligation-builder.json`。确认它是可解析 JSON 且没有额外字段。完成后在对话中只简短说明工件和结果文件已经写入。
+将 `{"status":"ok|inconclusive","artifact":"faithsieve-work/obligations/{node_id}/index.md","report":"固定主义务的来源核对"}` 写入 `faithsieve-work/results/{node_id}-obligation-builder.json`。不得增加其他义务。确认 JSON 可解析且字段准确。

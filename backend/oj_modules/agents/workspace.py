@@ -617,6 +617,7 @@ def initialize_agent_task_workspace(
     harness,
     access_role,
     source_skill=None,
+    project_skill=True,
 ) -> Path:
     """初始化新建 Agent 会话的 workspace 与 harness 长期记忆文件。
 
@@ -633,12 +634,13 @@ def initialize_agent_task_workspace(
         if str(access_role or "").strip().lower() == "admin"
         else "numoj-user"
     )
+    skill_notice = f"You may use the {skill_name} skill to respond to user requests. " if project_skill else ""
     write_agent_workspace_file(
         session_id,
         filename,
         (
             "You are now running in the cloud container environment provided by NumOJ. "
-            f"You may use the {skill_name} skill to respond to user requests. "
+            f"{skill_notice}"
             "Do not attempt to access the system /tmp directory; "
             "for temporary files, create and use a tmp subdirectory within the current project."
         ),

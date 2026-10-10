@@ -1,0 +1,40 @@
+.faithsieve-graph {min-width: 0;}
+.faithsieve-graph-heading {display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px;}
+.faithsieve-graph-heading-main {display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; min-width: 0;}
+.faithsieve-graph-heading h3 {margin: 0; color: var(--submission-ink-2, #303030); font-size: 15px; font-weight: 600; line-height: 1.5;}
+.faithsieve-graph-heading-meta {min-width: 0; color: var(--submission-ink-3, #6b6b6b); font-size: 12px;}
+.faithsieve-graph-controls {display: flex; align-items: center; gap: 2px; flex-shrink: 0;}
+.faithsieve-graph-controls .submission-icon-button {width: 28px; height: 28px; color: var(--submission-ink-3, #6b6b6b); font-size: 11px;}
+.faithsieve-graph-scroll {width: 100%; overflow: auto; border: 1px solid var(--submission-line, #e9e9e7); border-radius: 8px; background: var(--submission-paper-soft, #fafaf8); scrollbar-width: thin;}
+.faithsieve-graph-scroll.can-pan {cursor: grab;}
+.faithsieve-graph-scroll.is-dragging {cursor: grabbing; user-select: none;}
+.faithsieve-graph-scroll:focus-visible {outline: 2px solid var(--submission-accent, #d97706); outline-offset: 2px;}
+.faithsieve-graph-size {position: relative;}
+.faithsieve-graph-canvas {position: absolute; transform-origin: top left;}
+.faithsieve-graph-edges {position: absolute; inset: 0; overflow: visible; pointer-events: none;}
+.faithsieve-graph-arrow {fill: #bcbcb5;}
+.faithsieve-graph-arrow.is-selected {fill: #85857d;}
+.faithsieve-graph-edge {fill: none; stroke: #bcbcb5; stroke-width: 1.5;}
+.faithsieve-graph-edge.is-selected {stroke: #85857d; stroke-width: 1.8;}
+.faithsieve-graph-node {--faithsieve-node-color: #b0b0a8; position: absolute; display: flex; align-items: center; justify-content: flex-start; gap: 10px; padding: 11px 14px; border: 1px solid #deded7; border-radius: 7px; background: var(--submission-paper, #fff); color: var(--submission-ink-2, #303030); font: inherit; font-size: 13px; line-height: 1.5; text-align: left; cursor: pointer;}
+.faithsieve-graph-node-main {display: block; flex: 1; min-width: 0;}
+.faithsieve-graph-node-label {display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2;}
+.faithsieve-graph-node.has-context .faithsieve-graph-node-label {-webkit-line-clamp: 1;}
+.faithsieve-graph-node-context {display: flex; align-items: baseline; margin-top: 3px; color: var(--submission-ink-3, #6b6b6b); font-size: 11px; white-space: nowrap;}
+.faithsieve-graph-node-reference {min-width: 0; overflow: hidden; text-overflow: ellipsis;}
+.faithsieve-graph-node-outcome {flex-shrink: 0;}
+.faithsieve-graph-node-outcome.has-reference::before {content: '·'; margin: 0 5px; color: #a6a69d;}
+.faithsieve-graph-node-dot {width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--faithsieve-node-color);}
+.faithsieve-graph-node.is-completed {--faithsieve-node-color: #65927a;}
+.faithsieve-graph-node.is-running, .faithsieve-graph-node.is-queued {--faithsieve-node-color: #d97706;}
+.faithsieve-graph-node.is-protocol_error {--faithsieve-node-color: #dc2626;}
+.faithsieve-graph-node.is-issue {--faithsieve-node-color: #b96a5d; border-color: #ddbeb6;}
+.faithsieve-graph-node.is-warning {--faithsieve-node-color: #b38647; border-color: #dbc8a8;}
+.faithsieve-graph-node.is-issue .faithsieve-graph-node-outcome {color: #a15145;}
+.faithsieve-graph-node.is-warning .faithsieve-graph-node-outcome, .faithsieve-graph-node.is-running .faithsieve-graph-node-outcome, .faithsieve-graph-node.is-queued .faithsieve-graph-node-outcome {color: #987445;}
+.faithsieve-graph-node:hover {border-color: #b9b9af;}
+.faithsieve-graph-node.is-selected {border-color: var(--submission-accent, #d97706); box-shadow: 0 0 0 1px var(--submission-accent, #d97706);}
+.faithsieve-graph-node:focus-visible {outline: 2px solid var(--submission-accent, #d97706); outline-offset: 3px;}
+.faithsieve-graph.is-expanded {position: fixed; inset: 20px; z-index: 1100; display: flex; flex-direction: column; padding: 20px; border: 1px solid var(--submission-line, #e9e9e7); border-radius: 10px; background: var(--submission-paper, #fff); box-shadow: 0 0 0 100vmax rgb(0 0 0 / 25%);}
+.faithsieve-graph.is-expanded .faithsieve-graph-scroll {flex: 1; min-height: 0;}
+@media (max-width: 600px) {.faithsieve-graph.is-expanded {inset: 8px; padding: 14px;}}

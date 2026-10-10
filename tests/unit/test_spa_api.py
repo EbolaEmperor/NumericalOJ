@@ -68,10 +68,27 @@ def test_session_bootstrap_exposes_spa_paths_and_admin_capability(monkeypatch):
     assert paths["problems"] == "/problems"
     assert paths["repository"] == "/repository"
     assert paths["admin"] == "/admin"
+    faithsieve = next(item for item in payload["navigation"]["items"] if item["id"] == "faithsieve")
+    assert faithsieve["path"] == "/admin/faithsieve"
+    assert faithsieve["group"] == "admin"
     assert payload["navigation"]["agent_active"] is True
     assert payload["capabilities"]["spa"] is True
     assert payload["capabilities"]["class_adjust_enabled"] is True
     assert payload["capabilities"]["mail_service_configured"] is True
+
+
+def test_faithsieve_navigation_is_admin_only():
+    assert all(item["id"] != "faithsieve" for item in spa_api._navigation_items({"is_admin": 0}))
+
+
+def test_faithsieve_document_paths_do_not_match_other_resources():
+    from backend.oj_modules.routes.spa_routes import is_spa_document_path
+
+    assert is_spa_document_path("/admin/faithsieve")
+    assert is_spa_document_path("/admin/faithsieve/" + "a" * 32)
+    assert not is_spa_document_path("/admin/faithsieve/invalid")
+    assert not is_spa_document_path("/api/admin/faithsieve/" + "a" * 32)
+    assert not is_spa_document_path("/app/admin/faithsieve")
 
 
 def test_session_navigation_uses_class_cookie_with_url_priority(monkeypatch):

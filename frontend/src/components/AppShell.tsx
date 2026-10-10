@@ -95,6 +95,7 @@ const iconPaths: Record<string, string[]> = {
   'admin-homework': ['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z', 'M14 2v6h6M8 13h8M8 17h8'],
   agent: ['M12 8V4H8M2 14h20M6 20h12a2 2 0 0 0 2-2v-6H4v6a2 2 0 0 0 2 2ZM8 8h8v6H8Z'],
   ai: ['M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z', 'm9 12 2 2 4-5'],
+  faithsieve: ['M4 3h16l-6 8v8l-4 2V11Z'],
   'site-config': ['M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5'],
   password: ['M12 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM6 10V8a6 6 0 1 1 12 0v2M5 10h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z'],
   classes: ['M8 7h12M8 12h10M8 17h12M4 7l1.5 1.5L8 6M4 17l1.5 1.5L8 16'],
@@ -172,6 +173,8 @@ function contentClass(pathname: string, pageDisplayMode: PageDisplayMode) {
   if (pathname === '/problems') return 'container mt-4 numoj-problems-content'
   if (/^\/submissions\/[^/]+/.test(pathname)) return 'container-fluid submission-detail-shell'
   if (pathname === '/submissions') return 'container-fluid submission-page-shell'
+  if (/^\/admin\/faithsieve\/[^/]+/.test(pathname)) return 'container-fluid submission-detail-shell'
+  if (pathname === '/admin/faithsieve') return 'container-fluid submission-page-shell'
   if (/^\/rankings\/[^/]+/.test(pathname)) return 'container-fluid p-0 ranking-detail-shell'
   if (pathname.startsWith('/forum')) return 'forum-content-container'
   if (pathname === '/repository') return 'container-fluid p-0 repository-page-shell'

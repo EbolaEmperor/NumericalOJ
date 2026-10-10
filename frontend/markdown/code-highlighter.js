@@ -63,6 +63,7 @@ export async function tokenize(source, language, appearance = "light") {
   const result = highlighter.codeToTokens(String(source ?? ""), {
     lang: normalized,
     theme: appearance === "dark" ? "dark-plus" : "github-light-default",
+    tokenizeTimeLimit: 3000,
   });
   return {
     tokens: result.tokens.map((line) => line.map((token) => ({

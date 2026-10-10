@@ -24,7 +24,9 @@ def test_agent_judge_images_reuse_the_pinned_lean_runtime():
             assert f"COPY --from=lean4_runtime {path} {path}" in dockerfile
         assert "/usr/local/bin/lean" in dockerfile
         assert "Mathlib.olean" in dockerfile
-    assert "cat /opt/numoj-lean-path" in wrapper
+    assert 'Path("/opt/numoj-lean-path").read_text()' in wrapper
+    assert 'root=Path("/opt/numoj-lean-project")' in wrapper
+    assert '(root/p).resolve()' in wrapper
     assert 'exec /opt/elan/bin/lean "$@"' in wrapper
 
 

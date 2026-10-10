@@ -18,6 +18,7 @@ _SPA_EXACT_PATHS = frozenset({
     "/vibehub",
     "/admin",
     "/admin/homework",
+    "/admin/faithsieve",
     "/admin/ai-detection",
     "/admin/site-config",
 })
@@ -32,6 +33,7 @@ _SPA_PATH_PATTERNS = (
     re.compile(r"^/vibehub/guide/?$"),
     re.compile(r"^/vibehub/[A-Za-z0-9_-]+(?:/play)?/?$"),
     re.compile(r"^/admin/problems/(?:new|\d+/edit)/?$"),
+    re.compile(r"^/admin/faithsieve/[a-f0-9]{32}/?$"),
     re.compile(r"^/admin/ai-detection/problems/\d+/?$"),
     re.compile(r"^/admin/ai-detection/students/[^/]+/?$"),
 )

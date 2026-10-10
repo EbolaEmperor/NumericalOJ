@@ -47,6 +47,18 @@ def _runtime_env(endpoint, harness, task_kind, **kwargs):
     )
 
 
+@pytest.mark.parametrize("harness", ["pi", "claude_code"])
+def test_workflow_judge_disables_skill_loading_without_disabling_model_or_tools(harness):
+    endpoint = {**_endpoint("anthropic" if harness == "claude_code" else "openai"), "category": "omni"}
+    env = _runtime_env(endpoint, harness, "judge", source_skill="faithsieve", project_skill=False)
+    assert env["AJ_ENABLE_SKILLS"] == "0"
+    assert env["AJ_ENDPOINT_CATEGORY"] == "omni"
+    assert env["AJ_ENDPOINT_MODEL"] == endpoint["model"]
+    assert "NUMOJ_USER_CONFIG" not in env
+    assert "NUMOJ_ADMIN_CONFIG" not in env
+    assert env["TMPDIR"].startswith("/workspace/")
+
+
 def test_extract_harness_failure_detail_filters_internal_protocol_stdout():
     result = runtime.HarnessRunResult(
         returncode=2,

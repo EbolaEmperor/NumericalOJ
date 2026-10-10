@@ -1225,16 +1225,27 @@ def test_admin_usage_settlement_immediately_publishes_realtime_cost(monkeypatch)
     assert snapshots[-1]["session_charged_amount_rmb"] == "0.125"
 
 
-def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monkeypatch):
+@pytest.mark.parametrize("continuation", [False, True])
+def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monkeypatch, continuation):
+    from backend.oj_modules.agents import sessions
+    from tests.unit.test_agent_sessions import _ScriptedConnection
+
+    task_id = "judge-turn-c1" if continuation else "judge-turn"
+    native_session_id = "19191919-1919-4919-8919-191919191919" if continuation else ""
     session = {
-        "session_id": "judge-session", "current_task_id": "judge-turn",
+        "session_id": "judge-session", "current_task_id": task_id,
         "task_kind": "judge", "judge_kind": "reverse_answer", "title": "反向评测作答",
         "access_role": "user", "harness": "pi", "endpoint_id": 8,
-        "endpoint_revision": 1, "native_session_id": "", "turn_count": 1,
+        "endpoint_revision": 1, "native_session_id": native_session_id, "turn_count": 2 if continuation else 1,
     }
     _patch_generic(monkeypatch, session)
     monkeypatch.setattr(generic, "get_user_by_username", lambda _: {"id": 9, "is_admin": 0})
-    monkeypatch.setattr(generic, "get_agent_session_runtime_config", lambda *_: {"timeout_seconds": 30})
+    runtime_connection = _ScriptedConnection(one_values=[
+        {"runtime_config_json": '{"timeout_seconds":600,"project_skill":false}'},
+        {"dispatch_payload_json": '{"timeout_seconds":6000}' if continuation else '{"timeout_seconds":600}'},
+    ])
+    monkeypatch.setattr(sessions, "get_db_connection", lambda: runtime_connection)
+    monkeypatch.setattr(generic, "get_agent_session_runtime_config", sessions.get_agent_session_runtime_config)
     monkeypatch.setattr(generic, "resolve_judge_endpoint", lambda _: _endpoint())
     monkeypatch.setattr(generic, "judge_endpoint_pricing", lambda _: {
         "endpoint_id": None, "endpoint_revision": 1, "endpoint_model": "model-a",
@@ -1252,11 +1263,20 @@ def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monk
         0, False, "", "", native_session_id="19191919-1919-4919-8919-191919191919",
     ))
     task = generic.register_agent_run_turn_task(_FakeCelery())
-    result = task(_task_self("judge-turn"), "judge-session", "owner", "user", "pi", 8, "", "请作答")
+    result = task(_task_self(task_id), "judge-session", "owner", "user", "pi", 8, "", "请作答",
+                  resume_session_id=native_session_id,
+                  restore_runtime_checkpoint_id=task_id if continuation else "")
     assert result["success"]
     assert runs[0]["task_kind"] == "judge"
     assert runs[0]["enable_site_identity"] is False
-    assert runs[0]["timeout_seconds"] == 30
+    assert runs[0]["timeout_seconds"] == (6000 if continuation else 600)
+    assert runs[0]["task_id"] == task_id
+    assert runs[0]["session_id"] == "judge-session"
+    assert runs[0]["resume_session_id"] == native_session_id
+    assert runs[0]["restore_runtime_checkpoint_id"] == (task_id if continuation else "")
+    assert runs[0]["project_skill"] is False
+    assert runtime_connection.cursor_instance.calls[1][1] == ("judge-session", task_id)
+    assert all(query.startswith("SELECT ") for query, _ in runtime_connection.cursor_instance.calls)
     assert runs[0]["access_role"] == "user"
     assert all(gate["is_admin"] for gate in gates)
     assert accountants[0]["site_funded"] is True

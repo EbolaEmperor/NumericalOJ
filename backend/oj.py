@@ -467,6 +467,8 @@ celery.conf.task_routes = {
     'oj.ranking_agent_judge_paused_probe': {'queue': 'celery'},
     'oj.ranking_reverse_judge': {'queue': 'celery'},
     'oj.faithsieve_grade_submission': {'queue': 'celery'},
+    'oj.faithsieve_run_workflow': {'queue': 'agent'},
+    'oj.faithsieve_run_skill': {'queue': 'agent'},
 }
 # Redis broker 默认只会保留 late-ack 消息一小时。Agent 长任务超过该窗口时，
 # 同一 task_id 会被第二个 worker 重投并与原容器并发。该设置作用于共享 Redis

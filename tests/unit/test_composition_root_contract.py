@@ -26,6 +26,8 @@ EXPECTED_TASK_QUEUES = {
     "oj.evaluate_ranking_submission": "celery",
     "oj.evaluate_submission": "celery",
     "oj.faithsieve_grade_submission": "celery",
+    "oj.faithsieve_run_skill": "agent",
+    "oj.faithsieve_run_workflow": "agent",
     "oj.homework.export_codes_with_plagiarism_check_task": "celery",
     "oj.homework.mark_plagiarism_task": "celery",
     "oj.pending_requeue_watchdog": "celery",

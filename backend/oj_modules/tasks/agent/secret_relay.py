@@ -71,13 +71,13 @@ _ALLOWED_METHODS = {
     "mcp": frozenset({"GET", "POST", "DELETE"}),
 }
 _MAX_REQUEST_BYTES = {
-    "openai": 16 * 1024 * 1024,
-    "anthropic": 16 * 1024 * 1024,
+    "openai": 32 * 1024 * 1024,
+    "anthropic": 32 * 1024 * 1024,
     "mcp": 2 * 1024 * 1024,
 }
 _MAX_INFLIGHT_REQUEST_BYTES = {
-    "openai": 32 * 1024 * 1024,
-    "anthropic": 32 * 1024 * 1024,
+    "openai": 64 * 1024 * 1024,
+    "anthropic": 64 * 1024 * 1024,
     "mcp": 4 * 1024 * 1024,
 }
 _ALLOWED_RELATIVE_ROUTES = {
