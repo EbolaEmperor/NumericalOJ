@@ -100,6 +100,14 @@ def parse_written_grading_prompt_from_form(form):
     return text
 
 
+def parse_written_score_public_from_form(form, default=1):
+    """旧客户端未提交开关时保留既有值；显式值只接受 0 或 1。"""
+    raw = str(form.get('written_score_public', default)).strip()
+    if raw not in ('0', '1'):
+        raise ValueError('公开评分必须为 0 或 1')
+    return int(raw)
+
+
 def parse_programming_grading_mode_from_form(form, default=1):
     raw = str(form.get('programming_grading_mode', default) or default).strip()
     try:
@@ -225,7 +233,8 @@ def add_problem():
                 programming_grading_mode=programming_grading_mode,
             )
             written_vote_config = written_vote_config_from_form(request.form)
-        except (ProblemLlmBindingsError, WrittenVoteConfigError) as exc:
+            written_score_public = parse_written_score_public_from_form(request.form)
+        except (ProblemLlmBindingsError, WrittenVoteConfigError, ValueError) as exc:
             return jsonify(success=False, message=str(exc)), 400
 
         if not title or not content:
@@ -248,6 +257,7 @@ def add_problem():
             written_grading_prompt=written_grading_prompt,
             llm_endpoint_bindings=llm_endpoint_bindings,
             written_vote_config=written_vote_config,
+            written_score_public=written_score_public,
         )
         if _wants_json_response():
             return jsonify(success=True, problem_id=problem_id, message="题目创建成功")
@@ -296,6 +306,7 @@ def edit_problem(problem_id):
         default_mode = problem.get('written_grading_mode', 1)
         new_written_grading_mode = parse_written_grading_mode_from_form(request.form, default=default_mode)
         new_written_grading_prompt = parse_written_grading_prompt_from_form(request.form)
+        visibility_update = {}
         if new_lang == 'lean4':
             new_programming_grading_mode = 1
         try:
@@ -309,7 +320,9 @@ def edit_problem(problem_id):
                 request.form,
                 existing=problem.get('written_vote_config'),
             )
-        except (ProblemLlmBindingsError, WrittenVoteConfigError) as exc:
+            if 'written_score_public' in request.form:
+                visibility_update['new_written_score_public'] = parse_written_score_public_from_form(request.form)
+        except (ProblemLlmBindingsError, WrittenVoteConfigError, ValueError) as exc:
             return jsonify(success=False, message=str(exc)), 400
 
         if not new_title or not new_content:
@@ -332,6 +345,7 @@ def edit_problem(problem_id):
             new_written_grading_prompt=new_written_grading_prompt,
             new_llm_endpoint_bindings=new_llm_endpoint_bindings,
             new_written_vote_config=new_written_vote_config,
+            **visibility_update,
         )
         if _wants_json_response():
             return jsonify(

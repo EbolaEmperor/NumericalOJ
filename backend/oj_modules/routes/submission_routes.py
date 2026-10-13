@@ -29,9 +29,12 @@ from backend.oj_modules.submissions.presentation import (
     summarize_panel_test_points as _summarize_panel_test_points,
 )
 from backend.oj_modules.submissions.written_voting import (
-    REVIEW_REQUIRED_STATES,
     get_latest_attempt as get_latest_written_vote_attempt,
     public_attempt_payload,
+)
+from backend.oj_modules.submissions.visibility import (
+    project_submission_grading,
+    submission_is_judging,
 )
 from backend.oj_modules.shared.sse import (
     guard_sse_stream,
@@ -65,12 +68,25 @@ def _written_vote_state(submission_id, problem_type):
 
 
 def _snapshot_is_judging(snapshot, vote_attempt=None):
-    if vote_attempt and str(vote_attempt.get('status') or '') in REVIEW_REQUIRED_STATES:
-        return False
-    return (
-        snapshot.get('status') in ['Pending', 'Waiting', 'Running', 'Generating']
-        or snapshot.get('score') is None
-    )
+    return submission_is_judging(snapshot, vote_attempt)
+
+
+def _snapshot_problem(snapshot):
+    """快照只存真实判题数据，题目的公开配置每次发包都从数据库读取。"""
+    if int(snapshot.get('problem_type') or 0) == 1:
+        return None
+    problem_id = snapshot.get('problem_id')
+    if not problem_id:
+        row = get_submission_by_id(snapshot.get('id'))
+        problem_id = row.get('problem_id') if row else None
+    problem = get_problem(problem_id) if problem_id else None
+    return problem if problem is not None else {"type": 2, "written_score_public": 0}
+
+
+def _private_jsonify(payload):
+    response = jsonify(payload)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @submission_bp.route('/submission_detail/<int:submission_id>')
@@ -92,8 +108,11 @@ def submission_status(submission_id):
     if snapshot.get('username') != user['username'] and not is_admin(user):
         return jsonify({'error': 'Access denied'}), 403
 
-    vote_attempt = _written_vote_state(submission_id, snapshot.get('problem_type'))
+    problem = _snapshot_problem(snapshot)
+    problem_type = snapshot.get('problem_type') or (problem or {}).get('type')
+    vote_attempt = _written_vote_state(submission_id, problem_type)
     is_judging = _snapshot_is_judging(snapshot, vote_attempt)
+    snapshot = project_submission_grading(snapshot, problem, user)
     promptly_review_reply = str(
         snapshot.get('promptly_review_reply') or snapshot.get('prompt_generation_error') or ''
     ).strip()
@@ -107,17 +126,25 @@ def submission_status(submission_id):
         'test_points_count': snapshot.get('test_points_count', 0),
         'test_points': snapshot.get('test_points', []),
         'last_updated': snapshot.get('last_updated', ''),
-        'written_vote': public_attempt_payload(vote_attempt),
+        'written_vote': (
+            public_attempt_payload(vote_attempt) if snapshot['result_visible'] else None
+        ),
+        'result_visible': snapshot['result_visible'],
     }
     if 'generated_from_prompt' in snapshot:
         payload['generated_from_prompt'] = bool(snapshot.get('generated_from_prompt'))
     prompt_code = snapshot.get('code')
-    if payload.get('generated_from_prompt') and not prompt_code:
+    if snapshot['result_visible'] and payload.get('generated_from_prompt') and not prompt_code:
         row = get_submission_by_id(submission_id)
         prompt_code = row.get('code') if row else ''
     if payload.get('generated_from_prompt'):
         payload['code'] = str(prompt_code or '')
-    return jsonify(payload)
+    if int(problem_type or 0) == 2:
+        row = get_submission_by_id(submission_id) if snapshot['result_visible'] else None
+        payload['written_comment'] = str((row or {}).get('code') or '')
+    return _private_jsonify(project_submission_grading(
+        payload, problem, user,
+    ))
 
 
 @submission_bp.get('/api/submissions/<int:submission_id>/events')
@@ -136,15 +163,17 @@ def submission_status_stream(submission_id):
         return jsonify({'error': 'Access denied'}), 403
 
     def _build_payload(snapshot, *, include_prompt_code=False):
+        problem = _snapshot_problem(snapshot)
+        problem_type = snapshot.get('problem_type') or (problem or {}).get('type')
         vote_attempt = _written_vote_state(
-            snapshot.get('id'), snapshot.get('problem_type'),
+            snapshot.get('id'), problem_type,
         )
         is_judging = _snapshot_is_judging(snapshot, vote_attempt)
         if panel_view:
             test_points = _summarize_panel_test_points(
                 snapshot.get('test_points')
             )
-            return {
+            payload = {
                 'submission_id': snapshot.get('id'),
                 'status': snapshot.get('status'),
                 'score': snapshot.get('score'),
@@ -154,10 +183,11 @@ def submission_status_stream(submission_id):
                 'last_updated': snapshot.get('last_updated', ''),
                 'written_vote': public_attempt_payload(vote_attempt),
             }
+            return project_submission_grading(payload, problem, user)
 
         payload = {
             'submission_id': snapshot.get('id'),
-            'problem_type': snapshot.get('problem_type'),
+            'problem_type': problem_type,
             'status': snapshot.get('status'),
             'score': snapshot.get('score'),
             'is_judging': is_judging,
@@ -179,11 +209,12 @@ def submission_status_stream(submission_id):
             if prompt_code:
                 payload['code'] = str(prompt_code)
         payload['promptly_review_reply'] = payload['prompt_generation_error']
-        if int(snapshot.get('problem_type') or 0) == 2:
+        if int(problem_type or 0) == 2:
             sid = snapshot.get('id')
             row = get_submission_by_id(sid) if sid else None
             if row:
-                problem = get_problem(row.get('problem_id'))
+                if not row.get('problem_type'):
+                    row = dict(row, problem_type=problem_type)
                 written_mode = 1
                 if problem:
                     try:
@@ -197,7 +228,7 @@ def submission_status_stream(submission_id):
                     payload['written_latex_html'] = _render_written_markdown_to_html(latex_text)
                     payload['written_latex_error'] = latex_error
                 payload['written_comment'] = str(row.get('code') or '')
-        return payload
+        return project_submission_grading(payload, problem, user)
 
     def _encode_sse(event_name, payload):
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -209,7 +240,7 @@ def submission_status_stream(submission_id):
         prompt_code_sent = bool(first_payload.get('code'))
         yield _encode_sse("status", first_payload)
         if not first_payload['is_judging']:
-            yield _encode_sse("done", first_payload)
+            yield _encode_sse("done", _build_payload(initial_snapshot))
             return
 
         start_ts = time.time()
@@ -222,6 +253,7 @@ def submission_status_stream(submission_id):
                 first_payload.get('test_points_count'),
                 first_payload.get('last_updated'),
                 (first_payload.get('written_vote') or {}).get('status'),
+                first_payload.get('result_visible'),
             )
             last_ping = start_ts
             while True:
@@ -241,12 +273,13 @@ def submission_status_stream(submission_id):
                     payload.get('test_points_count'),
                     payload.get('last_updated'),
                     (payload.get('written_vote') or {}).get('status'),
+                    payload.get('result_visible'),
                 )
                 if marker != last_marker:
                     yield _encode_sse("status", payload)
                     last_marker = marker
                 if not payload['is_judging']:
-                    yield _encode_sse("done", payload)
+                    yield _encode_sse("done", _build_payload(snapshot))
                     return
 
                 now = time.time()
@@ -297,7 +330,7 @@ def submission_status_stream(submission_id):
                     prompt_code_sent = True
                 yield _encode_sse("status", payload)
                 if not payload['is_judging']:
-                    yield _encode_sse("done", payload)
+                    yield _encode_sse("done", _build_payload(snapshot))
                     return
         finally:
             try:
@@ -313,7 +346,7 @@ def submission_status_stream(submission_id):
         guard_sse_stream(generate(), lease),
         mimetype='text/event-stream',
         headers={
-            'Cache-Control': 'no-cache',
+            'Cache-Control': 'no-store',
             'X-Accel-Buffering': 'no',
             'Connection': 'keep-alive',
         },
@@ -332,6 +365,7 @@ def get_last_submission_code(problem_id):
         return jsonify({'success': False, 'message': '没有找到之前的提交记录'}), 404
 
     problem = get_problem(problem_id)
+    last_submission = project_submission_grading(last_submission, problem, user)
     is_lean4 = bool(
         problem
         and str(problem.get('lang') or '').strip().lower() in {'lean', 'lean4'}
@@ -341,7 +375,7 @@ def get_last_submission_code(problem_id):
         workspace = get_latest_submission_lean_workspace(
             username=user['username'], problem_id=problem_id
         )
-    if not workspace and not last_submission.get('code'):
+    if last_submission['result_visible'] and not workspace and not last_submission.get('code'):
         return jsonify({'success': False, 'message': '上一次提交没有代码'}), 404
 
     payload = {
@@ -349,12 +383,13 @@ def get_last_submission_code(problem_id):
         'code': last_submission.get('code') or '',
         'submission_id': last_submission['id'],
         'score': last_submission['score'],
+        'result_visible': last_submission['result_visible'],
     }
     if workspace:
         payload['revision'] = workspace['revision']
         payload['files'] = workspace['submitted_files']
         payload['default_file'] = workspace['default_file']
-    return jsonify(payload)
+    return _private_jsonify(payload)
 
 
 @submission_bp.get('/api/submissions/<int:submission_id>/outputs/<int:test_index>/image')

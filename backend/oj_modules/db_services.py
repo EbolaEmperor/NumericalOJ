@@ -1379,7 +1379,7 @@ def get_all_problems():
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,"
                 "written_grading_mode,written_grading_prompt,"
                 "programming_grading_mode,output_image_filename,programming_grading_prompt,"
-                "llm_endpoint_bindings,written_vote_config "
+                "llm_endpoint_bindings,written_vote_config,written_score_public "
                 "FROM problems ORDER BY id ASC"
             )
             cursor.execute(sql)
@@ -1404,7 +1404,7 @@ def get_problem(problem_id):
                 "SELECT id,title,content,initial_code,test_code,cnt,forbidden_func,type,lang,max_score,"
                 "time_limit_ms,submission_limit,written_grading_mode,written_grading_prompt,"
                 "programming_grading_mode,output_image_filename,programming_grading_prompt,"
-                "llm_endpoint_bindings,written_vote_config "
+                "llm_endpoint_bindings,written_vote_config,written_score_public "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
@@ -1421,6 +1421,25 @@ def get_problem(problem_id):
         conn.close()
 
 
+def get_problem_visibility_map(problem_ids):
+    """批量读取题目当前评分公开策略，不使用进程内或提交快照缓存。"""
+    normalized_ids = sorted({int(value) for value in problem_ids if value is not None})
+    if not normalized_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(normalized_ids))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, type, written_grading_mode, written_score_public "
+                f"FROM problems WHERE id IN ({placeholders})",
+                tuple(normalized_ids),
+            )
+            return {int(row["id"]): row for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
 def get_problem_title(problem_id):
     conn = get_db_connection()
     try:
@@ -1429,7 +1448,7 @@ def get_problem_title(problem_id):
                 "SELECT id,title,cnt,type,lang,max_score,time_limit_ms,submission_limit,"
                 "written_grading_mode,written_grading_prompt,"
                 "programming_grading_mode,output_image_filename,programming_grading_prompt,"
-                "llm_endpoint_bindings,written_vote_config "
+                "llm_endpoint_bindings,written_vote_config,written_score_public "
                 "FROM problems WHERE id=%s"
             )
             cursor.execute(sql, (problem_id,))
@@ -1463,6 +1482,7 @@ def create_problem(
     written_grading_prompt='',
     llm_endpoint_bindings=None,
     written_vote_config=None,
+    written_score_public=1,
 ):
     conn = get_db_connection()
     try:
@@ -1508,8 +1528,8 @@ def create_problem(
                      (title, content, initial_code, test_code, forbidden_func, type, lang, max_score, time_limit_ms, submission_limit,
                       programming_grading_mode, output_image_filename, programming_grading_prompt,
                       written_grading_mode, written_grading_prompt, llm_endpoint_bindings,
-                      written_vote_config)
-                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+                      written_vote_config, written_score_public)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
             cursor.execute(
                 sql,
                 (
@@ -1530,6 +1550,7 @@ def create_problem(
                     use_written_prompt,
                     serialize_problem_llm_bindings(normalized_llm_bindings),
                     serialize_written_vote_config(normalized_vote_config),
+                    int(written_score_public),
                 ),
             )
             problem_id = cursor.lastrowid
@@ -1622,6 +1643,7 @@ def update_problem(
     new_written_grading_prompt=None,
     new_llm_endpoint_bindings=_UNSET,
     new_written_vote_config=_UNSET,
+    new_written_score_public=_UNSET,
 ):
     conn = get_db_connection()
     try:
@@ -1727,6 +1749,10 @@ def update_problem(
                 )
                 assignments.append("written_vote_config=%s")
                 values.append(serialize_written_vote_config(normalized_vote_config))
+
+            if new_written_score_public is not _UNSET:
+                assignments.append("written_score_public=%s")
+                values.append(int(new_written_score_public))
 
             values.append(problem_id)
             cursor.execute(
@@ -2092,7 +2118,7 @@ def get_submission_summaries_by_user_and_problem(username, problem_id, limit=Non
     try:
         with conn.cursor() as cursor:
             sql = """
-                SELECT id, problem_id, username, score, status, problem_title, created_at
+                SELECT id, problem_id, username, score, status, problem_title, problem_type, created_at
                 FROM submissions
                 WHERE username=%s AND problem_id=%s
                 ORDER BY id DESC
@@ -2121,7 +2147,7 @@ def get_submission_summaries_by_user_and_problem_paginated(username, problem_id,
             total_pages = (total + per_page - 1) // per_page
 
             data_sql = """
-                SELECT id, problem_id, username, score, status, problem_title, created_at
+                SELECT id, problem_id, username, score, status, problem_title, problem_type, created_at
                 FROM submissions
                 WHERE username=%s AND problem_id=%s
                 ORDER BY id DESC
@@ -2182,6 +2208,7 @@ def _build_submission_list_where(
     query="",
     status_filter="",
     problem_id=None,
+    respect_grading_visibility=False,
 ):
     clauses = []
     params = []
@@ -2193,6 +2220,14 @@ def _build_submission_list_where(
     normalized_status = normalize_submission_list_status_filter(status_filter)
     if normalized_status:
         status_sql, status_params = _SUBMISSION_LIST_STATUS_FILTERS[normalized_status]
+        if respect_grading_visibility:
+            # 筛选与计数也使用学生可见状态，不能通过 accepted 条件推断隐藏成绩。
+            visible_status_sql = """CASE
+                WHEN p.type=2 AND COALESCE(p.written_grading_mode,1) IN (1,2,3)
+                     AND p.written_score_public=0
+                     AND s.status NOT IN ('Pending','Waiting','Running','Generating')
+                THEN '评分未公开' ELSE s.status END"""
+            status_sql = status_sql.replace("s.status", visible_status_sql)
         clauses.append(status_sql)
         params.extend(status_params)
 
@@ -2230,6 +2265,7 @@ def get_filtered_submissions_paginated(
     status_filter="",
     problem_id=None,
     include_test_points=True,
+    respect_grading_visibility=False,
 ):
     """按权限范围筛选提交列表，并在同一次分页查询中带出列表展示字段。"""
     page = max(1, int(page or 1))
@@ -2239,6 +2275,7 @@ def get_filtered_submissions_paginated(
         query=query,
         status_filter=status_filter,
         problem_id=problem_id,
+        respect_grading_visibility=respect_grading_visibility,
     )
     test_points_column = ", s.test_points" if include_test_points else ""
 
@@ -2246,7 +2283,8 @@ def get_filtered_submissions_paginated(
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) AS total FROM submissions s" + where_sql,
+                "SELECT COUNT(*) AS total FROM submissions s "
+                "LEFT JOIN problems p ON p.id = s.problem_id" + where_sql,
                 params,
             )
             total = int((cursor.fetchone() or {}).get("total") or 0)
@@ -2268,7 +2306,10 @@ def get_filtered_submissions_paginated(
                     {test_points_column},
                     p.title AS current_problem_title,
                     p.lang,
-                    p.max_score
+                    p.max_score,
+                    p.type AS current_problem_type,
+                    p.written_grading_mode,
+                    p.written_score_public
                 FROM submissions s
                 LEFT JOIN problems p ON p.id = s.problem_id
                 {where_sql}
@@ -2347,7 +2388,7 @@ def get_latest_submission_code_by_user_and_problem(username, problem_id):
     try:
         with conn.cursor() as cursor:
             sql = """
-                SELECT id, code, score
+                SELECT id, code, score, problem_type
                 FROM submissions
                 WHERE username=%s AND problem_id=%s
                 ORDER BY id DESC

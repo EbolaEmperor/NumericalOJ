@@ -37,9 +37,32 @@ from backend.oj_modules.submissions.written_voting import (
     get_latest_attempt as get_latest_written_vote_attempt,
     public_attempt_payload,
 )
+from backend.oj_modules.submissions.visibility import (
+    project_submission_grading,
+    submission_is_judging,
+)
 
 
 submission_api_bp = Blueprint("submission_api", __name__, url_prefix="/api")
+
+
+def _private_json_success(**payload):
+    response = json_success(**payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _project_summary(row, user, problem=None):
+    # 列表查询直接联查题目当前配置，避免逐行查题和读取旧快照配置。
+    if problem is None:
+        problem = {
+            "type": row.get("current_problem_type") or row.get("problem_type"),
+            "written_grading_mode": row.get("written_grading_mode"),
+            "written_score_public": row.get("written_score_public"),
+        }
+        if "current_problem_type" in row and row["current_problem_type"] is None:
+            problem["written_score_public"] = 0
+    return project_submission_grading(row, problem, user)
 
 
 def _submission_problem_payload(problem, user):
@@ -86,12 +109,21 @@ def _submission_detail_payload(submission):
         "promptly_review_reply": prompt_generation_error,
         "status": submission.get("status"),
         "score": submission.get("score"),
+        "result_visible": submission.get("result_visible", True),
+        "is_judging": submission.get("is_judging"),
         "created_at": submission.get("created_at"),
         "test_points": submission.get("test_points") if isinstance(submission.get("test_points"), list) else [],
     }
 
 
 def _submission_panel_payload(submission, raw_problem, user):
+    vote_attempt = (
+        get_latest_written_vote_attempt(int(submission["id"]))
+        if int((raw_problem or {}).get("type") or submission.get("problem_type") or 0) == 2
+        else None
+    )
+    is_judging = submission_is_judging(submission, vote_attempt)
+    submission = project_submission_grading(submission, raw_problem, user)
     submission_id = int(submission["id"])
     panel_submission = dict(submission)
     panel_submission["problem_title"] = _strip_problem_title_tags(
@@ -101,7 +133,7 @@ def _submission_panel_payload(submission, raw_problem, user):
     panel_problem["title"] = _strip_problem_title_tags(
         panel_problem.get("title")
     )
-    return _build_submission_panel_payload(
+    payload = _build_submission_panel_payload(
         panel_submission,
         panel_problem,
         detail_url=f"/submissions/{submission_id}",
@@ -117,6 +149,12 @@ def _submission_panel_payload(submission, raw_problem, user):
             else None
         ),
     )
+    payload["result_visible"] = submission["result_visible"]
+    payload["submission"]["result_visible"] = submission["result_visible"]
+    payload["submission"]["is_judging"] = is_judging
+    payload["problem"]["type"] = (raw_problem or {}).get("type") or submission.get("problem_type")
+    payload["problem"]["written_grading_mode"] = int((raw_problem or {}).get("written_grading_mode") or 1)
+    return payload
 
 
 @submission_api_bp.route("/submissions", methods=["GET"])
@@ -151,9 +189,12 @@ def submissions():
         status_filter=status_filter,
         problem_id=problem_id,
         include_test_points=True,
+        respect_grading_visibility=not is_admin(user),
     )
 
-    decorated = [_decorate_submission_summary(row) for row in rows]
+    decorated = [
+        _decorate_submission_summary(_project_summary(row, user)) for row in rows
+    ]
     visible = apply_limit(decorated, limit)
     problem_options = get_submission_problem_options(username=scope_username)
     current_problem_label = ""
@@ -167,7 +208,7 @@ def submissions():
         )
         if int(option["problem_id"]) == int(problem_id or 0):
             current_problem_label = option["filter_label"]
-    return json_success(
+    return _private_json_success(
         user=public_user(user),
         scope=scope,
         page=page,
@@ -199,9 +240,19 @@ def problem_submissions(problem_id):
     rows, total_pages = get_submission_summaries_by_user_and_problem_paginated(
         user["username"], problem_id, page=page, per_page=per_page
     )
-    decorated = [_decorate_submission_summary(row) for row in rows]
+    problem = (
+        get_problem(problem_id)
+        if rows and not is_admin(user)
+        else None
+    )
+    if rows and not is_admin(user) and problem is None:
+        problem = {"type": 2, "written_score_public": 0}
+    decorated = [
+        _decorate_submission_summary(_project_summary(row, user, problem))
+        for row in rows
+    ]
     visible = apply_limit(decorated, limit)
-    return json_success(
+    return _private_json_success(
         user=public_user(user),
         problem_id=problem_id,
         page=page,
@@ -233,11 +284,19 @@ def submission_detail(submission_id):
 
     raw_problem = get_problem(submission.get("problem_id"))
     if panel_view:
-        return json_success(
+        return _private_json_success(
             **_submission_panel_payload(submission, raw_problem, user)
         )
 
     problem = _submission_problem_payload(raw_problem, user)
+    vote_attempt = (
+        get_latest_written_vote_attempt(submission_id)
+        if int((raw_problem or {}).get("type") or submission.get("problem_type") or 0) == 2
+        else None
+    )
+    is_judging = submission_is_judging(submission, vote_attempt)
+    submission = project_submission_grading(submission, raw_problem, user)
+    submission["is_judging"] = is_judging
     plang = ((raw_problem or {}).get("lang") or "matlab").lower()
     lean_workspace = (
         get_submission_lean_workspace(submission_id)
@@ -245,7 +304,11 @@ def submission_detail(submission_id):
         else None
     )
     cached_ai_code_marks = None
-    if submission.get("problem_type") == 1:
+    if (
+        submission["result_visible"]
+        and submission.get("problem_type") == 1
+        and (raw_problem or {}).get("type") in {None, 1}
+    ):
         cached_ai_code_marks = get_cached_ai_code_marks_for_submission(submission)
 
     submission_latex_text = ""
@@ -261,12 +324,16 @@ def submission_detail(submission_id):
         if written_grading_mode == 1:
             submission_latex_text, submission_latex_error = _load_written_submission_latex_and_error(submission)
             submission_latex_html = _render_written_markdown_to_html(submission_latex_text)
-        written_vote = public_attempt_payload(
-            get_latest_written_vote_attempt(submission_id)
-        )
+            if not submission["result_visible"]:
+                submission_latex_error = ""
+        if submission["result_visible"]:
+            written_vote = public_attempt_payload(
+                vote_attempt
+            )
 
-    return json_success(
+    return _private_json_success(
         user=public_user(user),
+        result_visible=submission["result_visible"],
         submission=_submission_detail_payload(submission),
         test_points=submission.get("test_points") or [],
         problem=problem,

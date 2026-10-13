@@ -678,6 +678,30 @@ html.numoj-page-transition-entering #root .numoj-content {
 .problem-editor-settings .written-vote-editor .aje-title { font-size: .82rem; }
 .problem-editor-settings .written-vote-editor .aje-meta { display: none; }
 
+.written-vote-editor .written-vote-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.written-vote-editor .aje-head { gap: 8px; }
+.written-score-public-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.written-score-public-switch:focus-visible { outline: 2px solid var(--green); outline-offset: 4px; border-radius: 3px; }
+.written-score-public-track { display: inline-flex; align-items: center; width: 34px; height: 20px; padding: 3px; border-radius: 999px; background: var(--line-strong); transition: background-color .15s ease; }
+.written-score-public-track > span { width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s ease; }
+.written-score-public-switch[aria-checked='true'] .written-score-public-track { background: var(--green); }
+.written-score-public-switch[aria-checked='true'] .written-score-public-track > span { transform: translateX(14px); }
+@media (prefers-reduced-motion: reduce) {
+  .written-score-public-track, .written-score-public-track > span { transition: none; }
+}
+
 @media (max-width: 1050px) {
   .problem-editor-layout { grid-template-columns: 1fr; }
   .problem-editor-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }

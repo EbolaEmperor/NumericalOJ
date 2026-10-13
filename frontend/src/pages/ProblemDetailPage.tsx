@@ -38,7 +38,7 @@ interface SubmissionResponse extends ApiEnvelope {submission_id?: number; warnin
 interface AgentLaunchOptions extends ApiEnvelope {harnesses?: JsonRecord[]; endpoints_by_harness?: Record<string, JsonRecord[]>; preference?: JsonRecord}
 interface AgentLaunchResponse extends ApiEnvelope {task_id?: string; view_url?: string}
 
-const abbreviations: Record<string, string> = {'Accepted': 'AC', 'Wrong Answer': 'WA', 'Unaccepted': 'UA', 'Compile Error': 'CE', 'Runtime Error': 'RE', 'Time Limit Exceeded': 'TL', 'Memory Limit Exceeded': 'ML', 'Output Limit Exceeded': 'OL', 'Forbidden': 'FB', 'No Output': 'NO', 'Nonzero Exit Status': 'NZ', 'Pending': 'PD', 'Waiting': 'WT', 'Running': 'RN', 'Generating': 'GN', 'Error': 'ER'}
+const abbreviations: Record<string, string> = {'Accepted': 'AC', 'Wrong Answer': 'WA', 'Unaccepted': 'UA', 'Compile Error': 'CE', 'Runtime Error': 'RE', 'Time Limit Exceeded': 'TL', 'Memory Limit Exceeded': 'ML', 'Output Limit Exceeded': 'OL', 'Forbidden': 'FB', 'No Output': 'NO', 'Nonzero Exit Status': 'NZ', 'Pending': 'PD', 'Waiting': 'WT', 'Running': 'RN', 'Generating': 'GN', 'Error': 'ER', '评分未公开': '未公开'}
 
 function languageLabel(value?: string) {
   return ({matlab: 'MATLAB', cpp: 'C++', c: 'C', python: 'Python', lean: 'Lean 4', lean4: 'Lean 4'} as Record<string, string>)[String(value || '').toLowerCase()] || value || ''
@@ -264,7 +264,7 @@ export default function ProblemDetailPage() {
   const editorRef = useRef<MonacoEditorInstance | null>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   const loadedProblemRef = useRef<string | undefined>(undefined)
-  const detail = useQuery({queryKey: ['problem', problemId], queryFn: () => apiFetch<DetailResponse>(`/api/problems/${problemId}`)})
+  const detail = useQuery({queryKey: ['problem', problemId], queryFn: () => apiFetch<DetailResponse>(`/api/problems/${problemId}`), refetchOnWindowFocus: 'always', refetchOnMount: 'always'})
   useEffect(() => {if (detail.data?.problem.title) document.title = `${detail.data.problem.title} - Numerical OJ`}, [detail.data?.problem.title])
   useEffect(() => {
     if (detail.data && loadedProblemRef.current !== problemId) {

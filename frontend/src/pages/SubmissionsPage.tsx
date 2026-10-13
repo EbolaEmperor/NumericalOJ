@@ -87,14 +87,25 @@ function Panel({id, isAdmin, origin, onLiveSnapshot}: {id?: number; isAdmin: boo
   const queryClient = useQueryClient()
   const [selectedPoint, setSelectedPoint] = useState(0)
   const queryKey = ['submission-panel', id] as const
-  const result = useQuery({queryKey, queryFn: () => apiFetch<PanelResponse>(`/api/submissions/${id}?view=panel`), enabled: Boolean(id)})
+  const result = useQuery({
+    queryKey,
+    queryFn: () => apiFetch<PanelResponse>(`/api/submissions/${id}?view=panel`),
+    enabled: Boolean(id),
+    refetchOnWindowFocus: 'always',
+    refetchOnMount: 'always',
+    refetchInterval: (query) => !isAdmin && Number(query.state.data?.submission.problem_type || query.state.data?.problem.type) === 2 && Number(query.state.data?.submission.written_grading_mode || query.state.data?.problem.written_grading_mode || 1) !== 4 ? 15_000 : false,
+    refetchIntervalInBackground: false,
+  })
   const applyLiveSnapshot = useCallback((snapshot: SubmissionStatusSnapshot) => {
     queryClient.setQueryData<PanelResponse>(queryKey, (current) => current ? {
       ...current,
       submission: {
         ...current.submission,
         ...(snapshot.status === undefined ? {} : {status: snapshot.status}),
+        ...(snapshot.is_judging === undefined ? {} : {is_judging: snapshot.is_judging}),
         ...(Object.prototype.hasOwnProperty.call(snapshot, 'score') ? {score: snapshot.score} : {}),
+        ...(snapshot.result_visible === undefined ? {} : {result_visible: snapshot.result_visible}),
+        ...(snapshot.result_visible === false ? {score: null, code: ''} : {}),
       },
       test_points: Array.isArray(snapshot.test_points) ? snapshot.test_points : current.test_points,
     } : current)
@@ -102,7 +113,7 @@ function Panel({id, isAdmin, origin, onLiveSnapshot}: {id?: number; isAdmin: boo
   }, [id, onLiveSnapshot, queryClient])
   useSubmissionStatusStream({
     submissionId: id,
-    enabled: result.isSuccess && submissionStatusIsActive(result.data.submission.status),
+    enabled: result.isSuccess && result.data.submission.is_judging !== false && submissionStatusIsActive(result.data.submission.status),
     streamUrl: result.data?.status_stream_url,
     onSnapshot: applyLiveSnapshot,
   })
@@ -188,7 +199,14 @@ export default function SubmissionsPage() {
   const desktop = useDesktopSubmissionLayout()
   const problemInput = useRef<HTMLInputElement>(null)
   const listQueryKey = ['submissions', page, q, status, problemId] as const
-  const result = useQuery({queryKey: listQueryKey, queryFn: () => apiFetch<Response>(`/api/submissions${queryString({page, q, status, problem_id: problemId, per_page: 30})}`)})
+  const result = useQuery({
+    queryKey: listQueryKey,
+    queryFn: () => apiFetch<Response>(`/api/submissions${queryString({page, q, status, problem_id: problemId, per_page: 30})}`),
+    refetchOnWindowFocus: 'always',
+    refetchOnMount: 'always',
+    refetchInterval: (query) => !session?.user?.is_admin && query.state.data?.submissions.some((row) => Number(row.problem_type) === 2 && Number(row.written_grading_mode || 1) !== 4) ? 15_000 : false,
+    refetchIntervalInBackground: false,
+  })
   const rows = result.data?.submissions || []
   const rowIds = rows.map((row) => row.id).join(',')
   useEffect(() => {
@@ -204,7 +222,9 @@ export default function SubmissionsPage() {
       submissions: current.submissions.map((row) => row.id === submissionId ? {
         ...row,
         ...(snapshot.status === undefined ? {} : {status: snapshot.status}),
-        ...(Object.prototype.hasOwnProperty.call(snapshot, 'score') ? {score: typeof snapshot.score === 'number' ? snapshot.score : undefined} : {}),
+        ...(Object.prototype.hasOwnProperty.call(snapshot, 'score') ? {score: snapshot.score ?? null} : {}),
+        ...(snapshot.result_visible === undefined ? {} : {result_visible: snapshot.result_visible}),
+        ...(snapshot.result_visible === false ? {score: null} : {}),
         ...(Array.isArray(snapshot.test_points) ? {test_points: snapshot.test_points} : {}),
       } : row),
     } : current)

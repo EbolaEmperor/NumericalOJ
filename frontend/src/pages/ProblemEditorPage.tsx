@@ -1,4 +1,4 @@
-import {useMutation, useQuery} from '@tanstack/react-query'
+import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useState, type FormEvent} from 'react'
 import {useParams} from 'react-router-dom'
 
@@ -60,11 +60,11 @@ function EndpointChoice({name, label, value, items, onChange}: {name: string; la
 
 interface WrittenVoteRow {endpoint_id: string; count: number}
 
-function WrittenVoteEditor({rows, items, onChange}: {rows: WrittenVoteRow[]; items: JsonRecord[]; onChange: (rows: WrittenVoteRow[]) => void}) {
+function WrittenVoteEditor({rows, items, scorePublic, onScorePublicChange, onChange}: {rows: WrittenVoteRow[]; items: JsonRecord[]; scorePublic: boolean; onScorePublicChange: (value: boolean) => void; onChange: (rows: WrittenVoteRow[]) => void}) {
   const options = [{value: '', label: '选择评委模型', icon: 'fa-minus-circle'}, ...items.map((item) => ({value: String(item.id || ''), label: `${String(item.model || '未命名模型')} · #${String(item.id || '')}`, model: String(item.model || '')}))]
   const total = rows.reduce((sum, row) => sum + (row.endpoint_id ? row.count : 0), 0)
   const updateCount = (index: number, count: number) => onChange(rows.map((item, rowIndex) => rowIndex === index ? {...item, count: Math.max(1, Math.min(5, count || 1))} : item))
-  return <section className="aje written-vote-editor mb-3" aria-label="AI 评委配置"><div className="aje-shell"><div className="aje-head"><div className="aje-title"><EditorIcon name="judges" />AI 评委 Vote</div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{rows.length} 个评委</span><span className={`aje-total${total > 10 ? ' is-invalid' : ''}`}>票数 <b>{total}</b></span></div><button type="button" className="aje-add" title="添加评委模型" aria-label="添加评委模型" disabled={rows.length >= 10} onClick={() => onChange([...rows, {endpoint_id: '', count: 1}])}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{rows.map((row, index) => <article className="aje-card written-vote-card" key={index}><div className="aje-card-top"><span className="written-vote-card-index">评委 {String(index + 1).padStart(2, '0')}</span><button type="button" className="written-vote-remove" title={`删除评委模型 ${index + 1}`} aria-label={`删除评委模型 ${index + 1}`} disabled={rows.length === 1} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}><i className="fas fa-trash-can" /></button></div><div className="aje-card-main written-vote-card-main"><Choice value={row.endpoint_id} options={options} icon="fa-microchip" onChange={(value) => onChange(rows.map((item, rowIndex) => rowIndex === index ? {...item, endpoint_id: value} : item))} /></div><div className="written-vote-card-footer"><div className="written-vote-stepper" role="group" aria-label={`评委模型 ${index + 1} Vote 次数`}><button type="button" aria-label={`减少评委模型 ${index + 1} Vote 次数`} disabled={row.count <= 1} onClick={() => updateCount(index, row.count - 1)}><i className="fas fa-minus" /></button><input id={`writtenVoteCount${index}`} type="text" inputMode="numeric" pattern="[1-5]" role="spinbutton" aria-label={`评委模型 ${index + 1} Vote 次数`} aria-valuemin={1} aria-valuemax={5} aria-valuenow={row.count} value={row.count} onChange={(event) => updateCount(index, Number(event.target.value))} /><span>票</span><button type="button" aria-label={`增加评委模型 ${index + 1} Vote 次数`} disabled={row.count >= 5} onClick={() => updateCount(index, row.count + 1)}><i className="fas fa-plus" /></button></div></div></article>)}</div></div></section>
+  return <section className="aje written-vote-editor mb-3" aria-label="AI 评委配置"><div className="aje-shell"><div className="aje-head"><div className="written-vote-heading"><div className="aje-title"><EditorIcon name="judges" />AI 评委 Vote</div><button type="button" role="switch" className="written-score-public-switch" aria-label="公开评分" aria-checked={scorePublic} onClick={() => onScorePublicChange(!scorePublic)}><span className="written-score-public-track" aria-hidden="true"><span /></span><span>公开评分</span></button></div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{rows.length} 个评委</span><span className={`aje-total${total > 10 ? ' is-invalid' : ''}`}>票数 <b>{total}</b></span></div><button type="button" className="aje-add" title="添加评委模型" aria-label="添加评委模型" disabled={rows.length >= 10} onClick={() => onChange([...rows, {endpoint_id: '', count: 1}])}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{rows.map((row, index) => <article className="aje-card written-vote-card" key={index}><div className="aje-card-top"><span className="written-vote-card-index">评委 {String(index + 1).padStart(2, '0')}</span><button type="button" className="written-vote-remove" title={`删除评委模型 ${index + 1}`} aria-label={`删除评委模型 ${index + 1}`} disabled={rows.length === 1} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}><i className="fas fa-trash-can" /></button></div><div className="aje-card-main written-vote-card-main"><Choice value={row.endpoint_id} options={options} icon="fa-microchip" onChange={(value) => onChange(rows.map((item, rowIndex) => rowIndex === index ? {...item, endpoint_id: value} : item))} /></div><div className="written-vote-card-footer"><div className="written-vote-stepper" role="group" aria-label={`评委模型 ${index + 1} Vote 次数`}><button type="button" aria-label={`减少评委模型 ${index + 1} Vote 次数`} disabled={row.count <= 1} onClick={() => updateCount(index, row.count - 1)}><i className="fas fa-minus" /></button><input id={`writtenVoteCount${index}`} type="text" inputMode="numeric" pattern="[1-5]" role="spinbutton" aria-label={`评委模型 ${index + 1} Vote 次数`} aria-valuemin={1} aria-valuemax={5} aria-valuenow={row.count} value={row.count} onChange={(event) => updateCount(index, Number(event.target.value))} /><span>票</span><button type="button" aria-label={`增加评委模型 ${index + 1} Vote 次数`} disabled={row.count >= 5} onClick={() => updateCount(index, row.count + 1)}><i className="fas fa-plus" /></button></div></div></article>)}</div></div></section>
 }
 
 function asString(value: unknown, fallback = '') {return value == null ? fallback : String(value)}
@@ -75,6 +75,7 @@ export default function ProblemEditorPage() {
   const numericId = Number(problemId || 0)
   const {session} = useSession()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const query = useQuery({queryKey: ['admin', 'problem-form', problemId || 'new'], queryFn: () => apiFetch<FormResponse>(editing ? `/api/admin/problems/${numericId}/edit-form` : '/api/admin/problems/create-form'), enabled: Boolean(session?.user?.is_admin)})
   const seed = query.data?.form || query.data?.defaults
   const [values, setValues] = useState<Record<string, string>>({})
@@ -93,6 +94,7 @@ export default function ProblemEditorPage() {
     next.promptly_example_replies_json = JSON.stringify(promptly?.example_replies || [])
     const configuredVotes = Array.isArray(seed.written_vote_config) ? seed.written_vote_config as JsonRecord[] : []
     const seedWrittenMode = asString(seed.written_grading_mode, '1')
+    next.written_score_public = seed.written_score_public == null || Number(seed.written_score_public) !== 0 ? '1' : '0'
     const fallbackEndpoint = asString(seedWrittenMode === '2' ? seed.direct_image_grading_endpoint_id : seed.text_grading_endpoint_id)
     setWrittenVoteRows(configuredVotes.length ? configuredVotes.map((item) => ({endpoint_id: asString(item.endpoint_id), count: Number(item.count || 1)})) : [{endpoint_id: fallbackEndpoint, count: 1}])
     setTestCodeTouched(false)
@@ -124,10 +126,20 @@ export default function ProblemEditorPage() {
       body.set('lang', language)
       body.set('programming_grading_mode', programmingMode)
       body.set('written_grading_mode', writtenMode)
+      body.set('written_score_public', values.written_score_public === '0' ? '0' : '1')
       body.set('written_vote_config', JSON.stringify(writtenMode === '4' ? [] : writtenVoteRows.filter((row) => row.endpoint_id).map((row) => ({endpoint_id: Number(row.endpoint_id), count: row.count}))))
       return apiFetch<ApiEnvelope & {problem_id?: number}>(query.data?.action || (editing ? `/api/admin/problems/${numericId}` : '/api/admin/problems'), {method: 'POST', body})
     },
-    onSuccess: (data) => navigate(`/problems/${editing ? numericId : Number(data.problem_id)}`),
+    onSuccess: async (data) => {
+      await Promise.all([
+        queryClient.invalidateQueries({queryKey: ['problems']}),
+        queryClient.invalidateQueries({queryKey: ['problem', String(editing ? numericId : Number(data.problem_id))]}),
+        queryClient.invalidateQueries({queryKey: ['submissions']}),
+        queryClient.invalidateQueries({queryKey: ['submission']}),
+        queryClient.invalidateQueries({queryKey: ['submission-panel']}),
+      ])
+      navigate(`/problems/${editing ? numericId : Number(data.problem_id)}`)
+    },
   })
   const submit = (event: FormEvent) => {event.preventDefault(); mutation.mutate()}
   const markdownPreview = useQuery({
@@ -183,7 +195,7 @@ export default function ProblemEditorPage() {
             <div className="problem-editor-examples"><div className="problem-editor-examples-head"><span>示例回复</span><button type="button" onClick={() => setExamples([...examples, ''])} aria-label="添加示例"><i className="fas fa-plus" /></button></div>{examples.map((example, index) => <div className="problem-editor-example" key={index}><textarea rows={2} value={example} onChange={(event) => setExamples(examples.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" onClick={() => setExamples(examples.filter((_, itemIndex) => itemIndex !== index))} aria-label={`删除示例 ${index + 1}`}><i className="fas fa-trash-can" /></button></div>)}</div>
           </div></section> : null}
           {type === '2' && writtenMode === '1' ? <section className="problem-editor-card"><header><h2><EditorIcon name="ocr" />OCR</h2></header><div className="problem-editor-fields"><EndpointChoice name="ocr_endpoint_id" label="识别端点" value={values.ocr_endpoint_id || ''} items={endpointCandidates.ocr_endpoint_id || []} onChange={(value) => set('ocr_endpoint_id', value)} /></div></section> : null}
-          {type === '2' && writtenMode !== '4' ? <WrittenVoteEditor rows={writtenVoteRows} items={writtenVoteCandidates} onChange={setWrittenVoteRows} /> : null}
+          {type === '2' && writtenMode !== '4' ? <WrittenVoteEditor rows={writtenVoteRows} items={writtenVoteCandidates} scorePublic={values.written_score_public !== '0'} onScorePublicChange={(value) => set('written_score_public', value ? '1' : '0')} onChange={setWrittenVoteRows} /> : null}
           {type === '2' && writtenMode !== '4' ? <section className="problem-editor-card"><header><h2><EditorIcon name="rubric" />评分标准</h2></header><div className="problem-editor-fields"><textarea className="problem-editor-rubric" rows={8} aria-label="评分标准" value={values.written_grading_prompt || (!editing ? query.data.options.default_written_grading_prompt : '') || ''} onChange={(event) => set('written_grading_prompt', event.target.value)} /></div></section> : null}
         </aside>
       </div>

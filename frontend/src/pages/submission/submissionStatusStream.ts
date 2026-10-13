@@ -6,6 +6,7 @@ export interface SubmissionStatusSnapshot extends JsonRecord {
   status?: string
   score?: number | null
   is_judging?: boolean
+  result_visible?: boolean
   test_points?: JsonRecord[]
 }
 

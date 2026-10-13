@@ -12,6 +12,7 @@ from backend.oj_modules.classroom.dashboard import (
 )
 from backend.oj_modules.db_services import (
     get_db_connection,
+    get_problem_visibility_map,
     get_today_submission_total_from_counter,
 )
 from backend.oj_modules.problems.presentation import (
@@ -19,6 +20,7 @@ from backend.oj_modules.problems.presentation import (
 )
 from backend.oj_modules.homework.scores import homework_score_snapshot
 from backend.oj_modules.infrastructure.mysql import safe_table_name
+from backend.oj_modules.submissions.visibility import grading_results_visible
 
 
 __all__ = (
@@ -32,6 +34,7 @@ __all__ = (
     "invalidate_problem_list_cache_all",
     "invalidate_problem_list_cache_for_class",
     "invalidate_problem_list_cache_for_user",
+    "project_homework_grading_map",
 )
 
 
@@ -39,6 +42,43 @@ _HOMEWORKS_CACHE_TTL_SECONDS = 10
 _CLASS_GRADES_CACHE_TTL_SECONDS = 20
 _homeworks_cache = {}
 _class_grades_cache = {}
+
+
+def project_homework_grading_map(homeworks_map, viewer):
+    """按当前题目策略裁剪成绩副本，避免关闭公开后复用缓存中的真实结果。"""
+    projected = {
+        class_en: [dict(homework) for homework in rows]
+        for class_en, rows in homeworks_map.items()
+    }
+    if int((viewer or {}).get("is_admin") or 0) == 1:
+        return projected
+
+    problem_ids = {
+        int(homework["problem_id"])
+        for rows in projected.values()
+        for homework in rows
+        if homework.get("problem_id") is not None
+        and homework.get("kind") != "ranking"
+    }
+    visibility = get_problem_visibility_map(problem_ids)
+    for rows in projected.values():
+        for homework in rows:
+            problem_id = homework.get("problem_id")
+            if problem_id is None or homework.get("kind") == "ranking":
+                continue
+            if grading_results_visible(viewer, visibility.get(int(problem_id))):
+                continue
+            homework.update({
+                "result_visible": False,
+                "max_score": None,
+                "practice_max_score": None,
+                "best_submission_id": None,
+                "best_submission_at": None,
+                "is_completed": None,
+                "complete_cnt": None,
+            })
+    return projected
+
 
 def _attach_user_homework_scores(result, username, cursor):
     """按每条作业自己的 DDL 回填用户成绩，禁止全局 max_score 污染作业成绩。"""
@@ -527,12 +567,12 @@ def get_homeworks_for_class(user_id, class_en):
     return _get_homeworks_for_classes(user_id, [class_en]).get(class_en, [])
 
 
-def get_today_submission_counts():
+def get_today_submission_counts(*, viewer=None):
     """返回 (total_submissions, total_accepted)。
 
-    total_submissions 走 daily_submission_stats 计数表（含 programming + ranking 两类提交）。
-    total_accepted 仍直接查 submissions 表（仅 programming），单日范围 + idx_submissions_created_status，
-    本身已经很快，没必要也搬到计数表。
+    总提交量包含普通题（含书面题）和打榜赛，走 daily_submission_stats 计数表。
+    AC 数查询普通题提交；学生查询排除未公开评分的 AI 书面题。
+    未指定查看者时保留内部统计调用的完整口径。
     """
     total_submissions = get_today_submission_total_from_counter()
 
@@ -541,12 +581,22 @@ def get_today_submission_counts():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            student_view = viewer is not None and int(viewer.get("is_admin") or 0) != 1
+            visibility_join = "LEFT JOIN problems p ON p.id = s.problem_id" if student_view else ""
+            visibility_filter = (
+                "AND NOT (COALESCE(p.type, 0) = 2 "
+                "AND COALESCE(p.written_grading_mode, 1) IN (1, 2, 3) "
+                "AND COALESCE(p.written_score_public, 1) = 0)"
+                if student_view else ""
+            )
             cursor.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS total_accepted
-                FROM submissions
-                WHERE created_at >= %s AND created_at < %s
-                  AND status = 'Accepted'
+                FROM submissions s
+                {visibility_join}
+                WHERE s.created_at >= %s AND s.created_at < %s
+                  AND s.status = 'Accepted'
+                  {visibility_filter}
                 """,
                 (today_start, tomorrow_start),
             )

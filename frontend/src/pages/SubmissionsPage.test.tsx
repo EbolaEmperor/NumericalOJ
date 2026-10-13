@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
-import {cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react'
+import {act, cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react'
 import {MemoryRouter, Route, Routes} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -41,9 +41,52 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 describe('提交列表主从视图', () => {
+  it('书面题保留 Pending 状态但已停止批改时，不重新建立判题流', async () => {
+    const eventSource = vi.fn(function () {return {addEventListener: vi.fn(), close: vi.fn()}})
+    vi.stubGlobal('EventSource', eventSource)
+    vi.mocked(fetch).mockImplementation((input: string | URL | Request) => {
+      const url = String(input)
+      if (url === '/api/v1/session') return response({api_version: '1', user: {id: 1, username: 'alice', is_admin: 0}, navigation: {items: [], counts: {}, agent_active: false}, capabilities: {spa: true}})
+      const submission = {id: 1, problem_id: 11, problem_type: 2, written_grading_mode: 1, problem_title: '书面题', status: 'Pending', score: null, result_visible: false, is_judging: false}
+      if (url.startsWith('/api/submissions?')) return response({submissions: [submission], page: 1, total_pages: 1, scope: 'mine', problem_options: []})
+      if (url === '/api/submissions/1?view=panel') return response({submission, problem: {id: 11, title: '书面题', type: 2, written_grading_mode: 1, max_score: 5}, test_points: [], detail_url: '/submissions/1'})
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    renderPage()
+    await screen.findByRole('heading', {name: '书面题'})
+    await act(async () => undefined)
+    expect(eventSource).not.toHaveBeenCalled()
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith('/status'))).toBe(false)
+  })
+
+  it('学生书面评分显示占位，终态列表和预览定时同步公开开关', async () => {
+    vi.useFakeTimers()
+    let visible = false
+    vi.mocked(fetch).mockImplementation((input: string | URL | Request) => {
+      const url = String(input)
+      if (url === '/api/v1/session') return response({api_version: '1', user: {id: 1, username: 'alice', is_admin: 0}, navigation: {items: [], counts: {}, agent_active: false}, capabilities: {spa: true}})
+      const submission = {id: 1, problem_id: 11, problem_type: 2, written_grading_mode: 1, problem_title: '书面题', status: visible ? 'Accepted' : '评分未公开', score: visible ? 5 : null, result_visible: visible, display_max_score: 5}
+      if (url.startsWith('/api/submissions?')) return response({submissions: [submission], page: 1, total_pages: 1, scope: 'mine', problem_options: []})
+      if (url === '/api/submissions/1?view=panel') return response({submission, problem: {id: 11, title: '书面题', max_score: 5}, test_points: [], detail_url: '/submissions/1'})
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const {container} = renderPage()
+    await act(async () => {await vi.advanceTimersByTimeAsync(50)})
+    expect(screen.getByLabelText('提交 #1，评分未公开')).toBeTruthy()
+    expect(container.querySelector('.submission-col-score .submission-score')?.textContent).toBe('—')
+    expect(container.querySelector('.submission-detail-panel .submission-detail-score strong')?.textContent).toBe('—')
+
+    visible = true
+    await act(async () => {await vi.advanceTimersByTimeAsync(15_050)})
+    expect(screen.getByLabelText('提交 #1，Accepted')).toBeTruthy()
+    expect(container.querySelector('.submission-col-score .submission-score')?.textContent).toBe('5')
+    expect(container.querySelector('.submission-detail-panel .submission-detail-score strong')?.textContent).toBe('5')
+  })
+
   it('保留表格语义但不显示旧版已移除的表头行', async () => {
     renderPage()
     await screen.findByLabelText('提交 #1，Accepted')

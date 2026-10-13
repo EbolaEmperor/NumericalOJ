@@ -258,6 +258,14 @@ def test_panel_status_stream_omits_written_content(monkeypatch):
         "get_latest_written_vote_attempt",
         lambda _submission_id: None,
     )
+    monkeypatch.setattr(
+        submission_routes, "get_submission_by_id",
+        lambda _submission_id: {"id": 9, "problem_id": 3},
+    )
+    monkeypatch.setattr(
+        submission_routes, "get_problem",
+        lambda _problem_id: {"type": 2, "written_grading_mode": 1, "written_score_public": 1},
+    )
 
     with app.test_request_context("/submission_status_stream/9?view=panel"):
         response = submission_routes.submission_status_stream(9)

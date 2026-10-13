@@ -109,6 +109,22 @@ afterEach(() => {
 })
 
 describe('班级作业记忆', () => {
+  it('截止后的未公开书面评分仍显示占位，不误报零分或未按时提交', async () => {
+    vi.mocked(fetch).mockImplementation((input: string | URL | Request) => {
+      const url = String(input)
+      if (url.startsWith('/api/v1/session')) return jsonResponse({api_version: '1', user: {id: 1, username: 'student', is_admin: 0}, navigation: {items: [], counts: {}, agent_active: false, selected_class_en: 'C1'}, capabilities: {spa: true}})
+      if (url.startsWith('/api/class-activity')) return jsonResponse({activity: []})
+      if (url.startsWith('/api/problems')) return jsonResponse({problems: [{id: 11, problem_id: 11, homework_id: 3, title: '书面作业', problem_type: 2, kind: 'problem', result_visible: false, max_score: null, total_score: 5, has_submission: true, has_pending_submission: false, is_completed: false, ddl: '2020-01-01 00:00:00'}], count: 1, classes, selected_class_en: 'C1', selected_class_cn: '一班'})
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const {container} = renderPage()
+    await screen.findByText('书面作业')
+    expect(container.querySelector('.numoj-row-grade > strong')?.textContent).toBe('—/5')
+    expect(screen.getByText('评分未公开')).toBeTruthy()
+    expect(screen.queryByText('未按时提交')).toBeNull()
+    expect(screen.queryByLabelText('有提交但未通过')).toBeNull()
+  })
+
   it('悬停只按目标班级预取，不会改变真正记住的班级', async () => {
     renderPage()
     const picker = await screen.findByRole('button', {name: /一班/})

@@ -24,6 +24,13 @@ problem_api_bp = Blueprint("problem_api", __name__, url_prefix="/api")
 PROBLEM_LIST_CLASS_COOKIE = "numoj_problem_list_class"
 
 
+@problem_api_bp.after_request
+def prevent_cached_grading_results(response):
+    # 题目与作业响应可能含个人成绩，不能跨公开策略变更复用 HTTP 缓存。
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 def _homework_problem_item(hw, class_en=None, class_cn=None):
     common = {
         **to_jsonable(dict(hw)),
@@ -319,6 +326,7 @@ def problem_create_form():
             "written_grading_mode": 1,
             "written_grading_prompt": _DEFAULT_WRITTEN_GRADING_PROMPT,
             "written_vote_config": [],
+            "written_score_public": 1,
             "llm_endpoint_bindings": {},
         },
         options=_problem_form_options(),
@@ -355,6 +363,7 @@ def problem_edit_form(problem_id):
         "written_grading_mode": problem.get("written_grading_mode") or 1,
         "written_grading_prompt": problem.get("written_grading_prompt") or "",
         "written_vote_config": problem.get("written_vote_config") or [],
+        "written_score_public": problem.get("written_score_public", 1),
         "llm_endpoint_bindings": bindings,
     }
     form.update({key: value for key, value in bindings.items()})

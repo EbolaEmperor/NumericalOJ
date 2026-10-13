@@ -16,9 +16,11 @@ from zoneinfo import ZoneInfo
 
 from backend.oj_modules.db_services import (
     get_all_classes,
+    get_problem_visibility_map,
     get_user_classes,
 )
 from backend.oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
+from backend.oj_modules.submissions.visibility import grading_results_visible
 
 
 ACTIVITY_DAYS = 12 * 7
@@ -419,15 +421,29 @@ def _get_submission_metrics(
     return _cached(cache_key, load)
 
 
-def get_problem_submission_metrics(problem_ids, *, class_en=None):
+def get_problem_submission_metrics(problem_ids, *, class_en=None, viewer=None):
     """返回普通题目的终态提交数与通过率，键为 problem id。"""
-    return _get_submission_metrics(
+    metrics = _get_submission_metrics(
         problem_ids,
         table="submissions",
         alias="s",
         entity_column="problem_id",
         class_en=class_en,
     )
+    if viewer is None or int(viewer.get("is_admin") or 0) == 1:
+        return metrics
+
+    # 缓存保存真实统计，返回出口再读取当前开关，兼容其他 Web 进程的旧缓存。
+    visibility = get_problem_visibility_map(metrics)
+    projected = {problem_id: dict(metric) for problem_id, metric in metrics.items()}
+    for problem_id, metric in projected.items():
+        if not grading_results_visible(viewer, visibility.get(problem_id)):
+            metric.update({
+                "accepted_count": None,
+                "pass_rate": None,
+                "result_visible": False,
+            })
+    return projected
 
 
 def get_ranking_submission_metrics(competition_ids, *, class_en=None):
@@ -442,7 +458,7 @@ def get_ranking_submission_metrics(competition_ids, *, class_en=None):
     )
 
 
-def attach_submission_metrics(homeworks, *, class_en=None):
+def attach_submission_metrics(homeworks, *, class_en=None, viewer=None):
     """返回带聚合指标的副本，保持作业缓存值不可变。"""
     enriched = [dict(item) for item in homeworks]
     problem_ids = [item.get("problem_id") for item in enriched if item.get("problem_id")]
@@ -452,7 +468,11 @@ def attach_submission_metrics(homeworks, *, class_en=None):
         if item.get("competition_id") or item.get("ranking_competition_id")
         if str(item.get("scoring_mode") or "absolute").lower() != "elo"
     ]
-    problem_metrics = get_problem_submission_metrics(problem_ids, class_en=class_en)
+    problem_metrics = (
+        get_problem_submission_metrics(problem_ids, class_en=class_en, viewer=viewer)
+        if viewer is not None
+        else get_problem_submission_metrics(problem_ids, class_en=class_en)
+    )
     ranking_metrics = get_ranking_submission_metrics(competition_ids, class_en=class_en)
     for item in enriched:
         if item.get("problem_id"):

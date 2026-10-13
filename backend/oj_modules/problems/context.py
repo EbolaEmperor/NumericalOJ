@@ -26,9 +26,11 @@ from backend.oj_modules.problems.catalog import (
     get_problem_homework_deadline_state,
     get_today_submission_counts,
     get_user_classes_cached,
+    project_homework_grading_map,
 )
 from backend.oj_modules.problems.lean_workspace import get_current_lean_workspace
 from backend.oj_modules.shared.markdown import render_rich_markdown
+from backend.oj_modules.submissions.visibility import project_submission_grading
 
 
 HOMEWORK_DEADLINE_WARNING_CODE = "homework_deadline_passed"
@@ -49,7 +51,7 @@ __all__ = (
 )
 
 
-def _base_problem_list_context(*, include_statistics=False):
+def _base_problem_list_context(*, include_statistics=False, viewer=None):
     """返回题目列表的通用上下文；统计数据只在 JSON API 按需加载。
 
     HTML 题目页已经不展示全站今日提交量与十日趋势。此前仍会为每次页面请求
@@ -62,7 +64,11 @@ def _base_problem_list_context(*, include_statistics=False):
     if not include_statistics:
         return context
 
-    total_submissions, total_accepted = get_today_submission_counts()
+    total_submissions, total_accepted = (
+        get_today_submission_counts(viewer=viewer)
+        if viewer is not None
+        else get_today_submission_counts()
+    )
     last_10_days, daily_counts = get_last_10_days_counts_from_counter()
     context.update({
         "total_submissions": total_submissions,
@@ -215,7 +221,7 @@ def build_problem_list_context(
     组装题库页的完整数据上下文。
     HTML 页面和 JSON API 共用这里，避免 CLI 再从模板 HTML 里反向解析信息。
     """
-    context = _base_problem_list_context(include_statistics=include_statistics)
+    context = _base_problem_list_context(include_statistics=include_statistics, viewer=user)
     context["user"] = user
     context["numoj_cli_resource"] = _numoj_cli_resource(user)
 
@@ -267,6 +273,7 @@ def build_problem_list_context(
     if len(classes) == 1:
         cls = classes[0]['class_en']
         homeworks_map, grades_map = get_homeworks_and_grades_map(user['id'], user['username'], [cls])
+        homeworks_map = project_homework_grading_map(homeworks_map, user)
         homeworks = homeworks_map.get(cls, [])
         context.update({
             "homeworks": homeworks,
@@ -279,6 +286,7 @@ def build_problem_list_context(
             dashboard_homeworks = attach_submission_metrics(
                 homeworks,
                 class_en=cls,
+                viewer=user,
             )
             context.update({
                 "selected_class": classes[0],
@@ -297,6 +305,7 @@ def build_problem_list_context(
         user['username'],
         class_en_list,
     )
+    class_homeworks_map = project_homework_grading_map(class_homeworks_map, user)
 
     homeworks_by_class = []
     for c in classes:
@@ -322,7 +331,7 @@ def build_problem_list_context(
                 selected_homeworks = block["hw_list"]
                 break
         selected_homeworks = attach_submission_metrics(
-            selected_homeworks, class_en=selected_class["class_en"]
+            selected_homeworks, class_en=selected_class["class_en"], viewer=user
         )
     context["selected_homeworks"] = selected_homeworks
     context["class_activity"] = (
@@ -335,11 +344,14 @@ def build_problem_list_context(
 
 def build_problem_library_context(user, *, include_statistics=False):
     """构造所有登录用户可见的总题库视图，不混入班级 DDL。"""
-    context = _base_problem_list_context(include_statistics=include_statistics)
+    context = _base_problem_list_context(include_statistics=include_statistics, viewer=user)
     context["numoj_cli_resource"] = _numoj_cli_resource(user)
     problems = [dict(problem) for problem in (get_all_problems() or [])]
-    metrics = get_problem_submission_metrics(
-        [problem.get("id") for problem in problems]
+    problem_ids = [problem.get("id") for problem in problems]
+    metrics = (
+        get_problem_submission_metrics(problem_ids)
+        if int(user.get("is_admin") or 0) == 1
+        else get_problem_submission_metrics(problem_ids, viewer=user)
     )
     for problem in problems:
         problem["submission_metrics"] = metrics.get(int(problem["id"]))
@@ -385,6 +397,10 @@ def build_problem_detail_context(user, problem_id, selected_class_en=None):
 
     # 题目详情页只展示最近 3 条提交，直接用 LIMIT 取，避免把该用户该题的全部提交拉进内存。
     last_submissions = get_submission_summaries_by_user_and_problem(user['username'], problem_id, limit=3)
+    last_submissions = [
+        project_submission_grading(submission, problem, user)
+        for submission in last_submissions
+    ]
     lean_workspace = None
     if (
         int(problem.get("type") or 0) == 1

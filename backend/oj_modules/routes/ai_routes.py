@@ -116,6 +116,10 @@ def _prepare_ai_code_marks_request(data):
         payload = response.get_json(silent=True) or {}
         raise _AiRequestError(payload.get("message") or "无法访问题目", status_code)
 
+    # 书面题的 code 字段实际保存批改评语；不能通过代码分析或旧缓存绕过评分权限。
+    if int(problem.get('type') or submission.get('problem_type') or 0) == 2:
+        raise _AiRequestError("书面题不支持代码标注", 400)
+
     problem_content = problem.get('content') or ''
     if not problem_content:
         raise _AiRequestError("缺少题目内容", 400)

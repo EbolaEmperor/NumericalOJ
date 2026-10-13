@@ -62,7 +62,8 @@ export interface SubmissionSummary extends JsonRecord {
   display_problem_title?: string
   username?: string
   status?: string
-  score?: number
+  score?: number | null
+  result_visible?: boolean
   created_at?: string
 }
 

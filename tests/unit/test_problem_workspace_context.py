@@ -11,6 +11,11 @@ from backend.oj_modules.routes import problem_core_routes
 
 def _stub_base_context(monkeypatch):
     monkeypatch.setattr(
+        problem_catalog,
+        "get_problem_visibility_map",
+        lambda problem_ids: {problem_id: {"type": 1} for problem_id in problem_ids},
+    )
+    monkeypatch.setattr(
         problem_context,
         "_base_problem_list_context",
         lambda **_kwargs: {"now": datetime(2026, 7, 22, 11, 35)},
@@ -170,7 +175,10 @@ def test_student_multi_class_context_only_aggregates_selected_class(monkeypatch)
     assert context["selected_class_en"] == "C2"
     assert context["selected_homeworks"] == [{"id": 2, "problem_id": 22}]
     assert [block["class_en"] for block in context["homeworks_by_class"]] == ["C1", "C2"]
-    attach_metrics.assert_called_once_with(context["selected_homeworks"], class_en="C2")
+    attach_metrics.assert_called_once_with(
+        context["selected_homeworks"], class_en="C2",
+        viewer={"id": 8, "username": "student", "is_admin": 0},
+    )
     assert context["class_activity"] == ["C2"]
 
 
