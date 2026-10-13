@@ -200,7 +200,8 @@ jobs:
           cache-from: type=gha,scope=lean4
           cache-to: type=gha,mode=max,scope=lean4
       - name: Build the Agent Judge lite image
-        timeout-minutes: 30
+        # 缓存过期或基础镜像更新时需要冷构建，预留镜像导出和缓存上传时间。
+        timeout-minutes: 60
         uses: docker/build-push-action@v7
         with:
           context: docker
