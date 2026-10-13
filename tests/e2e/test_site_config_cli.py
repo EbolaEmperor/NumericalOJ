@@ -729,7 +729,7 @@ def test_site_config_cli_complete_lifecycle(cli, unique_suffix, tmp_path):
     assert "enable_thinking" not in omni_payload
     assert "thinking" not in omni_payload
     vision_payload = request_for("anthropic_messages", vision_model)["payload"]
-    assert "thinking" not in vision_payload
+    assert vision_payload["thinking"] == {"type": "disabled"}
     assert "enable_thinking" not in vision_payload
     embedding_payload = request_for("openai_embeddings", embedding_model)["payload"]
     assert embedding_payload["input"] == ["NumericalOJ endpoint connectivity probe"]
