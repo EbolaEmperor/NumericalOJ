@@ -2,13 +2,15 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {useEffect, useMemo, useState, type FormEvent} from 'react'
 import {useParams} from 'react-router-dom'
 
-import {apiFetch, errorMessage} from '../api/client'
+import {apiFetch, errorMessage, queryString} from '../api/client'
 import type {ApiEnvelope, JsonRecord} from '../api/types'
 import {MarkdownContent} from '../components/MarkdownContent'
 import {ModelLogo} from '../components/ModelLogo'
 import {MonacoEditor} from '../components/MonacoEditor'
 import {Link, useNavigate} from '../components/PageNavigation'
 import {ErrorState, LoadingState} from '../components/PageState'
+import {ReactModal} from '../components/ReactModal'
+import SearchableTargetPicker from '../components/SearchableTargetPicker'
 import {useDismissibleDropdown} from '../components/useDismissibleDropdown'
 import {useSession} from '../session'
 
@@ -59,12 +61,46 @@ function EndpointChoice({name, label, value, items, onChange}: {name: string; la
 }
 
 interface WrittenVoteRow {endpoint_id: string; count: number}
+interface WrittenVoteSource {id: number; title: string; written_vote_config: Array<{endpoint_id: number; count: number}>}
 
-function WrittenVoteEditor({rows, items, scorePublic, onScorePublicChange, onChange}: {rows: WrittenVoteRow[]; items: JsonRecord[]; scorePublic: boolean; onScorePublicChange: (value: boolean) => void; onChange: (rows: WrittenVoteRow[]) => void}) {
+function WrittenVoteCopyDialog({open, gradingMode, currentProblemId, items, onClose, onCopy}: {open: boolean; gradingMode: string; currentProblemId: number; items: JsonRecord[]; onClose: () => void; onCopy: (source: WrittenVoteSource) => void}) {
+  const [selected, setSelected] = useState('')
+  const sources = useQuery({
+    queryKey: ['admin', 'written-vote-configs', gradingMode, currentProblemId],
+    queryFn: () => apiFetch<ApiEnvelope & {problems: WrittenVoteSource[]}>(`/api/admin/problems/written-vote-configs${queryString({grading_mode: gradingMode, exclude_problem_id: currentProblemId || undefined})}`),
+    enabled: open,
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+  })
+  useEffect(() => {if (open) setSelected('')}, [open, gradingMode, currentProblemId])
+  const source = sources.data?.problems.find((item) => String(item.id) === selected)
+  const loading = sources.isPending || sources.isFetching
+  const confirmCopy = () => {
+    if (!source || loading || sources.isError) return
+    onCopy(source)
+    onClose()
+  }
+  return <ReactModal open={open} onClose={onClose} id="writtenVoteCopyModal" labelledBy="writtenVoteCopyModalLabel" className="written-vote-copy-modal" dialogClassName="modal-dialog-centered">
+    <div className="numoj-content" style={{display: 'contents'}}><div className="modal-content">
+      <div className="modal-header"><h5 className="modal-title aje-modal-title" id="writtenVoteCopyModalLabel">从其它题目里复制配置</h5><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div>
+      <div className="modal-body">{loading ? <LoadingState label="正在读取题目配置" /> : sources.isError ? <div className="alert alert-danger" role="alert">{errorMessage(sources.error)}<button type="button" className="btn btn-sm btn-outline-danger ms-2" onClick={() => void sources.refetch()}>重试</button></div> : <>
+        <SearchableTargetPicker id="writtenVoteSourceSearch" label="搜索题目" hideLabel showSelection={false} placeholder="按编号或标题搜索题目…" items={sources.data?.problems || []} value={selected} onChange={setSelected} />
+        {source ? source.written_vote_config.length ? <ul className="written-vote-copy-preview list-unstyled mb-0" aria-label="评委配置预览">{source.written_vote_config.map((row) => {
+          const endpoint = items.find((item) => Number(item.id) === row.endpoint_id)
+          const model = String(endpoint?.model || endpoint?.name || '未命名模型')
+          return <li key={row.endpoint_id} aria-label={`${model} · 节点 ${row.endpoint_id} · ${row.count} 票`}><ModelLogo model={model} /><span className="written-vote-copy-model">{model}</span><span className="written-vote-copy-node">节点 {row.endpoint_id}</span><span className="written-vote-copy-votes"><strong>{row.count}</strong><span>票</span></span></li>
+        })}</ul> : <p className="form-text mb-0">此题目未配置评委</p> : null}
+      </>}</div>
+      <div className="modal-footer"><button type="button" className="btn btn-primary" disabled={!source || loading || sources.isError} onClick={confirmCopy}>确认</button></div>
+    </div></div>
+  </ReactModal>
+}
+
+function WrittenVoteEditor({rows, items, scorePublic, onScorePublicChange, onCopy, onChange}: {rows: WrittenVoteRow[]; items: JsonRecord[]; scorePublic: boolean; onScorePublicChange: (value: boolean) => void; onCopy: () => void; onChange: (rows: WrittenVoteRow[]) => void}) {
   const options = [{value: '', label: '选择评委模型', icon: 'fa-minus-circle'}, ...items.map((item) => ({value: String(item.id || ''), label: `${String(item.model || '未命名模型')} · #${String(item.id || '')}`, model: String(item.model || '')}))]
   const total = rows.reduce((sum, row) => sum + (row.endpoint_id ? row.count : 0), 0)
   const updateCount = (index: number, count: number) => onChange(rows.map((item, rowIndex) => rowIndex === index ? {...item, count: Math.max(1, Math.min(5, count || 1))} : item))
-  return <section className="aje written-vote-editor mb-3" aria-label="AI 评委配置"><div className="aje-shell"><div className="aje-head"><div className="written-vote-heading"><div className="aje-title"><EditorIcon name="judges" />AI 评委 Vote</div><button type="button" role="switch" className="written-score-public-switch" aria-label="公开评分" aria-checked={scorePublic} onClick={() => onScorePublicChange(!scorePublic)}><span className="written-score-public-track" aria-hidden="true"><span /></span><span>公开评分</span></button></div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{rows.length} 个评委</span><span className={`aje-total${total > 10 ? ' is-invalid' : ''}`}>票数 <b>{total}</b></span></div><button type="button" className="aje-add" title="添加评委模型" aria-label="添加评委模型" disabled={rows.length >= 10} onClick={() => onChange([...rows, {endpoint_id: '', count: 1}])}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{rows.map((row, index) => <article className="aje-card written-vote-card" key={index}><div className="aje-card-top"><span className="written-vote-card-index">评委 {String(index + 1).padStart(2, '0')}</span><button type="button" className="written-vote-remove" title={`删除评委模型 ${index + 1}`} aria-label={`删除评委模型 ${index + 1}`} disabled={rows.length === 1} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}><i className="fas fa-trash-can" /></button></div><div className="aje-card-main written-vote-card-main"><Choice value={row.endpoint_id} options={options} icon="fa-microchip" onChange={(value) => onChange(rows.map((item, rowIndex) => rowIndex === index ? {...item, endpoint_id: value} : item))} /></div><div className="written-vote-card-footer"><div className="written-vote-stepper" role="group" aria-label={`评委模型 ${index + 1} Vote 次数`}><button type="button" aria-label={`减少评委模型 ${index + 1} Vote 次数`} disabled={row.count <= 1} onClick={() => updateCount(index, row.count - 1)}><i className="fas fa-minus" /></button><input id={`writtenVoteCount${index}`} type="text" inputMode="numeric" pattern="[1-5]" role="spinbutton" aria-label={`评委模型 ${index + 1} Vote 次数`} aria-valuemin={1} aria-valuemax={5} aria-valuenow={row.count} value={row.count} onChange={(event) => updateCount(index, Number(event.target.value))} /><span>票</span><button type="button" aria-label={`增加评委模型 ${index + 1} Vote 次数`} disabled={row.count >= 5} onClick={() => updateCount(index, row.count + 1)}><i className="fas fa-plus" /></button></div></div></article>)}</div></div></section>
+  return <section className="aje written-vote-editor mb-3" aria-label="AI 评委配置"><div className="aje-shell"><div className="aje-head"><div className="written-vote-heading"><div className="aje-title"><EditorIcon name="judges" />AI 评委 Vote</div><button type="button" role="switch" className="written-score-public-switch" aria-label="公开评分" aria-checked={scorePublic} onClick={() => onScorePublicChange(!scorePublic)}><span className="written-score-public-track" aria-hidden="true"><span /></span><span>公开评分</span></button></div><div className="aje-head-tools"><div className="aje-meta"><span className="aje-count">{rows.length} 个评委</span><span className={`aje-total${total > 10 ? ' is-invalid' : ''}`}>票数 <b>{total}</b></span></div><button type="button" className="aje-add" aria-label="复制 AI Vote 配置" title="从其它题目里复制配置" onClick={onCopy}><i className="fas fa-copy" aria-hidden="true" /></button><button type="button" className="aje-add" title="添加评委模型" aria-label="添加评委模型" disabled={rows.length >= 10} onClick={() => onChange([...rows, {endpoint_id: '', count: 1}])}><i className="fas fa-plus" /></button></div></div><div className="aje-grid">{rows.map((row, index) => <article className="aje-card written-vote-card" key={index}><div className="aje-card-top"><span className="written-vote-card-index">评委 {String(index + 1).padStart(2, '0')}</span><button type="button" className="written-vote-remove" title={`删除评委模型 ${index + 1}`} aria-label={`删除评委模型 ${index + 1}`} disabled={rows.length === 1} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}><i className="fas fa-trash-can" /></button></div><div className="aje-card-main written-vote-card-main"><Choice value={row.endpoint_id} options={options} icon="fa-microchip" onChange={(value) => onChange(rows.map((item, rowIndex) => rowIndex === index ? {...item, endpoint_id: value} : item))} /></div><div className="written-vote-card-footer"><div className="written-vote-stepper" role="group" aria-label={`评委模型 ${index + 1} Vote 次数`}><button type="button" aria-label={`减少评委模型 ${index + 1} Vote 次数`} disabled={row.count <= 1} onClick={() => updateCount(index, row.count - 1)}><i className="fas fa-minus" /></button><input id={`writtenVoteCount${index}`} type="text" inputMode="numeric" pattern="[1-5]" role="spinbutton" aria-label={`评委模型 ${index + 1} Vote 次数`} aria-valuemin={1} aria-valuemax={5} aria-valuenow={row.count} value={row.count} onChange={(event) => updateCount(index, Number(event.target.value))} /><span>票</span><button type="button" aria-label={`增加评委模型 ${index + 1} Vote 次数`} disabled={row.count >= 5} onClick={() => updateCount(index, row.count + 1)}><i className="fas fa-plus" /></button></div></div></article>)}</div></div></section>
 }
 
 function asString(value: unknown, fallback = '') {return value == null ? fallback : String(value)}
@@ -82,6 +118,8 @@ export default function ProblemEditorPage() {
   const [writtenVoteRows, setWrittenVoteRows] = useState<WrittenVoteRow[]>([{endpoint_id: '', count: 1}])
   const [testCodeTouched, setTestCodeTouched] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [voteCopyOpen, setVoteCopyOpen] = useState(false)
+  const [voteCopyNotice, setVoteCopyNotice] = useState('')
   const set = (key: string, value: string) => setValues((current) => ({...current, [key]: value}))
   useEffect(() => {
     if (!seed) return
@@ -109,6 +147,7 @@ export default function ProblemEditorPage() {
   const endpointCandidates = query.data?.options.llm_endpoint_candidates || {}
   const writtenVoteCandidates = writtenMode === '2' ? endpointCandidates.direct_image_grading_endpoint_id || [] : endpointCandidates.text_grading_endpoint_id || []
   const changeWrittenMode = (nextMode: string) => {
+    setVoteCopyNotice('')
     if (writtenMode !== '4' && nextMode !== '4' && (writtenMode === '2') !== (nextMode === '2')) {
       setWrittenVoteRows([{endpoint_id: '', count: 1}])
     }
@@ -195,7 +234,8 @@ export default function ProblemEditorPage() {
             <div className="problem-editor-examples"><div className="problem-editor-examples-head"><span>示例回复</span><button type="button" onClick={() => setExamples([...examples, ''])} aria-label="添加示例"><i className="fas fa-plus" /></button></div>{examples.map((example, index) => <div className="problem-editor-example" key={index}><textarea rows={2} value={example} onChange={(event) => setExamples(examples.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} /><button type="button" onClick={() => setExamples(examples.filter((_, itemIndex) => itemIndex !== index))} aria-label={`删除示例 ${index + 1}`}><i className="fas fa-trash-can" /></button></div>)}</div>
           </div></section> : null}
           {type === '2' && writtenMode === '1' ? <section className="problem-editor-card"><header><h2><EditorIcon name="ocr" />OCR</h2></header><div className="problem-editor-fields"><EndpointChoice name="ocr_endpoint_id" label="识别端点" value={values.ocr_endpoint_id || ''} items={endpointCandidates.ocr_endpoint_id || []} onChange={(value) => set('ocr_endpoint_id', value)} /></div></section> : null}
-          {type === '2' && writtenMode !== '4' ? <WrittenVoteEditor rows={writtenVoteRows} items={writtenVoteCandidates} scorePublic={values.written_score_public !== '0'} onScorePublicChange={(value) => set('written_score_public', value ? '1' : '0')} onChange={setWrittenVoteRows} /> : null}
+          {type === '2' && writtenMode !== '4' ? <WrittenVoteEditor rows={writtenVoteRows} items={writtenVoteCandidates} scorePublic={values.written_score_public !== '0'} onScorePublicChange={(value) => set('written_score_public', value ? '1' : '0')} onCopy={() => setVoteCopyOpen(true)} onChange={setWrittenVoteRows} /> : null}
+          {voteCopyNotice && type === '2' && writtenMode !== '4' ? <p className="written-vote-copy-notice" role="status">{voteCopyNotice}</p> : null}
           {type === '2' && writtenMode !== '4' ? <section className="problem-editor-card"><header><h2><EditorIcon name="rubric" />评分标准</h2></header><div className="problem-editor-fields"><textarea className="problem-editor-rubric" rows={8} aria-label="评分标准" value={values.written_grading_prompt || (!editing ? query.data.options.default_written_grading_prompt : '') || ''} onChange={(event) => set('written_grading_prompt', event.target.value)} /></div></section> : null}
         </aside>
       </div>
@@ -205,5 +245,11 @@ export default function ProblemEditorPage() {
         <label className="problem-editor-code-card problem-editor-code-card--compact" htmlFor="forbiddenFunctions"><span>禁用函数</span><input id="forbiddenFunctions" value={values.forbidden_func || ''} onChange={(event) => set('forbidden_func', event.target.value)} /></label>
       </section> : null}
     </form>
+    <WrittenVoteCopyDialog open={voteCopyOpen} gradingMode={writtenMode} currentProblemId={numericId} items={writtenVoteCandidates} onClose={() => setVoteCopyOpen(false)} onCopy={(source) => {
+      setWrittenVoteRows(source.written_vote_config.length ? source.written_vote_config.map((row) => ({endpoint_id: String(row.endpoint_id), count: row.count})) : [{endpoint_id: '', count: 1}])
+      // 空 Vote 会回退旧单评委绑定，复制时一并解除当前批改用途的旧绑定。
+      set(writtenMode === '2' ? 'direct_image_grading_endpoint_id' : 'text_grading_endpoint_id', '')
+      setVoteCopyNotice(`已复制 #${source.id} ${source.title} 的评委配置，保存题目后生效。`)
+    }} />
   </section>
 }

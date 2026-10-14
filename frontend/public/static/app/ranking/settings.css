@@ -214,7 +214,8 @@
   background:#fbfcfd;
   padding:.95rem 1.05rem;
 }
-.aje-modal .modal-title { font-size:1rem; font-weight:750; letter-spacing:0; }
+.aje-modal .modal-title,
+.modal-title.aje-modal-title { font-size:1rem; font-weight:750; letter-spacing:0; }
 .aje-modal .modal-body { padding:1rem 1.05rem 1.05rem; background:#fff; }
 .aje-modal .modal-footer {
   border-color:var(--line);

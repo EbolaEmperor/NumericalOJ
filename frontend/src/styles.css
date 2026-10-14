@@ -680,6 +680,16 @@ html.numoj-page-transition-entering #root .numoj-content {
 
 .written-vote-editor .written-vote-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .written-vote-editor .aje-head { gap: 8px; }
+.written-vote-copy-notice { grid-column: 1 / -1; margin: -6px 0 0; color: var(--editor-muted); font-size: 12px; }
+.written-vote-copy-modal .modal-body { padding: 20px; }
+.written-vote-copy-preview li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto 48px; align-items: center; gap: 10px; padding: 12px 0; font-size: 14px; }
+.written-vote-copy-preview li + li { border-top: 1px solid var(--numoj-line, #dfe4ea); }
+.written-vote-copy-preview [data-model-family-logo] { flex: 0 0 auto; width: 18px; height: 18px; font-size: 18px; }
+.written-vote-copy-model { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.written-vote-copy-node { color: var(--numoj-ink-3, #71717a); font-size: 12px; white-space: nowrap; }
+.written-vote-copy-votes { display: flex; align-items: baseline; justify-content: flex-end; gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.written-vote-copy-votes strong { font-weight: 700; }
+.written-vote-copy-votes > span { color: var(--numoj-ink-3, #71717a); font-size: 12px; }
 .written-score-public-switch {
   display: inline-flex;
   align-items: center;

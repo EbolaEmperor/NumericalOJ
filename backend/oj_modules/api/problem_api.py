@@ -10,8 +10,12 @@ from backend.oj_modules.problems.grading import (
     DEFAULT_WRITTEN_GRADING_PROMPT as _DEFAULT_WRITTEN_GRADING_PROMPT,
 )
 from backend.oj_modules.problems.llm_bindings import (
+    DIRECT_IMAGE_GRADING_ENDPOINT_ID,
+    TEXT_GRADING_ENDPOINT_ID,
     get_problem_llm_endpoint_candidates as _problem_llm_endpoint_candidates,
 )
+from backend.oj_modules.problems.written_vote import copyable_written_vote_config
+from backend.oj_modules.problems.written_vote_copy import list_written_vote_copy_sources
 from backend.oj_modules.problems.context import (
     build_problem_deadline_warning_context,
     build_problem_detail_context,
@@ -296,6 +300,58 @@ def _promptly_review_config_from_prompt(prompt_text):
         "example_replies": config.get("example_replies") or [],
         "raw_is_json": bool(config.get("raw_is_json")),
     }
+
+
+@problem_api_bp.route("/admin/problems/written-vote-configs", methods=["GET"])
+def written_vote_configs():
+    user = current_user()
+    if not is_admin(user):
+        return json_error("无权限", 403)
+
+    try:
+        grading_mode = int(request.args.get("grading_mode", "1"))
+    except (TypeError, ValueError):
+        return json_error("书面题批改模式不合法", 400)
+    if grading_mode not in {1, 2, 3}:
+        return json_error("书面题批改模式不合法", 400)
+
+    exclude_problem_id = None
+    if "exclude_problem_id" in request.args:
+        raw_id = request.args.get("exclude_problem_id", "").strip()
+        if not raw_id.isascii() or not raw_id.isdigit():
+            return json_error("排除题目 ID 必须是正整数", 400)
+        try:
+            exclude_problem_id = int(raw_id)
+        except ValueError:
+            return json_error("排除题目 ID 必须是正整数", 400)
+        if exclude_problem_id <= 0 or exclude_problem_id > 9_223_372_036_854_775_807:
+            return json_error("排除题目 ID 必须是正整数", 400)
+
+    binding_key = (
+        DIRECT_IMAGE_GRADING_ENDPOINT_ID
+        if grading_mode == 2
+        else TEXT_GRADING_ENDPOINT_ID
+    )
+    allowed_endpoint_ids = {
+        endpoint["id"]
+        for endpoint in _problem_llm_endpoint_candidates().get(binding_key, [])
+    }
+    items = []
+    for problem in list_written_vote_copy_sources():
+        if problem["id"] == exclude_problem_id:
+            continue
+        config = copyable_written_vote_config(
+            problem, allowed_endpoint_ids=allowed_endpoint_ids,
+        )
+        if config is None:
+            continue
+        # 明确列出可复制字段，避免带出公开评分设置、提示词或端点凭据。
+        items.append({
+            "id": problem["id"],
+            "title": problem.get("title") or "",
+            "written_vote_config": config,
+        })
+    return json_success(problems=items)
 
 
 @problem_api_bp.route("/admin/problems/create-form", methods=["GET"])

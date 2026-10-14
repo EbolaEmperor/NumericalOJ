@@ -8,6 +8,12 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 
+from backend.oj_modules.problems.llm_bindings import (
+    DIRECT_IMAGE_GRADING_ENDPOINT_ID,
+    TEXT_GRADING_ENDPOINT_ID,
+    deserialize_problem_llm_bindings,
+)
+
 
 MAX_VOTES_PER_ENDPOINT = 5
 MAX_TOTAL_VOTES = 10
@@ -79,10 +85,48 @@ def written_vote_config_from_form(form, *, existing=None):
     return normalize_written_vote_config(form.get("written_vote_config"))
 
 
+def copyable_written_vote_config(problem, *, allowed_endpoint_ids):
+    """返回可完整复制的书面题 Vote 配置；不兼容时不返回部分评委。
+
+    旧题未保存多评委配置时，沿用批改链路的单端点 1 Vote 语义。
+    完全未指定评委的题目返回空数组，供目标题目恢复为默认配置。
+    """
+
+    try:
+        problem_type = int(problem.get("type") or 1)
+        raw_mode = problem.get("written_grading_mode")
+        written_mode = int(1 if raw_mode is None else raw_mode)
+    except (TypeError, ValueError):
+        return None
+    if problem_type != 2 or written_mode not in {1, 2, 3}:
+        return None
+
+    try:
+        config = normalize_written_vote_config(problem.get("written_vote_config"))
+    except WrittenVoteConfigError:
+        return None
+    if not config:
+        binding_key = (
+            DIRECT_IMAGE_GRADING_ENDPOINT_ID
+            if written_mode == 2
+            else TEXT_GRADING_ENDPOINT_ID
+        )
+        endpoint_id = deserialize_problem_llm_bindings(
+            problem.get("llm_endpoint_bindings")
+        ).get(binding_key)
+        if endpoint_id is not None:
+            config = [{"endpoint_id": endpoint_id, "count": 1}]
+
+    if any(item["endpoint_id"] not in allowed_endpoint_ids for item in config):
+        return None
+    return config
+
+
 __all__ = [
     "MAX_TOTAL_VOTES",
     "MAX_VOTES_PER_ENDPOINT",
     "WrittenVoteConfigError",
+    "copyable_written_vote_config",
     "deserialize_written_vote_config",
     "normalize_written_vote_config",
     "serialize_written_vote_config",
