@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from backend.oj_modules.runtime import pending_recovery as startup_requeue
+from backend.oj_modules.submissions import rejudge_dispatch
 from backend.oj_modules.tasks.ranking import (
     agent_judge as ranking_agent_judge_tasks,
     elo as ranking_elo_tasks,
@@ -362,3 +363,50 @@ def test_judge_recovery_preserves_existing_attempt_and_workspace(monkeypatch):
         task, {'id': 15, 'judge_attempt_id': 'persisted-attempt'}, requeue_index=0,
     )
     assert task.calls[0][0] == [15, 'persisted-attempt']
+
+
+def test_bulk_rejudge_reservations_suppress_watchdog_until_expiration(monkeypatch):
+    redis_client = _FakeRedis()
+    reservation_calls = []
+    original_set = redis_client.set
+
+    def capture_set(key, value, *, ex=None, nx=False):
+        reservation_calls.append((key, value, ex, nx))
+        return original_set(key, value, ex=ex, nx=nx)
+
+    redis_client.set = capture_set
+    redis_client.hset = lambda *_args, **_kwargs: None
+    old = datetime.now() - timedelta(days=10)
+    rows = [
+        {"id": 11, "problem_type": 1, "status": "Pending", "created_at": old},
+        {"id": 12, "problem_type": 1, "status": "Pending", "created_at": old},
+    ]
+    monkeypatch.setattr(rejudge_dispatch, "reset_submission_for_rejudge", lambda *_args: None)
+    task = types.SimpleNamespace(apply_async=lambda **_kwargs: None)
+    rejudge_dispatch.dispatch_rejudge_submissions(rows, "rejudge:batch:example", task, redis_client)
+    assert reservation_calls[:2] == [
+        ("submission:11:pending_requeue", "rejudge:batch:example", 602, False),
+        ("submission:12:pending_requeue", "rejudge:batch:example", 603, False),
+    ]
+
+    monkeypatch.setattr(startup_requeue, "_redis_client", lambda: redis_client)
+    monkeypatch.setattr(startup_requeue, "get_incomplete_submissions", lambda: rows)
+    watchdog_task = _FakeTask()
+    assert startup_requeue._requeue_stale_pending_submissions(watchdog_task, None, source="watchdog") == 0
+    assert watchdog_task.calls == []
+    assert redis_client.values["submission:11:pending_requeue"] == "rejudge:batch:example"
+
+    # 模拟 Redis TTL 到期：保留原有 watchdog 抢占和重投行为，恢复无需更改授权边界。
+    redis_client.delete("submission:11:pending_requeue", "submission:12:pending_requeue")
+    assert startup_requeue._requeue_stale_pending_submissions(watchdog_task, None, source="watchdog") == 2
+    assert watchdog_task.calls == [([11], 0), ([12], 1)]
+
+
+def test_watchdog_ranking_claim_uses_its_existing_separate_namespace():
+    redis_client = _FakeRedis()
+    key_fmt = "ranking_submission:{submission_id}:pending_requeue"
+
+    assert startup_requeue._claim_watchdog_requeue(redis_client, 11, key_fmt=key_fmt)
+    assert redis_client.values == {"ranking_submission:11:pending_requeue": "1"}
+    startup_requeue._release_watchdog_requeue_claim(redis_client, 11, key_fmt=key_fmt)
+    assert redis_client.values == {}

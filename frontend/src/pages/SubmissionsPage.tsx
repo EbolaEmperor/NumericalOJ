@@ -1,5 +1,5 @@
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
-import {useCallback, useEffect, useRef, useState, type FormEvent} from 'react'
+import {useCallback, useEffect, useState, type FormEvent} from 'react'
 import {useLocation, useSearchParams} from 'react-router-dom'
 
 import {apiFetch, queryString} from '../api/client'
@@ -7,15 +7,15 @@ import type {ApiEnvelope, JsonRecord, SubmissionSummary} from '../api/types'
 import {ErrorState, LoadingState} from '../components/PageState'
 import {MathCurveLoader} from '../components/MathCurveLoader'
 import {Link, useNavigate} from '../components/PageNavigation'
-import {ReactModal} from '../components/ReactModal'
+import {ChoicePicker} from '../components/ChoicePicker'
 import {submissionNavigationState} from '../lib/submissionNavigation'
 import {useSession} from '../session'
+import {RejudgeFilters} from './submission/RejudgeFilters'
 import {submissionStatusIsActive, type SubmissionStatusSnapshot, useSubmissionStatusStream} from './submission/submissionStatusStream'
 
 interface ProblemOption extends JsonRecord {problem_id: number; filter_label: string}
 interface Response extends ApiEnvelope {submissions: SubmissionSummary[]; page: number; total_pages: number; page_numbers?: number[]; scope: string; problem_options?: ProblemOption[]; current_problem_label?: string}
 interface PanelResponse extends ApiEnvelope {submission: JsonRecord; problem: JsonRecord; test_points: JsonRecord[]; detail_url: string; status_stream_url?: string; rejudge_url?: string}
-interface RejudgeRangeResponse extends ApiEnvelope {preview?: boolean; too_many?: boolean; max_total?: number; total?: number; min_created_at?: string; max_created_at?: string; progress?: number; done?: number}
 
 const statusOptions = [
   ['', '全部'], ['accepted', 'Accepted'], ['wrong_answer', 'Wrong Answer'], ['unaccepted', 'Unaccepted'],
@@ -142,47 +142,6 @@ function Panel({id, isAdmin, origin, onLiveSnapshot}: {id?: number; isAdmin: boo
   </article></aside>
 }
 
-function TimeRangeRejudge() {
-  const [formOpen, setFormOpen] = useState(false)
-  const [progressOpen, setProgressOpen] = useState(false)
-  const [start, setStart] = useState('')
-  const [end, setEnd] = useState('')
-  const [progressActive, setProgressActive] = useState(false)
-  const [progressTotal, setProgressTotal] = useState(0)
-  const request = useMutation({mutationFn: (body: {start: string; end: string; confirm_total?: number}) => apiFetch<RejudgeRangeResponse>('/api/admin/rejudge-ranges', {method: 'POST', body: JSON.stringify(body)})})
-  const progress = useQuery({queryKey: ['admin', 'rejudge-ranges', 'status'], queryFn: () => apiFetch<RejudgeRangeResponse>('/api/admin/rejudge-ranges/status'), enabled: progressActive, refetchInterval: progressActive ? 1500 : false})
-  const percent = Number(progress.data?.progress || 0)
-  const done = Number(progress.data?.done || 0)
-  const total = Number(progress.data?.total || progressTotal || 0)
-  useEffect(() => {if (progressActive && percent >= 100) setProgressActive(false)}, [percent, progressActive])
-  useEffect(() => {if (progress.isError) setProgressActive(false)}, [progress.isError])
-
-  const submit = async () => {
-    if (!start || !end) {window.alert('请选择起始时间和结束时间'); return}
-    if (start > end) {window.alert('起始时间不能晚于结束时间'); return}
-    try {
-      const preview = await request.mutateAsync({start, end})
-      if (!preview.preview) return
-      if (preview.too_many) throw new Error(`该时间范围命中 ${preview.total} 条提交，超过单次上限 ${preview.max_total} 条。`)
-      const confirmed = window.confirm(`该时间范围将重测 ${preview.total} 条提交。\n实际命中时间：${preview.min_created_at} ~ ${preview.max_created_at}\n\n确认开始重测吗？`)
-      if (!confirmed) return
-      const result = await request.mutateAsync({start, end, confirm_total: Number(preview.total)})
-      setProgressTotal(Number(result.total || 0))
-      setProgressActive(true)
-      setFormOpen(false)
-      setProgressOpen(true)
-    } catch (error) {
-      window.alert(`重测失败：${error instanceof Error ? error.message : '请稍后重试'}`)
-    }
-  }
-
-  return <>
-    <button type="button" className="submission-button submission-button--dark" onClick={() => setFormOpen(true)}><i className="fas fa-rotate-right" aria-hidden="true" /> 按时间范围重测</button>
-    <ReactModal open={formOpen} onClose={() => setFormOpen(false)} id="timeRangeRejudgeModal" labelledBy="timeRangeRejudgeLabel" className="submission-rejudge-modal"><div className="modal-content"><div className="modal-header"><h2 className="modal-title fs-5" id="timeRangeRejudgeLabel"><i className="fas fa-rotate-right me-2" aria-hidden="true" />按时间范围重测</h2><button type="button" className="btn-close" aria-label="关闭" onClick={() => setFormOpen(false)} /></div><div className="modal-body"><div className="mb-3"><label htmlFor="rejudgeStartTime" className="form-label">起始时间</label><input type="datetime-local" className="form-control" id="rejudgeStartTime" value={start} onChange={(event) => setStart(event.target.value)} /></div><div><label htmlFor="rejudgeEndTime" className="form-label">结束时间</label><input type="datetime-local" className="form-control" id="rejudgeEndTime" value={end} onChange={(event) => setEnd(event.target.value)} /></div></div><div className="modal-footer"><button type="button" className="submission-button submission-button--ghost" onClick={() => setFormOpen(false)}>取消</button><button type="button" className="submission-button submission-button--accent" id="btnStartTimeRangeRejudge" disabled={request.isPending} onClick={() => void submit()}><i className="fas fa-play" aria-hidden="true" /> 开始重测</button></div></div></ReactModal>
-    <ReactModal open={progressOpen} onClose={() => setProgressOpen(false)} id="timeRangeRejudgeProgressModal" labelledBy="timeRangeRejudgeProgressLabel" className="submission-rejudge-modal"><div className="modal-content"><div className="modal-header"><h2 className="modal-title fs-5" id="timeRangeRejudgeProgressLabel">重测进度</h2><button type="button" className="btn-close" aria-label="关闭" onClick={() => setProgressOpen(false)} /></div><div className="modal-body"><div className="progress mb-2"><div className="progress-bar" role="progressbar" id="timeRangeRejudgeProgressBar" style={{width: `${percent}%`}} aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}>{percent}%</div></div>{progress.isError ? <div className="alert alert-danger mb-0" role="alert">无法读取重测进度：{progress.error.message}<button type="button" className="btn btn-sm btn-outline-danger ms-2" onClick={() => {setProgressActive(true); void progress.refetch()}}>重试</button></div> : <p className="small text-muted mb-0" id="timeRangeRejudgeProgressDetail">{progressActive || progress.data ? `已完成 ${done} / ${total}` : '尚未开始'}</p>}</div><div className="modal-footer"><button type="button" className="submission-button submission-button--ghost" onClick={() => setProgressOpen(false)}>关闭</button></div></div></ReactModal>
-  </>
-}
-
 export default function SubmissionsPage() {
   const {session} = useSession()
   const queryClient = useQueryClient()
@@ -194,10 +153,9 @@ export default function SubmissionsPage() {
   const status = params.get('status') || ''
   const problemId = params.get('problem_id') || ''
   const [draft, setDraft] = useState(q)
-  const [problemDraft, setProblemDraft] = useState('')
+  const [problemDraft, setProblemDraft] = useState(problemId)
   const [selectedId, setSelectedId] = useState<number>()
   const desktop = useDesktopSubmissionLayout()
-  const problemInput = useRef<HTMLInputElement>(null)
   const listQueryKey = ['submissions', page, q, status, problemId] as const
   const result = useQuery({
     queryKey: listQueryKey,
@@ -229,30 +187,28 @@ export default function SubmissionsPage() {
       } : row),
     } : current)
   }, [page, problemId, q, queryClient, status])
-  useEffect(() => {setProblemDraft(result.data?.current_problem_label || '')}, [problemId, result.data?.current_problem_label])
+  useEffect(() => {setProblemDraft(problemId)}, [problemId])
   const search = (event: FormEvent) => {
     event.preventDefault()
-    const option = (result.data?.problem_options || []).find((item) => item.filter_label === problemDraft.trim())
-    if (problemDraft.trim() && !option) {
-      problemInput.current?.setCustomValidity('请从题目建议列表中选择，或清空该筛选。'); problemInput.current?.reportValidity(); return
-    }
-    problemInput.current?.setCustomValidity('')
-    navigate(`/submissions${queryString({q: draft, status, problem_id: option?.problem_id || undefined})}`)
+    navigate(`/submissions${queryString({q: draft, status, problem_id: problemDraft || undefined})}`)
   }
   if (result.isPending) return <LoadingState label="正在同步提交记录" />
   if (result.isError) return <ErrorState message={result.error.message} retry={() => void result.refetch()} />
   const origin = `${location.pathname}${location.search}`
   const openSubmission = (id: number) => navigate(`/submissions/${id}`, {state: submissionNavigationState(origin)})
   const pages = Array.from({length: Math.max(0, Math.min(result.data?.total_pages || 1, page + 3) - Math.max(1, page - 3) + 1)}, (_, index) => Math.max(1, page - 3) + index)
+  const problemChoices = [{value: '', label: '全部题目', icon: 'fa-book-open'}, ...(result.data.problem_options || []).map((option) => ({value: String(option.problem_id), label: option.filter_label, icon: 'fa-book-open'}))]
+  if (problemDraft && !problemChoices.some((option) => option.value === problemDraft)) {
+    problemChoices.push({value: problemDraft, label: result.data.current_problem_label || `P${problemDraft.padStart(4, '0')}`, icon: 'fa-book-open'})
+  }
   return <div className="submission-page" data-submission-page>
     <header className="submission-page-header"><h1>SUBMISSIONS · LIST</h1></header>
     <section className="submission-filter-panel" aria-label="提交记录筛选">
       <form className="submission-filter-form" onSubmit={search}>
         <label className="submission-search-field"><i className="fas fa-magnifying-glass" aria-hidden="true" /><span className="visually-hidden">搜索提交记录</span><input type="search" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={120} autoComplete="off" placeholder={session?.user?.is_admin ? '搜索提交号、题目、提交者…' : '搜索提交号、题目…'} /></label>
-        <label className="submission-problem-filter"><i className="fas fa-book-open" aria-hidden="true" /><span className="visually-hidden">按题目筛选</span><input type="search" value={problemDraft} list="submissionProblemOptions" autoComplete="off" placeholder="全部题目" ref={problemInput} onChange={(event) => {setProblemDraft(event.target.value); event.target.setCustomValidity('')}} /></label>
-        <datalist id="submissionProblemOptions">{(result.data?.problem_options || []).map((option) => <option value={option.filter_label} data-problem-id={option.problem_id} key={option.problem_id} />)}</datalist>
+        <div className="submission-problem-filter"><ChoicePicker name="problem_id" id="submissionProblemPicker" label="按题目筛选" value={problemDraft} onChange={setProblemDraft} options={problemChoices} searchable searchLabel="搜索题目" searchPlaceholder="按编号或标题搜索题目…" /></div>
         <button type="submit" className="submission-button submission-button--ghost">应用筛选</button>
-        {session?.user?.is_admin ? <TimeRangeRejudge /> : null}
+        {session?.user?.is_admin ? <RejudgeFilters /> : null}
         {q || status || problemId ? <Link className="submission-filter-clear" to="/submissions"><i className="fas fa-xmark" /> 清除</Link> : null}
       </form>
       <div className="submission-status-filters" aria-label="按状态筛选"><span className="submission-filter-label">Status</span>{statusOptions.map(([value, label]) => <Link className={`submission-status-chip${status === value ? ' is-active' : ''}`} to={`/submissions${queryString({q, status: value, problem_id: problemId})}`} aria-current={status === value ? 'true' : undefined} key={value || 'all'}>{label}</Link>)}</div>

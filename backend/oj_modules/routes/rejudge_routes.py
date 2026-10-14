@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from datetime import datetime
-
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, current_app, jsonify, request
 
 from backend.oj_modules.db_services import (
     get_db_connection,
     get_submission_by_id,
-    get_submissions_in_time_range,
-    get_user_by_username,
     reset_submission_for_rejudge,
 )
+from backend.oj_modules.observability import emit_audit
+from backend.oj_modules.security.auth import current_user, is_admin
 from backend.oj_modules.submissions.locks import clear_submission_lock
+from backend.oj_modules.submissions.rejudge_filters import (
+    LATEST_REJUDGE_BATCH_KEY,
+    RejudgeConfirmationUnavailable,
+    batch_progress_key,
+    build_rejudge_preview,
+    consume_rejudge_confirmation,
+    get_filtered_rejudge_submissions,
+    get_rejudge_filter_options,
+    normalize_rejudge_filters,
+    resolve_rejudge_progress_key,
+)
 from backend.oj_modules.submissions.written_voting import supersede_latest_attempt
 
 
@@ -20,22 +29,18 @@ rejudge_bp = Blueprint('rejudge', __name__)
 
 _rds = None
 _rejudge_task = None
+_bulk_rejudge_task = None
 
-# 时间范围重测共用的进度键（同一时刻只跑一次，足够）
-_TIME_RANGE_PROGRESS_KEY = "rejudge:timerange"
-_TIME_RANGE_MAX_TOTAL = 500
 _REJUDGE_STAGGER_SECONDS = 1
 
 
-from backend.oj_modules.security.auth import current_user, is_admin
-
-
-def init_rejudge_module(redis_client, rejudge_task):
+def init_rejudge_module(redis_client, rejudge_task, bulk_rejudge_task=None):
     """注入重测路由所需的 Redis 客户端与已注册任务。"""
 
-    global _rds, _rejudge_task
+    global _rds, _rejudge_task, _bulk_rejudge_task
     _rds = redis_client
     _rejudge_task = rejudge_task
+    _bulk_rejudge_task = bulk_rejudge_task
 
 
 def get_all_submissions_for_problem(problem_id):
@@ -58,7 +63,7 @@ def _enqueue_rejudge(submissions, progress_key, clear_running_lock=False):
     """重置每条提交状态为 Pending 并按 problem_type 分派重测；进度写入 progress_key。
 
     clear_running_lock=True 时，对状态为 'Running' 的提交清除残留的评测幂等锁
-    （用于时间范围重测：区间内可能包含上次崩溃时评测到一半、锁还没过期的提交）。
+    （筛选范围可能包含上次崩溃时评测到一半、锁还没过期的提交）。
     """
     _rds.hset(progress_key, mapping={"total": len(submissions), "done": 0})
 
@@ -129,6 +134,9 @@ def rejudge_submission(submission_id):
 @rejudge_bp.route('/api/admin/problems/<int:problem_id>/rejudge-status', methods=['GET'])
 @rejudge_bp.route('/admin/rejudge_status/<int:problem_id>', methods=['GET'])
 def rejudge_status(problem_id):
+    if not is_admin(current_user()):
+        return jsonify(success=False, message="无权限"), 403
+
     if _rds is None:
         return jsonify(success=False, message="重测模块未初始化"), 500
 
@@ -144,38 +152,18 @@ def rejudge_status(problem_id):
         return jsonify(success=False, message="总数异常")
     progress = int(done / total * 100)
 
-    return jsonify(success=True, progress=progress, done=done, total=total)
+    response = jsonify(success=True, progress=progress, done=done, total=total)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
-def _normalize_dt(raw):
-    """把前端 datetime-local 的 'YYYY-MM-DDTHH:MM' 规整为 MySQL 可用的 'YYYY-MM-DD HH:MM:SS'。"""
-    text = str(raw or "").strip().replace("T", " ")
-    if not text:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            pass
-    return None
-
-
-def _format_dt(value):
-    if not value:
-        return ""
-    try:
-        return value.strftime("%Y-%m-%d %H:%M:%S")
-    except AttributeError:
-        return str(value)
-
-
-def _summarize_time_range_rows(rows):
-    created_values = [row.get("created_at") for row in rows if row.get("created_at")]
-    return {
-        "total": len(rows),
-        "min_created_at": _format_dt(min(created_values)) if created_values else "",
-        "max_created_at": _format_dt(max(created_values)) if created_values else "",
-    }
+@rejudge_bp.get('/api/admin/rejudge-ranges/options')
+def rejudge_filter_options():
+    if not is_admin(current_user()):
+        return jsonify(success=False, message="无权限"), 403
+    response = jsonify(success=True, **get_rejudge_filter_options())
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @rejudge_bp.post('/api/admin/rejudge-ranges')
@@ -185,66 +173,87 @@ def rejudge_time_range():
     if not is_admin(user):
         return jsonify(success=False, message="无权限"), 403
 
-    if _rejudge_task is None or _rds is None:
+    if _bulk_rejudge_task is None or _rds is None:
         return jsonify(success=False, message="重测模块未初始化"), 500
 
-    payload = request.get_json(silent=True) or request.form
-    start = _normalize_dt(payload.get("start"))
-    end = _normalize_dt(payload.get("end"))
-    if not start or not end:
-        return jsonify(success=False, message="请提供有效的起始与结束时间"), 400
-    if start > end:
-        return jsonify(success=False, message="起始时间不能晚于结束时间"), 400
-
-    submissions = get_submissions_in_time_range(start, end)
-    if not submissions:
-        return jsonify(success=False, message="该时间范围内没有提交"), 400
-
-    summary = _summarize_time_range_rows(submissions)
-    print(
-        "[TimeRangeRejudge] "
-        f"user={user.get('username')} start={start} end={end} "
-        f"total={summary['total']} min={summary['min_created_at']} max={summary['max_created_at']}"
-    )
-
-    confirm_total = payload.get("confirm_total")
+    payload = request.get_json(silent=True) if request.is_json else request.form
     try:
-        confirm_total = int(confirm_total)
-    except (TypeError, ValueError):
-        confirm_total = None
+        filters = normalize_rejudge_filters(payload)
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
 
-    if confirm_total != len(submissions):
-        return jsonify(
-            success=True,
-            preview=True,
-            too_many=(len(submissions) > _TIME_RANGE_MAX_TOTAL),
-            max_total=_TIME_RANGE_MAX_TOTAL,
-            start=start,
-            end=end,
-            **summary,
-        )
+    submissions = get_filtered_rejudge_submissions(filters)
+    try:
+        if not consume_rejudge_confirmation(_rds, user["username"], filters, submissions, payload):
+            return jsonify(
+                success=True,
+                **build_rejudge_preview(_rds, user["username"], filters, submissions),
+            )
+    except RejudgeConfirmationUnavailable as exc:
+        current_app.logger.exception("批量重测确认存储不可用")
+        return jsonify(success=False, message=str(exc)), 503
 
-    if len(submissions) > _TIME_RANGE_MAX_TOTAL:
-        return jsonify(
-            success=False,
-            message=f"单次时间范围重测最多允许 {_TIME_RANGE_MAX_TOTAL} 条提交，请缩小时间范围",
-            **summary,
-        ), 400
-
-    _enqueue_rejudge(submissions, _TIME_RANGE_PROGRESS_KEY, clear_running_lock=True)
-    return jsonify(success=True, message="已开始重测", total=len(submissions))
+    batch_id = payload["confirmation_token"]
+    progress_key = batch_progress_key(batch_id)
+    job_submissions = [
+        {"id": row["id"], "problem_type": row.get("problem_type"), "status": row.get("status")}
+        for row in submissions
+    ]
+    try:
+        _rds.hset(progress_key, mapping={"total": len(submissions), "done": 0, "scheduled": 0, "dispatch_status": "queued"})
+        _bulk_rejudge_task.apply_async(args=[job_submissions, progress_key], queue="celery", task_id=batch_id)
+    except Exception:
+        current_app.logger.exception("批量重测任务投递失败")
+        try:
+            _rds.hset(progress_key, mapping={"dispatch_status": "failed", "error": "重测任务投递失败"})
+        except Exception:
+            current_app.logger.exception("批量重测任务投递失败后写入进度失败")
+        return jsonify(success=False, message="重测任务投递失败，请重试"), 503
+    try:
+        _rds.set(LATEST_REJUDGE_BATCH_KEY, batch_id)
+    except Exception:
+        # 已成功投递的任务不能因兼容查询指针故障向前端伪装成失败。
+        current_app.logger.exception("批量重测已投递，但最新批次指针写入失败")
+    emit_audit(
+        "submissions",
+        action="bulk_rejudge",
+        outcome="queued",
+        message="已开始批量重测",
+        actor={"id": user.get("id"), "name": user["username"], "is_admin": True},
+        change={"filters": filters, "total": len(submissions)},
+    )
+    return jsonify(
+        success=True,
+        preview=False,
+        message="已开始重测",
+        total=len(submissions),
+        batch_id=batch_id,
+        progress_url=f"/api/admin/rejudge-ranges/status?batch_id={batch_id}",
+    )
 
 
 @rejudge_bp.get('/api/admin/rejudge-ranges/status')
 @rejudge_bp.route('/admin/rejudge_time_range_status', methods=['GET'])
 def rejudge_time_range_status():
+    if not is_admin(current_user()):
+        return jsonify(success=False, message="无权限"), 403
+
     if _rds is None:
         return jsonify(success=False, message="重测模块未初始化"), 500
 
-    if not _rds.exists(_TIME_RANGE_PROGRESS_KEY):
-        return jsonify(success=False, message="当前没有进行中的时间范围重测")
+    try:
+        progress_key = resolve_rejudge_progress_key(_rds, request.args.get("batch_id"))
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
 
-    info = _rds.hgetall(_TIME_RANGE_PROGRESS_KEY)
+    if not _rds.exists(progress_key):
+        return jsonify(success=False, message="当前没有进行中的重测")
+
+    info = _rds.hgetall(progress_key)
+    if info.get("dispatch_status") == "failed":
+        response = jsonify(success=False, message=info.get("error") or "重测调度失败")
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
     total = int(info.get("total", 0))
     done = int(info.get("done", 0))
 
@@ -252,4 +261,6 @@ def rejudge_time_range_status():
         return jsonify(success=False, message="总数异常")
     progress = int(done / total * 100)
 
-    return jsonify(success=True, progress=progress, done=done, total=total)
+    response = jsonify(success=True, progress=progress, done=done, total=total)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response

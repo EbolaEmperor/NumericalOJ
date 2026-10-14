@@ -5,6 +5,7 @@ const test = require('node:test')
 
 const source = fs.readFileSync(path.resolve(__dirname, '../src/pages/SubmissionsPage.tsx'), 'utf8')
 const styles = fs.readFileSync(path.resolve(__dirname, '../public/static/app/submissions.css'), 'utf8')
+const rejudgeSource = fs.readFileSync(path.resolve(__dirname, '../src/pages/submission/RejudgeFilters.tsx'), 'utf8')
 const detailSource = fs.readFileSync(path.resolve(__dirname, '../src/pages/SubmissionDetailPage.tsx'), 'utf8')
 const detailStyles = fs.readFileSync(path.resolve(__dirname, '../public/static/app/submissions/detail.css'), 'utf8')
 
@@ -28,8 +29,8 @@ test('提交列表隐藏视觉表头并保留主从选择，手机端仍使用�
   assert.match(mobileStyles, /\.submission-master-detail \{\s*padding: 14px 12px 0;/)
 })
 
-test('时间范围重测弹窗在 Portal 中仍保留提交页按钮颜色', () => {
-  assert.match(source, /className="submission-rejudge-modal"/)
+test('多维重测弹窗在 Portal 中仍保留提交页按钮颜色', () => {
+  assert.match(rejudgeSource, /className="submission-rejudge-modal"/)
   assert.match(styles, /\.submission-rejudge-modal \{[\s\S]*--submission-accent: #d97706;[\s\S]*--submission-accent-dark: #92400e;/)
 })
 

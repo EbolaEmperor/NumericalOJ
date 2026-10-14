@@ -2,7 +2,7 @@
 
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
 import {act, cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react'
-import {MemoryRouter, Route, Routes} from 'react-router-dom'
+import {MemoryRouter, Route, Routes, useLocation, useNavigate} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
 import {SessionProvider} from '../session'
@@ -17,9 +17,15 @@ function response(payload: object) {
   return Promise.resolve(new Response(JSON.stringify({success: true, ...payload}), {status: 200, headers: {'Content-Type': 'application/json'}}))
 }
 
-function renderPage() {
+function TestNavigation() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  return <><output aria-label="当前列表地址">{location.pathname}{location.search}</output><button type="button" onClick={() => navigate(-1)}>后退（测试）</button><button type="button" onClick={() => navigate(1)}>前进（测试）</button></>
+}
+
+function renderPage(initialEntry = '/submissions') {
   const client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: false}}})
-  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/submissions']}><SessionProvider><Routes><Route path="/submissions" element={<SubmissionsPage />} /><Route path="/submissions/:id" element={<div>完整详情</div>} /></Routes></SessionProvider></MemoryRouter></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[initialEntry]}><TestNavigation /><SessionProvider><Routes><Route path="/submissions" element={<SubmissionsPage />} /><Route path="/submissions/:id" element={<div>完整详情</div>} /></Routes></SessionProvider></MemoryRouter></QueryClientProvider>)
 }
 
 beforeEach(() => {
@@ -27,7 +33,11 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation((input: string | URL | Request) => {
     const url = String(input)
     if (url === '/api/v1/session') return response({api_version: '1', user: {id: 1, username: 'alice', is_admin: 0}, navigation: {items: [], counts: {}, agent_active: false}, capabilities: {spa: true, legacy_ui_available: false, streaming: true, class_adjust_enabled: false, mail_service_configured: false}})
-    if (url.startsWith('/api/submissions?')) return response({submissions: rows, page: 1, total_pages: 1, scope: 'mine', problem_options: []})
+    if (url.startsWith('/api/submissions?')) {
+      const problemOptions = rows.map((row) => ({problem_id: row.problem_id, filter_label: `P${String(row.problem_id).padStart(4, '0')} · ${row.problem_title}`}))
+      const problemId = new URL(url, 'http://localhost').searchParams.get('problem_id')
+      return response({submissions: rows, page: 1, total_pages: 1, scope: 'mine', problem_options: problemOptions, current_problem_label: problemOptions.find((option) => String(option.problem_id) === problemId)?.filter_label || ''})
+    }
     const match = url.match(/^\/api\/submissions\/(\d+)\?view=panel$/)
     if (match) {
       const row = rows.find((item) => item.id === Number(match[1]))!
@@ -35,6 +45,85 @@ beforeEach(() => {
     }
     throw new Error(`unexpected fetch: ${url}`)
   }))
+})
+
+describe('提交列表题目自定义筛选', () => {
+  it('用可搜索菜单选择题目，应用时保留其它筛选并回到第一页', async () => {
+    const {container} = renderPage('/submissions?page=3&q=作业&status=wrong_answer')
+    const picker = await screen.findByRole('combobox', {name: '按题目筛选'})
+    expect(container.querySelector('select, datalist, input[list]')).toBeNull()
+    fireEvent.click(picker)
+    const input = screen.getByRole('textbox', {name: '搜索题目'})
+    fireEvent.change(input, {target: {value: ' 第一题 '}})
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('option', {name: 'P0011 · 第一题'}))
+    expect(picker.textContent).toContain('P0011 · 第一题')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input).startsWith('/api/submissions?'))).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', {name: '应用筛选'}))
+    await waitFor(() => expect(screen.getByLabelText('当前列表地址').textContent).toContain('problem_id=11'))
+    const params = new URLSearchParams(screen.getByLabelText('当前列表地址').textContent!.split('?')[1])
+    expect(params.get('q')).toBe('作业')
+    expect(params.get('status')).toBe('wrong_answer')
+    expect(params.has('page')).toBe(false)
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => {
+      const url = String(input)
+      if (!url.startsWith('/api/submissions?')) return false
+      const query = new URL(url, 'http://localhost').searchParams
+      return query.get('problem_id') === '11' && query.get('page') === '1'
+    })).toBe(true))
+  })
+
+  it('保留未在候选里的当前题号，选择全部清空，前进后退同步已应用筛选', async () => {
+    renderPage('/submissions?q=作业&status=accepted&problem_id=999')
+    let picker = await screen.findByRole('combobox', {name: '按题目筛选'})
+    expect(picker.textContent).toContain('P0999')
+    fireEvent.click(screen.getByRole('button', {name: '应用筛选'}))
+    expect(screen.getByLabelText('当前列表地址').textContent).toContain('problem_id=999')
+    fireEvent.click(picker)
+    fireEvent.click(screen.getByRole('option', {name: '全部题目'}))
+    fireEvent.click(screen.getByRole('button', {name: '应用筛选'}))
+    await waitFor(() => expect(screen.getByLabelText('当前列表地址').textContent).not.toContain('problem_id='))
+    fireEvent.click(screen.getByRole('button', {name: '后退（测试）'}))
+    await waitFor(() => expect(screen.getByRole('combobox', {name: '按题目筛选'}).textContent).toContain('P0999'))
+    fireEvent.click(screen.getByRole('button', {name: '前进（测试）'}))
+    await waitFor(() => expect(screen.getByRole('combobox', {name: '按题目筛选'}).textContent).toContain('全部题目'))
+    picker = screen.getByRole('combobox', {name: '按题目筛选'})
+    expect(picker.getAttribute('aria-expanded')).toBe('false')
+    const params = new URLSearchParams(screen.getByLabelText('当前列表地址').textContent!.split('?')[1])
+    expect(params.get('q')).toBe('作业')
+    expect(params.get('status')).toBe('accepted')
+  })
+
+  it('搜索框支持键盘选择和取消，Enter 不会提前提交筛选', async () => {
+    renderPage()
+    const picker = await screen.findByRole('combobox', {name: '按题目筛选'})
+    fireEvent.click(picker)
+    let input = screen.getByRole('textbox', {name: '搜索题目'}) as HTMLInputElement
+    fireEvent.change(input, {target: {value: '不存在的题目'}})
+    expect(screen.getByText('没有匹配的选项')).toBeTruthy()
+    fireEvent.keyDown(input, {key: 'Enter'})
+    expect(screen.getByLabelText('当前列表地址').textContent).toBe('/submissions')
+    fireEvent.keyDown(input, {key: 'Escape'})
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(document.activeElement).toBe(picker)
+    fireEvent.click(picker)
+    input = screen.getByRole('textbox', {name: '搜索题目'}) as HTMLInputElement
+    expect(input.value).toBe('')
+    fireEvent.keyDown(input, {key: 'ArrowDown'})
+    const all = screen.getByRole('option', {name: '全部题目'})
+    expect(document.activeElement).toBe(all)
+    fireEvent.keyDown(all, {key: 'ArrowDown'})
+    expect(document.activeElement).toBe(screen.getByRole('option', {name: 'P0011 · 第一题'}))
+    fireEvent.keyDown(document.activeElement!, {key: 'Escape'})
+    fireEvent.click(picker)
+    input = screen.getByRole('textbox', {name: '搜索题目'}) as HTMLInputElement
+    fireEvent.change(input, {target: {value: 'p0012'}})
+    fireEvent.keyDown(input, {key: 'Enter'})
+    expect(picker.textContent).toContain('P0012 · 第二题')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(screen.getByLabelText('当前列表地址').textContent).toBe('/submissions')
+  })
 })
 
 afterEach(() => {

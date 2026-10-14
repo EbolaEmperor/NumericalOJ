@@ -9,7 +9,7 @@ from backend.oj_modules.tasks.homework_admin_tasks import (
     build_homework_task_operations,
     register_homework_admin_tasks,
 )
-from backend.oj_modules.tasks.rejudge_tasks import register_rejudge_task
+from backend.oj_modules.tasks.rejudge_tasks import register_bulk_rejudge_task, register_rejudge_task
 from backend.oj_modules.tasks.promptly_tasks import register_promptly_generate_submission_task
 from backend.oj_modules.tasks.agent.registry import (
     apply_agent_concurrency_limit,
@@ -74,6 +74,7 @@ __all__ = [
     "build_homework_task_operations",
     "register_homework_admin_tasks",
     "register_rejudge_task",
+    "register_bulk_rejudge_task",
     "register_promptly_generate_submission_task",
     "apply_agent_concurrency_limit",
     "register_agent_solve_problem_task",

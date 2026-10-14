@@ -36,6 +36,201 @@
   --submission-accent-dark: #92400e;
 }
 
+.submission-rejudge-modal .modal-dialog {
+  max-width: 560px;
+}
+
+.submission-rejudge-modal .modal-content {
+  border: 1px solid var(--submission-line);
+  border-radius: 14px;
+}
+
+.submission-rejudge-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: 0;
+}
+
+.submission-rejudge-modal .modal-header,
+.submission-rejudge-modal .modal-footer {
+  padding: 18px 22px;
+  border-color: var(--submission-line);
+}
+
+.submission-rejudge-filters {
+  display: grid;
+  gap: 14px;
+  padding: 24px 22px;
+}
+
+.submission-rejudge-filter-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 12px;
+}
+
+.submission-rejudge-filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b6b6b;
+  font-size: 15px;
+}
+
+.submission-rejudge-filter-icon .fa-circle {
+  font-size: 10px;
+}
+
+.submission-rejudge-modal .rk-choice-trigger {
+  min-height: 40px;
+  border-color: #dededb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.submission-rejudge-modal .rk-choice-trigger-main > span {
+  font-weight: 500;
+}
+
+.submission-rejudge-modal .rk-choice-option-name {
+  font-size: 13px;
+}
+
+.submission-rejudge-filter-switch {
+  display: inline-flex;
+  width: 48px;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.submission-rejudge-switch-track {
+  display: inline-flex;
+  width: 36px;
+  height: 20px;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  background: #d4d4d4;
+  transition: background-color 150ms ease;
+}
+
+.submission-rejudge-switch-track > span {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+  transition: transform 150ms ease;
+}
+
+.submission-rejudge-filter-switch[aria-checked="true"] .submission-rejudge-switch-track {
+  background: var(--submission-accent);
+}
+
+.submission-rejudge-filter-switch[aria-checked="true"] .submission-rejudge-switch-track > span {
+  transform: translateX(16px);
+}
+
+.submission-rejudge-filter-switch:focus-visible {
+  outline: 2px solid var(--submission-accent);
+  outline-offset: 2px;
+}
+
+.submission-rejudge-filter-switch:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.submission-rejudge-filter-row.is-disabled .submission-rejudge-filter-icon {
+  color: #b3b3b3;
+}
+
+.submission-rejudge-filter-row.is-disabled .rk-choice.is-disabled .rk-choice-trigger {
+  border-color: #e4e4e2;
+  background: #f4f4f3;
+  color: #a3a3a3;
+  opacity: 1;
+}
+
+.submission-rejudge-filter-row.is-disabled .rk-choice-caret {
+  color: #b3b3b3;
+}
+
+.submission-rejudge-count {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 30px 22px;
+  color: #6b6b6b;
+  font-size: 13px;
+}
+
+.submission-rejudge-count strong {
+  color: var(--submission-ink);
+  font-size: 30px;
+  font-variant-numeric: tabular-nums;
+}
+
+.submission-rejudge-count small {
+  color: #6b6b6b;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.submission-rejudge-error {
+  position: fixed;
+  z-index: 1100;
+  top: 18px;
+  left: 50%;
+  display: flex;
+  max-width: min(520px, calc(100vw - 32px));
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 12%);
+  color: #b91c1c;
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+
+.submission-rejudge-error button {
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+@media (max-width: 575.98px) {
+  .submission-rejudge-filter-row {
+    grid-template-columns: 20px minmax(0, 1fr) 44px;
+    gap: 8px;
+  }
+
+  .submission-rejudge-filter-switch {
+    width: 44px;
+    min-height: 44px;
+  }
+
+  .submission-rejudge-modal .modal-header,
+  .submission-rejudge-modal .modal-footer,
+  .submission-rejudge-filters {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}
+
 .numoj-content.submission-page-shell {
   padding-top: 16px;
   padding-right: 0;
@@ -159,8 +354,7 @@
   flex: 0 1 320px;
 }
 
-.submission-search-field > i,
-.submission-problem-filter > i {
+.submission-search-field > i {
   position: absolute;
   left: 12px;
   z-index: 1;
@@ -169,8 +363,7 @@
   pointer-events: none;
 }
 
-.submission-search-field input,
-.submission-problem-filter input {
+.submission-search-field input {
   width: 100%;
   min-height: 36px;
   padding: 7px 12px 7px 34px;
@@ -183,11 +376,48 @@
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
-.submission-search-field input:focus,
-.submission-problem-filter input:focus {
+.submission-search-field input:focus {
   border-color: var(--submission-ink-3);
   box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.06);
 }
+
+.submission-problem-filter .rk-choice {
+  --choice-ink: var(--submission-ink);
+  --choice-ink-2: var(--submission-ink-2);
+  --choice-ink-3: var(--submission-ink-3);
+  --choice-ink-4: var(--submission-ink-4);
+  --choice-soft: var(--submission-paper-soft);
+}
+
+.submission-problem-filter .rk-choice-trigger {
+  padding: 7px 12px;
+  border-color: var(--submission-line);
+  border-radius: 8px;
+  background: var(--submission-paper);
+  color: var(--submission-ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.submission-problem-filter .rk-choice-trigger:hover:not(:disabled),
+.submission-problem-filter .rk-choice.open .rk-choice-trigger {
+  border-color: var(--submission-ink-3);
+  background: var(--submission-paper-soft);
+}
+
+.submission-problem-filter .rk-choice-trigger-main > i {
+  color: var(--submission-ink-4);
+  font-size: 12px;
+}
+
+.submission-problem-filter .rk-choice-menu {
+  z-index: 1080;
+  border-color: var(--submission-line);
+}
+
+.submission-problem-filter .rk-choice-option,
+.submission-problem-filter .rk-choice-option-name,
+.submission-problem-filter .rk-choice-search input { font-size: 13px; }
 
 .submission-filter-clear {
   display: inline-flex;

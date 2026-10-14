@@ -126,6 +126,7 @@ from backend.oj_modules.tasks.registry import (
     register_homework_admin_tasks,
     register_promptly_generate_submission_task,
     register_rejudge_task,
+    register_bulk_rejudge_task,
     register_written_homework_task,
     register_faithsieve_grading_task,
     register_ai_detection_tasks,
@@ -492,6 +493,7 @@ rejudge_submission_and_update = register_rejudge_task(
     evaluate_submission,
     transcribe_written_homework_to_latex,
 )
+dispatch_rejudge_batch = register_bulk_rejudge_task(celery, rds, rejudge_submission_and_update)
 export_codes_with_plagiarism_check, mark_homework_plagiarism = (
     register_homework_admin_tasks(
         celery,
@@ -548,7 +550,7 @@ pending_requeue_watchdog = register_pending_requeue_watchdog_task(
 class_activity_refresh = register_class_activity_refresh_task(celery, rds)
 
 # 初始化重测模块（依赖 Redis 与已注册的分派任务）
-init_rejudge_module(rds, rejudge_submission_and_update)
+init_rejudge_module(rds, rejudge_submission_and_update, dispatch_rejudge_batch)
 init_grading_routes(faithsieve_grade_submission)
 # 初始化作业管理模块（依赖 Redis 与已注册的导出/查重任务）
 init_homework_module(

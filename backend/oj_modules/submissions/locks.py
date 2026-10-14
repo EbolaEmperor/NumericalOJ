@@ -25,6 +25,11 @@ def submission_lock_key(submission_id):
     return f"submission:{submission_id}:lock"
 
 
+def submission_pending_requeue_key(submission_id):
+    """重测预约与 Pending watchdog 共享的抢占键。"""
+    return f"submission:{int(submission_id)}:pending_requeue"
+
+
 def acquire_submission_lock(submission_id, *, ttl_seconds=None):
     """领取同一个提交锁；长流程可显式延长 TTL，普通评测沿用默认值。"""
 
@@ -91,4 +96,5 @@ __all__ = [
     "has_submission_lock",
     "release_submission_lock",
     "submission_lock_key",
+    "submission_pending_requeue_key",
 ]

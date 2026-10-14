@@ -876,13 +876,20 @@ def problem_rejudge_time_range(args: argparse.Namespace) -> None:
     payload: Dict[str, Any] = {"start": args.start, "end": args.end}
     if args.confirm_total is not None:
         payload["confirm_total"] = args.confirm_total
+    confirmation_token = getattr(args, "confirmation_token", None)
+    if confirmation_token is not None:
+        payload["confirmation_token"] = confirmation_token
     resp = client.request("POST", "/api/admin/rejudge-ranges", json=payload)
     print_or_save_response(resp)
 
 
 def problem_rejudge_time_range_status(args: argparse.Namespace) -> None:
     client = client_from_args(args)
-    resp = client.request("GET", "/api/admin/rejudge-ranges/status")
+    request_kwargs: Dict[str, Any] = {}
+    batch_id = getattr(args, "batch_id", None)
+    if batch_id is not None:
+        request_kwargs["params"] = {"batch_id": batch_id}
+    resp = client.request("GET", "/api/admin/rejudge-ranges/status", **request_kwargs)
     print_or_save_response(resp, fail_on_business_error=False)
 
 
@@ -1201,10 +1208,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=problem_rejudge_status)
     pa = add_cli_parser(ps, "rejudge-time-range", "Start a rejudge task for submissions created within a time range.")
     pa.add_argument("--start", required=True, help="Inclusive start time, formatted as YYYY-MM-DDTHH:MM.")
-    pa.add_argument("--end", required=True, help="Exclusive end time, formatted as YYYY-MM-DDTHH:MM.")
+    pa.add_argument("--end", required=True, help="Inclusive end time, covering the full minute when formatted as YYYY-MM-DDTHH:MM.")
     pa.add_argument("--confirm-total", type=int, help="Expected number of affected submissions; the server may require this safety confirmation.")
+    pa.add_argument("--confirmation-token", help="Confirmation token returned by the preview; pass it with --confirm-total to execute the rejudge.")
     pa.set_defaults(func=problem_rejudge_time_range)
     pa = add_cli_parser(ps, "rejudge-time-range-status", "Check progress for the most recent time-range rejudge task.")
+    pa.add_argument("--batch-id", help="Batch ID returned when the rejudge starts; omit to check the most recent task.")
     pa.set_defaults(func=problem_rejudge_time_range_status)
     pa = add_cli_parser(ps, "agent-run-status", "Fetch JSON status for a problem-solving or test-data-generation agent task.")
     pa.add_argument("task_id", help="Agent task ID returned by an agent command.")

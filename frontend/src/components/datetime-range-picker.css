@@ -1,0 +1,148 @@
+.datetime-range-picker .rk-choice-trigger-main > span {
+  font-variant-numeric: tabular-nums;
+}
+
+.datetime-range-picker .datetime-range-panel {
+  width: min(430px, 100%);
+  max-height: none;
+  right: 0;
+  left: auto;
+  padding: 12px;
+  overflow: visible;
+  border-radius: 8px;
+}
+
+.datetime-range-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.datetime-range-field {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 7px 8px;
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  color: var(--choice-ink-3);
+  background: #fff;
+}
+
+.datetime-range-field.is-active {
+  border-color: #a16207;
+  box-shadow: 0 0 0 1px #a16207;
+}
+
+.datetime-range-field > i {
+  flex: 0 0 12px;
+  font-size: 11px;
+}
+
+.datetime-range-field > input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--choice-ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.datetime-range-field > input::placeholder {
+  color: var(--choice-ink-4);
+}
+
+.datetime-range-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 10px 0 4px;
+}
+
+.datetime-range-calendar-head > strong {
+  color: var(--choice-ink-2);
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.datetime-range-calendar-head > button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--choice-ink-3);
+  font-size: 10px;
+}
+
+.datetime-range-weekdays,
+.datetime-range-calendar-row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.datetime-range-weekdays > span {
+  padding: 7px 0;
+  color: var(--choice-ink-4);
+  font-size: 11px;
+  text-align: center;
+}
+
+.datetime-range-day {
+  min-width: 0;
+  min-height: 34px;
+  margin: 1px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--choice-ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.datetime-range-day.is-outside {
+  color: var(--choice-ink-4);
+}
+
+.datetime-range-day.is-range {
+  border-radius: 0;
+  background: var(--choice-brand-soft);
+}
+
+.datetime-range-day.is-selected {
+  background: #a16207;
+  color: #fff;
+  font-weight: 700;
+}
+
+.datetime-range-calendar-head > button:hover,
+.datetime-range-day:hover:not(.is-selected) {
+  background: var(--choice-soft);
+  color: var(--choice-ink);
+}
+
+.datetime-range-calendar-head > button:focus-visible,
+.datetime-range-day:focus-visible {
+  outline: 2px solid #a16207;
+  outline-offset: -2px;
+}
+
+@media (max-width: 600px) {
+  .datetime-range-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

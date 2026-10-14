@@ -41,6 +41,7 @@ EXPECTED_TASK_QUEUES = {
     "oj.ranking_elo_match": "celery",
     "oj.ranking_elo_matchmaker_tick": "celery",
     "oj.ranking_reverse_judge": "celery",
+    "oj.rejudge.dispatch_batch": "celery",
     "oj.rejudge.evaluate_submission_and_update": "celery",
     "oj.repository.build_index": "celery",
     "oj.transcribe_written_homework_to_latex": "celery",
@@ -156,6 +157,7 @@ def test_real_oj_import_preserves_runtime_ports_and_task_topology():
 
         assert rejudge_routes._rds is oj.rds
         assert rejudge_routes._rejudge_task is oj.rejudge_submission_and_update
+        assert rejudge_routes._bulk_rejudge_task is oj.dispatch_rejudge_batch
 
         ranking_runtime_ports = (
             "build_current_judge_snapshot",

@@ -33,7 +33,11 @@ from backend.oj_modules.ranking.db import (
     reserve_standard_ranking_evaluation,
     set_agent_judge_task_id,
 )
-from backend.oj_modules.submissions.locks import clear_submission_lock, has_submission_lock
+from backend.oj_modules.submissions.locks import (
+    clear_submission_lock,
+    has_submission_lock,
+    submission_pending_requeue_key,
+)
 from backend.oj_modules.tasks.ranking.agent_judge import (
     is_completed_agent_judge_submission,
 )
@@ -51,7 +55,6 @@ PENDING_REQUEUE_WATCHDOG_TASK_NAME = "oj.pending_requeue_watchdog"
 _PENDING_REQUEUE_OWNER_KEY = "submission:pending_requeue:owner"
 _PENDING_REQUEUE_SEED_LOCK_KEY = "submission:pending_requeue:seed_lock"
 _PENDING_REQUEUE_RUN_LOCK_KEY = "submission:pending_requeue:run_lock"
-_PENDING_REQUEUE_ITEM_KEY_FMT = "submission:{submission_id}:pending_requeue"
 _RANKING_REQUEUE_ITEM_KEY_FMT = "ranking_submission:{submission_id}:pending_requeue"
 _AGENT_JUDGE_STARTUP_GUARD_KEY = "ranking:agent_judge:startup_recovery_guard"
 _AGENT_JUDGE_TASK_NAME = "oj.ranking_agent_judge"
@@ -151,10 +154,10 @@ def _old_enough_for_watchdog(row):
 
 
 def _claim_watchdog_requeue(redis_client, submission_id, *,
-                            key_fmt=_PENDING_REQUEUE_ITEM_KEY_FMT):
+                            key_fmt=None):
     if redis_client is None:
         return True
-    key = key_fmt.format(submission_id=int(submission_id))
+    key = key_fmt.format(submission_id=int(submission_id)) if key_fmt else submission_pending_requeue_key(submission_id)
     try:
         return bool(redis_client.set(key, "1", ex=_PENDING_REQUEUE_ITEM_TTL_SECONDS, nx=True))
     except Exception:
@@ -162,10 +165,10 @@ def _claim_watchdog_requeue(redis_client, submission_id, *,
 
 
 def _release_watchdog_requeue_claim(redis_client, submission_id, *,
-                                    key_fmt=_PENDING_REQUEUE_ITEM_KEY_FMT):
+                                    key_fmt=None):
     if redis_client is None:
         return
-    key = key_fmt.format(submission_id=int(submission_id))
+    key = key_fmt.format(submission_id=int(submission_id)) if key_fmt else submission_pending_requeue_key(submission_id)
     try:
         redis_client.delete(key)
     except Exception:

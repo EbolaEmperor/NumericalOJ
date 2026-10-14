@@ -140,6 +140,67 @@ def test_admin_problem_list_requests_problem_library(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    ("confirmation_args", "confirmation_payload"),
+    [
+        ([], {}),
+        (["--confirm-total", "2"], {"confirm_total": 2}),
+        (
+            ["--confirm-total", "2", "--confirmation-token", "preview-token"],
+            {"confirm_total": 2, "confirmation_token": "preview-token"},
+        ),
+    ],
+)
+def test_admin_time_range_rejudge_forwards_preview_confirmation(
+    monkeypatch, confirmation_args, confirmation_payload
+):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(
+        cli.problem_rejudge_time_range.__globals__,
+        "client_from_args",
+        lambda _args: fake_client,
+    )
+    args = cli.build_parser().parse_args([
+        "problem", "rejudge-time-range",
+        "--start", "2026-01-01T00:00", "--end", "2026-01-02T00:00",
+        *confirmation_args,
+    ])
+
+    args.func(args)
+
+    assert fake_client.requests == [(
+        "POST",
+        "/api/admin/rejudge-ranges",
+        {"json": {
+            "start": "2026-01-01T00:00",
+            "end": "2026-01-02T00:00",
+            **confirmation_payload,
+        }},
+    )]
+
+
+@pytest.mark.parametrize(
+    ("batch_args", "request_kwargs"),
+    [([], {}), (["--batch-id", "batch-a"], {"params": {"batch_id": "batch-a"}})],
+)
+def test_admin_time_range_rejudge_status_forwards_optional_batch(
+    monkeypatch, batch_args, request_kwargs
+):
+    cli = _load_numoj_admin_cli_module()
+    fake_client = _FakeClient()
+    monkeypatch.setitem(
+        cli.problem_rejudge_time_range_status.__globals__,
+        "client_from_args",
+        lambda _args: fake_client,
+    )
+    args = cli.build_parser().parse_args(["problem", "rejudge-time-range-status", *batch_args])
+
+    args.func(args)
+
+    assert fake_client.requests == [("GET", "/api/admin/rejudge-ranges/status", request_kwargs)]
+
+
 def test_forum_write_commands_use_json_api_and_uuid(monkeypatch, capsys):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()

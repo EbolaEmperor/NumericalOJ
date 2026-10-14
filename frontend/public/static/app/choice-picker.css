@@ -130,6 +130,52 @@
   display: block;
 }
 
+.rk-choice-searchable .rk-choice-menu {
+  overflow: hidden;
+}
+
+.rk-choice-searchable.open .rk-choice-menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.rk-choice-search {
+  flex: 0 0 auto;
+  padding: 4px 4px 8px;
+}
+
+.rk-choice-search input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid #b9c1cb;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--choice-ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  outline: 0;
+}
+
+.rk-choice-search input:focus {
+  border-color: #687484;
+  box-shadow: 0 0 0 2px var(--choice-soft);
+}
+
+.rk-choice-options {
+  min-height: 0;
+  max-height: min(215px, 38vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.rk-choice-empty {
+  padding: 12px 8px;
+  color: var(--choice-ink-3);
+  font-size: 12px;
+}
+
 .rk-choice.is-disabled .rk-choice-trigger {
   cursor: not-allowed;
   opacity: 0.52;
@@ -212,6 +258,7 @@
 
 @media (forced-colors: active) {
   .rk-choice-trigger:focus-visible,
+  .rk-choice-search input:focus,
   .rk-choice.is-invalid .rk-choice-trigger:focus-visible,
   .rk-choice-option:focus-visible {
     outline: 2px solid Highlight;
