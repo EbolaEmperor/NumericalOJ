@@ -4,7 +4,9 @@
 ARG LEAN4_IMAGE=numericaloj-lean4:latest
 FROM ${LEAN4_IMAGE} AS lean4_runtime
 
-FROM node:24-bookworm
+# 固定到生产稳定镜像使用、default builder 已缓存的 Node 基础镜像。
+# 基础系统升级须显式更新摘要并预热重型依赖，业务工具更新不跟随浮动标签。
+FROM node:24-bookworm@sha256:be23f54a88d34e8824c741b19b91064094f92c1c97b194144bfc8b50d67258e2
 
 ENV DEBIAN_FRONTEND=noninteractive
 # 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住

@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,18 +69,59 @@ def test_lite_agent_judge_contains_every_selectable_harness():
         assert f'{package}@${{{build_arg}}}' in lite
 
 
-def test_production_docker_bases_follow_the_selected_runtime_policy():
-    judger = _dockerfile('docker/judger/Dockerfile')
-    agent = _dockerfile('docker/agent_judge/Dockerfile')
-    lite_agent = _dockerfile('docker/agent_judge-lite/Dockerfile')
+@pytest.mark.parametrize(
+    ('path', 'expected_base'),
+    (
+        (
+            'docker/judger/Dockerfile',
+            'debian:bookworm-slim@sha256:'
+            '60eac759739651111db372c07be67863818726f754804b8707c90979bda511df',
+        ),
+        (
+            'docker/agent_judge/Dockerfile',
+            'node:24-bookworm@sha256:'
+            'be23f54a88d34e8824c741b19b91064094f92c1c97b194144bfc8b50d67258e2',
+        ),
+        (
+            'docker/agent_judge-lite/Dockerfile',
+            'node:24.20.0-bookworm-slim@sha256:'
+            'ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e',
+        ),
+        (
+            'docker/lean4/Dockerfile',
+            'debian:bookworm-slim@sha256:'
+            'abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241',
+        ),
+        (
+            'docker/judger-lite/Dockerfile',
+            'debian:bookworm-slim@sha256:'
+            'abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241',
+        ),
+        (
+            'docker/vibehub-runtime/Dockerfile',
+            'python:3.12-slim-bookworm@sha256:'
+            'd50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b',
+        ),
+    ),
+)
+def test_docker_external_bases_follow_the_fixed_runtime_policy(path, expected_base):
+    stages = set()
+    external_bases = []
+    for line in _dockerfile(path).splitlines():
+        if not line.startswith('FROM '):
+            continue
+        words = line.split()
+        base = words[1]
+        if base not in stages and base != '${LEAN4_IMAGE}':
+            external_bases.append(base)
+        if len(words) == 4 and words[2].upper() == 'AS':
+            stages.add(words[3])
 
-    assert (
-        'FROM debian:bookworm-slim@sha256:'
-        '60eac759739651111db372c07be67863818726f754804b8707c90979bda511df'
-        in judger
+    assert expected_base in external_bases
+    assert all(
+        re.fullmatch(r'[^@]+@sha256:[0-9a-f]{64}', base)
+        for base in external_bases
     )
-    assert 'FROM node:24-bookworm\n' in agent
-    assert 'FROM node:24-bookworm-slim\n' in lite_agent
 
 
 def test_agent_harness_args_do_not_invalidate_heavy_toolchain_cache():

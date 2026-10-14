@@ -1,4 +1,5 @@
-FROM debian:bookworm-slim
+# 与 Lean 镜像使用相同的固定基础系统，升级时显式更新摘要。
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
 ENV DEBIAN_FRONTEND=noninteractive
 

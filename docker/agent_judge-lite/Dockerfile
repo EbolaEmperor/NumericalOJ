@@ -5,7 +5,8 @@
 ARG LEAN4_IMAGE=numericaloj-lean4:latest
 FROM ${LEAN4_IMAGE} AS lean4_runtime
 
-FROM node:24-bookworm-slim
+# 与生产 Node 24.20 工具链保持同版，固定多架构摘要，避免 CI 随标签漂移。
+FROM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
 
 ENV DEBIAN_FRONTEND=noninteractive
 # 关闭 claude CLI 的非必要外联（遥测/自动更新/错误上报）——受限容器内若开启会卡住

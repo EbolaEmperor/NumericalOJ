@@ -245,7 +245,8 @@ def test_deploy_detects_and_uses_daemon_docker_build_cache():
     assert "--build-arg BUILDKIT_INLINE_CACHE=1" in script
     for marker in (
         "debian:bookworm-slim@sha256:60eac759",
-        "node:20-bookworm@sha256:8f693eaa",
+        "debian:bookworm-slim@sha256:abd67ffc",
+        "node:24-bookworm@sha256:be23f54a",
         "intel-oneapi-mkl-devel",
         "torch torchvision",
         "paddlepaddle paddleocr",
@@ -254,6 +255,17 @@ def test_deploy_detects_and_uses_daemon_docker_build_cache():
         assert marker in script
     assert "为避免冷构建，拒绝继续部署" in script
     assert "本次将冷构建" not in script
+    assert "已检测到 Docker builder %s 的基础镜像及关键步骤缓存记录" in script
+    assert "构建将逐层确认命中" in script
+    assert "使用 Docker builder %s 的步骤缓存" not in script
+
+    for context in ('docker/judger', 'docker/lean4', 'docker/agent_judge'):
+        base = next(
+            line.split()[1]
+            for line in _read(f'{context}/Dockerfile').splitlines()
+            if line.startswith('FROM ') and '${' not in line
+        )
+        assert f"'{base}'" in script
 
 
 def test_deploy_uses_bounded_project_local_runtime_state():

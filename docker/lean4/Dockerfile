@@ -1,5 +1,6 @@
 # Lean 与 Mathlib 作为一个独立镜像供正式证明判题和交互式 goal state 共用。
-FROM debian:bookworm-slim
+# 与生产现有 Lean 稳定镜像使用的基础系统一致，避免重下 Mathlib 缓存。
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
 ARG LEAN_VERSION=v4.32.0
 ARG MATHLIB_VERSION=v4.32.0

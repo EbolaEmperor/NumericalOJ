@@ -460,7 +460,7 @@ build_candidate_image() {
     fi
   done
 
-  printf '使用 Docker builder %s 的步骤缓存；稳定镜像：%s (%s)\n' \
+  printf '已检测到 Docker builder %s 的基础镜像及关键步骤缓存记录；构建将逐层确认命中。稳定镜像：%s (%s)\n' \
     "$DOCKER_BUILDER" "$stable" "$stable_id"
 
   DOCKER_BUILDKIT=1 docker build \
@@ -609,10 +609,11 @@ build_candidate_image \
   'texlive-full' 'intel-oneapi-mkl-devel'
 build_candidate_image \
   "$LEAN4_STABLE" "$LEAN4_CANDIDATE" docker/lean4 \
-  'debian:bookworm-slim' 'elan-init.sh' 'lake exe cache get'
+  'debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241' \
+  'elan-init.sh' 'lake exe cache get'
 build_candidate_image \
   "$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" docker/agent_judge \
-  'node:20-bookworm@sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5' \
+  'node:24-bookworm@sha256:be23f54a88d34e8824c741b19b91064094f92c1c97b194144bfc8b50d67258e2' \
   'texlive-full' 'torch torchvision' 'paddlepaddle paddleocr' \
   'playwright install chromium'
 
