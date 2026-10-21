@@ -255,6 +255,10 @@ def run_code(source: str, inputs: list[int], *, timeout_seconds: int = 5) -> dic
             executable_name="a.out",
             executable_max_bytes=16 * 1024 * 1024,
         )
+        if compiled.returncode == -1:
+            # 沙箱 -1 表示基础设施未能执行命令；不能记作学生编译错误。
+            # 抛出异常由平台保留提交并重试，学生程序 exit(-1) 的状态为 255。
+            raise RuntimeError("C++ 编译沙箱暂时不可用，请稍后重试")
         if compiled.returncode != 0 or "a.out" not in compiled.artifacts:
             return _failure(len(inputs), compiled.stderr or "编译失败，未生成可执行程序")
         executable = root / "a.out"
@@ -266,6 +270,8 @@ def run_code(source: str, inputs: list[int], *, timeout_seconds: int = 5) -> dic
             input_text=str(len(inputs)) + "\n" + "\n".join(map(str, inputs)) + "\n",
             timeout_sec=timeout_seconds + 5,
         )
+        if result.returncode == -1:
+            raise RuntimeError("C++ 运行沙箱暂时不可用，请稍后重试")
         if result.stdout_truncated or result.stderr_truncated:
             return _failure(len(inputs), "程序输出超过限制", compiled=True)
         runtime_error = ""

@@ -49,7 +49,7 @@ export default function VibeHubPlayerPage() {
   const leaseRef = useRef<LeaseResponse | null>(null)
   const acquireGeneration = useRef(0)
   const project = useQuery({queryKey: ['vibehub', 'project', slug, channel], queryFn: () => apiFetch<ProjectResponse>(`/api/vibehub/projects/${encodeURIComponent(slug)}?view=${encodeURIComponent(channel)}`)})
-  const isEdu = project.data?.project?.kind === 'edu'
+  const isEdu = Boolean(assignmentId) || project.data?.project?.kind === 'edu'
 
   useEffect(() => {
     if (project.data?.project?.title) document.title = `正在游玩 ${String(project.data.project.title)} · VibeHub - Numerical OJ`

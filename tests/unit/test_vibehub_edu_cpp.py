@@ -156,6 +156,31 @@ def test_compile_failure_never_starts_the_user_executable(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("stage", ["compile", "run"])
+def test_infrastructure_startup_failure_raises_for_platform_retry_instead_of_grading_zero(monkeypatch, stage):
+    responses = []
+    if stage == "run":
+        responses.append(_RunResult(0, "", "", artifacts={"a.out": b"executable"}))
+    responses.append(_RunResult(-1, "", "无法启动判题测试点容器"))
+    pending = iter(responses)
+    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: next(pending))
+    with pytest.raises(RuntimeError, match="沙箱暂时不可用"):
+        edu_cpp.run_code("int step(int x) { return x; }", [7])
+
+
+def test_student_exit_255_remains_a_student_runtime_error(monkeypatch):
+    responses = iter([
+        _RunResult(0, "", "", artifacts={"a.out": b"executable"}),
+        _RunResult(255, "", "学生程序退出"),
+    ])
+    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: next(responses))
+    result = edu_cpp.run_code("int step(int x) { return x; }", [7])
+    assert result["compiled"] is True
+    assert result["passed"] == 0 and result["total"] == 1
+    assert "学生程序退出" in result["error"]
+    assert result["rounds"][0]["returned"] is None
+
+
 def test_empty_and_oversized_source_do_not_start_a_container(monkeypatch):
     monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: pytest.fail("不应启动容器"))
     assert edu_cpp.run_code("", [7])["compiled"] is False
