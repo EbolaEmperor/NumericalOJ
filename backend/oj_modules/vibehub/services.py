@@ -10,6 +10,7 @@ import secrets
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.vibehub import build_progress, gpu, quotas, storage
 from backend.oj_modules.vibehub.runtime import get_runtime_manager
+from backend.oj_modules.vibehub.retention import EDU_VERSION_REFERENCED_SQL
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
@@ -414,7 +415,10 @@ def _fetch_core_for_update(cursor, slug: str):
         """
         SELECT id, slug, owner_id, latest_version_id,
                public_version_id, review_version_id, last_reviewed_version_id,
-               is_featured
+               is_featured,
+               (EXISTS (SELECT 1 FROM vibehub_edu_assignments ea WHERE ea.project_id=vibehub_projects.id)
+                OR EXISTS (SELECT 1 FROM vibehub_edu_attempts et WHERE et.project_id=vibehub_projects.id)
+                OR EXISTS (SELECT 1 FROM vibehub_edu_submissions es WHERE es.project_id=vibehub_projects.id)) AS edu_referenced
         FROM vibehub_projects
         WHERE slug = %s
         FOR UPDATE
@@ -480,14 +484,14 @@ def _lock_and_count_nonfeatured_projects(cursor, owner_id: int) -> int:
     return len(cursor.fetchall() or [])
 
 
-def _version_identity_map(cursor, project_id: int) -> dict[int, int]:
+def _version_identity_map(cursor, project_id: int, retained_ids=None) -> dict[int, int]:
     """返回已锁项目的全部历史版本 ID -> 版本号映射。"""
     cursor.execute(
-        """
-        SELECT id, version_number
-        FROM vibehub_versions
-        WHERE project_id = %s
-        ORDER BY version_number
+        f"""
+        SELECT v.id, v.version_number, {EDU_VERSION_REFERENCED_SQL} AS edu_referenced
+        FROM vibehub_versions v
+        WHERE v.project_id = %s
+        ORDER BY v.version_number
         FOR UPDATE
         """,
         (int(project_id),),
@@ -511,6 +515,8 @@ def _version_identity_map(cursor, project_id: int) -> dict[int, int]:
                 code="snapshot_metadata_conflict",
             )
         result[version_id] = version_number
+        if retained_ids is not None and row.get('edu_referenced'):
+            retained_ids.append(version_id)
         seen_numbers.add(version_number)
     return result
 
@@ -562,11 +568,11 @@ def _lock_owner_snapshot_gc_states(cursor, owner_id: int) -> list[dict]:
                 raise ValueError("duplicate project identity")
             projects[project_id] = {
                 "slug": slug,
-                "references": (
+                "references": [
                     row.get("latest_version_id"),
                     row.get("public_version_id"),
                     row.get("review_version_id"),
-                ),
+                ],
                 "identity_map": {},
             }
             slugs.add(slug)
@@ -578,8 +584,8 @@ def _lock_owner_snapshot_gc_states(cursor, owner_id: int) -> list[dict]:
         ) from exc
     if projects:
         cursor.execute(
-            """
-            SELECT v.project_id, v.id, v.version_number
+            f"""
+            SELECT v.project_id, v.id, v.version_number, {EDU_VERSION_REFERENCED_SQL} AS edu_referenced
             FROM vibehub_versions v
             INNER JOIN vibehub_projects p ON p.id = v.project_id
             WHERE p.owner_id = %s
@@ -603,6 +609,8 @@ def _lock_owner_snapshot_gc_states(cursor, owner_id: int) -> list[dict]:
                 ):
                     raise ValueError("duplicate version identity")
                 identity_map[version_id] = version_number
+                if row.get('edu_referenced'):
+                    project['references'].append(version_id)
         except (KeyError, TypeError, ValueError) as exc:
             raise VibeHubError(
                 "VibeHub 用户版本元数据无法对齐",
@@ -1144,7 +1152,8 @@ def _create_next_version(
                     quotas.enforce_version_count(version_count)
                     latest = _fetch_version(cursor, int(project["latest_version_id"]))
                     next_number = int(latest["version_number"]) + 1
-                    identity_map = _version_identity_map(cursor, int(project["id"]))
+                    retained_ids = []
+                    identity_map = _version_identity_map(cursor, int(project["id"]), retained_ids)
                     storage.cleanup_uncommitted_version_snapshot(
                         normalized_slug,
                         next_number,
@@ -1313,6 +1322,7 @@ def _create_next_version(
                             version_id,
                             project.get("public_version_id"),
                             review_version_id,
+                            *retained_ids,
                         ),
                     )
                 conn.commit()
@@ -1388,6 +1398,12 @@ def delete_project(actor, slug: str, *, upload_root=None) -> dict:
                 project = _fetch_core_for_update(cursor, normalized_slug)
                 if not (_owns(project, actor) or _is_admin(actor)):
                     raise VibeHubPermissionError()
+                if project.get('edu_referenced'):
+                    raise VibeHubError(
+                        '该作品已有教学作业或作答记录，需保留作品与评分证据，不能删除',
+                        status_code=409,
+                        code='edu_records_retained',
+                    )
                 cursor.execute(
                     "DELETE FROM vibehub_projects WHERE id = %s",
                     (int(project["id"]),),
@@ -1561,13 +1577,15 @@ def review_submission(
                             (version["id"], project["id"], version["id"]),
                         )
                         public_version_id = project.get("public_version_id")
-                    identity_map = _version_identity_map(cursor, int(project["id"]))
+                    retained_ids = []
+                    identity_map = _version_identity_map(cursor, int(project["id"]), retained_ids)
                     known_versions, live_versions = _snapshot_sets(
                         identity_map,
                         (
                             project.get("latest_version_id"),
                             public_version_id,
                             None,
+                            *retained_ids,
                         ),
                     )
                     row = _fetch_project_row(cursor, normalized_slug)

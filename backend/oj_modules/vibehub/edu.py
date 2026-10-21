@@ -194,7 +194,8 @@ def launch(slug, actor, assignment_id=None, channel="public"):
             seed = secrets.token_urlsafe(24)
             generator = random.Random(seed)
             parameters = _load(assignment["parameters_json"], {}) if assignment else {}
-            parameters = {**parameters, "inputs": [7, 3, 10, -2, 6, 6, 15, 1] + [generator.randint(-30, 30) for _ in range(16)]}
+            if version["manifest"].get("education", {}).get("executor") == "cpp-heap-median-v1":
+                parameters = {**parameters, "inputs": [7, 3, 10, -2, 6, 6, 15, 1] + [generator.randint(-30, 30) for _ in range(16)]}
             context = {"attempt_id": attempt_id, "assignment_id": assignment_id,
                 "project_version_id": int(version["id"]), "rubric_version": 1,
                 "challenge_seed": seed, "parameters": parameters}
@@ -219,15 +220,21 @@ def launch(slug, actor, assignment_id=None, channel="public"):
         raise
 
 
-def _get_attempt(cursor, attempt_id, actor=None):
-    cursor.execute("SELECT * FROM vibehub_edu_attempts WHERE id=%s", (attempt_id,))
+def _get_attempt(cursor, attempt_id, actor=None, *, for_update=False):
+    suffix = " FOR UPDATE" if for_update else ""
+    cursor.execute("SELECT * FROM vibehub_edu_attempts WHERE id=%s" + suffix, (attempt_id,))
     row = cursor.fetchone()
     if not row:
         raise services.VibeHubNotFoundError("作答不存在")
     if actor is not None and int(row["user_id"]) != services._actor_id(actor):
         raise services.VibeHubPermissionError("无权访问他人的作答")
     if row["assignment_id"]:
-        _assignment(cursor, row["assignment_id"], actor or {"id": row["user_id"]})
+        if actor is None:
+            cursor.execute("SELECT id,is_admin FROM users WHERE id=%s", (row["user_id"],))
+            actor = cursor.fetchone()
+            if not actor:
+                raise services.VibeHubPermissionError("作答所属用户不存在")
+        _assignment(cursor, row["assignment_id"], actor)
     return row
 
 
@@ -348,11 +355,11 @@ def submit(attempt_id, payload, actor=None):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            row = _get_attempt(cursor, attempt_id, actor)
+            row = _get_attempt(cursor, attempt_id, actor, for_update=True)
             cursor.execute("SELECT * FROM vibehub_edu_submissions WHERE attempt_id=%s", (attempt_id,))
             previous = cursor.fetchone()
             if previous:
-                if previous["request_id"] != request_id or int(previous["final_seq"]) != payload["expected_seq"]:
+                if int(previous["final_seq"]) != payload["expected_seq"]:
                     raise services.VibeHubError("本次作答已提交", status_code=409)
                 submission_id = previous["id"]
             else:
@@ -378,6 +385,23 @@ def submit(attempt_id, payload, actor=None):
         raise services.VibeHubError("评分服务未就绪，请重试提交", status_code=503)
     _grade_task.apply_async(args=[int(submission_id)], queue="celery")
     return {"submission_id": int(submission_id), "status": "grading"}
+
+
+def dispatch_pending_grades():
+    """补投已冻结但未成功派发的提交，不修改运行锁或已开始的评分。"""
+    if _grade_task is None:
+        return 0
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("""SELECT id FROM vibehub_edu_submissions WHERE status='submitted'
+                AND created_at < DATE_SUB(NOW(), INTERVAL 60 SECOND) ORDER BY id LIMIT 50""")
+            ids = [int(row["id"]) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+    for submission_id in ids:
+        _grade_task.apply_async(args=[submission_id], queue="celery")
+    return len(ids)
 
 
 def submission_result(submission_id=None, *, attempt_id=None, actor=None):
@@ -436,7 +460,7 @@ def grade_submission(submission_id):
             except Exception:
                 conn.rollback()
                 cursor.execute("UPDATE vibehub_edu_submissions SET status='error',result_json=%s WHERE id=%s AND status<>'graded'",
-                    (_dump({"feedback": "评分服务暂时不可用，正在重试。"}), submission_id))
+                    (_dump({"feedback": "评分服务暂时不可用，可重试评分。"}), submission_id))
                 conn.commit()
                 raise
             finally:

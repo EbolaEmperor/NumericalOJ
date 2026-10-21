@@ -844,6 +844,12 @@ def register_pending_requeue_watchdog_task(celery_app, evaluate_task, written_ta
         repository_upload_cleanup = {}
         try:
             repository_upload_cleanup = _cleanup_repository_upload_staging()
+            try:
+                from backend.oj_modules.vibehub.edu import dispatch_pending_grades
+                dispatch_pending_grades()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("教育作业待评分提交补投失败")
             written_publications = _recover_written_publications(
                 min_age_seconds=DEFAULT_RECOVERY_GRACE_SECONDS,
             )

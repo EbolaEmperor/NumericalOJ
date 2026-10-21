@@ -302,6 +302,11 @@ python3 scripts/numoj_user.py vibehub edu submit <attempt_id> \
 python3 scripts/numoj_user.py vibehub edu result --attempt-id <attempt_id>
 ```
 
+提交时平台锁定作答行并冻结连续操作记录；同一最终序号的重交只返回原提交，不会创建重复成绩。
+若数据库保存后队列派发失败，待处理提交由现有后台巡检补投；评分使用退避重试，失败后也可
+在示例页面点击“重试评分”。重新评分始终使用原快照，不采纳新代码或新分数。
+作业及其历史作答引用的作品版本会保留，已有教学记录的作品不能直接删除。
+
 ## 使用 CLI 管理作品
 
 ### 查看作品

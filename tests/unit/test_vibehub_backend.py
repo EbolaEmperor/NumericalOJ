@@ -351,6 +351,16 @@ def test_delete_project_removes_owned_metadata_in_one_transaction(tmp_path, monk
     assert delete_params == (3,)
 
 
+def test_delete_project_with_edu_audit_records_is_rejected(tmp_path, monkeypatch):
+    connection = _Connection([_project_row(edu_referenced=1)])
+    monkeypatch.setattr(services, 'get_db_connection', lambda: connection)
+    with pytest.raises(services.VibeHubError, match='评分证据') as captured:
+        services.delete_project(USER, 'demo-vibe', upload_root=tmp_path)
+    assert captured.value.status_code == 409
+    assert not any(sql.startswith('DELETE') for sql, _params in connection.fake_cursor.calls)
+    assert connection.closed is True
+
+
 def test_public_serializer_omits_private_workflow_instead_of_masking_values():
     row = _project_row(
         latest_review_status="rejected",

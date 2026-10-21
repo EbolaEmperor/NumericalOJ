@@ -179,7 +179,8 @@ def test_database_quota_helpers_lock_user_projects_and_versions():
     assert statements[2].endswith("FOR UPDATE")
     assert "FROM vibehub_versions" in statements[3]
     assert statements[3].endswith("FOR UPDATE")
-    assert "SELECT id, version_number" in statements[4]
+    assert "SELECT v.id, v.version_number" in statements[4]
+    assert "vibehub_edu_assignments" in statements[4]
     assert statements[4].endswith("FOR UPDATE")
 
 
@@ -191,6 +192,21 @@ def test_snapshot_sets_preserve_distinct_latest_public_and_review_versions():
 
     assert known == {1, 2, 3, 4}
     assert live == {1, 2, 3}
+
+
+def test_version_identity_map_preserves_edu_references_for_pruning():
+    class Cursor(_Cursor):
+        def fetchall(self):
+            return [
+                {'id': 10, 'version_number': 1, 'edu_referenced': 1},
+                {'id': 11, 'version_number': 2, 'edu_referenced': 0},
+            ]
+
+    cursor = Cursor()
+    retained = []
+    identities = services._version_identity_map(cursor, 3, retained)
+    assert retained == [10]
+    assert services._snapshot_sets(identities, [11, *retained]) == ({1, 2}, {1, 2})
 
 
 def test_owner_snapshot_gc_facts_lock_only_owner_projects_and_versions():

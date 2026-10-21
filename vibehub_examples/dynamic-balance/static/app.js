@@ -43,7 +43,8 @@
   function updateButtons() {
     const active = status === 'active';
     $('runButton').disabled = busy || !active;
-    $('submitButton').disabled = busy || !active;
+    $('submitButton').disabled = busy || !['active', 'submitted', 'error'].includes(status);
+    $('submitButton').textContent = ['submitted', 'error'].includes(status) ? '重试评分 ↗' : '提交作业 ↗';
     $('resetButton').disabled = busy || !active;
     code.readOnly = busy || !active;
     $('runButton').innerHTML = busy ? '<span>◌</span> 正在执行' : '<span>▶</span> 试运行';
@@ -278,7 +279,7 @@
         status = 'graded';
       } else if (current === 'error') {
         $('resultTitle').textContent = '评分暂时失败';
-        $('resultFeedback').textContent = data.error || '提交记录已保留，请稍后刷新查看。';
+        $('resultFeedback').textContent = result.feedback || data.error || '提交记录已保留，可点击“重试评分”。';
       } else {
         $('resultTitle').textContent = '作业已提交，正在评分';
         $('resultFeedback').textContent = '平台正在使用隐藏数据重新执行你的代码，成绩会自动显示在这里。';
@@ -295,7 +296,7 @@
     if (busy) return;
     busy = true; stopPlayback(); updateButtons(); message('正在保存当前代码并提交…', true);
     try {
-      if (code.value !== lastRunSource) await runCode(false);
+      if (status === 'active' && code.value !== lastRunSource) await runCode(false);
       const data = await api('submit', { request_id: uuid(), expected_seq: seq });
       status = data.status || 'grading';
       message('当前代码已冻结并提交，平台将使用隐藏数据重新评分。', true);

@@ -20,6 +20,7 @@ import time
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.project_paths import PROJECT_ROOT
 from backend.oj_modules.vibehub import quotas, storage
+from backend.oj_modules.vibehub.retention import EDU_VERSION_REFERENCED_SQL
 
 
 DEFAULT_STORAGE_GC_INTERVAL_SECONDS = 15 * 60.0
@@ -97,7 +98,7 @@ def _locked_snapshot_gc_states(cursor) -> tuple[dict, ...]:
             raise VibeHubMaintenanceError("VibeHub 后台回收作品元数据冲突")
         projects[project_id] = {
             "slug": slug,
-            "references": (
+            "references": [
                 _optional_positive_id(
                     row.get("latest_version_id"),
                     label="VibeHub latest version ID",
@@ -110,15 +111,15 @@ def _locked_snapshot_gc_states(cursor) -> tuple[dict, ...]:
                     row.get("review_version_id"),
                     label="VibeHub review version ID",
                 ),
-            ),
+            ],
             "versions": {},
             "numbers": set(),
         }
         slugs.add(slug)
 
     cursor.execute(
-        """
-        SELECT v.project_id, v.id, v.version_number
+        f"""
+        SELECT v.project_id, v.id, v.version_number, {EDU_VERSION_REFERENCED_SQL} AS edu_referenced
         FROM vibehub_versions v
         ORDER BY v.project_id, v.version_number
         LIMIT %s
@@ -149,6 +150,8 @@ def _locked_snapshot_gc_states(cursor) -> tuple[dict, ...]:
             raise VibeHubMaintenanceError("VibeHub 后台回收版本元数据冲突")
         seen_version_ids.add(version_id)
         project["versions"][version_id] = version_number
+        if row.get('edu_referenced'):
+            project['references'].append(version_id)
         project["numbers"].add(version_number)
 
     states = []

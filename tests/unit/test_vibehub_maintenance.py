@@ -92,6 +92,13 @@ def _empty_connection() -> _FakeConnection:
     return _FakeConnection(project_rows=(), version_rows=())
 
 
+def test_edu_referenced_old_versions_remain_live_after_public_changes():
+    connection = _connection_for_demo()
+    connection.version_rows[0]['edu_referenced'] = 1
+    states = maintenance._locked_snapshot_gc_states(connection.cursor())
+    assert states == ({'slug': 'demo-vibe', 'known_versions': {1, 2}, 'live_versions': {1, 2}},)
+
+
 def test_background_gc_reclaims_aged_marker_without_another_user_write(tmp_path):
     retired = _snapshot(tmp_path, 1)
     live = _snapshot(tmp_path, 2)

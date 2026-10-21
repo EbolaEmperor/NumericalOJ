@@ -2312,7 +2312,8 @@ CREATE TABLE `vibehub_edu_assignments` (
   `deleted_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_edu_assignment_homework` (`class_en`,`homework_id`),
-  KEY `idx_edu_assignment_version` (`version_id`)
+  KEY `idx_edu_assignment_version` (`version_id`),
+  KEY `idx_edu_assignment_project` (`project_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `vibehub_edu_attempts` (
@@ -2329,7 +2330,9 @@ CREATE TABLE `vibehub_edu_attempts` (
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_edu_attempt_owner` (`user_id`,`assignment_id`,`version_id`,`status`)
+  KEY `idx_edu_attempt_owner` (`user_id`,`assignment_id`,`version_id`,`status`),
+  KEY `idx_edu_attempt_version` (`version_id`),
+  KEY `idx_edu_attempt_project` (`project_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `vibehub_edu_commands` (
@@ -2362,5 +2365,6 @@ CREATE TABLE `vibehub_edu_submissions` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_edu_submission_attempt` (`attempt_id`),
   KEY `idx_edu_score_assignment` (`assignment_id`,`user_id`,`status`,`created_at`),
-  KEY `idx_edu_submission_version` (`version_id`)
+  KEY `idx_edu_submission_version` (`version_id`),
+  KEY `idx_edu_submission_project` (`project_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
