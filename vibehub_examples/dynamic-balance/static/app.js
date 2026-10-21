@@ -68,8 +68,8 @@
     if (!starter) starter = view.initial_source || view.source || '';
     if (restoreCode) {
       code.value = view.source || starter;
-      lastRunSource = view.execution ? code.value : '';
     }
+    lastRunSource = view.execution ? (view.source || '') : '';
     setBadge(data);
     if (view.execution?.rounds?.length) preparePlayback(view.execution, false);
     else renderFrame({ left: [], right: [], round: 0, message: '写好 step 函数后，点击「试运行」，观察真实的堆操作。' });
