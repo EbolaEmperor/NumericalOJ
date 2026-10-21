@@ -128,9 +128,33 @@ def _attach_user_homework_scores(result, username, cursor):
                 int(submission["competition_id"]), []
             ).append(submission)
 
+    assignment_ids = sorted({
+        int(hw["vibehub_edu_assignment_id"])
+        for rows in result.values() for hw in rows
+        if hw.get("kind") == "edu" and hw.get("vibehub_edu_assignment_id")
+    })
+    edu_submissions = {}
+    if assignment_ids:
+        placeholders = ",".join(["%s"] * len(assignment_ids))
+        cursor.execute(
+            f"""
+            SELECT es.id, es.assignment_id, es.score, es.status, es.created_at
+            FROM vibehub_edu_submissions es
+            JOIN users u ON u.id = es.user_id
+            WHERE u.username=%s AND es.assignment_id IN ({placeholders})
+              AND es.status='graded'
+            """,
+            tuple([username] + assignment_ids),
+        )
+        for submission in cursor.fetchall() or []:
+            edu_submissions.setdefault(int(submission["assignment_id"]), []).append(submission)
+
     for rows in result.values():
         for homework in rows:
-            if homework.get("kind") == "ranking":
+            if homework.get("kind") == "edu":
+                submissions = edu_submissions.get(int(homework["vibehub_edu_assignment_id"]), [])
+                snapshot = homework_score_snapshot(submissions, homework.get("ddl"))
+            elif homework.get("kind") == "ranking":
                 submissions = ranking_submissions.get(
                     int(homework["competition_id"]), []
                 )
@@ -333,7 +357,7 @@ def get_problem_homework_deadline_state(
 def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=None):
     """
     批量读取多个班级作业，并一次性补齐题目标题、AC 状态、最高分。
-    支持两类作业：题目（problem_id）与打榜赛（ranking_competition_id）。
+    支持题目、打榜赛与固定作品版本的 VibeHub 教学作业。
     返回: {class_en: [hw, ...]}
     """
     result = {cls: [] for cls in class_en_list}
@@ -356,8 +380,9 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
         union_parts = []
         union_params = []
         for cls in class_en_list:
+            table_name = safe_table_name(cls)
             union_parts.append(
-                f"SELECT %s AS class_en, id, problem_id, ranking_competition_id, ddl, complete_cnt FROM `{cls}`"
+                f"SELECT %s AS class_en, id, problem_id, ranking_competition_id, vibehub_project_id, vibehub_edu_assignment_id, ddl, complete_cnt, problem_title AS saved_title FROM `{table_name}`"
             )
             union_params.append(cls)
         if not union_parts:
@@ -367,12 +392,15 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
         db_cursor.execute(
             f"""
             SELECT t.class_en, t.id, t.problem_id, t.ranking_competition_id, t.ddl, t.complete_cnt,
+                   t.vibehub_project_id, t.vibehub_edu_assignment_id, t.saved_title,
+                   vp.slug AS vibehub_slug,
                    p.title AS problem_title, p.max_score AS total_score,
                    p.type AS problem_type, p.lang AS problem_lang,
                    rc.title AS rk_title, rc.max_score AS rk_total, rc.scoring_mode AS rk_mode
             FROM ({union_sql}) t
             LEFT JOIN problems p ON p.id = t.problem_id
             LEFT JOIN ranking_competitions rc ON rc.id = t.ranking_competition_id
+            LEFT JOIN vibehub_projects vp ON vp.id = t.vibehub_project_id
             ORDER BY t.class_en ASC, t.id ASC
             """,
             tuple(union_params),
@@ -385,7 +413,23 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
             if cls not in result:
                 continue
             rcid = row.get("ranking_competition_id")
-            if rcid:
+            if row.get("vibehub_edu_assignment_id"):
+                hw = {
+                    "id": row["id"],
+                    "kind": "edu",
+                    "problem_id": None,
+                    "vibehub_project_id": row.get("vibehub_project_id"),
+                    "vibehub_edu_assignment_id": row["vibehub_edu_assignment_id"],
+                    "vibehub_slug": row.get("vibehub_slug"),
+                    "ddl": row["ddl"],
+                    "complete_cnt": row["complete_cnt"],
+                    "problem_title": row.get("saved_title") or "VibeHub 教学作业",
+                    "total_score": 100,
+                    "is_completed": False,
+                    "max_score": None,
+                    "has_submission": False,
+                }
+            elif rcid:
                 is_elo = (row.get("rk_mode") == "elo")
                 hw = {
                     "id": row["id"],
@@ -429,7 +473,7 @@ def _get_homeworks_for_classes(user_id, class_en_list, cursor=None, username=Non
 
         for cls, hw_list in result.items():
             for hw in hw_list:
-                if hw.get("kind") == "ranking":
+                if hw.get("kind") in {"ranking", "edu"}:
                     continue
                 pid = hw["problem_id"]
                 hw["problem_title"] = (

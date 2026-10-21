@@ -474,8 +474,40 @@ def attach_submission_metrics(homeworks, *, class_en=None, viewer=None):
         else get_problem_submission_metrics(problem_ids, class_en=class_en)
     )
     ranking_metrics = get_ranking_submission_metrics(competition_ids, class_en=class_en)
+    assignment_ids = sorted({
+        int(item['vibehub_edu_assignment_id']) for item in enriched
+        if item.get('vibehub_edu_assignment_id')
+    })
+    edu_metrics = {}
+    if assignment_ids:
+        placeholders = ','.join(['%s'] * len(assignment_ids))
+        membership = ''
+        params = list(assignment_ids)
+        if class_en:
+            membership = 'AND EXISTS (SELECT 1 FROM user_class_map m WHERE m.user_id=es.user_id AND m.class_en=%s)'
+            params.append(class_en)
+        rows = _metric_rows(
+            f"""
+            SELECT es.assignment_id AS entity_id, COUNT(*) AS submission_count,
+                   SUM(CASE WHEN es.score_bp >= 10000 THEN 1 ELSE 0 END) AS accepted_count
+            FROM vibehub_edu_submissions es
+            WHERE es.assignment_id IN ({placeholders}) AND es.status='graded' {membership}
+            GROUP BY es.assignment_id
+            """,
+            tuple(params),
+        )
+        for row in rows:
+            total = int(row.get('submission_count') or 0)
+            accepted = int(row.get('accepted_count') or 0)
+            edu_metrics[int(row['entity_id'])] = {
+                'submission_count': total,
+                'accepted_count': accepted,
+                'pass_rate': accepted / total if total else None,
+            }
     for item in enriched:
-        if item.get("problem_id"):
+        if item.get('vibehub_edu_assignment_id'):
+            item['submission_metrics'] = edu_metrics.get(int(item['vibehub_edu_assignment_id']))
+        elif item.get("problem_id"):
             item["submission_metrics"] = problem_metrics.get(int(item["problem_id"]))
         else:
             competition_id = item.get("competition_id") or item.get("ranking_competition_id")

@@ -124,6 +124,7 @@ from backend.oj_modules.tasks.registry import (
     read_agent_steer_capability,
     register_evaluate_submission_task,
     register_homework_admin_tasks,
+    register_vibehub_edu_task,
     register_promptly_generate_submission_task,
     register_rejudge_task,
     register_bulk_rejudge_task,
@@ -486,6 +487,8 @@ celery.conf.broker_transport_options = {
 celery.conf.task_acks_late = True
 celery.conf.task_reject_on_worker_lost = True
 evaluate_submission = register_evaluate_submission_task(celery)
+from backend.oj_modules.vibehub.edu import init_grade_task
+init_grade_task(register_vibehub_edu_task(celery))
 transcribe_written_homework_to_latex = register_written_homework_task(celery)
 rejudge_submission_and_update = register_rejudge_task(
     celery,

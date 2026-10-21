@@ -1726,6 +1726,7 @@ class DockerCLI:
         *,
         timeout: float,
         response_max_bytes: int,
+        edu: bool = False,
     ) -> ProxyResponse:
         if not re.fullmatch(r"numoj-vh-[0-9a-f]{16}-[0-9a-f]{40}", container_name):
             raise VibeHubProxyError("VibeHub relay 容器名无效")
@@ -1755,7 +1756,9 @@ class DockerCLI:
             container_name,
             "/usr/local/bin/vibehub-uds-relay",
         ]
-        if self._relay_process_factory is not None:
+        if edu:
+            command.append("--edu")
+        if self._relay_process_factory is not None and not edu:
             try:
                 response_frame = self._persistent_relay_response(
                     container_name,
@@ -2933,6 +2936,11 @@ class VibeHubRuntimeManager:
     ) -> RuntimeLease:
         """取得短期租约；只启动保存时已经构建好的受管镜像。"""
 
+        if gpu_allocation:
+            base_image = self.docker.inspect_image("numericaloj-vibehub-runtime:1")
+            if base_image.labels.get("com.numericaloj.vibehub.gpu") == "0":
+                raise VibeHubGPUError("当前测试站使用 CPU 运行时，不支持 GPU 作品")
+
         key = _validate_project_key(project_key)
         selected_channel = _validate_channel(channel)
         selected_storage_key = _validate_storage_key(
@@ -3176,6 +3184,21 @@ class VibeHubRuntimeManager:
             lease["expires_at"] = float(self._clock()) + self.lease_ttl_seconds
             state["leases"][digest] = lease
             return self._lease_from_state(token, lease, runtime)
+
+    def bind_edu_attempt(self, token: str, attempt_id: str) -> None:
+        """仅由已鉴权的教育启动流程绑定匿名作答。"""
+        with self._locked_state() as state:
+            digest, lease, _runtime = self._lookup_lease(state, token)
+            lease["edu_attempt_id"] = str(attempt_id)
+            state["leases"][digest] = lease
+
+    def edu_attempt_for_token(self, token: str) -> str:
+        with self._locked_state() as state:
+            _digest, lease, _runtime = self._lookup_lease(state, token)
+            attempt_id = lease.get("edu_attempt_id")
+            if not attempt_id:
+                raise VibeHubLeaseError("该运行会话未绑定作答")
+            return str(attempt_id)
 
     def validate_proxy_capability(
         self,

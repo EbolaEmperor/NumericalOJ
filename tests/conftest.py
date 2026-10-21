@@ -202,7 +202,9 @@ def _reset_db():
                     f"CREATE TABLE IF NOT EXISTS `{en}` ("
                     "id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, problem_id INT, "
                     "ddl DATETIME, complete_cnt INT DEFAULT 0, problem_title TEXT, "
-                    "ranking_competition_id INT DEFAULT NULL) "
+                    "ranking_competition_id INT DEFAULT NULL, "
+                    "vibehub_project_id BIGINT UNSIGNED DEFAULT NULL, "
+                    "vibehub_edu_assignment_id BIGINT UNSIGNED DEFAULT NULL) "
                     "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
             cur.execute(
                 "INSERT INTO users "

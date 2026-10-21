@@ -22,7 +22,7 @@ beforeEach(() => {
     if (url === '/api/v1/session') return response({api_version: '1', user: {id: 1, username: 'admin', is_admin: 1}, navigation: {items: [], counts: {}, agent_active: false}, capabilities: {spa: true}})
     if (url.startsWith('/api/admin/homework')) {
       if (init?.method === 'POST') {savedBody = init.body as FormData; return response({})}
-      return response({classes: [{class_en: 'test', class_cn: '测试班'}], selected_class: 'test', homework_list: [], all_problems: [{id: 12, title: '矩阵练习'}], all_competitions: [{id: 7, title: '数值积分赛'}]})
+      return response({classes: [{class_en: 'test', class_cn: '测试班'}], selected_class: 'test', homework_list: [], all_problems: [{id: 12, title: '矩阵练习'}], all_competitions: [{id: 7, title: '数值积分赛'}], all_edu_projects: [{id: 8, title: '动态平衡术', slug: 'balance'}]})
     }
     throw new Error(`unexpected fetch: ${url}`)
   }))
@@ -36,6 +36,20 @@ function renderPage() {
 }
 
 describe('作业管理共享搜索选择', () => {
+  it('可选择教学作品布置作业，并只提交作品编号', async () => {
+    const {container} = renderPage()
+    fireEvent.click(await screen.findByRole('button', {name: '布置新作业'}))
+    fireEvent.click(screen.getByRole('radio', {name: 'VibeHub 教学作品'}))
+    const search = screen.getByRole('combobox', {name: '选择VibeHub 教学作品'})
+    fireEvent.change(search, {target: {value: '平衡'}})
+    fireEvent.click(screen.getByRole('option', {name: '#8 动态平衡术'}))
+    fireEvent.change(container.ownerDocument.querySelector('#homeworkAddForm input[type="datetime-local"]')!, {target: {value: '2026-10-28T20:00'}})
+    fireEvent.submit(container.ownerDocument.querySelector('#homeworkAddForm')!)
+    await waitFor(() => expect(savedBody?.get('vibehub_project_id')).toBe('8'))
+    expect(savedBody?.get('problem_id')).toBeNull()
+    expect(savedBody?.get('ranking_competition_id')).toBeNull()
+  })
+
   it('切换作业类型时清空搜索和选择，仍通过原确认按钮提交正确编号', async () => {
     const {container} = renderPage()
     fireEvent.click(await screen.findByRole('button', {name: '布置新作业'}))

@@ -320,6 +320,35 @@ def runtime_proxy(token, path):
     manager = get_runtime_manager()
     if request.method == "OPTIONS":
         return _runtime_preflight(manager, token)
+    if path == "_edu" or path.startswith("_edu/"):
+        from backend.oj_modules.vibehub import edu
+        try:
+            attempt_id = manager.edu_attempt_for_token(token)
+            operation = path.removeprefix("_edu/v1/")
+            if request.method == "GET" and operation == "state":
+                payload = edu.attempt_state(attempt_id)
+            elif request.method == "GET" and operation == "result":
+                payload = edu.submission_result(attempt_id=attempt_id)
+            elif request.method == "POST" and operation in {"actions", "submit"}:
+                request.max_content_length = 128 * 1024
+                if request.content_length and request.content_length > 128 * 1024:
+                    raise services.VibeHubError("请求过大", status_code=413)
+                body = request.get_json(silent=True)
+                payload = edu.apply_action(attempt_id, body) if operation == "actions" else edu.submit(attempt_id, body)
+            else:
+                return Response("unknown education endpoint", status=404)
+            response = jsonify(success=True, **payload)
+        except services.VibeHubError as exc:
+            response = jsonify(success=False, message=str(exc), code=exc.code)
+            response.status_code = exc.status_code
+        except VibeHubLeaseError:
+            return Response("runtime lease unavailable", status=404)
+        except VibeHubRuntimeError:
+            response = jsonify(success=False, message="作品运行服务暂时不可用，请稍后重试。")
+            response.status_code = 503
+        response.headers["Access-Control-Allow-Origin"] = "null"
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
     content_length = request.content_length
     if content_length is not None and content_length > manager.request_max_bytes:
         return Response("request body too large", status=413, content_type="text/plain")

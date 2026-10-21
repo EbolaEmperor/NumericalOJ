@@ -50,6 +50,8 @@ def homework_add(args: argparse.Namespace) -> None:
         data["problem_id"] = str(args.problem_id)
     if args.ranking_competition_id is not None:
         data["ranking_competition_id"] = str(args.ranking_competition_id)
+    if getattr(args, "vibehub_project_id", None) is not None:
+        data["vibehub_project_id"] = str(args.vibehub_project_id)
     resp = client.request("POST", "/api/admin/homework", data=data)
     print_or_save_response(resp)
 
@@ -225,12 +227,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa = add_cli_parser(hs, "list", "List homework assigned to a class or visible classes.")
     pa.add_argument("--class-en", help="English class identifier to filter by, e.g. C2026A.")
     pa.set_defaults(func=homework_list)
-    pa = add_cli_parser(hs, "add", "Assign a problem or ranking competition as homework for a class.")
+    pa = add_cli_parser(hs, "add", "为班级布置题目、打榜赛或已发布的 VibeHub edu 作品。")
     pa.add_argument("--class-en", required=True, help="English class identifier receiving the homework, e.g. C2026A.")
     pa.add_argument("--ddl", required=True, help="Homework deadline, formatted as YYYY-MM-DDTHH:MM or a MySQL datetime string.")
     group = pa.add_mutually_exclusive_group(required=True)
     group.add_argument("--problem-id", type=int, help="Problem ID to assign as homework.")
     group.add_argument("--ranking-competition-id", type=int, help="Ranking competition ID to assign as homework.")
+    group.add_argument("--vibehub-project-id", type=int, help="已发布的 edu 作品 ID；作业固定使用布置时的公开版本。")
     pa.set_defaults(func=homework_add)
     pa = add_cli_parser(hs, "update-ddl", "Update the deadline for one homework assignment.")
     pa.add_argument("--class-en", required=True, help="English class identifier that owns the homework.")

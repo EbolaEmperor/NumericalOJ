@@ -64,7 +64,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge four-step progress), submit/check appeals, and download own visible ranking submission files.
-- `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, edit versioned metadata, and permanently delete owned works. Featured status is assigned only by administrators and cannot be requested by users.
+- `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, edit versioned metadata, permanently delete owned works, and launch/operate/submit edu homework with separate result queries. Featured status is assigned only by administrators and cannot be requested by users.
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
 
@@ -149,6 +149,33 @@ python3 "$NUMOJ_USER_CLI" vibehub create ./my-vibe.zip --title "My Vibe"
 python3 "$NUMOJ_USER_CLI" vibehub mine
 python3 "$NUMOJ_USER_CLI" vibehub delete <slug> --yes
 ```
+
+Complete VibeHub visualization homework using `vibehub edu` rather than ordinary
+`problem submit`. Read the assigned homework with `problem list` to obtain its
+`vibehub_edu_assignment_id` and demo URL. This ID is also the URL's `assignment`
+parameter and differs from the homework row ID. The URL opens the demo directly; submissions
+are separate from `submission list` and class scores are associated by NumOJ.
+The demo receives an anonymous attempt ID, not the student's school number.
+
+```bash
+python3 "$NUMOJ_USER_CLI" vibehub edu launch <slug> --assignment-id <edu_assignment_id>
+python3 "$NUMOJ_USER_CLI" vibehub edu state <attempt_id>
+python3 "$NUMOJ_USER_CLI" vibehub edu action <attempt_id> \
+  --expected-seq 0 --command-id command-1 --action @action.json
+python3 "$NUMOJ_USER_CLI" vibehub edu submit <attempt_id> \
+  --expected-seq 1 --request-id submit-1
+python3 "$NUMOJ_USER_CLI" vibehub edu result --attempt-id <attempt_id>
+```
+
+Use the actual `seq` returned by `state` or the previous action. An action is a
+JSON object defined by that demo; do not guess its fields from another work.
+On a network failure, retry with the original command/request ID and identical
+payload. A `409` means reread the state before continuing. The result command
+also accepts `--submission-id <edu_submission_id>` returned by `submit`.
+Omitting `--assignment-id` starts practice and does not count toward homework.
+Creating an edu work requires `kind: "edu"`, `education.protocol:
+"vibehub-edu/1"`, and its internal teaching socket; read the server's developer
+guide for the exact contract before implementing or uploading one.
 
 Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
 

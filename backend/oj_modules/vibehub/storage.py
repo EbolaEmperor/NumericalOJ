@@ -373,6 +373,22 @@ def validate_manifest(app_dir: Path) -> dict:
         "socket_path": SOCKET_PATH,
         "health_path": HEALTH_PATH,
     }
+    kind = manifest.get("kind", "app")
+    if kind not in {"app", "edu"}:
+        raise PackageValidationError("kind 必须为 app 或 edu")
+    normalized["kind"] = kind
+    if kind == "edu":
+        education = manifest.get("education")
+        if not isinstance(education, dict) or education.get("protocol") != "vibehub-edu/1":
+            raise PackageValidationError("edu 作品必须声明 education.protocol=vibehub-edu/1")
+        if education.get("socket_path") != "/run/vibehub/edu.sock":
+            raise PackageValidationError("education.socket_path 必须为 /run/vibehub/edu.sock")
+        executor = education.get("executor")
+        if executor not in {None, "cpp-heap-median-v1"}:
+            raise PackageValidationError("不支持的 education.executor")
+        normalized["education"] = {"protocol": "vibehub-edu/1", "socket_path": "/run/vibehub/edu.sock"}
+        if executor:
+            normalized["education"]["executor"] = executor
     cover_image, cover_image_mime = validate_cover_image(
         manifest.get("cover_image"), app_dir,
     )

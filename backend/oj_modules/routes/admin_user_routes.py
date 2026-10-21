@@ -678,7 +678,7 @@ def add_class_ajax():
             )
         conn.commit()
         with conn.cursor() as cursor:
-            sql = f"CREATE TABLE {safe_table_name(class_en)}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT, ranking_competition_id INT DEFAULT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;"
+            sql = f"CREATE TABLE {safe_table_name(class_en)}(id INT PRIMARY KEY AUTO_INCREMENT, problem_id INT, ddl DATETIME, complete_cnt INT, problem_title TEXT, ranking_competition_id INT DEFAULT NULL, vibehub_project_id BIGINT UNSIGNED DEFAULT NULL, vibehub_edu_assignment_id BIGINT UNSIGNED DEFAULT NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;"
             cursor.execute(sql)
         conn.commit()
     except Exception as e:

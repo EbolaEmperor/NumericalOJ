@@ -11,6 +11,7 @@ from backend.oj_modules.api.ranking_api import ranking_api_bp
 from backend.oj_modules.api.repository_api import repository_api_bp
 from backend.oj_modules.api.submission_api import submission_api_bp
 from backend.oj_modules.api.vibehub_api import vibehub_api_bp
+from backend.oj_modules.api.vibehub_edu_api import vibehub_edu_api_bp
 from backend.oj_modules.api.spa_api import spa_api_bp
 
 
@@ -26,4 +27,5 @@ API_BLUEPRINTS = (
     repository_api_bp,
     submission_api_bp,
     vibehub_api_bp,
+    vibehub_edu_api_bp,
 )

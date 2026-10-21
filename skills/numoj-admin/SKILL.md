@@ -63,7 +63,7 @@ Do not use commands that launch external model/API work, large judging workloads
 - `me`: view current account classes, join or leave classes, view current account submissions, and summarize visible grades.
 - `submission`: list visible submissions, list submissions for one problem, inspect details/status/streams, fetch last submitted code, download output images, and download written-submission files.
 - `problem`: list/view/create/edit/delete problems, fetch create/edit/submit contexts, submit programming/Promptly/written homework as the administrator, upload test data, inspect scores, rejudge submissions, check rejudge status, and manage problem-solving or test-data-generation agent tasks.
-- `homework`: list class homework, assign/update/delete homework, export scores/codes/progress, download export artifacts, upload exam scores, inspect plagiarism records, and toggle class-adjustment settings.
+- `homework`: list class homework, assign problems/ranking competitions/published VibeHub edu works, update/delete homework, export scores/codes/progress, download export artifacts, upload exam scores, inspect plagiarism records, and toggle class-adjustment settings.
 - `user`: list users, create class types, rename users, add/remove class memberships, grant administrator privileges, list grades, and update or clear manual grade overrides.
 - `grading`: inspect pending written-homework grading items and submit manual grading decisions.
 - `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
@@ -71,7 +71,7 @@ Do not use commands that launch external model/API work, large judging workloads
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
 - `ranking`: 打榜赛管理。配置、题型差异与 CLI 工作流见 [ranking-contests.md]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests.md)。
-- `vibehub`: fetch the current developer guide, create or update versions with automatic review submission, delete works, decide pending publication reviews, and directly set or unset featured status.
+- `vibehub`: fetch the current developer guide, create or update versions with automatic review submission, delete works, decide pending publication reviews, directly set or unset featured status, and launch/inspect/submit edu attempts for the current account.
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
 
@@ -241,6 +241,37 @@ Assign homework and export scores:
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" homework add --class-en C2026A --problem-id <problem_id> --ddl 2026-12-31T23:59
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" homework export-scores --class-en C2026A -o scores.csv
 ```
+
+For a VibeHub visualization homework, fetch `vibehub guide` and inspect
+`vibehub list` / `vibehub detail <slug>`. Select a published project whose
+`kind` is `edu` and `education.protocol` is `vibehub-edu/1`, then use its numeric
+project ID (not its version number):
+
+```bash
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" homework add \
+  --class-en C2026A --vibehub-project-id <project_id> --ddl 2026-12-31T23:59
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" homework export-scores \
+  --class-en C2026A -o scores.csv
+```
+
+The three homework target flags are mutually exclusive. A VibeHub homework pins
+the published version at assignment time; later project publication does not
+replace its grading rules. Homework rows link directly to the demo. Edu scores
+are included in the existing class score export, while edu submissions are
+separate from ordinary `submission list`. A work receives an anonymous attempt
+ID, not the player's student number or OJ login cookie.
+
+Use `vibehub edu --help` for current-account testing. `launch <slug>
+--assignment-id <edu_assignment_id>` binds a run to homework; obtain this value
+from the homework row's `vibehub_edu_assignment_id` or demo URL's `assignment`
+parameter, rather than the class table's homework row ID. Omitting the flag is
+practice and does not count toward class homework. `state <attempt_id>` returns
+the current `seq`; `action` requires that `--expected-seq`, an explicit
+`--command-id`, and an action JSON object or `@file`. `submit` requires
+`--expected-seq` and `--request-id`. Reuse the original ID and identical payload
+when retrying a network failure; after a `409`, reread `state` before proceeding.
+Read grades through `vibehub edu result --attempt-id <attempt_id>` or
+`--submission-id <edu_submission_id>`; an edu ID is not an ordinary submission ID.
 
 Manage a user's classes, privileges, and grades:
 

@@ -54,7 +54,14 @@ def test_only_trusted_base_build_receives_host_cuda_context():
     deploy = (ROOT / "deploy.sh").read_text()
     start = deploy.index("phase='构建 VibeHub 受信基础候选镜像'")
     end = deploy.index("vibehub_runtime_candidate_id=", start)
-    assert "--build-context host_cuda=/usr/local/cuda-12.6" in deploy[start:end]
+    assert '"${VIBEHUB_RUNTIME_BUILD_ARGS[@]}"' in deploy[start:end]
+    configuration_start = deploy.index("configure_deployment_profile() {")
+    configuration_end = deploy.index("\n}\n", configuration_start)
+    configuration = deploy[configuration_start:configuration_end]
+    assert "production)" in configuration
+    assert "VIBEHUB_RUNTIME_BUILD_ARGS=(--build-context host_cuda=/usr/local/cuda-12.6)" in configuration
+    assert "VIBEHUB_RUNTIME_BUILD_ARGS=(--target web)" in configuration
+    assert deploy.count('"${VIBEHUB_RUNTIME_BUILD_ARGS[@]}"') == 1
     dockerfile = (ROOT / "docker/vibehub-runtime/Dockerfile").read_text()
     assert "--mount=type=bind,from=host_cuda,target=/usr/local/cuda-12.6" in dockerfile
     assert "COPY --from=gpu-builder /opt/vibehub-gpu /opt/vibehub-gpu" in dockerfile

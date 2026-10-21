@@ -27,7 +27,7 @@ from backend.oj_modules.vibehub import services, storage
 from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
-EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3", "guess-who")
+EXAMPLE_SLUGS = ("circle-cat", "arc-agi-3", "guess-who", "dynamic-balance")
 EXPECTED_ARC_GAME_COUNT = 25
 DETERMINISTIC_ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 

@@ -2298,3 +2298,69 @@ CREATE TABLE `vibehub_versions` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 -- Dump completed on 2025-08-20 11:12:51
+
+-- 教育作品作答和成绩独立存储，不进入普通 submissions。
+CREATE TABLE `vibehub_edu_assignments` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `class_en` varchar(255) NOT NULL,
+  `homework_id` int NOT NULL,
+  `project_id` bigint unsigned NOT NULL,
+  `version_id` bigint unsigned NOT NULL,
+  `parameters_json` mediumtext NOT NULL,
+  `max_score` decimal(8,2) NOT NULL DEFAULT 100,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `deleted_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_edu_assignment_homework` (`class_en`,`homework_id`),
+  KEY `idx_edu_assignment_version` (`version_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `vibehub_edu_attempts` (
+  `id` varchar(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `assignment_id` bigint unsigned DEFAULT NULL,
+  `project_id` bigint unsigned NOT NULL,
+  `version_id` bigint unsigned NOT NULL,
+  `user_id` int NOT NULL,
+  `seq` int unsigned NOT NULL DEFAULT 0,
+  `status` varchar(16) NOT NULL,
+  `context_json` mediumtext NOT NULL,
+  `state_json` mediumtext NOT NULL,
+  `view_json` mediumtext NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_edu_attempt_owner` (`user_id`,`assignment_id`,`version_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `vibehub_edu_commands` (
+  `attempt_id` varchar(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `command_id` varchar(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `seq` int unsigned NOT NULL,
+  `action_json` mediumtext NOT NULL,
+  `response_json` mediumtext NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`attempt_id`,`command_id`),
+  UNIQUE KEY `uq_edu_command_seq` (`attempt_id`,`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `vibehub_edu_submissions` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `attempt_id` varchar(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `assignment_id` bigint unsigned DEFAULT NULL,
+  `project_id` bigint unsigned NOT NULL,
+  `version_id` bigint unsigned NOT NULL,
+  `user_id` int NOT NULL,
+  `request_id` varchar(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  `final_seq` int unsigned NOT NULL,
+  `status` varchar(16) NOT NULL,
+  `score` decimal(8,2) DEFAULT NULL,
+  `score_bp` int unsigned DEFAULT NULL,
+  `snapshot_json` mediumtext NOT NULL,
+  `result_json` mediumtext,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `graded_at` datetime DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_edu_submission_attempt` (`attempt_id`),
+  KEY `idx_edu_score_assignment` (`assignment_id`,`user_id`,`status`,`created_at`),
+  KEY `idx_edu_submission_version` (`version_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

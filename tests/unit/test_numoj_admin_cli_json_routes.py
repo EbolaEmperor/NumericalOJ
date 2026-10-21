@@ -2314,6 +2314,11 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["vibehub", "pending"],
         ["vibehub", "review", "demo-vibe", "approve", "--expected-version", "1"],
         ["vibehub", "featured", "demo-vibe", "on"],
+        ["vibehub", "edu", "launch", "demo-vibe", "--assignment-id", "1"],
+        ["vibehub", "edu", "state", "att-demo"],
+        ["vibehub", "edu", "action", "att-demo", "--expected-seq", "0", "--command-id", "command-1", "--action", '{"type":"next"}'],
+        ["vibehub", "edu", "submit", "att-demo", "--expected-seq", "1", "--request-id", "submit-1"],
+        ["vibehub", "edu", "result", "--attempt-id", "att-demo"],
     ]
 
     expected_paths = {" ".join(path) for path in _leaf_command_paths(parser)}

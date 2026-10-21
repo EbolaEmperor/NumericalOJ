@@ -384,6 +384,13 @@ def _serialize_project(row, *, audience: str, include_workflow=False, actor=None
         "review_requested_at": row.get("review_requested_at"),
         "play_url": play_url,
     }
+    try:
+        selected_manifest = json.loads(row.get(f"{prefix}_manifest_json") or "{}")
+    except (TypeError, ValueError):
+        selected_manifest = {}
+    project["kind"] = selected_manifest.get("kind", "app")
+    if project["kind"] == "edu":
+        project["education"] = selected_manifest.get("education", {})
     if audience != "public" or include_workflow:
         try:
             manifest = json.loads(row.get(f"{prefix}_manifest_json") or "{}")

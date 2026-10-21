@@ -40,6 +40,7 @@ export default function VibeHubPlayerPage() {
   const location = useLocation()
   const setPageDisplayMode = usePageDisplayMode()
   const channel = new URLSearchParams(location.search).get('channel') || 'public'
+  const assignmentId = new URLSearchParams(location.search).get('assignment') || ''
   const [runtime, setRuntime] = useState<LeaseResponse | null>(null)
   const [runtimeError, setRuntimeError] = useState('')
   const [acquiring, setAcquiring] = useState(false)
@@ -48,6 +49,7 @@ export default function VibeHubPlayerPage() {
   const leaseRef = useRef<LeaseResponse | null>(null)
   const acquireGeneration = useRef(0)
   const project = useQuery({queryKey: ['vibehub', 'project', slug, channel], queryFn: () => apiFetch<ProjectResponse>(`/api/vibehub/projects/${encodeURIComponent(slug)}?view=${encodeURIComponent(channel)}`)})
+  const isEdu = project.data?.project?.kind === 'edu'
 
   useEffect(() => {
     if (project.data?.project?.title) document.title = `正在游玩 ${String(project.data.project.title)} · VibeHub - Numerical OJ`
@@ -103,7 +105,8 @@ export default function VibeHubPlayerPage() {
     }
     const requestLease = async (generation: number, retryCount: number): Promise<LeaseResponse | null> => {
       try {
-        const response = await fetch(`/api/vibehub/projects/${encodeURIComponent(slug)}/runtime/leases?channel=${encodeURIComponent(channel)}`, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', Accept: 'application/json'}, body: '{}'})
+        const endpoint = isEdu ? `/api/vibehub/projects/${encodeURIComponent(slug)}/edu/launch` : `/api/vibehub/projects/${encodeURIComponent(slug)}/runtime/leases?channel=${encodeURIComponent(channel)}`
+        const response = await fetch(endpoint, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', Accept: 'application/json'}, body: JSON.stringify(isEdu ? {channel, ...(assignmentId ? {assignment_id: Number(assignmentId)} : {})} : {})})
         const payload = await parseLeaseResponse(response)
         if (!payload.lease_token || !payload.proxy_url || !payload.heartbeat_url || !payload.release_url) throw new Error('运行服务没有返回完整的租约信息。')
         if (generation !== acquireGeneration.current || leaving) {
@@ -147,7 +150,7 @@ export default function VibeHubPlayerPage() {
       window.removeEventListener('pagehide', pagehide)
       release(false)
     }
-  }, [channel, project.data, retryGeneration, slug])
+  }, [assignmentId, channel, isEdu, project.data, retryGeneration, slug])
 
   if (project.isError) return <section className="vibe-not-found">
     <span aria-hidden="true"><i /><i /><i /></span>

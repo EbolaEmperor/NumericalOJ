@@ -44,7 +44,7 @@ export interface ProblemSummary extends JsonRecord {
   id: number
   problem_id?: number
   competition_id?: number
-  kind?: 'problem' | 'ranking'
+  kind?: 'problem' | 'ranking' | 'edu'
   title: string
   type?: number
   lang?: string

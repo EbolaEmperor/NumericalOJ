@@ -235,6 +235,26 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 
 `deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。`vibehub_examples/` 会通过普通作品链路同步为 admin 的个人作品；同名公开包与仓库内容不同时创建并发布新版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、根目录 `static/` 的未跟踪额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；根目录 `static/` 完全不由部署脚本写入，仅由 Flask 在新前端静态目录未命中时只读回退。显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
 
+独立的 CPU 测试站可以在完整发布入口显式选择测试配置：
+
+```bash
+git pull --ff-only
+NUMOJ_DEPLOY_PROFILE=test-cpu bash deploy.sh
+```
+
+`NUMOJ_DEPLOY_PROFILE` 默认是 `production`，只允许 `production` 或 `test-cpu`。
+CPU 模式跳过 NVIDIA CDI 准备，使用 VibeHub Dockerfile 的 `web` 阶段，保留完整 Web 依赖与
+Unix socket relay，不需要宿主 CUDA，也不构建 vLLM/GPU 环境。基础镜像标记
+`com.numericaloj.vibehub.gpu=0`；生产镜像标记为 `1`，运行器拒绝使用 CPU 基础镜像处理 GPU 申请。
+学生 C++ 仍使用普通判题 Docker 沙箱，不在教学作品中编译或执行。
+测试模式允许缺少稳定判题镜像的机器首次构建完整的 judger、Lean 与 Agent Judge 候选镜像，
+Agent Judge 始终引用同次发布的 Lean 候选标签；它不会使用 lite 镜像替代完整服务。
+首次完整镜像仍可能需要较多磁盘与下载时间。已有稳定镜像时继续遵守构建输入复用与关键缓存门禁；
+生产默认的冷构建拒绝规则保持不变，Lean 首次供应仍按原有规则处理。
+两种模式都执行配置校验、备份、停服、schema 同步、示例发布、任务恢复与服务启动，
+不会在部署脚本内运行测试。浏览器、接口和可丢弃基础设施测试应在部署成功后的独立测试阶段执行。
+CPU 模式只用于明确隔离的测试站；不应在生产部署时设置。
+
 VibeHub 候选基础镜像在停服前完成静态供应链核验：只读证明生产专属 Buildx builder 是
 `docker-container` driver、全部节点为 running，且逐节点容器使用 `NetworkMode=bridge`；再将
 `docker image save` 产物交给不提取路径、不导入模块、不运行镜像内容的转换器，逐一校验

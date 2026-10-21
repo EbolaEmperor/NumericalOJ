@@ -64,7 +64,27 @@ usage() {
   printf '%s\n' \
     '用法: bash deploy.sh' \
     '' \
-    '请先在当前项目目录完成 git pull，再执行本脚本。'
+    '请先在当前项目目录完成 git pull，再执行本脚本。' \
+    '独立 CPU 测试站可显式设置 NUMOJ_DEPLOY_PROFILE=test-cpu；默认 production。'
+}
+
+configure_deployment_profile() {
+  DEPLOY_PROFILE="${NUMOJ_DEPLOY_PROFILE:-production}"
+  case "$DEPLOY_PROFILE" in
+    production)
+      VIBEHUB_RUNTIME_GPU=1
+      VIBEHUB_RUNTIME_BUILD_ARGS=(--build-context host_cuda=/usr/local/cuda-12.6)
+      ;;
+    test-cpu)
+      VIBEHUB_RUNTIME_GPU=0
+      VIBEHUB_RUNTIME_BUILD_ARGS=(--target web)
+      ;;
+    *)
+      printf '未知部署模式：%s；仅支持 production 或 test-cpu。\n' \
+        "$DEPLOY_PROFILE" >&2
+      return 2
+      ;;
+  esac
 }
 
 stop_sudo_keepalive() {
@@ -141,6 +161,8 @@ if (($#)); then
       ;;
   esac
 fi
+
+configure_deployment_profile
 
 cleanup() {
   local exit_code=$?
@@ -287,8 +309,12 @@ ENV_FILE="$ROOT_DIR/.env"
 }
 PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
   deploy/preflight.py validate-config "$ENV_FILE"
-phase='准备 NVIDIA CDI 容器接入'
-PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B deploy/prepare_nvidia_cdi.py
+if [[ "$DEPLOY_PROFILE" == 'production' ]]; then
+  phase='准备 NVIDIA CDI 容器接入'
+  PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B deploy/prepare_nvidia_cdi.py
+else
+  printf 'CPU 测试模式：跳过 NVIDIA CDI，VibeHub 仅提供 Web 运行环境。\n'
+fi
 phase='准备并校验 VibeHub 专属 builder'
 VIBEHUB_BUILD_BUILDER="$(
   PYTHONDONTWRITEBYTECODE=1 "$BOOTSTRAP_PYTHON" -B \
@@ -411,23 +437,24 @@ build_candidate_image() {
     docker image inspect --format '{{.Id}}' "$stable" 2>/dev/null || true
   )"
   if [[ -z "$stable_id" ]]; then
-    if [[ "$context" != 'docker/lean4' ]]; then
+    if [[ "$context" != 'docker/lean4' && "$DEPLOY_PROFILE" != 'test-cpu' ]]; then
       printf '未检测到稳定镜像 %s；为避免冷构建，拒绝继续部署。\n' \
         "$stable" >&2
       return 1
     fi
     source_digest="$(docker_source_digest "$context")" || return 1
-    printf '首次构建 Lean 4 独立镜像：%s\n' "$candidate"
+    printf '首次构建独立候选镜像：%s（模式：%s）\n' "$candidate" "$DEPLOY_PROFILE"
     DOCKER_BUILDKIT=1 docker build \
       --builder "$DOCKER_BUILDER" \
       --build-arg BUILDKIT_INLINE_CACHE=1 \
+      "${docker_build_args[@]}" \
       --label "$MANAGED_IMAGE_LABEL" \
       --label "$SOURCE_IMAGE_LABEL=$source_digest" \
       --tag "$candidate" \
       "$context"
     candidate_source_digest="$(image_source_digest "$candidate")"
     if [[ "$candidate_source_digest" != "$source_digest" ]]; then
-      printf 'Lean 4 候选镜像缺少预期的构建输入指纹：%s\n' \
+      printf '候选镜像缺少预期的构建输入指纹：%s\n' \
         "$candidate" >&2
       return 1
     fi
@@ -555,8 +582,9 @@ rm -rf -- "$CANDIDATE_VENV"
 phase='构建 VibeHub 受信基础候选镜像'
 DOCKER_BUILDKIT=1 docker build \
   --provenance=false \
-  --build-context host_cuda=/usr/local/cuda-12.6 \
+  "${VIBEHUB_RUNTIME_BUILD_ARGS[@]}" \
   --label "$MANAGED_IMAGE_LABEL" \
+  --label "com.numericaloj.vibehub.gpu=$VIBEHUB_RUNTIME_GPU" \
   --tag "$VIBEHUB_RUNTIME_CANDIDATE" \
   docker/vibehub-runtime
 vibehub_runtime_candidate_id="$(

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "kind": "edu",
+  "transport": "unix",
+  "socket_path": "/run/vibehub/app.sock",
+  "health_path": "/healthz",
+  "education": {
+    "protocol": "vibehub-edu/1",
+    "socket_path": "/run/vibehub/edu.sock",
+    "executor": "cpp-heap-median-v1"
+  },
+  "title": "动态平衡术",
+  "summary": "写一个 C++ step 函数，让两棵二叉堆接住传送带上的数字，实时返回较小中位数。",
+  "tags": ["教学", "Heap", "C++", "中位数"],
+  "cover_image": "static/cover.png"
+}

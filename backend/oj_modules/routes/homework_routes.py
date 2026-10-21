@@ -13,6 +13,7 @@ from backend.oj_modules.db_services import (
     get_user_by_username,
     set_setting,
 )
+from backend.oj_modules.homework.edu import edu_completion_counts
 from backend.oj_modules.homework.records import (
     _load_plagiarism_records_for_class,
     build_plagiarism_records_csv,
@@ -94,6 +95,9 @@ def _homework_completion_counts(cursor, class_en, homeworks):
         for row in cursor.fetchall() or []:
             counts[int(row['homework_id'])] = int(row.get('completed_count') or 0)
 
+    if any(item.get('vibehub_edu_assignment_id') is not None for item in homeworks):
+        counts.update(edu_completion_counts(cursor, class_en))
+
     return counts
 
 def _wants_json_response():
@@ -163,7 +167,12 @@ def admin_homework():
                     cursor, selected_class, homework_list,
                 )
                 for hw in homework_list:
-                    if hw.get('ranking_competition_id'):
+                    if hw.get('vibehub_edu_assignment_id'):
+                        hw['kind'] = 'edu'
+                        hw['is_edu'] = True
+                        hw['is_ranking'] = False
+                        hw['problem_title'] = hw.get('problem_title') or 'VibeHub 教学作业'
+                    elif hw.get('ranking_competition_id'):
                         hw['is_ranking'] = True
                         # ranking 作业：沿用入库时存的比赛标题（problem_title 列）
                         if not hw.get('problem_title'):
@@ -215,12 +224,16 @@ def admin_homework():
     except Exception:
         all_competitions = []
 
+    from backend.oj_modules.vibehub.edu import list_assignable_projects
+    all_edu_projects = list_assignable_projects(user)
+
     page_payload = dict(
         classes=classes,
         selected_class=selected_class,
         homework_list=homework_list,
         all_problems=all_problems,
         all_competitions=all_competitions,
+        all_edu_projects=all_edu_projects,
         plagiarism_problem_options=plagiarism_problem_options,
         user=user,
     )
@@ -284,12 +297,12 @@ def admin_add_homework():
     ddl = request.form.get('ddl')
     problem_id = (request.form.get('problem_id') or '').strip()
     ranking_competition_id = (request.form.get('ranking_competition_id') or '').strip()
+    vibehub_project_id = (request.form.get('vibehub_project_id') or '').strip()
 
     if not class_en or not ddl:
         return _json_or_homework_redirect('缺少必要参数', 400, class_en=class_en)
-    # 题目 / 打榜赛 必须恰好二选一
-    if bool(problem_id) == bool(ranking_competition_id):
-        return _json_or_homework_redirect('请选择一项作业内容：题目 或 打榜赛', 400, class_en=class_en)
+    if sum(bool(value) for value in (problem_id, ranking_competition_id, vibehub_project_id)) != 1:
+        return _json_or_homework_redirect('请选择一项作业内容：题目、打榜赛或 VibeHub 教学作品', 400, class_en=class_en)
     if not get_class_by_en(class_en):
         return _json_or_homework_redirect('班级不存在', 404)
 
@@ -303,7 +316,7 @@ def admin_add_homework():
             if not problem:
                 return _json_or_homework_redirect('题目不存在', 404, class_en=class_en)
             col, val, title = 'problem_id', pid, problem['title']
-        else:
+        elif ranking_competition_id:
             try:
                 cid = int(ranking_competition_id)
             except ValueError:
@@ -312,6 +325,16 @@ def admin_add_homework():
             if not comp:
                 return _json_or_homework_redirect('打榜赛不存在', 404, class_en=class_en)
             col, val, title = 'ranking_competition_id', cid, comp['title']
+        else:
+            from backend.oj_modules.vibehub.edu import list_assignable_projects
+            try:
+                project_id = int(vibehub_project_id)
+            except ValueError:
+                return _json_or_homework_redirect('教学作品ID非法', 400, class_en=class_en)
+            project = next((item for item in list_assignable_projects(user) if int(item['id']) == project_id), None)
+            if not project:
+                return _json_or_homework_redirect('请选择已发布的 edu 教学作品', 400, class_en=class_en)
+            col, val, title = 'vibehub_project_id', project_id, project['title']
 
         conn = get_db_connection()
         try:
@@ -319,11 +342,21 @@ def admin_add_homework():
                 sql = f"INSERT INTO {safe_table_name(class_en)} ({col}, ddl, complete_cnt, problem_title) VALUES (%s, %s, 0, %s)"
                 cursor.execute(sql, (val, ddl, title))
                 homework_id = cursor.lastrowid
+                if vibehub_project_id:
+                    from backend.oj_modules.vibehub.edu import create_assignment
+                    assignment_id = create_assignment(cursor, class_en, homework_id, val, user)
+                    cursor.execute(
+                        f"UPDATE {safe_table_name(class_en)} SET vibehub_edu_assignment_id=%s WHERE id=%s",
+                        (assignment_id, homework_id),
+                    )
             conn.commit()
             _invalidate_problem_list_cache_for_class(class_en)
             if _wants_json_response():
                 return jsonify(success=True, message='作业添加成功', class_en=class_en, homework_id=homework_id)
             flash('作业添加成功', 'success')
+        except ValueError as exc:
+            conn.rollback()
+            return _json_or_homework_redirect(str(exc), 400, class_en=class_en)
         finally:
             conn.close()
     except pymysql.Error as e:
@@ -354,6 +387,14 @@ def admin_delete_homework():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT vibehub_edu_assignment_id FROM {safe_table_name(class_en)} WHERE id=%s FOR UPDATE",
+                (homework_id,),
+            )
+            homework = cursor.fetchone() or {}
+            if homework.get('vibehub_edu_assignment_id'):
+                from backend.oj_modules.vibehub.edu import delete_assignment
+                delete_assignment(cursor, homework['vibehub_edu_assignment_id'])
             sql = f"DELETE FROM {safe_table_name(class_en)} WHERE id=%s"
             cursor.execute(sql, (homework_id,))
         conn.commit()
@@ -389,6 +430,8 @@ def export_scores():
                 SELECT hw.id,
                        hw.problem_id,
                        hw.ranking_competition_id,
+                       hw.vibehub_project_id,
+                       hw.vibehub_edu_assignment_id,
                        hw.ddl,
                        hw.problem_title,
                        rc.title AS ranking_title
@@ -423,12 +466,20 @@ def export_scores():
                 'title': title,
                 'ddl': hw.get('ddl'),
             })
+        elif hw.get('vibehub_edu_assignment_id') is not None:
+            score_columns.append({
+                'kind': 'edu',
+                'id': int(hw['vibehub_edu_assignment_id']),
+                'title': hw.get('problem_title') or 'VibeHub 教学作业',
+                'ddl': hw.get('ddl'),
+            })
 
     if not score_columns:
         return "该班级没有可导出的作业", 404
 
     problem_ids = [c['id'] for c in score_columns if c['kind'] == 'problem']
     ranking_competition_ids = [c['id'] for c in score_columns if c['kind'] == 'ranking']
+    edu_assignment_ids = [c['id'] for c in score_columns if c['kind'] == 'edu']
 
     problem_titles = {}
     if problem_ids:
@@ -523,6 +574,32 @@ def export_scores():
         finally:
             conn.close()
 
+    edu_submission_map = {}
+    if edu_assignment_ids:
+        user_ids = [student['id'] for student in students]
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cursor:
+                user_placeholders = ','.join(['%s'] * len(user_ids))
+                assignment_placeholders = ','.join(['%s'] * len(edu_assignment_ids))
+                cursor.execute(
+                    f"""
+                    SELECT es.id, u.username, es.assignment_id, es.score, es.status, es.created_at
+                    FROM vibehub_edu_submissions es JOIN users u ON u.id = es.user_id
+                    WHERE es.user_id IN ({user_placeholders})
+                      AND es.assignment_id IN ({assignment_placeholders})
+                      AND es.status = 'graded'
+                    ORDER BY es.id ASC
+                    """,
+                    tuple(user_ids + edu_assignment_ids),
+                )
+                for submission in cursor.fetchall() or []:
+                    edu_submission_map.setdefault(
+                        (submission['username'], int(submission['assignment_id'])), []
+                    ).append(submission)
+        finally:
+            conn.close()
+
     output = BytesIO()
     writer = csv.writer(codecs.getwriter('gbk')(output))
 
@@ -548,13 +625,18 @@ def export_scores():
                     ),
                     col.get('ddl'),
                 )
-            else:
+            elif col['kind'] == 'ranking':
                 snapshot = homework_score_snapshot(
                     ranking_submission_map.get(
                         (stu['username'], col['id']), []
                     ),
                     col.get('ddl'),
                     require_terminal=False,
+                )
+            else:
+                snapshot = homework_score_snapshot(
+                    edu_submission_map.get((stu['username'], col['id']), []),
+                    col.get('ddl'),
                 )
             best = snapshot['best']
             score = (best or {}).get('score') or 0

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import json
 from argparse import Namespace
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,11 +17,11 @@ def test_user_and_admin_vibehub_cli_groups_expose_expected_commands():
     cases = [
         (
             ROOT / "skills" / "numoj-user" / "scripts" / "numoj_user.py",
-            ("guide", "list", "mine", "detail", "create", "update", "edit"),
+            ("guide", "list", "mine", "detail", "create", "update", "edit", "edu"),
         ),
         (
             ROOT / "skills" / "numoj-admin" / "scripts" / "numoj_admin.py",
-            ("guide", "pending", "review", "featured"),
+            ("guide", "pending", "review", "featured", "edu"),
         ),
     ]
     for script, commands in cases:
@@ -188,3 +191,108 @@ def test_both_clis_submit_git_as_json_and_reject_ambiguous_sources(monkeypatch):
         with pytest.raises(module.common.CliError):
             module.project_update(args)
         assert len(calls) == 2
+
+
+@pytest.mark.parametrize("skill,package", [
+    ("numoj-admin", "numoj_admin_cli"),
+    ("numoj-user", "numoj_user_cli"),
+])
+def test_edu_cli_uses_login_apis_and_preserves_retry_identifiers(skill, package, tmp_path, monkeypatch, capsys):
+    monkeypatch.syspath_prepend(str(ROOT / "skills" / skill / "scripts"))
+    module = importlib.import_module(f"{package}.vibehub")
+    calls = []
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        text = '{"success": true}'
+
+        def json(self):
+            return {"success": True}
+
+    class Client:
+        def request(self, method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return Response()
+
+    monkeypatch.setattr(module, "client_from_args", lambda _args: Client())
+    action = {"type": "run_code", "source": "int step(int x) { return x; }"}
+    action_file = tmp_path / "action.json"
+    action_file.write_text(json.dumps(action), encoding="utf-8")
+
+    module.edu_launch(Namespace(slug="dynamic-balance", assignment_id=17))
+    module.edu_launch(Namespace(slug="dynamic-balance", assignment_id=None))
+    module.edu_state(Namespace(attempt_id="att-demo"))
+    command = Namespace(attempt_id="att-demo", command_id="command-1", expected_seq=0, action=f"@{action_file}")
+    module.edu_action(command)
+    module.edu_action(command)  # 原样重试，不能悄悄更换去重编号。
+    module.edu_submit(Namespace(attempt_id="att-demo", request_id="submit-1", expected_seq=1))
+    module.edu_result(Namespace(attempt_id="att-demo", submission_id=None))
+    module.edu_result(Namespace(attempt_id=None, submission_id=23))
+
+    assert calls == [
+        ("POST", "/api/vibehub/projects/dynamic-balance/edu/launch", {"json": {"assignment_id": 17}}),
+        ("POST", "/api/vibehub/projects/dynamic-balance/edu/launch", {"json": {}}),
+        ("GET", "/api/vibehub/edu/attempts/att-demo", {}),
+        ("POST", "/api/vibehub/edu/attempts/att-demo/actions", {
+            "json": {"command_id": "command-1", "expected_seq": 0, "action": action},
+        }),
+        ("POST", "/api/vibehub/edu/attempts/att-demo/actions", {
+            "json": {"command_id": "command-1", "expected_seq": 0, "action": action},
+        }),
+        ("POST", "/api/vibehub/edu/attempts/att-demo/submit", {
+            "json": {"request_id": "submit-1", "expected_seq": 1},
+        }),
+        ("GET", "/api/vibehub/edu/attempts/att-demo/result", {}),
+        ("GET", "/api/vibehub/edu/submissions/23", {}),
+    ]
+    assert capsys.readouterr().out.count('"success": true') == 8
+
+    for invalid in ("[]", "null", "not json"):
+        command.action = invalid
+        with pytest.raises(module.common.CliError, match="JSON 对象"):
+            module.edu_action(command)
+    assert len(calls) == 8
+
+
+def test_admin_homework_edu_target_is_exclusive_and_sent_to_assignment_api(monkeypatch, capsys):
+    monkeypatch.syspath_prepend(str(ROOT / "skills" / "numoj-admin" / "scripts"))
+    cli = importlib.import_module("numoj_admin")
+    module = importlib.import_module("numoj_admin_cli.homework")
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "homework", "add", "--class-en", "C2026A", "--ddl", "2026-12-31T23:59",
+        "--vibehub-project-id", "7",
+    ])
+    calls = []
+
+    class Client:
+        def request(self, *arguments, **kwargs):
+            calls.append((arguments, kwargs))
+            return object()
+
+    monkeypatch.setattr(module, "client_from_args", lambda _args: Client())
+    monkeypatch.setattr(module, "print_or_save_response", lambda _response: None)
+    args.func(args)
+    assert calls == [(("POST", "/api/admin/homework"), {"data": {
+        "class_en": "C2026A", "ddl": "2026-12-31T23:59", "vibehub_project_id": "7",
+    }})]
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "homework", "add", "--class-en", "C2026A", "--ddl", "2026-12-31T23:59",
+            "--vibehub-project-id", "7", "--problem-id", "8",
+        ])
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("skill,package", [
+    ("numoj-admin", "numoj_admin_cli"),
+    ("numoj-user", "numoj_user_cli"),
+])
+def test_project_projection_exposes_edu_eligibility_without_internal_manifest(skill, package, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "skills" / skill / "scripts"))
+    module = importlib.import_module(f"{package}.vibehub")
+    assert module.necessary_project({
+        "id": 7, "kind": "edu", "education": {"protocol": "vibehub-edu/1"},
+        "manifest_json": {"private": "internal"},
+    }) == {"id": 7, "kind": "edu", "education": {"protocol": "vibehub-edu/1"}}

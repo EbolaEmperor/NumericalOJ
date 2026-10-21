@@ -90,6 +90,12 @@ USER_COMMAND_PATHS = [
     ["vibehub", "update"],
     ["vibehub", "edit"],
     ["vibehub", "delete"],
+    ["vibehub", "edu"],
+    ["vibehub", "edu", "launch"],
+    ["vibehub", "edu", "state"],
+    ["vibehub", "edu", "action"],
+    ["vibehub", "edu", "submit"],
+    ["vibehub", "edu", "result"],
 ]
 
 

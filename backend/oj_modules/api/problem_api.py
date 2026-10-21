@@ -43,6 +43,13 @@ def _homework_problem_item(hw, class_en=None, class_cn=None):
         "class_cn": class_cn,
         "title": hw.get("problem_title"),
     }
+    if hw.get("kind") == "edu":
+        return {
+            **common,
+            "kind": "edu",
+            "id": hw.get("vibehub_project_id"),
+            "url": f"/vibehub/{hw.get('vibehub_slug')}/play?assignment={hw.get('vibehub_edu_assignment_id')}",
+        }
     if hw.get("kind") == "ranking":
         return {
             **common,

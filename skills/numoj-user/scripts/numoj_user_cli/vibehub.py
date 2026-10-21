@@ -12,6 +12,7 @@ client_from_args = common.client_from_args
 
 
 PROJECT_FIELDS = (
+    "kind", "education",
     "source",
     "gpu_memory_mib", "gpu_approved_memory_mib", "runtime_blocked_reason",
     "id",
@@ -212,6 +213,83 @@ def developer_guide(args: argparse.Namespace) -> None:
     )
 
 
+
+def edu_launch(args: argparse.Namespace) -> None:
+    payload = {}
+    if args.assignment_id is not None:
+        payload["assignment_id"] = args.assignment_id
+    resp = client_from_args(args).request(
+        "POST", f"/api/vibehub/projects/{args.slug}/edu/launch", json=payload,
+    )
+    common.print_or_save_response(resp, allow_redirect=False)
+
+
+def edu_state(args: argparse.Namespace) -> None:
+    resp = client_from_args(args).request(
+        "GET", f"/api/vibehub/edu/attempts/{args.attempt_id}",
+    )
+    common.print_or_save_response(resp, allow_redirect=False)
+
+
+def edu_action(args: argparse.Namespace) -> None:
+    try:
+        action = json.loads(common.read_text_value(args.action))
+    except (ValueError, OSError) as exc:
+        raise common.CliError("--action 必须是 JSON 对象或 @JSON文件。") from exc
+    if not isinstance(action, dict):
+        raise common.CliError("--action 必须是 JSON 对象。")
+    resp = client_from_args(args).request(
+        "POST", f"/api/vibehub/edu/attempts/{args.attempt_id}/actions",
+        json={"command_id": args.command_id, "expected_seq": args.expected_seq, "action": action},
+    )
+    common.print_or_save_response(resp, allow_redirect=False)
+
+
+def edu_submit(args: argparse.Namespace) -> None:
+    resp = client_from_args(args).request(
+        "POST", f"/api/vibehub/edu/attempts/{args.attempt_id}/submit",
+        json={"request_id": args.request_id, "expected_seq": args.expected_seq},
+    )
+    common.print_or_save_response(resp, allow_redirect=False)
+
+
+def edu_result(args: argparse.Namespace) -> None:
+    if args.submission_id is not None:
+        path = f"/api/vibehub/edu/submissions/{args.submission_id}"
+    else:
+        path = f"/api/vibehub/edu/attempts/{args.attempt_id}/result"
+    resp = client_from_args(args).request("GET", path)
+    common.print_or_save_response(resp, allow_redirect=False)
+
+
+def _register_edu(commands: argparse._SubParsersAction) -> None:
+    edu = common.add_cli_parser(commands, "edu", "启动、操作、提交 VibeHub 可视化作业并查询成绩。")
+    actions = edu.add_subparsers(dest="edu_cmd", required=True)
+    parser = common.add_cli_parser(actions, "launch", "创建或恢复当前账号的 edu 作答。")
+    parser.add_argument("slug", help="已发布的 edu 作品 slug。")
+    parser.add_argument("--assignment-id", type=int, help="edu 作业编号（vibehub_edu_assignment_id 或 demo URL 的 assignment 参数）；省略时为自由练习。")
+    parser.set_defaults(func=edu_launch)
+    parser = common.add_cli_parser(actions, "state", "读取自己作答的序号、展示状态和提交状态。")
+    parser.add_argument("attempt_id", help="launch 返回的匿名作答编号。")
+    parser.set_defaults(func=edu_state)
+    parser = common.add_cli_parser(actions, "action", "执行一次作品定义的操作；重试必须保留同一个 command ID。")
+    parser.add_argument("attempt_id", help="当前账号的作答编号。")
+    parser.add_argument("--expected-seq", type=int, required=True, help="state 或上次操作返回的序号；冲突时重新读取状态。")
+    parser.add_argument("--command-id", required=True, help="本次操作唯一编号；原样重试时复用它。")
+    parser.add_argument("--action", required=True, help="作品定义的操作 JSON 对象，或 @JSON文件。")
+    parser.set_defaults(func=edu_action)
+    parser = common.add_cli_parser(actions, "submit", "冻结作答并由服务端评分；重试必须保留同一个 request ID。")
+    parser.add_argument("attempt_id", help="当前账号的作答编号。")
+    parser.add_argument("--expected-seq", type=int, required=True, help="提交前 state 返回的序号。")
+    parser.add_argument("--request-id", required=True, help="本次提交唯一编号；原样重试时复用它。")
+    parser.set_defaults(func=edu_submit)
+    parser = common.add_cli_parser(actions, "result", "查询独立 edu 提交结果；此类提交不进入普通 submission list。")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--attempt-id", help="查询该作答最新提交的结果。")
+    target.add_argument("--submission-id", type=int, help="查询 submit 返回的 edu 提交编号。")
+    parser.set_defaults(func=edu_result)
+
+
 def _add_metadata_args(parser, *, include_slug=False, require_title=False) -> None:
     if include_slug:
         parser.add_argument("--slug", help="Optional stable URL slug (lowercase letters, numbers, and hyphens).")
@@ -230,6 +308,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "Browse, create, version, and publish VibeHub projects.",
     )
     commands = hub.add_subparsers(dest="cmd", required=True)
+    _register_edu(commands)
 
     parser = common.add_cli_parser(commands, "guide", "Get the complete VibeHub developer guide from the server.")
     parser.add_argument("-o", "--output", help="Save the Markdown guide to this file instead of printing it.")

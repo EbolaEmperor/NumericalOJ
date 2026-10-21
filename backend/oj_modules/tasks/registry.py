@@ -9,6 +9,7 @@ from backend.oj_modules.tasks.homework_admin_tasks import (
     build_homework_task_operations,
     register_homework_admin_tasks,
 )
+from backend.oj_modules.tasks.vibehub_edu_tasks import register_vibehub_edu_task
 from backend.oj_modules.tasks.rejudge_tasks import register_bulk_rejudge_task, register_rejudge_task
 from backend.oj_modules.tasks.promptly_tasks import register_promptly_generate_submission_task
 from backend.oj_modules.tasks.agent.registry import (
@@ -67,6 +68,7 @@ from backend.oj_modules.tasks.ranking.bulk_rejudge import (
 )
 
 __all__ = [
+    "register_vibehub_edu_task",
     "register_evaluate_submission_task",
     "register_written_homework_task",
     "register_faithsieve_grading_task",

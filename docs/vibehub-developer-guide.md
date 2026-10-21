@@ -144,6 +144,164 @@ HTTP(S) API 或连接外部 WebSocket。跨域 fetch/WebSocket 仍受对方服�
 作品运行在不含 `allow-same-origin` 的 sandbox iframe 中，不能读取站点页面、浏览器 Cookie 或控制
 顶层窗口。这一隔离边界不禁止作品联网。
 
+## edu 可视化作业
+
+### 声明作品类型
+
+普通作品保持原清单格式。可由管理员布置为作业的作品，增加以下声明：
+
+```json
+{
+  "schema_version": 1,
+  "transport": "unix",
+  "socket_path": "/run/vibehub/app.sock",
+  "health_path": "/healthz",
+  "title": "动态平衡术",
+  "summary": "用两棵堆维护动态中位数",
+  "tags": ["教学", "堆"],
+  "cover_image": "static/cover.png",
+  "kind": "edu",
+  "education": {
+    "protocol": "vibehub-edu/1",
+    "socket_path": "/run/vibehub/edu.sock"
+  }
+}
+```
+
+作品启动时同时监听两个 HTTP/1.1 Unix socket：`app.sock` 提供页面及普通作品接口，
+`edu.sock` 提供下述教学接口。两个路径固定，不能声明 TCP 端口。浏览器的普通作品请求只会
+连接 `app.sock`，不能指定或切换到 `edu.sock`。不要把教学内部接口再挂到 `app.sock`。
+
+### 开发者负责的三个函数
+
+建议将 HTTP 适配、题目规则和评分分别保存；下面只展示后端结构：
+
+```text
+my-edu/
+├── Dockerfile
+├── vibehub.json
+├── server.py          # 两个 socket 的 HTTP 服务与 JSON 校验
+├── exercise.py        # start(context)、step(context, state, action)
+├── grading.py         # grade(context, actions)，从初始条件重放评分
+└── static/
+```
+
+平台在内部调用以下接口，消息均为 JSON。`context` 由平台生成，字段为 `attempt_id`、
+`assignment_id`、`project_version_id`、`rubric_version`、`challenge_seed`、`parameters`；
+作品不得依赖其中有学生学号、姓名或 OJ 登录 Cookie。
+
+| 内部接口 | 请求 | 成功响应 |
+| --- | --- | --- |
+| `POST /v1/start` | `{ "context": {...} }` | `{ "state": {...}, "view": {...} }` |
+| `POST /v1/step` | `{ "context": {...}, "state": {...}, "action": {...}, "seq": 1 }` | `{ "state": {...}, "view": {...} }` |
+| `POST /v1/grade` | `{ "context": {...}, "actions": [...] }` | `{ "verdict": "passed", "score_bp": 10000, "metrics": {...}, "feedback": "..." }` |
+
+`state` 是平台保存的内部 JSON 状态；`view` 才交给学生浏览器。答案、未公开题目和隐藏测试不要
+放进 `view` 或静态文件。`score_bp` 必须是 `0～10000` 的整数，平台将其折算为作业分数。
+`verdict` 为 `passed` 或 `failed`。`metrics` 用于保存轮数、操作次数等证据，
+`feedback` 为给学生看的纯文本反馈。
+
+`start` 使用 `context` 中的平台随机种子生成题目；`step` 只根据平台提供的旧状态和操作计算
+新状态，不接受浏览器上传的完整状态。三个接口应可重复调用且不产生外部写入；需要随机数时
+使用传入种子，避免重试或评分重放时得到不同结果。评分从初始条件及按序记录的操作重新计算，
+不要采用浏览器提交的 `score`、`completed`、步数或最终状态。
+
+### 页面怎样操作与交作业
+
+从作业列表进入时，平台先根据 OJ 登录身份创建或恢复作答，并把运行租约绑定到该作答。
+作品页面在 `X-VibeHub-Base-Path` 前缀下使用平台保留的 `/_edu/v1/` 接口：
+
+| 页面接口 | 消息或结果 |
+| --- | --- |
+| `GET ./_edu/v1/state` | 读取 `seq`、`view` 与作答状态 |
+| `POST ./_edu/v1/actions` | `{ "command_id": "本次操作唯一编号", "expected_seq": 0, "action": {...} }` |
+| `POST ./_edu/v1/submit` | `{ "request_id": "本次提交唯一编号", "expected_seq": 1 }` |
+| `GET ./_edu/v1/result` | 读取本次作答最新提交的判定、成绩和反馈 |
+
+这些路径由平台处理，不转发到作品页面服务。`action` 的业务字段由作品定义，例如交换节点或
+提交一份候选程序。学生不填写学号，也不能通过请求参数决定成绩属于谁。
+
+每次操作必须带上当前 `seq`。平台调用内部 `step`，保存操作和新状态后才更新序号；版本冲突
+返回 `409`，此时重新读取状态。网络重试应复用原 `command_id` 和原请求内容，不能为同一次
+操作生成新编号。提交的 `request_id` 同理：平台冻结记录后评分，重试查询同一次提交，
+不会把浏览器声称的分数写入成绩。
+
+OJ 登录态客户端也可使用以下接口，权限同样绑定当前账号：
+
+```text
+POST /api/vibehub/projects/{slug}/edu/launch    {assignment_id?}
+GET  /api/vibehub/edu/attempts/{attempt_id}
+POST /api/vibehub/edu/attempts/{attempt_id}/actions
+POST /api/vibehub/edu/attempts/{attempt_id}/submit
+GET  /api/vibehub/edu/attempts/{attempt_id}/result
+GET  /api/vibehub/edu/submissions/{submission_id}
+```
+
+`launch` 返回 `attempt_id`、`seq` 和运行租约。`assignment_id` 是 edu 全局作业编号，取作业行的
+`vibehub_edu_assignment_id` 或 demo URL 的 `assignment` 参数，不是班级动态表的作业行 ID；省略则为自由练习。
+自由练习成绩不计入班级作业。CLI 无需持有作品内部教学接口的访问凭据。
+
+### 动态平衡术与学生 C++ 程序
+
+随仓库提供的“动态平衡术”示例使用平台白名单执行器，在清单 `education` 中增加
+`"executor": "cpp-heap-median-v1"`。学生实现 `int step(int x)`，每次收到下一个整数，
+可调用 `A.insert(x)`、`A.pop()`、`A.top()` 及对应的 `B` 操作。`A` 为大顶堆，`B` 为小顶堆；
+要求返回所有已输入整数的当前中位数，偶数个元素取两个中间值中较小的一个。
+只提交函数及需要的辅助代码，不编写 `main`，也不自行输出内容。堆 API 的 `insert(int)` 和
+`pop()` 返回 `void`，`top()` 返回 `int`；空堆上的 `pop`、`top` 会报错。不提供 `size` 或
+`empty`，学生可自行维护元素个数；同一输入序列中的函数调用共享全局变量及两棵堆。
+
+页面显示两棵堆的树结构和执行轨迹。学生程序由平台在专用 Docker 沙箱中编译及执行；作品不能
+获得 Docker socket，也不能直接在作品后端或宿主机执行学生程序。自定义任意执行器名称不会
+获得执行能力。开发新的编程类教学作品时，先确认平台已有受支持的执行器；普通 edu 操作规则
+本身不授予运行学生代码的权限。
+
+该执行器的操作格式固定为：
+
+```json
+{
+  "type": "run_code",
+  "source": "int step(int x) { /* 学生实现 */ }"
+}
+```
+
+试玩输入由 `context.parameters.inputs` 给出。平台先编译执行，再将可信的执行结果放入内部
+`context.execution` 交给作品生成展示状态；浏览器不能填写 `execution`。提交评分时，平台
+从冻结记录取得源代码，使用独立隐藏输入再次执行，并把这次结果交给 `/v1/grade`。因此本地
+伪造堆画面或试玩输出不会改变提交成绩，作品评分器也不应只依据试玩是否通过。
+
+### 发布、布置与成绩
+
+edu 作品沿用普通作品的创建、构建、审核与公开发布流程。管理员布置作业时可选择已公开的
+edu 作品；作业冻结当时的公开版本，作者后续更新作品不会替换已有作业的评分规则。
+
+学生在 homework list 点击该项，直接进入 `/vibehub/{slug}/play?assignment={作业编号}`。
+edu 提交独立保存，不显示在普通 submission list；班级成绩导出会包含 edu 作业成绩，并沿用
+作业的截止时间与计分规则。评分的可信规则来自管理员指定的作品版本；平台验证身份、记录和
+调用通道，不能替一个规则有误的自定义评分器证明教学目标已经完成。
+
+管理员 CLI 布置与导出示例：
+
+```bash
+python3 skills/numoj-admin/scripts/numoj_admin.py vibehub list
+python3 skills/numoj-admin/scripts/numoj_admin.py homework add \
+  --class-en C2026A --vibehub-project-id 7 --ddl 2026-12-31T23:59
+python3 skills/numoj-admin/scripts/numoj_admin.py homework export-scores \
+  --class-en C2026A -o scores.csv
+```
+
+登录后的学生可通过 CLI 进行相同作答。操作 JSON 必须遵守具体作品的规则：
+
+```bash
+python3 scripts/numoj_user.py vibehub edu launch dynamic-balance --assignment-id 12
+python3 scripts/numoj_user.py vibehub edu state <attempt_id>
+python3 scripts/numoj_user.py vibehub edu action <attempt_id> \
+  --expected-seq 0 --command-id command-1 --action @action.json
+python3 scripts/numoj_user.py vibehub edu submit <attempt_id> \
+  --expected-seq 1 --request-id submit-1
+python3 scripts/numoj_user.py vibehub edu result --attempt-id <attempt_id>
+```
+
 ## 使用 CLI 管理作品
 
 ### 查看作品

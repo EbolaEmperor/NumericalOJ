@@ -23,6 +23,7 @@ from backend.oj_modules.homework.runtime import (
     start_plagiarism_mark_task,
 )
 from backend.oj_modules.homework.targets import parse_plagiarism_mark_payload
+from backend.oj_modules.homework.edu import edu_completion_counts
 from backend.oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
 from backend.oj_modules.ranking.db import list_competitions
 
@@ -72,11 +73,21 @@ def homework_list():
             with conn.cursor() as cursor:
                 cursor.execute(f"SELECT * FROM {safe_table_name(selected_class)} ORDER BY id ASC")
                 homework_rows = cursor.fetchall() or []
+                if any(hw.get("vibehub_edu_assignment_id") for hw in homework_rows):
+                    counts = edu_completion_counts(cursor, selected_class)
+                    for hw in homework_rows:
+                        if hw.get("vibehub_edu_assignment_id"):
+                            hw["complete_cnt"] = counts.get(int(hw["id"]), 0)
         finally:
             conn.close()
 
         for hw in homework_rows:
-            if hw.get("ranking_competition_id"):
+            if hw.get("vibehub_edu_assignment_id"):
+                hw["kind"] = "edu"
+                hw["is_edu"] = True
+                hw["is_ranking"] = False
+                hw["problem_title"] = hw.get("problem_title") or "VibeHub 教学作业"
+            elif hw.get("ranking_competition_id"):
                 hw["kind"] = "ranking"
                 hw["is_ranking"] = True
                 hw["competition_id"] = hw.get("ranking_competition_id")
@@ -99,6 +110,8 @@ def homework_list():
     except Exception:
         all_competitions = []
 
+    from backend.oj_modules.vibehub.edu import list_assignable_projects
+
     return json_success(
         user=public_user(user),
         classes=classes,
@@ -107,6 +120,7 @@ def homework_list():
         homework_list=homework_rows,
         all_problems=all_problems,
         all_competitions=all_competitions,
+        all_edu_projects=list_assignable_projects(user),
     )
 
 

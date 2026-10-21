@@ -109,6 +109,20 @@ afterEach(() => {
 })
 
 describe('班级作业记忆', () => {
+  it('教学作业链接直接进入绑定作业的 VibeHub 作品', async () => {
+    vi.mocked(fetch).mockImplementation((input: string | URL | Request) => {
+      const url = String(input)
+      if (url.startsWith('/api/v1/session')) return jsonResponse({api_version: '1', user: {id: 1, username: 'student', is_admin: 0}, navigation: {items: [], counts: {}, agent_active: false, selected_class_en: 'C1'}, capabilities: {spa: true}})
+      if (url.startsWith('/api/class-activity')) return jsonResponse({activity: []})
+      if (url.startsWith('/api/problems')) return jsonResponse({problems: [{id: 8, homework_id: 3, title: '动态平衡术', kind: 'edu', url: '/vibehub/balance/play?assignment=7', max_score: 100, total_score: 100, has_submission: true, is_completed: true}], count: 1, classes, selected_class_en: 'C1', selected_class_cn: '一班'})
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    renderPage()
+    expect((await screen.findByRole('link', {name: '动态平衡术'})).getAttribute('href')).toBe('/vibehub/balance/play?assignment=7')
+    expect(screen.getByText('可视化作业')).toBeTruthy()
+    expect(screen.getByText('100/100')).toBeTruthy()
+  })
+
   it('截止后的未公开书面评分仍显示占位，不误报零分或未按时提交', async () => {
     vi.mocked(fetch).mockImplementation((input: string | URL | Request) => {
       const url = String(input)
