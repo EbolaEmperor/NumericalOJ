@@ -120,7 +120,8 @@ def _version(cursor, project_id, version_id):
 def _lease(version):
     """按数据库版本号建立专用镜像别名，不跟随作品 public/latest 切换。"""
     manager = get_runtime_manager()
-    key = f"{version['slug']}-edu-v{version['id']}"
+    # 冒号不属于作者可注册的 slug 字符，避免普通作品占用教学固定版本的镜像别名。
+    key = f"edu:{version['project_id']}:v{version['id']}"
     # 同版本的首次固定镜像准备由数据库命名锁串行化。
     conn = get_db_connection()
     lock = f"vibehub:edu-image:{version['id']}"
@@ -394,8 +395,10 @@ def dispatch_pending_grades():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            cursor.execute("""SELECT id FROM vibehub_edu_submissions WHERE status='submitted'
-                AND created_at < DATE_SUB(NOW(), INTERVAL 60 SECOND) ORDER BY id LIMIT 50""")
+            cursor.execute("""SELECT id FROM vibehub_edu_submissions WHERE
+                (status='submitted' AND created_at < DATE_SUB(NOW(), INTERVAL 60 SECOND))
+                OR (status='grading' AND created_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+                ORDER BY id LIMIT 50""")
             ids = [int(row["id"]) for row in cursor.fetchall()]
     finally:
         conn.close()

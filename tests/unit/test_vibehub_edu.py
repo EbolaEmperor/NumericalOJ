@@ -84,6 +84,27 @@ def test_owner_cannot_read_other_students_attempt():
         edu._get_attempt(cursor, ROW['id'], ACTOR)
 
 
+def test_internal_assignment_request_restores_owner_admin_role(monkeypatch):
+    cursor = Cursor(one=[{**ROW, 'assignment_id': 5}, {'id': 12, 'is_admin': 1}])
+    actors = []
+    monkeypatch.setattr(edu, '_assignment', lambda _cursor, assignment_id, actor: actors.append((assignment_id, actor)))
+    edu._get_attempt(cursor, ROW['id'], for_update=True)
+    assert actors == [(5, {'id': 12, 'is_admin': 1})]
+    assert cursor.calls[0][0].endswith('FOR UPDATE')
+
+
+def test_dispatch_recovers_saved_submissions_without_rewriting_evidence(monkeypatch):
+    cursor = Cursor(many=[[{'id': 21}, {'id': 22}]])
+    conn = Connection(cursor)
+    tasks = []
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: conn)
+    monkeypatch.setattr(edu, '_grade_task', SimpleNamespace(apply_async=lambda **kwargs: tasks.append(kwargs)))
+    assert edu.dispatch_pending_grades() == 2
+    assert tasks == [{'args': [21], 'queue': 'celery'}, {'args': [22], 'queue': 'celery'}]
+    assert not conn.committed
+    assert all(sql.startswith('SELECT') for sql, _params in cursor.calls)
+
+
 def test_student_must_belong_to_assignment_class():
     cursor = Cursor(one=[{'id': 5, 'class_en': 'C1', 'homework_id': 4}, None])
     with pytest.raises(services.VibeHubPermissionError, match='班级'):
