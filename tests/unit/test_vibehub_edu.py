@@ -448,7 +448,9 @@ def test_grading_rejects_out_of_range_or_non_integer_score(monkeypatch, score_bp
     assert any("SET status='error'" in sql for sql, _params in cursor.calls)
 
 
-def test_cpp_execution_uses_recorded_source_and_new_hidden_inputs(monkeypatch):
+@pytest.mark.parametrize('executor', ['cpp-heap-median-v1', 'cpp-heap-median-v2'])
+@pytest.mark.parametrize('grading', [False, True])
+def test_cpp_execution_uses_recorded_source_and_versioned_inputs(monkeypatch, executor, grading):
     from backend.oj_modules.vibehub import edu_cpp
 
     calls = []
@@ -458,18 +460,76 @@ def test_cpp_execution_uses_recorded_source_and_new_hidden_inputs(monkeypatch):
     cursor = Cursor(one=[{'acquired': 1}, {'acquired': 1}])
     monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
     context = {'attempt_id': ROW['id'], 'challenge_seed': 'seed', 'parameters': {'inputs': [7, 3]}}
+    result_type = 'double' if executor == 'cpp-heap-median-v2' else 'int'
     actions = [
-        {'action': {'type': 'run_code', 'source': 'int step(int x) {return 0;}'}},
-        {'action': {'type': 'run_code', 'source': 'int step(int x) {return x;}', 'execution': {'passed': 10000}}},
+        {'action': {'type': 'run_code', 'source': f'{result_type} step(int x) {{return 0;}}'}},
+        {'action': {'type': 'run_code', 'source': f'{result_type} step(int x) {{return x;}}', 'execution': {'passed': 10000}}},
     ]
-    result = edu._execution(context, {'education': {'executor': 'cpp-heap-median-v1'}}, actions,
-        lease=SimpleNamespace(container_name='existing-container'), grading=True)
-    assert calls[0][0] == 'int step(int x) {return x;}'
-    assert len(calls[0][1]) == 129
-    assert calls[0][1] != [7, 3]
-    assert calls[0][2] == {'docker': docker, 'container_name': 'existing-container'}
-    assert result['execution'] == {'passed': 129}
+    result = edu._execution(context, {'education': {'executor': executor}}, actions,
+        lease=SimpleNamespace(container_name='existing-container'), grading=grading)
+    assert calls[0][0] == f'{result_type} step(int x) {{return x;}}'
+    assert calls[0][2] == {'docker': docker, 'container_name': 'existing-container', 'executor': executor}
+    if grading:
+        assert len(calls[0][1]) == 129 and calls[0][1] != [7, 3]
+        if executor == 'cpp-heap-median-v2':
+            inputs = calls[0][1]
+            assert (inputs[0] + inputs[1]) / 2 == 999999999.5
+            assert sum(sorted(inputs[:6])[2:4]) / 2 == -999999997.5
+        else:
+            assert calls[0][1][:6] == [0, 0, -1, 1, 1000000000, -1000000000]
+    else:
+        assert calls[0][1] == [7, 3]
+    assert result['execution'] == {'passed': 129 if grading else 2}
     assert 'execution' not in context
+
+
+@pytest.mark.parametrize('executor,second', [('cpp-heap-median-v1', 3), ('cpp-heap-median-v2', 4)])
+def test_both_cpp_versions_receive_platform_trial_inputs_at_launch(monkeypatch, executor, second):
+    version = {'id': 9, 'project_id': 3, 'slug': 'balance', 'manifest': {'education': {'executor': executor}}}
+    assignment = {'id': 5, 'project_id': 3, 'version_id': 9, 'parameters_json': '{}'}
+    cursor = Cursor(one=[None])
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+    monkeypatch.setattr(edu, '_assignment', lambda *_args: assignment)
+    monkeypatch.setattr(edu, '_version', lambda *_args: version)
+    lease = SimpleNamespace(token='lease', proxy_base_path='/vibehub/runtime/lease', expires_at=1)
+    monkeypatch.setattr(edu, '_lease', lambda *_args: lease)
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(bind_edu_attempt=lambda *_args: None))
+    contexts = []
+
+    def internal(_lease, operation, payload):
+        assert operation == 'start'
+        contexts.append(payload['context'])
+        return {'state': {}, 'view': {}}
+
+    monkeypatch.setattr(edu, '_internal', internal)
+    edu.launch('balance', ACTOR, assignment_id=5)
+    inputs = contexts[0]['parameters']['inputs']
+    assert len(inputs) == 24 and inputs[:8] == [7, second, 10, -2, 6, 6, 15, 1]
+    assert all(type(item) is int for item in inputs)
+
+
+@pytest.mark.parametrize('executor', [None, 'cpp-heap-median-v1', 'cpp-heap-median-v2'])
+def test_manifest_validation_preserves_the_supported_executor_version(tmp_path, monkeypatch, executor):
+    manifest = {'schema_version': 1, 'kind': 'edu', 'transport': 'unix',
+        'socket_path': '/run/vibehub/app.sock', 'health_path': '/healthz',
+        'cover_image': 'static/cover.jpg', 'education': {'protocol': edu.PROTOCOL,
+            'socket_path': '/run/vibehub/edu.sock', 'executor': executor}}
+    (tmp_path / 'Dockerfile').write_text('FROM numericaloj-vibehub-runtime:1\n')
+    (tmp_path / 'vibehub.json').write_text(json.dumps(manifest))
+    monkeypatch.setattr(edu.storage, 'validate_cover_image', lambda *_args: ('static/cover.jpg', 'image/jpeg'))
+    result = edu.storage.validate_manifest(tmp_path)
+    assert result['education'].get('executor') == executor
+
+
+@pytest.mark.parametrize('executor', ['cpp-heap-median-v3', 'client-defined', {}, []])
+def test_manifest_validation_rejects_unknown_or_non_string_executors(tmp_path, executor):
+    manifest = {'schema_version': 1, 'kind': 'edu', 'transport': 'unix',
+        'socket_path': '/run/vibehub/app.sock', 'health_path': '/healthz',
+        'education': {'protocol': edu.PROTOCOL, 'socket_path': '/run/vibehub/edu.sock', 'executor': executor}}
+    (tmp_path / 'Dockerfile').write_text('FROM numericaloj-vibehub-runtime:1\n')
+    (tmp_path / 'vibehub.json').write_text(json.dumps(manifest))
+    with pytest.raises(edu.storage.PackageValidationError, match='不支持的 education.executor'):
+        edu.storage.validate_manifest(tmp_path)
 
 
 def test_cpp_action_holds_the_existing_runtime_lease_until_execution_cleanup(monkeypatch):

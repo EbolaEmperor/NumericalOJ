@@ -75,9 +75,9 @@ def command_result(returncode=0, stdout="", stderr="", **overrides):
         "stdout_truncated": False, "stderr_truncated": False, **overrides}
 
 
-def execute(source, inputs, response):
+def execute(source, inputs, response, *, executor=edu_cpp.LEGACY_EXECUTOR):
     return edu_cpp.run_code(source, inputs, container_name="existing-container",
-        docker=SimpleNamespace(execute_edu_cpp=lambda *_args, **_kwargs: response))
+        docker=SimpleNamespace(execute_edu_cpp=lambda *_args, **_kwargs: response), executor=executor)
 
 
 def test_compile_and_execute_use_one_existing_vibehub_container():
@@ -197,3 +197,85 @@ def test_size_reads_empty_and_nonempty_heaps_without_mutating_them():
 def test_invalid_runner_results_never_become_a_grade(response):
     with pytest.raises(RuntimeError, match="执行响应"):
         execute("int step(int x){return x;}", [7], response)
+
+
+def test_v2_uses_the_average_and_keeps_the_legacy_lower_median_unchanged():
+    trace = VALID_TRACE.replace('ROUND 1 3 ', 'ROUND 1 5 ')
+    rounds = edu_cpp._replay(trace, [7, 3, 10], executor=edu_cpp.MEDIAN_EXECUTOR)
+    assert [item['expected'] for item in rounds] == [7.0, 5.0, 7.0]
+    assert all(item['passed'] for item in rounds)
+    legacy = edu_cpp._replay(VALID_TRACE, [7, 3, 10], executor=edu_cpp.LEGACY_EXECUTOR)
+    assert [item['expected'] for item in legacy] == [7, 3, 7]
+    assert all(item['passed'] for item in legacy)
+    with pytest.raises(ValueError, match='无效整数'):
+        edu_cpp._replay('ROUND 0 7.0 1\nA I 7\n', [7])
+
+
+@pytest.mark.parametrize('left,right,returned', [(1, 2, '1.5'), (-4, -1, '-2.5'),
+    (999999999, 1000000000, '999999999.5'),
+    (-1000000000, -999999999, '-999999999.5'),
+    (-1000000000, 1000000000, '0'), (1000000000, 1000000000, '1e9')])
+def test_v2_accepts_exact_half_integer_and_extreme_medians(left, right, returned):
+    trace = f'ROUND 0 {left} 1\nA I {left}\nROUND 1 {returned} 1\nB I {right}\n'
+    result = edu_cpp._replay(trace, [left, right], executor=edu_cpp.MEDIAN_EXECUTOR)
+    assert all(item['passed'] for item in result)
+    assert result[-1]['returned'] == result[-1]['expected'] == (left + right) / 2
+
+
+@pytest.mark.parametrize('left,right,wrong', [(1, 2, '1'), (-4, -1, '-2'),
+    (999999999, 1000000000, '999999999'), (999999999, 1000000000, '1000000000'),
+    (-1000000000, -999999999, '-999999999')])
+def test_v2_rejects_integer_division_and_half_unit_errors_at_large_magnitudes(left, right, wrong):
+    trace = f'ROUND 0 {left} 1\nA I {left}\nROUND 1 {wrong} 1\nB I {right}\n'
+    result = edu_cpp._replay(trace, [left, right], executor=edu_cpp.MEDIAN_EXECUTOR)
+    assert result[0]['passed'] is True
+    assert result[1]['valid'] is True and result[1]['passed'] is False
+    assert '中位数不正确' in result[1]['feedback']
+
+
+@pytest.mark.parametrize('returned', ['nan', '-nan', 'NaN', 'inf', '-inf', '+Infinity',
+    '1e309', '-1e999', '1_000', '0x1p0'])
+def test_v2_never_accepts_nonfinite_or_nondecimal_return_values(returned):
+    with pytest.raises(ValueError, match='有限浮点数'):
+        edu_cpp._replay(f'ROUND 0 {returned} 1\nA I 7\n', [7], executor=edu_cpp.MEDIAN_EXECUTOR)
+
+
+@pytest.mark.parametrize('operation', ['A I 7.0', 'A I 7e0', 'A I 7_0', 'A S 0.0'])
+def test_v2_keeps_heap_operation_values_strictly_integer(operation):
+    with pytest.raises(ValueError, match='无效整数'):
+        edu_cpp._replay(f'ROUND 0 7 1\n{operation}\n', [7], executor=edu_cpp.MEDIAN_EXECUTOR)
+
+
+@pytest.mark.parametrize('executor,result_type,returned,expected', [
+    (edu_cpp.LEGACY_EXECUTOR, 'int', '7', 7),
+    (edu_cpp.MEDIAN_EXECUTOR, 'double', '7.0', 7.0),
+])
+def test_run_code_selects_the_matching_frozen_function_abi_and_replay(executor, result_type, returned, expected):
+    calls = []
+
+    def run(container_name, payload, **_kwargs):
+        calls.append((container_name, payload))
+        assert f'{result_type} step(int x);' in payload['api_header']
+        assert f'using NumOJStepResult = {result_type};' in payload['harness']
+        assert 'std::numeric_limits<NumOJStepResult>::max_digits10' in payload['harness']
+        return {'compile': command_result(), 'run': command_result(stdout=f'ROUND 0 {returned} 1\nA I 7\n')}
+
+    result = edu_cpp.run_code(f'{result_type} step(int x){{A.insert(x);return A.top();}}', [7],
+        docker=SimpleNamespace(execute_edu_cpp=run), container_name='existing-container', executor=executor)
+    assert len(calls) == 1 and result['passed'] == 1
+    assert result['rounds'][0]['expected'] == expected
+
+
+def test_v2_nonfinite_program_output_is_a_student_failure():
+    result = execute('double step(int x){return 0.0/0.0;}', [7],
+        {'compile': command_result(), 'run': command_result(stdout='ROUND 0 nan 1\nA I 7\n')},
+        executor=edu_cpp.MEDIAN_EXECUTOR)
+    assert result['compiled'] is True and result['passed'] == 0
+    assert '有限浮点数' in result['error']
+
+
+def test_unknown_executor_cannot_start_any_program():
+    docker = SimpleNamespace(execute_edu_cpp=lambda *_a, **_k: pytest.fail('不应执行'))
+    with pytest.raises(ValueError, match='不支持'):
+        edu_cpp.run_code('double step(int x){return x;}', [7], docker=docker,
+            container_name='existing-container', executor='client-defined-executor')

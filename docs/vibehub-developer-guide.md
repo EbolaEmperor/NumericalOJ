@@ -248,12 +248,21 @@ GET  /api/vibehub/edu/submissions/{submission_id}
 ### 动态平衡术与学生 C++ 程序
 
 随仓库提供的“动态平衡术”示例使用平台白名单执行器，在清单 `education` 中增加
-`"executor": "cpp-heap-median-v1"`。学生实现 `int step(int x)`，每次收到下一个整数，
+`"executor": "cpp-heap-median-v2"`。学生实现 `double step(int x)`，每次收到下一个整数，
 可调用 `A.insert(x)`、`A.pop()`、`A.top()`、`A.size()` 及对应的 `B` 操作。`A` 为大顶堆，`B` 为小顶堆；
-要求返回所有已输入整数的当前中位数，偶数个元素取两个中间值中较小的一个。
+要求返回所有已输入整数的当前中位数，偶数个元素取两个中间值的平均值。
 只提交函数及需要的辅助代码，不编写 `main`，也不自行输出内容。堆 API 的 `insert(int)` 和
 `pop()` 返回 `void`，`top()` 和 `size()` 返回 `int`；空堆上的 `pop`、`top` 会报错，
 `size()` 返回当前元素个数，空堆返回 0。同一输入序列中的函数调用共享全局变量及两棵堆。
+
+堆元素和操作记录中的元素仍是整数，成功的函数返回值必须是有限 `double`；`NaN` 和无穷大
+不能作为合法结果。求平均时应先转换为 `double`，避免整数除法或整数加法溢出。平台驱动以
+`std::numeric_limits<double>::max_digits10` 的精度记录返回值，JSON 中保留数值类型，不得
+先截断为整数或用默认六位有效数字格式化。
+
+旧的 `cpp-heap-median-v1` 继续使用 `int step(int x)`，偶数个元素取较小中位数。
+已有作业冻结的旧版本不随示例更新改变；本示例通过新版本切换到 v2，不覆盖旧作业规则。
+执行器编号的升级不改变教学通道协议 `vibehub-edu/1`。
 
 页面显示两棵堆的树结构和执行轨迹。平台通过受控的 `docker exec`，在已经启动的 VibeHub
 作品容器中编译、运行学生程序，不再额外启动判题容器，也不给作品 Docker socket。固定执行
@@ -273,7 +282,7 @@ memfd 执行，源码和产物不落入持久化 `/data`。完成后清理该 UI
 ```json
 {
   "type": "run_code",
-  "source": "int step(int x) { /* 学生实现 */ }"
+  "source": "double step(int x) { /* 学生实现 */ }"
 }
 ```
 

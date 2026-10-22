@@ -10,6 +10,7 @@ import secrets
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
 from backend.oj_modules.vibehub import services, storage
+from backend.oj_modules.vibehub.edu_cpp import CPP_HEAP_EXECUTORS, MEDIAN_EXECUTOR
 from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
@@ -203,8 +204,10 @@ def launch(slug, actor, assignment_id=None, channel="public"):
             seed = secrets.token_urlsafe(24)
             generator = random.Random(seed)
             parameters = _load(assignment["parameters_json"], {}) if assignment else {}
-            if version["manifest"].get("education", {}).get("executor") == "cpp-heap-median-v1":
-                parameters = {**parameters, "inputs": [7, 3, 10, -2, 6, 6, 15, 1] + [generator.randint(-30, 30) for _ in range(16)]}
+            executor = version["manifest"].get("education", {}).get("executor")
+            if executor in CPP_HEAP_EXECUTORS:
+                prefix = [7, 4 if executor == MEDIAN_EXECUTOR else 3, 10, -2, 6, 6, 15, 1]
+                parameters = {**parameters, "inputs": prefix + [generator.randint(-30, 30) for _ in range(16)]}
             context = {"attempt_id": attempt_id, "assignment_id": assignment_id,
                 "project_version_id": int(version["id"]), "rubric_version": 1,
                 "challenge_seed": seed, "parameters": parameters}
@@ -259,7 +262,8 @@ def attempt_state(attempt_id, actor=None):
 
 def _execution(context, manifest, actions, *, lease, grading=False):
     """只能由平台从已记录源码和可信输入构造 execution；客户端无此字段。"""
-    if manifest.get("education", {}).get("executor") != "cpp-heap-median-v1":
+    executor = manifest.get("education", {}).get("executor")
+    if executor not in CPP_HEAP_EXECUTORS:
         return context
     source = next((a["action"].get("source") for a in reversed(actions) if a["action"].get("type") == "run_code"), "")
     if not isinstance(source, str) or not source.strip():
@@ -268,7 +272,14 @@ def _execution(context, manifest, actions, *, lease, grading=False):
     inputs = context["parameters"]["inputs"]
     if grading:
         rng = random.Random("grade:" + context["challenge_seed"])
-        inputs = [0, 0, -1, 1, 1000000000, -1000000000] + [rng.randint(-10000, 10000) for _ in range(123)]
+        if executor == MEDIAN_EXECUTOR:
+            # 固定覆盖大正数和大负数的 .5，防止整数除法或过宽相对误差漏判。
+            prefix = [999999999, 1000000000, -1000000000, -999999999,
+                      -999999998, -999999997, 0, 0, -1, 1]
+        else:
+            # 旧作业的输入与较小中位数规则均保持原样。
+            prefix = [0, 0, -1, 1, 1000000000, -1000000000]
+        inputs = prefix + [rng.randint(-10000, 10000) for _ in range(129 - len(prefix))]
     enriched = deepcopy(context)
     conn = get_db_connection()
     acquired = []
@@ -288,7 +299,7 @@ def _execution(context, manifest, actions, *, lease, grading=False):
             else:
                 raise services.VibeHubError("试运行资源繁忙，请稍后重试", status_code=429)
             enriched["execution"] = run_code(source, inputs,
-                docker=get_runtime_manager().docker, container_name=lease.container_name)
+                docker=get_runtime_manager().docker, container_name=lease.container_name, executor=executor)
     finally:
         try:
             with conn.cursor() as cursor:

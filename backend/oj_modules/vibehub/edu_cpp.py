@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import Counter
 import base64
 import heapq
+import math
+import re
 
 
 MAX_SOURCE_BYTES = 64 * 1024
@@ -16,6 +18,9 @@ MAX_INPUTS = 512
 MAX_OPERATIONS = 32768
 MAX_ROUND_OPERATIONS = 4096
 MAX_INTEGER = 1_000_000_000
+LEGACY_EXECUTOR = "cpp-heap-median-v1"
+MEDIAN_EXECUTOR = "cpp-heap-median-v2"
+CPP_HEAP_EXECUTORS = frozenset({LEGACY_EXECUTOR, MEDIAN_EXECUTOR})
 
 _API_HEADER = """#pragma once
 class NumOJHeap final {
@@ -33,10 +38,13 @@ int step(int x);
 # 用户代码与驱动分开编译；学生的预处理宏不能改变驱动入口或堆实现。
 _HARNESS = r'''#include "heap_api.hpp"
 #include <algorithm>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #include <functional>
+using NumOJStepResult = int;
 NumOJHeap A, B;
 namespace {
 struct Operation { char heap; char type; int value; };
@@ -110,8 +118,10 @@ int main() {
         if (!(std::cin >> x)) return 2;
         data().operations.clear();
         try {
-            const int returned = step(x);
-            std::cout << "ROUND " << index << ' ' << returned << ' '
+            const NumOJStepResult returned = step(x);
+            std::cout << "ROUND " << index << ' '
+                      << std::setprecision(std::numeric_limits<NumOJStepResult>::max_digits10)
+                      << returned << ' '
                       << data().operations.size() << '\n';
             dump_operations();
         } catch (const std::exception& e) {
@@ -123,6 +133,14 @@ int main() {
     return 0;
 }
 '''
+
+_PROGRAMS = {
+    LEGACY_EXECUTOR: (_API_HEADER, _HARNESS),
+    MEDIAN_EXECUTOR: (
+        _API_HEADER.replace("int step(int x);", "double step(int x);"),
+        _HARNESS.replace("using NumOJStepResult = int;", "using NumOJStepResult = double;"),
+    ),
+}
 
 
 def _failure(total, message, *, compiled=False, rounds=None):
@@ -137,14 +155,29 @@ def _failure(total, message, *, compiled=False, rounds=None):
 
 
 def _integer(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[+-]?[0-9]+", value):
+        raise ValueError("运行记录包含无效整数")
     parsed = int(value)
     if not -2_147_483_648 <= parsed <= 2_147_483_647:
         raise ValueError("运行记录包含超出 int 范围的数值")
     return parsed
 
 
-def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[dict]:
+def _finite_double(value):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value
+    ):
+        raise ValueError("返回值必须是有限浮点数")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("返回值必须是有限浮点数")
+    return parsed
+
+
+def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "", executor: str = LEGACY_EXECUTOR) -> list[dict]:
     """所有展示数据与通过状态都来自 Python 重放，不信任 C++ 自报快照。"""
+    if executor not in CPP_HEAP_EXECUTORS:
+        raise ValueError("不支持的 C++ 执行器")
     lines = iter(stdout.splitlines())
     left, right, rounds, seen = [], [], [], []
     operation_count = 0
@@ -160,8 +193,9 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
         failed = len(header) == 3 and header[0] == "ERROR" and bool(runtime_error)
         if (not failed and (len(header) != 4 or header[0] != "ROUND")) or header[1] != str(index):
             raise ValueError("程序输出与堆操作协议不一致，请勿自行输出内容")
-        returned = None if failed else _integer(header[2])
-        count = int(header[2] if failed else header[3])
+        parse_returned = _finite_double if executor == MEDIAN_EXECUTOR else _integer
+        returned = None if failed else parse_returned(header[2])
+        count = _integer(header[2] if failed else header[3])
         operation_count += count
         if not 0 <= count <= MAX_ROUND_OPERATIONS or operation_count > MAX_OPERATIONS:
             raise ValueError("堆操作次数超过限制")
@@ -199,7 +233,15 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
         seen.append(x)
         left_values = [-item for item in left]
         right_values = list(right)
-        expected = sorted(seen)[(len(seen) - 1) // 2]
+        ordered_values = sorted(seen)
+        expected = ordered_values[(len(seen) - 1) // 2]
+        if executor == MEDIAN_EXECUTOR:
+            expected = (expected + ordered_values[len(seen) // 2]) / 2
+        # 整数与半整数在本题数值范围内均能被 double 精确表达。仅允许很小的
+        # 绝对误差，不能让 1e9 附近错 0.5 的答案被相对误差阈值放行。
+        correct_return = not failed and (
+            abs(returned - expected) <= 1e-9 if executor == MEDIAN_EXECUTOR else returned == expected
+        )
         conserved = Counter(left_values + right_values) == Counter(seen)
         balanced = len(left) in {len(right), len(right) + 1}
         ordered = not left or not right or -left[0] <= right[0]
@@ -211,7 +253,7 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
             reasons.append("A 的元素数应等于 B，或比 B 多一个")
         if not ordered:
             reasons.append("A 中的数应全部不大于 B 中的数")
-        if not failed and returned != expected:
+        if not failed and not correct_return:
             reasons.append("返回的中位数不正确")
         rounds.append({
             "x": x,
@@ -221,7 +263,7 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
             "right_heap": right_values,
             "operations": operations,
             "valid": valid,
-            "passed": valid and returned == expected,
+            "passed": valid and correct_return,
             "error": failed,
             "feedback": "；".join(reasons) if reasons else "两堆平衡，中位数正确",
         })
@@ -254,19 +296,24 @@ def _command_result(value):
     return result
 
 
-def run_code(source: str, inputs: list[int], *, docker, container_name: str, timeout_seconds: int = 5) -> dict:
-    """执行 ``int step(int x)``，仅接受平台选择的输入和有界资源参数。"""
+def run_code(source: str, inputs: list[int], *, docker, container_name: str,
+             timeout_seconds: int = 5, executor: str = LEGACY_EXECUTOR) -> dict:
+    """按固定版本执行 step，仅接受平台选择的输入和有界资源参数。"""
+    if executor not in CPP_HEAP_EXECUTORS:
+        raise ValueError("不支持的 C++ 执行器")
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_INPUTS:
         raise ValueError("输入序列长度应在 1 到 512 之间")
     if any(type(value) is not int or abs(value) > MAX_INTEGER for value in inputs):
         raise ValueError("输入必须为 -10^9 到 10^9 之间的整数")
     if not isinstance(source, str) or not source.strip():
-        return _failure(len(inputs), "请先填写 int step(int x) 函数")
+        return_type = "double" if executor == MEDIAN_EXECUTOR else "int"
+        return _failure(len(inputs), f"请先填写 {return_type} step(int x) 函数")
     if len(source.encode("utf-8")) > MAX_SOURCE_BYTES or "\x00" in source:
         return _failure(len(inputs), "代码超过 64 KiB 或包含无效字符")
     timeout_seconds = max(1, min(10, int(timeout_seconds)))
+    api_header, harness = _PROGRAMS[executor]
     response = docker.execute_edu_cpp(container_name, {
-        "source": source, "api_header": _API_HEADER, "harness": _HARNESS,
+        "source": source, "api_header": api_header, "harness": harness,
         "inputs": inputs, "timeout_seconds": timeout_seconds,
     }, timeout=timeout_seconds + 30)
     if not isinstance(response, dict) or set(response) not in ({"compile"}, {"compile", "run"}):
@@ -291,7 +338,7 @@ def run_code(source: str, inputs: list[int], *, docker, container_name: str, tim
         runtime_error = "运行超时" if result["returncode"] in {124, 137} else (result["stderr"] or "程序运行异常")
         runtime_error = str(runtime_error)[:6000]
     try:
-        rounds = _replay(result["stdout"], inputs, runtime_error=runtime_error)
+        rounds = _replay(result["stdout"], inputs, runtime_error=runtime_error, executor=executor)
     except (ValueError, OverflowError) as exc:
         return _failure(len(inputs), str(exc), compiled=True)
     if runtime_error:

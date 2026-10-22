@@ -27,6 +27,7 @@ from backend.oj_modules.shared.archive import (
     extract_zip,
 )
 from backend.oj_modules.vibehub import quotas
+from backend.oj_modules.vibehub.edu_cpp import CPP_HEAP_EXECUTORS
 
 
 VIBEHUB_UPLOAD_ROOT = PROJECT_ROOT / "uploads" / "vibehub"
@@ -384,7 +385,7 @@ def validate_manifest(app_dir: Path) -> dict:
         if education.get("socket_path") != "/run/vibehub/edu.sock":
             raise PackageValidationError("education.socket_path 必须为 /run/vibehub/edu.sock")
         executor = education.get("executor")
-        if executor not in {None, "cpp-heap-median-v1"}:
+        if executor is not None and (not isinstance(executor, str) or executor not in CPP_HEAP_EXECUTORS):
             raise PackageValidationError("不支持的 education.executor")
         normalized["education"] = {"protocol": "vibehub-edu/1", "socket_path": "/run/vibehub/edu.sock"}
         if executor:

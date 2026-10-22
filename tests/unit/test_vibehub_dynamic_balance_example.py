@@ -25,7 +25,7 @@ def test_manifest_declares_separate_internal_education_socket_and_platform_execu
     assert manifest["education"] == {
         "protocol": "vibehub-edu/1",
         "socket_path": "/run/vibehub/edu.sock",
-        "executor": "cpp-heap-median-v1",
+        "executor": "cpp-heap-median-v2",
     }
     assert (EXAMPLE / manifest["cover_image"]).is_file()
 
@@ -35,16 +35,16 @@ def test_start_is_deterministic_and_accepts_the_platform_practice_sequence(balan
     initial = balance.start(context)
     assert initial == balance.start(context)
     assert initial["view"]["inputs"] == [7, 3, 10]
-    assert "int step(int x)" in initial["view"]["source"]
+    assert "double step(int x)" in initial["view"]["source"]
     assert "user_id" not in initial["view"]
 
 
 def test_action_cannot_supply_its_own_execution_result(balance):
     state = balance.start({"challenge_seed": "example"})["state"]
     with pytest.raises(ValueError, match="可信"):
-        balance.step({}, state, {"type": "run_code", "source": "int step(int x){return x;}", "execution": {"passed": 100}})
+        balance.step({}, state, {"type": "run_code", "source": "double step(int x){return x;}", "execution": {"passed": 100}})
     execution = {"compiled": True, "rounds": [], "passed": 0, "total": 20}
-    updated = balance.step({"execution": execution}, state, {"type": "run_code", "source": "int step(int x){return x;}"})
+    updated = balance.step({"execution": execution}, state, {"type": "run_code", "source": "double step(int x){return x;}"})
     assert updated["state"]["execution"] == execution
     assert updated["state"]["inputs"] == state["inputs"]
     assert state["execution"] is None
@@ -53,7 +53,7 @@ def test_action_cannot_supply_its_own_execution_result(balance):
 def test_grading_uses_only_frozen_platform_execution_and_keeps_hidden_cases_private(balance):
     execution = {"compiled": True, "passed": 17, "total": 20, "rounds": [{"x": -999, "expected": 12}]}
     actions = [{"action": {"type": "fake_score", "score": 100}},
-               {"action": {"type": "run_code", "source": "int step(int x){return x;}"}}]
+               {"action": {"type": "run_code", "source": "double step(int x){return x;}"}}]
     result = balance.grade({"execution": execution}, actions)
     assert result["score_bp"] == 8500
     assert result["metrics"] == {"passed_rounds": 17, "total_rounds": 20}

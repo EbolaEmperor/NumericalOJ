@@ -173,8 +173,12 @@ On a network failure, retry with the original command/request ID and identical
 payload. A `409` means reread the state before continuing. The result command
 also accepts `--submission-id <edu_submission_id>` returned by `submit`.
 Omitting `--assignment-id` starts practice and does not count toward homework.
-The dynamic-balance example provides `A`/`B.insert(x)`, `pop()`, `top()`, and
-`size()` (`int`, zero for an empty heap). Its editor supports C++ highlighting.
+The current dynamic-balance example uses `cpp-heap-median-v2` with
+`double step(int x)` and averages the two middle values for even input counts.
+Check the assigned frozen version: `cpp-heap-median-v1` still uses
+`int step(int x)` and the lower-middle rule. Both provide `A`/`B.insert(x)`,
+`pop()`, `top()`, and `size()` (`int`, zero for an empty heap); heap values remain
+integers. Its editor supports C++ highlighting.
 The platform executes the code in the existing VibeHub work container and
 verifies the trace; final scores come from rerunning frozen code on hidden inputs.
 

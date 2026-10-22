@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parent
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 DEFAULT_SOURCE = """// A 是大顶堆，B 是小顶堆。两棵堆在各次 step 调用之间保留。
 // 可调用 insert(int)、pop()、top()、size()。
-int step(int x) {
-    // TODO：插入 x，调整两个堆，再返回当前的较小中位数。
+double step(int x) {
+    // TODO：完成你的实现。
     A.insert(x);
     return A.top();
 }

@@ -261,8 +261,11 @@ are included in the existing class score export, while edu submissions are
 separate from ordinary `submission list`. A work receives an anonymous attempt
 ID, not the player's student number or OJ login cookie.
 
-The dynamic-balance example provides `A`/`B.insert(x)`, `pop()`, `top()`, and
-`size()` (`int`, zero for an empty heap). Its C++ executor uses the existing
+The current dynamic-balance example uses `cpp-heap-median-v2` and
+`double step(int x)`; even input counts return the mean of the two middle values.
+Frozen `cpp-heap-median-v1` works retain `int step(int x)` and the lower-middle rule.
+Both provide `A`/`B.insert(x)`, `pop()`, `top()`, and `size()` (`int`, zero for an
+empty heap); heap values remain integers. The C++ executor uses the existing
 VibeHub work container, with platform-verified traces and a fresh hidden run
 for grading; it does not start additional judging containers.
 

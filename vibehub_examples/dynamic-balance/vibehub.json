@@ -7,10 +7,10 @@
   "education": {
     "protocol": "vibehub-edu/1",
     "socket_path": "/run/vibehub/edu.sock",
-    "executor": "cpp-heap-median-v1"
+    "executor": "cpp-heap-median-v2"
   },
   "title": "动态平衡术",
-  "summary": "写一个 C++ step 函数，让两棵二叉堆接住传送带上的数字，实时返回较小中位数。",
+  "summary": "使用两棵二叉堆计算输入流的中位数。",
   "tags": ["教学", "Heap", "C++", "中位数"],
   "cover_image": "static/cover.png"
 }
