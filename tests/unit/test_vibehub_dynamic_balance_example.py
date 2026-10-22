@@ -264,8 +264,11 @@ def test_demo_keeps_visual_playback_and_uses_only_execution_requests():
     for item in ('id="conveyor"', 'id="heapA"', 'id="heapB"', 'id="runButton"', 'id="submitButton"'):
         assert item in html
     script = (EXAMPLE / "static" / "app.js").read_text()
-    assert "if (!result.passed" in script
-    assert "上浮" in script and "下沉" in script
+    playback = (EXAMPLE / "static" / "playback.js").read_text()
+    assert "if (!result.passed" in playback
+    assert "上浮" in playback and "下沉" in playback
+    assert "NumOJHeapPlayback.buildFrames" in script
+    assert "NumOJHeapMotion.create" in script
     assert "action: { type: 'run_code', source }" in script
     assert "score: 100" not in script
 

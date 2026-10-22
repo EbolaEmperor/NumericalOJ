@@ -15,10 +15,17 @@
   let speed = 1;
   let timer = null;
   let pollTimer = null;
+  let transitioning = false;
+  let playbackGeneration = 0;
   const speeds = [1, 2, 4, 0.5];
   const base = new URL('./', window.location.href);
   const uuid = () => globalThis.crypto?.randomUUID?.() || `cmd-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const endpoint = (name) => new URL(`_edu/v1/${name}`, base).href;
+  const heapMotion = window.NumOJHeapMotion.create({
+    heapA: $('heapA'), heapB: $('heapB'), conveyor: $('conveyor'),
+    inputs: () => view.inputs || [],
+    reducedMotion: () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false,
+  });
 
   async function api(name, payload) {
     const response = await fetch(endpoint(name), {
@@ -50,9 +57,9 @@
     $('resetButton').disabled = busy || !editable;
     code?.updateOptions({ readOnly: busy || !editable, domReadOnly: busy || !editable });
     $('runButton').innerHTML = busy ? '<span>◌</span> 正在执行' : '<span>▶</span> 试运行';
-    $('playButton').disabled = !frames.length;
-    $('nextButton').disabled = !frames.length || position >= frames.length - 1;
-    $('replayButton').disabled = !frames.length;
+    $('playButton').disabled = busy || !frames.length;
+    $('nextButton').disabled = busy || !frames.length || position >= frames.length - 1 || Boolean(frames[position]?.error);
+    $('replayButton').disabled = busy || !frames.length;
     $('playButton').textContent = playing ? 'Ⅱ' : '▶';
   }
 
@@ -81,67 +88,13 @@
     return data;
   }
 
-  function svgElement(name, attributes, text) {
-    const item = document.createElementNS('http://www.w3.org/2000/svg', name);
-    Object.entries(attributes || {}).forEach(([key, value]) => item.setAttribute(key, String(value)));
-    if (text !== undefined) item.textContent = text;
-    return item;
-  }
-
-  function renderHeap(id, items, highlight) {
-    const svg = $(id);
-    svg.replaceChildren();
-    if (!items.length) { svg.append(svgElement('text', { x: 200, y: 126, class: 'empty-heap' }, '等待第一个数字')); return; }
-    const shown = items.slice(0, 31);
-    const depth = Math.floor(Math.log2(shown.length));
-    const levelGap = depth > 3 ? 43 : 53;
-    const radius = depth > 3 ? 12 : depth > 2 ? 15 : 19;
-    const coordinate = (index) => {
-      const level = Math.floor(Math.log2(index + 1));
-      const offset = index - (2 ** level - 1);
-      return [400 * (offset + 0.5) / (2 ** level), 39 + level * levelGap];
-    };
-    shown.forEach((_value, index) => {
-      if (!index) return;
-      const [x1, y1] = coordinate(Math.floor((index - 1) / 2));
-      const [x2, y2] = coordinate(index);
-      svg.append(svgElement('line', { x1, y1, x2, y2, class: 'heap-edge' }));
-    });
-    shown.forEach((value, index) => {
-      const [x, y] = coordinate(index);
-      const node = svgElement('g', { class: `heap-node${index === 0 ? ' root' : ''}${index === highlight ? ' new' : ''}`, transform: `translate(${x},${y})` });
-      node.append(svgElement('circle', { r: radius }));
-      node.append(svgElement('text', { style: `font-size:${Math.abs(value) > 999 ? 9 : radius < 15 ? 10 : 15}px` }, value));
-      svg.append(node);
-    });
-    if (items.length > shown.length) svg.append(svgElement('text', { x: 200, y: 238, class: 'heap-extra' }, `另有 ${items.length - shown.length} 个节点，已省略显示`));
-  }
-
-  function renderConveyor(round, entering) {
-    const conveyor = $('conveyor');
-    conveyor.replaceChildren();
-    const inputs = view.inputs || [];
-    inputs.slice(round, round + 11).forEach((value, index) => {
-      const block = document.createElement('div');
-      block.className = `number-block${entering && index === 0 ? ' active' : ''}`;
-      block.textContent = value;
-      conveyor.append(block);
-    });
-    if (round >= inputs.length && inputs.length) {
-      const block = document.createElement('span');
-      block.className = 'quiet'; block.textContent = '本次输入已全部处理'; conveyor.append(block);
-    }
-  }
-
-  function renderFrame(frame) {
+  function renderFrame(frame, animate = true) {
     const left = frame.left || [], right = frame.right || [];
-    renderHeap('heapA', left, frame.highlight?.heap === 'A' ? frame.highlight.index : -1);
-    renderHeap('heapB', right, frame.highlight?.heap === 'B' ? frame.highlight.index : -1);
+    const rendered = heapMotion.render(frame, { animate });
     $('sizeA').textContent = `${left.length} 个`;
     $('sizeB').textContent = `${right.length} 个`;
     const checked = frame.checked;
     const round = frame.round || 0;
-    renderConveyor(round + (checked ? 1 : 0), frame.entering);
     $('roundLabel').textContent = view.inputs?.length ? `第 ${Math.min(round + 1, view.inputs.length)} / ${view.inputs.length} 轮` : '等待试运行';
     $('currentInput').textContent = frame.x === undefined ? '等待输入' : `x = ${frame.x}`;
     $('median').textContent = frame.median === undefined ? '—' : frame.median;
@@ -157,78 +110,64 @@
       $('operationLog').append(span);
     });
     updateButtons();
+    return rendered;
   }
 
-  function buildFrames(execution) {
-    const left = [], right = [], output = [], log = [];
-    let median;
-    const add = (round, values = {}) => output.push({ left: [...left], right: [...right], round, x: execution.rounds[round]?.x, median, log: [...log], ...values });
-    add(0, { message: '准备开始：从传送带最左端取出下一个数字。' });
-    for (let round = 0; round < execution.rounds.length; round++) {
-      const result = execution.rounds[round];
-      add(round, { entering: true, message: `取出 ${result.x}，调用 step(${result.x})。` });
-      for (const operation of result.operations || []) {
-        const heap = operation.heap === 'A' ? left : right;
-        const higher = operation.heap === 'A' ? (a, b) => a > b : (a, b) => a < b;
-        const label = `${operation.heap}.${operation.type}(${operation.type === 'insert' ? operation.value : ''})`;
-        log.push(label);
-        const highlight = (index) => ({ heap: operation.heap, index });
-        if (operation.type === 'insert') {
-          heap.push(operation.value);
-          let at = heap.length - 1;
-          add(round, { message: `${label}：把 ${operation.value} 放到末尾。`, highlight: highlight(at) });
-          while (at > 0) {
-            const parent = Math.floor((at - 1) / 2);
-            if (!higher(heap[at], heap[parent])) break;
-            [heap[at], heap[parent]] = [heap[parent], heap[at]];
-            at = parent;
-            add(round, { message: `${operation.heap} 中的新节点上浮，恢复堆序。`, highlight: highlight(at) });
-          }
-        } else if (operation.type === 'pop') {
-          const last = heap.pop();
-          if (heap.length) heap[0] = last;
-          add(round, { message: `${label}：删除堆顶 ${operation.value}，由末尾节点补位。`, highlight: highlight(0) });
-          let at = 0;
-          while (2 * at + 1 < heap.length) {
-            let child = 2 * at + 1;
-            if (child + 1 < heap.length && higher(heap[child + 1], heap[child])) child++;
-            if (!higher(heap[child], heap[at])) break;
-            [heap[at], heap[child]] = [heap[child], heap[at]];
-            at = child;
-            add(round, { message: `${operation.heap} 的补位节点下沉，恢复堆序。`, highlight: highlight(at) });
-          }
-        } else if (operation.type === 'size') {
-          add(round, { message: `${label}：当前有 ${operation.value} 个元素。` });
-        } else {
-          add(round, { message: `${label}：读到堆顶 ${operation.value}。`, highlight: highlight(0) });
-        }
-        if (output.length >= 5000) break;
-      }
-      left.splice(0, left.length, ...(result.left_heap || []));
-      right.splice(0, right.length, ...(result.right_heap || []));
-      median = result.expected;
-      const failure = result.error ? (execution.error || '程序运行异常') : result.returned !== result.expected ? '返回值不正确' : '堆状态未通过检查';
-      add(round, { checked: true, returned: result.returned ?? '未返回', error: !result.passed, success: result.passed, message: result.passed ? `第 ${round + 1} 轮通过，返回 ${result.returned}。` : `第 ${round + 1} 轮停止：${failure}。应返回 ${result.expected}，${result.returned == null ? '函数未能返回。' : `实际返回 ${result.returned}。`}` });
-      if (!result.passed || output.length >= 5000) break;
+  function stopPlayback() {
+    playing = false;
+    clearTimeout(timer);
+    timer = null;
+    heapMotion.pause();
+    updateButtons();
+  }
+
+  function restartPlayback() {
+    clearTimeout(timer);
+    timer = null;
+    playbackGeneration++;
+    transitioning = false;
+    heapMotion.reset();
+    position = 0;
+    if (frames.length) renderFrame(frames[0], false);
+  }
+
+  async function advance() {
+    if (transitioning || !frames.length || position >= frames.length - 1 || frames[position]?.error) return;
+    const generation = playbackGeneration;
+    const frame = frames[++position];
+    transitioning = true;
+    await renderFrame(frame);
+    if (generation !== playbackGeneration) return;
+    transitioning = false;
+    if (frame.error || position >= frames.length - 1) { stopPlayback(); return; }
+    if (playing) {
+      const hold = frame.motion?.kind === 'swap' ? 25 : frame.motion?.kind === 'idle' ? 140 : 90;
+      timer = setTimeout(tick, hold / speed);
     }
-    if (execution.passed === execution.total && output.length) output[output.length - 1].message = `全部 ${execution.total} 轮通过。`;
-    return output;
   }
 
-  function stopPlayback() { playing = false; clearTimeout(timer); updateButtons(); }
   function tick() {
-    if (!playing || position >= frames.length - 1) { stopPlayback(); return; }
-    position++;
-    renderFrame(frames[position]);
-    if (frames[position].error || position >= frames.length - 1) { stopPlayback(); return; }
-    timer = setTimeout(tick, 650 / speed);
+    timer = null;
+    if (!playing || transitioning || position >= frames.length - 1) return;
+    void advance();
   }
-  function play() { if (position >= frames.length - 1) position = 0; playing = true; updateButtons(); timer = setTimeout(tick, 300 / speed); }
+
+  function play() {
+    if (!frames.length) return;
+    if (position >= frames.length - 1 || frames[position]?.error) restartPlayback();
+    playing = true;
+    heapMotion.resume();
+    updateButtons();
+    if (!transitioning) {
+      clearTimeout(timer);
+      timer = setTimeout(tick, 180 / speed);
+    }
+  }
+
   function preparePlayback(execution, autoplay) {
     stopPlayback();
-    frames = buildFrames(execution);
-    position = 0;
-    renderFrame(frames[0]);
+    frames = window.NumOJHeapPlayback.buildFrames(execution);
+    restartPlayback();
     if (autoplay) play();
   }
 
@@ -247,6 +186,7 @@
         return false;
       }
       frames = [];
+      restartPlayback();
       renderFrame({ left: [], right: [], round: 0, error: true, message: '试运行未能完成，请根据右侧提示修改代码。' });
       return false;
     }
@@ -309,10 +249,20 @@
   $('runButton').addEventListener('click', performRun);
   $('submitButton').addEventListener('click', submit);
   $('resetButton').addEventListener('click', () => { code.setValue(starter); message('已恢复初始代码。', true); });
-  $('playButton').addEventListener('click', () => { if (playing) stopPlayback(); else play(); });
-  $('nextButton').addEventListener('click', () => { stopPlayback(); if (position < frames.length - 1) renderFrame(frames[++position]); });
-  $('replayButton').addEventListener('click', () => { stopPlayback(); position = 0; renderFrame(frames[0]); play(); });
-  $('speedButton').addEventListener('click', () => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length]; $('speedButton').textContent = `${speed}× 速度`; });
+  $('playButton').addEventListener('click', () => { if (!busy) { if (playing) stopPlayback(); else play(); } });
+  $('nextButton').addEventListener('click', () => {
+    if (busy) return;
+    stopPlayback();
+    if (transitioning) heapMotion.finish();
+    else void advance();
+  });
+  $('replayButton').addEventListener('click', () => { if (!busy && frames.length) { stopPlayback(); restartPlayback(); play(); } });
+  $('speedButton').addEventListener('click', () => {
+    speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length];
+    heapMotion.setSpeed(speed);
+    $('speedButton').textContent = `${speed}× 速度`;
+    if (playing && !transitioning) { clearTimeout(timer); timer = setTimeout(tick, 90 / speed); }
+  });
   function showTask() {
     const panel = $('taskInstructions');
     const overlay = $('taskOverlay');
