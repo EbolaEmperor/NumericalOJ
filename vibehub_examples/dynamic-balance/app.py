@@ -1,4 +1,4 @@
-"""动态平衡术教学作品。学生 C++ 只交给平台判题沙箱，不在作品容器执行。"""
+"""动态平衡术教学作品。平台在既有作品容器执行 C++，后端独立核验轨迹。"""
 
 from __future__ import annotations
 
@@ -15,13 +15,10 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 DEFAULT_SOURCE = """// A 是大顶堆，B 是小顶堆。两棵堆在各次 step 调用之间保留。
-// 只能调用 insert(int)、pop()、top()。请自行记录两堆元素数。
-int na = 0, nb = 0;
-
+// 可调用 insert(int)、pop()、top()、size()。
 int step(int x) {
     // TODO：插入 x，调整两个堆，再返回当前的较小中位数。
     A.insert(x);
-    ++na;
     return A.top();
 }
 """

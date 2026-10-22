@@ -1,10 +1,10 @@
-"""教学 C++ 运行必须走普通判题沙箱，分数与堆状态独立重放。"""
+"""教学 C++ 只在已有 VibeHub 容器执行，分数与堆状态由平台独立重放。"""
 
-from pathlib import Path
+import base64
+from types import SimpleNamespace
 
 import pytest
 
-from backend.oj_modules.judging.sandbox import _RunResult
 from backend.oj_modules.vibehub import edu_cpp
 
 
@@ -68,54 +68,56 @@ def test_replay_checks_balance_and_partition_separately_from_answer():
     assert "全部不大于" in rounds[1]["feedback"]
 
 
-def test_compile_and_execute_are_separate_bounded_docker_sandbox_calls(monkeypatch):
+def command_result(returncode=0, stdout="", stderr="", **overrides):
+    return {"returncode": returncode,
+        "stdout_b64": base64.b64encode(stdout.encode()).decode(),
+        "stderr_b64": base64.b64encode(stderr.encode()).decode(),
+        "stdout_truncated": False, "stderr_truncated": False, **overrides}
+
+
+def execute(source, inputs, response):
+    return edu_cpp.run_code(source, inputs, container_name="existing-container",
+        docker=SimpleNamespace(execute_edu_cpp=lambda *_args, **_kwargs: response))
+
+
+def test_compile_and_execute_use_one_existing_vibehub_container():
     calls = []
     source = "#define main ignored\nint step(int x) { A.insert(x); return A.top(); }"
 
-    def run(command, **kwargs):
-        calls.append((command, kwargs))
-        if len(calls) == 1:
-            root = Path(kwargs["run_dir"])
-            assert source in (root / "student.cpp").read_text()
-            assert source not in (root / "harness.cpp").read_text()
-            assert "int main()" in (root / "harness.cpp").read_text()
-            assert "size()" not in (root / "heap_api.hpp").read_text()
-            return _RunResult(0, "", "", artifacts={"a.out": b"test executable"})
-        assert (Path(kwargs["run_dir"]) / "a.out").stat().st_mode & 0o777 == 0o755
-        return _RunResult(0, VALID_TRACE, "")
+    def run(container_name, payload, **kwargs):
+        calls.append((container_name, payload, kwargs))
+        assert payload["source"] == source
+        assert source not in payload["harness"]
+        assert "int main()" in payload["harness"]
+        assert "int size();" in payload["api_header"]
+        return {"compile": command_result(), "run": command_result(stdout=VALID_TRACE)}
 
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", run)
-    result = edu_cpp.run_code(source, [7, 3, 10])
+    result = edu_cpp.run_code(source, [7, 3, 10], container_name="existing-container",
+        docker=SimpleNamespace(execute_edu_cpp=run))
     assert result["compiled"] is True
     assert result["passed"] == result["total"] == 3
-    assert len(calls) == 2
-    assert calls[0][0][:5] == ["timeout", "-k", "1s", "25s", "g++"]
-    assert calls[0][1]["executable_name"] == "a.out"
-    assert calls[1][0][-1] == "/sandbox/a.out"
-    assert calls[1][1]["input_text"] == "3\n7\n3\n10\n"
-    assert "executable_name" not in calls[1][1]
-    assert not Path(calls[0][1]["run_dir"]).exists()
+    assert len(calls) == 1
+    assert calls[0][0] == "existing-container"
+    assert calls[0][1]["inputs"] == [7, 3, 10]
+    assert calls[0][1]["timeout_seconds"] == 5
+    assert calls[0][2]["timeout"] == 35
 
 
-def test_score_counts_only_the_correct_prefix(monkeypatch):
-    responses = iter([
-        _RunResult(0, "", "", artifacts={"a.out": b"executable"}),
-        _RunResult(0, VALID_TRACE.replace("ROUND 1 3", "ROUND 1 999"), ""),
-    ])
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: next(responses))
-    result = edu_cpp.run_code("int step(int x) { return x; }", [7, 3, 10])
+def test_score_counts_only_the_correct_prefix():
+    result = execute("int step(int x) { return x; }", [7, 3, 10], {
+        "compile": command_result(),
+        "run": command_result(stdout=VALID_TRACE.replace("ROUND 1 3", "ROUND 1 999")),
+    })
     assert [item["passed"] for item in result["rounds"]] == [True, False, True]
     assert result["passed"] == 1
 
 
-def test_runtime_exception_preserves_completed_rounds_and_current_heap_operations(monkeypatch):
+def test_runtime_exception_preserves_completed_rounds_and_current_heap_operations():
     output = "ROUND 0 7 2\nA I 7\nA T 7\nERROR 1 1\nA I 3\n"
-    responses = iter([
-        _RunResult(0, "", "", artifacts={"a.out": b"executable"}),
-        _RunResult(3, output, "B.top()：不能读取空堆的堆顶"),
-    ])
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: next(responses))
-    result = edu_cpp.run_code("int step(int x) { return x; }", [7, 3, 10])
+    result = execute("int step(int x) { return x; }", [7, 3, 10], {
+        "compile": command_result(),
+        "run": command_result(3, output, "B.top()：不能读取空堆的堆顶"),
+    })
     assert result["compiled"] is True
     assert result["passed"] == 1 and result["total"] == 3
     assert len(result["rounds"]) == 2
@@ -142,48 +144,56 @@ def test_a_successful_process_cannot_pass_by_printing_a_runtime_error_frame():
         edu_cpp._replay("ERROR 0 0\n", [7])
 
 
-def test_compile_failure_never_starts_the_user_executable(monkeypatch):
-    calls = []
-
-    def run(*args, **kwargs):
-        calls.append(args)
-        return _RunResult(1, "", "step 编译错误")
-
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", run)
-    result = edu_cpp.run_code("invalid C++", [7])
+def test_compile_failure_does_not_require_a_user_executable_result():
+    result = execute("invalid C++", [7], {"compile": command_result(1, stderr="step 编译错误")})
     assert result["compiled"] is False
     assert "编译错误" in result["error"]
-    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("stage", ["compile", "run"])
-def test_infrastructure_startup_failure_raises_for_platform_retry_instead_of_grading_zero(monkeypatch, stage):
-    responses = []
+def test_infrastructure_failure_raises_for_platform_retry_instead_of_grading_zero(stage):
+    response = {"compile": command_result()}
     if stage == "run":
-        responses.append(_RunResult(0, "", "", artifacts={"a.out": b"executable"}))
-    responses.append(_RunResult(-1, "", "无法启动判题测试点容器"))
-    pending = iter(responses)
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: next(pending))
-    with pytest.raises(RuntimeError, match="沙箱暂时不可用"):
-        edu_cpp.run_code("int step(int x) { return x; }", [7])
+        response["run"] = command_result(-1)
+    else:
+        response["compile"] = command_result(-1)
+    with pytest.raises(RuntimeError, match="服务暂时不可用"):
+        execute("int step(int x) { return x; }", [7], response)
 
 
-def test_student_exit_255_remains_a_student_runtime_error(monkeypatch):
-    responses = iter([
-        _RunResult(0, "", "", artifacts={"a.out": b"executable"}),
-        _RunResult(255, "", "学生程序退出"),
-    ])
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: next(responses))
-    result = edu_cpp.run_code("int step(int x) { return x; }", [7])
+def test_student_exit_255_remains_a_student_runtime_error():
+    result = execute("int step(int x) { return x; }", [7], {
+        "compile": command_result(), "run": command_result(255, stderr="学生程序退出"),
+    })
     assert result["compiled"] is True
     assert result["passed"] == 0 and result["total"] == 1
     assert "学生程序退出" in result["error"]
     assert result["rounds"][0]["returned"] is None
 
 
-def test_empty_and_oversized_source_do_not_start_a_container(monkeypatch):
-    monkeypatch.setattr(edu_cpp.sandbox, "run_case_in_container", lambda *_a, **_k: pytest.fail("不应启动容器"))
-    assert edu_cpp.run_code("", [7])["compiled"] is False
-    assert edu_cpp.run_code("x" * (edu_cpp.MAX_SOURCE_BYTES + 1), [7])["compiled"] is False
+def test_empty_and_oversized_source_do_not_execute():
+    docker = SimpleNamespace(execute_edu_cpp=lambda *_a, **_k: pytest.fail("不应执行"))
+    kwargs = {"docker": docker, "container_name": "existing-container"}
+    assert edu_cpp.run_code("", [7], **kwargs)["compiled"] is False
+    assert edu_cpp.run_code("x" * (edu_cpp.MAX_SOURCE_BYTES + 1), [7], **kwargs)["compiled"] is False
     with pytest.raises(ValueError):
-        edu_cpp.run_code("int step(int x){return x;}", [True])
+        edu_cpp.run_code("int step(int x){return x;}", [True], **kwargs)
+
+
+def test_size_reads_empty_and_nonempty_heaps_without_mutating_them():
+    result = edu_cpp._replay("ROUND 0 7 5\nA S 0\nB S 0\nA I 7\nA S 1\nA T 7\n", [7])[0]
+    assert result["passed"] is True
+    assert result["left_heap"] == [7] and result["right_heap"] == []
+    assert [item["value"] for item in result["operations"] if item["type"] == "size"] == [0, 0, 1]
+    with pytest.raises(ValueError, match="实际堆大小"):
+        edu_cpp._replay("ROUND 0 7 2\nA I 7\nA S 99\n", [7])
+
+
+@pytest.mark.parametrize("response", [None, {}, {"compile": {}},
+    {"compile": command_result(), "score": 100},
+    {"compile": command_result(), "run": command_result(stdout_b64="not base64!")},
+    {"compile": command_result()},
+])
+def test_invalid_runner_results_never_become_a_grade(response):
+    with pytest.raises(RuntimeError, match="执行响应"):
+        execute("int step(int x){return x;}", [7], response)

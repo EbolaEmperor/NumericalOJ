@@ -257,7 +257,7 @@ def attempt_state(attempt_id, actor=None):
         conn.close()
 
 
-def _execution(context, manifest, actions, *, grading=False):
+def _execution(context, manifest, actions, *, lease, grading=False):
     """只能由平台从已记录源码和可信输入构造 execution；客户端无此字段。"""
     if manifest.get("education", {}).get("executor") != "cpp-heap-median-v1":
         return context
@@ -287,7 +287,8 @@ def _execution(context, manifest, actions, *, grading=False):
                     break
             else:
                 raise services.VibeHubError("试运行资源繁忙，请稍后重试", status_code=429)
-            enriched["execution"] = run_code(source, inputs)
+            enriched["execution"] = run_code(source, inputs,
+                docker=get_runtime_manager().docker, container_name=lease.container_name)
     finally:
         try:
             with conn.cursor() as cursor:
@@ -328,9 +329,9 @@ def apply_action(attempt_id, payload, actor=None):
         conn.close()
     if version["manifest"].get("education", {}).get("executor") and (set(action) != {"type", "source"} or action["type"] != "run_code"):
         raise services.VibeHubError("该作品只接受 run_code/source 操作")
-    context = _execution(_load(row["context_json"]), version["manifest"], [{"action": action}])
     lease = _lease(version)
     try:
+        context = _execution(_load(row["context_json"]), version["manifest"], [{"action": action}], lease=lease)
         transition = _transition(_internal(lease, "step", {"context": context, "state": _load(row["state_json"]), "action": action, "seq": int(row["seq"]) + 1}))
     finally:
         get_runtime_manager().release(lease.token)
@@ -453,9 +454,9 @@ def grade_submission(submission_id):
                 snapshot = _load(row["snapshot_json"])
                 cursor.execute("UPDATE vibehub_edu_submissions SET status='grading' WHERE id=%s", (submission_id,))
                 conn.commit()
-                context = _execution(snapshot["context"], version["manifest"], snapshot["actions"], grading=True)
                 lease = _lease(version)
                 try:
+                    context = _execution(snapshot["context"], version["manifest"], snapshot["actions"], lease=lease, grading=True)
                     result = _internal(lease, "grade", {"context": context, "actions": snapshot["actions"]})
                 finally:
                     get_runtime_manager().release(lease.token)

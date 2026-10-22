@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  const code = $('code');
+  let code;
   let seq = 0;
   let status = 'loading';
   let view = {};
@@ -46,7 +46,7 @@
     $('submitButton').disabled = busy || !['active', 'submitted', 'error'].includes(status);
     $('submitButton').textContent = ['submitted', 'error'].includes(status) ? '重试评分 ↗' : '提交作业 ↗';
     $('resetButton').disabled = busy || !active;
-    code.readOnly = busy || !active;
+    code?.updateOptions({ readOnly: busy || !active, domReadOnly: busy || !active });
     $('runButton').innerHTML = busy ? '<span>◌</span> 正在执行' : '<span>▶</span> 试运行';
     $('playButton').disabled = !frames.length;
     $('nextButton').disabled = !frames.length || position >= frames.length - 1;
@@ -56,7 +56,7 @@
 
   function setBadge(data) {
     const homework = data.assignment_id || data.homework_id || data.assignment || view.assignment_id;
-    const label = { active: homework ? '作业模式 · 进度已保存' : '练习模式', submitted: '作业已提交', grading: '正在评分', graded: '评分完成', error: '评分暂时失败' }[status] || '教学实验室';
+    const label = { active: homework ? '作业模式' : '练习模式', submitted: '作业已提交', grading: '正在评分', graded: '评分完成', error: '评分暂时失败' }[status] || '正在连接';
     $('assignmentBadge').textContent = '● ' + label;
   }
 
@@ -67,12 +67,12 @@
     view = data.view || data.data?.view || {};
     if (!starter) starter = view.initial_source || view.source || '';
     if (restoreCode) {
-      code.value = view.source || starter;
+      code.setValue(view.source || starter);
     }
     lastRunSource = view.execution ? (view.source || '') : '';
     setBadge(data);
     if (view.execution?.rounds?.length) preparePlayback(view.execution, false);
-    else renderFrame({ left: [], right: [], round: 0, message: '写好 step 函数后，点击「试运行」，观察真实的堆操作。' });
+    else renderFrame({ left: [], right: [], round: 0, message: '等待试运行' });
     updateButtons();
     if (['submitted', 'grading', 'graded', 'error'].includes(status)) pollResult();
     return data;
@@ -140,15 +140,9 @@
     const round = frame.round || 0;
     renderConveyor(round + (checked ? 1 : 0), frame.entering);
     $('roundLabel').textContent = view.inputs?.length ? `第 ${Math.min(round + 1, view.inputs.length)} / ${view.inputs.length} 轮` : '等待试运行';
-    $('currentInput').textContent = frame.x === undefined ? '每次取最左边的一个数字' : `本轮输入 x = ${frame.x}`;
+    $('currentInput').textContent = frame.x === undefined ? '等待输入' : `x = ${frame.x}`;
     $('median').textContent = frame.median === undefined ? '—' : frame.median;
     $('returned').textContent = checked ? frame.returned : '—';
-    const balanced = left.length === right.length || left.length === right.length + 1;
-    const ordered = !left.length || !right.length || left[0] <= right[0];
-    $('balanceCheck').className = checked ? balanced ? 'ok' : 'bad' : '';
-    $('balanceCheck').textContent = `${checked ? balanced ? '✓' : '✕' : '○'} A 与 B 的大小保持平衡`;
-    $('orderCheck').className = checked ? ordered ? 'ok' : 'bad' : '';
-    $('orderCheck').textContent = `${checked ? ordered ? '✓' : '✕' : '○'} A 的堆顶 ≤ B 的堆顶`;
     $('executionMessage').textContent = frame.message || '';
     $('executionMessage').className = `execution-message${frame.error ? ' error' : frame.success ? ' success' : ''}`;
     $('timelineProgress').style.width = frames.length > 1 ? `${100 * position / (frames.length - 1)}%` : '0%';
@@ -200,6 +194,8 @@
             at = child;
             add(round, { message: `${operation.heap} 的补位节点下沉，恢复堆序。`, highlight: highlight(at) });
           }
+        } else if (operation.type === 'size') {
+          add(round, { message: `${label}：当前有 ${operation.value} 个元素。` });
         } else {
           add(round, { message: `${label}：读到堆顶 ${operation.value}。`, highlight: highlight(0) });
         }
@@ -208,10 +204,10 @@
       left.splice(0, left.length, ...(result.left_heap || []));
       right.splice(0, right.length, ...(result.right_heap || []));
       median = result.expected;
-      add(round, { checked: true, returned: result.returned ?? '未返回', error: !result.passed, success: result.passed, message: result.passed ? `第 ${round + 1} 轮通过：返回 ${result.returned}，两棵堆满足全部不变量。` : `第 ${round + 1} 轮停止：${result.feedback}。应返回 ${result.expected}，${result.returned == null ? '函数未能返回。' : `实际返回 ${result.returned}。`}` });
+      add(round, { checked: true, returned: result.returned ?? '未返回', error: !result.passed, success: result.passed, message: result.passed ? `第 ${round + 1} 轮通过，返回 ${result.returned}。` : `第 ${round + 1} 轮停止：${result.feedback}。应返回 ${result.expected}，${result.returned == null ? '函数未能返回。' : `实际返回 ${result.returned}。`}` });
       if (!result.passed || output.length >= 5000) break;
     }
-    if (execution.passed === execution.total && output.length) output[output.length - 1].message = `全部 ${execution.total} 轮试运行通过！可以提交作业，接受隐藏数据的检验。`;
+    if (execution.passed === execution.total && output.length) output[output.length - 1].message = `全部 ${execution.total} 轮通过。`;
     return output;
   }
 
@@ -233,7 +229,7 @@
   }
 
   async function runCode(autoplay = true) {
-    const source = code.value;
+    const source = code.getValue();
     const data = await api('actions', { command_id: uuid(), expected_seq: seq, action: { type: 'run_code', source } });
     seq = data.seq;
     view = data.view;
@@ -258,7 +254,7 @@
 
   async function performRun() {
     if (busy) return;
-    busy = true; stopPlayback(); updateButtons(); message('正在隔离环境中编译并运行 C++ 代码…', true);
+    busy = true; stopPlayback(); updateButtons(); message('正在编译并运行 C++ 代码…', true);
     try { await runCode(); } catch (error) { message(error.message); }
     finally { busy = false; updateButtons(); }
   }
@@ -272,7 +268,7 @@
       status = current;
       $('resultCard').hidden = false;
       if (result.score_bp != null || result.score != null) {
-        $('resultTitle').textContent = result.verdict === 'passed' ? '挑战完成，作业已记分' : '作业已评分';
+        $('resultTitle').textContent = '作业已评分';
         $('resultFeedback').textContent = result.feedback || '评分结果已经保存到本次作业。';
         const score = result.score_bp !== undefined ? result.score_bp / 100 : Number(result.score);
         $('resultScore').textContent = `${Number(score.toFixed(2))} 分`;
@@ -296,7 +292,7 @@
     if (busy) return;
     busy = true; stopPlayback(); updateButtons(); message('正在保存当前代码并提交…', true);
     try {
-      if (status === 'active' && code.value !== lastRunSource) await runCode(false);
+      if (status === 'active' && code.getValue() !== lastRunSource) await runCode(false);
       const data = await api('submit', { request_id: uuid(), expected_seq: seq });
       status = data.status || 'grading';
       message('当前代码已冻结并提交，平台将使用隐藏数据重新评分。', true);
@@ -308,14 +304,63 @@
 
   $('runButton').addEventListener('click', performRun);
   $('submitButton').addEventListener('click', submit);
-  $('resetButton').addEventListener('click', () => { code.value = starter; message('已恢复初始代码。', true); });
+  $('resetButton').addEventListener('click', () => { code.setValue(starter); message('已恢复初始代码。', true); });
   $('playButton').addEventListener('click', () => { if (playing) stopPlayback(); else play(); });
   $('nextButton').addEventListener('click', () => { stopPlayback(); if (position < frames.length - 1) renderFrame(frames[++position]); });
   $('replayButton').addEventListener('click', () => { stopPlayback(); position = 0; renderFrame(frames[0]); play(); });
   $('speedButton').addEventListener('click', () => { speed = speeds[(speeds.indexOf(speed) + 1) % speeds.length]; $('speedButton').textContent = `${speed}× 速度`; });
-  code.addEventListener('keydown', (event) => {
-    if (event.key === 'Tab') { event.preventDefault(); const start = code.selectionStart, end = code.selectionEnd; code.setRangeText('    ', start, end, 'end'); }
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); performRun(); }
-  });
+  function showTask() {
+    const panel = $('taskInstructions');
+    const overlay = $('taskOverlay');
+    const button = $('acknowledgeButton');
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    let acknowledged = false;
+    function dockTask() {
+      if (acknowledged) return;
+      acknowledged = true;
+      const before = panel.getBoundingClientRect();
+      document.body.style.overflow = previousOverflow;
+      button.hidden = true;
+      panel.classList.add('docked');
+      panel.removeAttribute('role');
+      panel.removeAttribute('aria-modal');
+      $('instructionDock').append(panel);
+      const after = panel.getBoundingClientRect();
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      if (!reducedMotion && panel.animate && after.width && after.height) {
+        panel.style.zIndex = '1001';
+        const motion = panel.animate([
+          { transform: `translate(${before.left - after.left}px, ${before.top - after.top}px) scale(${before.width / after.width}, ${before.height / after.height})` },
+          { transform: 'none' },
+        ], { duration: 520, easing: 'cubic-bezier(.22,1,.36,1)' });
+        panel.style.transformOrigin = 'top left';
+        const finishMotion = () => { panel.style.zIndex = ''; panel.style.transformOrigin = ''; };
+        motion.finished.then(finishMotion, finishMotion);
+        const fade = overlay.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 180 });
+        overlay.style.pointerEvents = 'none';
+        const finishFade = () => { overlay.hidden = true; };
+        fade.finished.then(finishFade, finishFade);
+      } else overlay.hidden = true;
+      code?.focus();
+    }
+    button.addEventListener('click', dockTask);
+    overlay.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); dockTask(); }
+      if (event.key === 'Tab') { event.preventDefault(); button.focus(); }
+    });
+    button.focus();
+  }
+  showTask();
+  try {
+    code = window.NumOJEduEditor.create($('code'), { onRun: performRun });
+    $('editorLoading').hidden = true;
+  } catch (error) {
+    status = 'unavailable';
+    $('editorLoading').textContent = '代码编辑器加载失败，请刷新页面重试。';
+    message('代码编辑器未能加载，请刷新页面重试。');
+    updateButtons();
+    return;
+  }
   loadState().catch((error) => { status = 'unavailable'; message(error.message); $('assignmentBadge').textContent = '● 未连接作答'; updateButtons(); });
 })();

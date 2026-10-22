@@ -1,4 +1,4 @@
-"""动态平衡术的 C++ 执行器：不可信编译与运行均复用普通判题 Docker 沙箱。
+"""动态平衡术的 C++ 执行器：在既有 VibeHub 容器中编译与运行。
 
 C++ 只输出返回值和堆 API 调用记录。Python 根据可信输入独立重放记录，
 重建两棵堆、检查多重集与平衡条件，并重新计算中位数，不接收程序自报的成绩。
@@ -7,12 +7,8 @@ C++ 只输出返回值和堆 API 调用记录。Python 根据可信输入独立�
 from __future__ import annotations
 
 from collections import Counter
+import base64
 import heapq
-import os
-from pathlib import Path
-import tempfile
-
-from backend.oj_modules.judging import sandbox
 
 
 MAX_SOURCE_BYTES = 64 * 1024
@@ -27,6 +23,7 @@ public:
     void insert(int value);
     void pop();
     int top();
+    int size();
 };
 extern NumOJHeap A;
 extern NumOJHeap B;
@@ -99,6 +96,12 @@ int NumOJHeap::top() {
     record(left, 'T', heap.front());
     return heap.front();
 }
+int NumOJHeap::size() {
+    const bool left = is_left(this);
+    const int value = static_cast<int>((left ? data().left : data().right).size());
+    record(left, 'S', value);
+    return value;
+}
 int main() {
     int count;
     if (!(std::cin >> count) || count < 1 || count > 512) return 2;
@@ -168,7 +171,7 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
                 fields = next(lines).split()
             except StopIteration as exc:
                 raise ValueError("堆操作记录不完整") from exc
-            if len(fields) != 3 or fields[0] not in {"A", "B"} or fields[1] not in {"I", "P", "T"}:
+            if len(fields) != 3 or fields[0] not in {"A", "B"} or fields[1] not in {"I", "P", "T", "S"}:
                 raise ValueError("堆操作记录格式无效")
             heap_name, kind, raw_value = fields
             value = _integer(raw_value)
@@ -179,6 +182,10 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
                     raise ValueError("堆容量超过限制")
                 heapq.heappush(heap, factor * value)
                 operation_type = "insert"
+            elif kind == "S":
+                if value != len(heap):
+                    raise ValueError("堆操作记录与实际堆大小不一致")
+                operation_type = "size"
             else:
                 if not heap:
                     raise ValueError("不能对空堆调用 pop() 或 top()")
@@ -225,7 +232,29 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "") -> list[
     return rounds
 
 
-def run_code(source: str, inputs: list[int], *, timeout_seconds: int = 5) -> dict:
+def _command_result(value):
+    if not isinstance(value, dict) or set(value) != {
+        "returncode", "stdout_b64", "stderr_b64", "stdout_truncated", "stderr_truncated"
+    } or type(value["returncode"]) is not int or any(
+        type(value[name]) is not bool for name in ("stdout_truncated", "stderr_truncated")
+    ):
+        raise RuntimeError("作品 C++ 执行响应无效")
+    result = {key: value[key] for key in ("returncode", "stdout_truncated", "stderr_truncated")}
+    for name, maximum in (("stdout", 1024 * 1024), ("stderr", 64 * 1024)):
+        try:
+            encoded = value[name + "_b64"]
+            if not isinstance(encoded, str) or len(encoded) > (maximum * 4 + 2) // 3 + 4:
+                raise ValueError("输出超过限制")
+            decoded = base64.b64decode(encoded, validate=True)
+            if len(decoded) > maximum:
+                raise ValueError("输出超过限制")
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("作品 C++ 执行响应无效") from exc
+        result[name] = decoded.decode("utf-8", errors="replace")
+    return result
+
+
+def run_code(source: str, inputs: list[int], *, docker, container_name: str, timeout_seconds: int = 5) -> dict:
     """执行 ``int step(int x)``，仅接受平台选择的输入和有界资源参数。"""
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_INPUTS:
         raise ValueError("输入序列长度应在 1 到 512 之间")
@@ -236,59 +265,42 @@ def run_code(source: str, inputs: list[int], *, timeout_seconds: int = 5) -> dic
     if len(source.encode("utf-8")) > MAX_SOURCE_BYTES or "\x00" in source:
         return _failure(len(inputs), "代码超过 64 KiB 或包含无效字符")
     timeout_seconds = max(1, min(10, int(timeout_seconds)))
-    with tempfile.TemporaryDirectory(prefix="numoj-edu-cpp-") as directory:
-        os.chmod(directory, 0o755)
-        root = Path(directory)
-        for name, text in {
-            "heap_api.hpp": _API_HEADER,
-            "student.cpp": '#include "heap_api.hpp"\n' + source,
-            "harness.cpp": _HARNESS,
-        }.items():
-            path = root / name
-            path.write_text(text, encoding="utf-8")
-            path.chmod(0o644)
-        compiled = sandbox.run_case_in_container(
-            ["timeout", "-k", "1s", "25s", "g++", "-std=c++20", "-O2", "-pipe",
-             "-I", "/sandbox", "/sandbox/student.cpp", "/sandbox/harness.cpp", "-o", "a.out"],
-            run_dir=directory,
-            timeout_sec=30,
-            executable_name="a.out",
-            executable_max_bytes=16 * 1024 * 1024,
-        )
-        if compiled.returncode == -1:
-            # 沙箱 -1 表示基础设施未能执行命令；不能记作学生编译错误。
-            # 抛出异常由平台保留提交并重试，学生程序 exit(-1) 的状态为 255。
-            raise RuntimeError("C++ 编译沙箱暂时不可用，请稍后重试")
-        if compiled.returncode != 0 or "a.out" not in compiled.artifacts:
-            return _failure(len(inputs), compiled.stderr or "编译失败，未生成可执行程序")
-        executable = root / "a.out"
-        executable.write_bytes(compiled.artifacts["a.out"])
-        executable.chmod(0o755)
-        result = sandbox.run_case_in_container(
-            ["timeout", "-k", "1s", f"{timeout_seconds}s", "/sandbox/a.out"],
-            run_dir=directory,
-            input_text=str(len(inputs)) + "\n" + "\n".join(map(str, inputs)) + "\n",
-            timeout_sec=timeout_seconds + 5,
-        )
-        if result.returncode == -1:
-            raise RuntimeError("C++ 运行沙箱暂时不可用，请稍后重试")
-        if result.stdout_truncated or result.stderr_truncated:
-            return _failure(len(inputs), "程序输出超过限制", compiled=True)
-        runtime_error = ""
-        if result.returncode != 0:
-            runtime_error = "运行超时" if result.returncode in {124, 137} else (result.stderr or "程序运行异常")
-            runtime_error = str(runtime_error)[:6000]
-        try:
-            rounds = _replay(result.stdout, inputs, runtime_error=runtime_error)
-        except (ValueError, OverflowError) as exc:
-            return _failure(len(inputs), str(exc), compiled=True)
-        if runtime_error:
-            if rounds and all(item["passed"] for item in rounds):
-                rounds[-1].update(passed=False, valid=False, error=True, feedback=runtime_error)
-            return _failure(len(inputs), runtime_error, compiled=True, rounds=rounds)
-        return {
-            "compiled": True,
-            "rounds": rounds,
-            "passed": next((index for index, item in enumerate(rounds) if not item["passed"]), len(rounds)),
-            "total": len(inputs),
-        }
+    response = docker.execute_edu_cpp(container_name, {
+        "source": source, "api_header": _API_HEADER, "harness": _HARNESS,
+        "inputs": inputs, "timeout_seconds": timeout_seconds,
+    }, timeout=timeout_seconds + 30)
+    if not isinstance(response, dict) or set(response) not in ({"compile"}, {"compile", "run"}):
+        raise RuntimeError("作品 C++ 执行响应无效")
+    compiled = _command_result(response["compile"])
+    if compiled["returncode"] == -1:
+        raise RuntimeError("作品 C++ 编译服务暂时不可用，请稍后重试")
+    if compiled["stdout_truncated"] or compiled["stderr_truncated"]:
+        return _failure(len(inputs), "编译输出超过限制")
+    if compiled["returncode"] != 0:
+        message = "编译超时" if compiled["returncode"] == 124 else (compiled["stderr"] or "编译失败")
+        return _failure(len(inputs), message)
+    if "run" not in response:
+        raise RuntimeError("作品 C++ 执行响应缺少运行结果")
+    result = _command_result(response["run"])
+    if result["returncode"] == -1:
+        raise RuntimeError("作品 C++ 运行服务暂时不可用，请稍后重试")
+    if result["stdout_truncated"] or result["stderr_truncated"]:
+        return _failure(len(inputs), "程序输出超过限制", compiled=True)
+    runtime_error = ""
+    if result["returncode"] != 0:
+        runtime_error = "运行超时" if result["returncode"] in {124, 137} else (result["stderr"] or "程序运行异常")
+        runtime_error = str(runtime_error)[:6000]
+    try:
+        rounds = _replay(result["stdout"], inputs, runtime_error=runtime_error)
+    except (ValueError, OverflowError) as exc:
+        return _failure(len(inputs), str(exc), compiled=True)
+    if runtime_error:
+        if rounds and all(item["passed"] for item in rounds):
+            rounds[-1].update(passed=False, valid=False, error=True, feedback=runtime_error)
+        return _failure(len(inputs), runtime_error, compiled=True, rounds=rounds)
+    return {
+        "compiled": True,
+        "rounds": rounds,
+        "passed": next((index for index, item in enumerate(rounds) if not item["passed"]), len(rounds)),
+        "total": len(inputs),
+    }

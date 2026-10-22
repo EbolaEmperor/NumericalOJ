@@ -452,7 +452,9 @@ def test_cpp_execution_uses_recorded_source_and_new_hidden_inputs(monkeypatch):
     from backend.oj_modules.vibehub import edu_cpp
 
     calls = []
-    monkeypatch.setattr(edu_cpp, 'run_code', lambda source, inputs: calls.append((source, inputs)) or {'passed': len(inputs)})
+    docker = object()
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=docker))
+    monkeypatch.setattr(edu_cpp, 'run_code', lambda source, inputs, **kwargs: calls.append((source, inputs, kwargs)) or {'passed': len(inputs)})
     cursor = Cursor(one=[{'acquired': 1}, {'acquired': 1}])
     monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
     context = {'attempt_id': ROW['id'], 'challenge_seed': 'seed', 'parameters': {'inputs': [7, 3]}}
@@ -460,12 +462,35 @@ def test_cpp_execution_uses_recorded_source_and_new_hidden_inputs(monkeypatch):
         {'action': {'type': 'run_code', 'source': 'int step(int x) {return 0;}'}},
         {'action': {'type': 'run_code', 'source': 'int step(int x) {return x;}', 'execution': {'passed': 10000}}},
     ]
-    result = edu._execution(context, {'education': {'executor': 'cpp-heap-median-v1'}}, actions, grading=True)
+    result = edu._execution(context, {'education': {'executor': 'cpp-heap-median-v1'}}, actions,
+        lease=SimpleNamespace(container_name='existing-container'), grading=True)
     assert calls[0][0] == 'int step(int x) {return x;}'
     assert len(calls[0][1]) == 129
     assert calls[0][1] != [7, 3]
+    assert calls[0][2] == {'docker': docker, 'container_name': 'existing-container'}
     assert result['execution'] == {'passed': 129}
     assert 'execution' not in context
+
+
+def test_cpp_action_holds_the_existing_runtime_lease_until_execution_cleanup(monkeypatch):
+    events = []
+    cursor = Cursor(one=[ROW, None])
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+    monkeypatch.setattr(edu, '_version', lambda *_args: {'manifest': {'education': {'executor': 'cpp-heap-median-v1'}}})
+    lease = SimpleNamespace(token='existing-lease', container_name='existing-container')
+    monkeypatch.setattr(edu, '_lease', lambda *_args: events.append('lease') or lease)
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(release=lambda token: events.append(('release', token))))
+
+    def fail_execution(*_args, **kwargs):
+        assert kwargs['lease'] is lease
+        events.append('execute')
+        raise RuntimeError('C++ unavailable')
+
+    monkeypatch.setattr(edu, '_execution', fail_execution)
+    with pytest.raises(RuntimeError, match=r'C\+\+ unavailable'):
+        edu.apply_action(ROW['id'], {'command_id': 'command_123', 'expected_seq': 1,
+            'action': {'type': 'run_code', 'source': 'int step(int x){return x;}' }}, ACTOR)
+    assert events == ['lease', 'execute', ('release', 'existing-lease')]
 
 
 def test_education_api_requires_login_and_rejects_identity_override(monkeypatch):

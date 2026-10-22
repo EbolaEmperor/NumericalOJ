@@ -261,6 +261,11 @@ are included in the existing class score export, while edu submissions are
 separate from ordinary `submission list`. A work receives an anonymous attempt
 ID, not the player's student number or OJ login cookie.
 
+The dynamic-balance example provides `A`/`B.insert(x)`, `pop()`, `top()`, and
+`size()` (`int`, zero for an empty heap). Its C++ executor uses the existing
+VibeHub work container, with platform-verified traces and a fresh hidden run
+for grading; it does not start additional judging containers.
+
 Use `vibehub edu --help` for current-account testing. `launch <slug>
 --assignment-id <edu_assignment_id>` binds a run to homework; obtain this value
 from the homework row's `vibehub_edu_assignment_id` or demo URL's `assignment`

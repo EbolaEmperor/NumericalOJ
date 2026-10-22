@@ -41,6 +41,9 @@ RUN --mount=type=bind,from=host_cuda,target=/usr/local/cuda-12.6 \
 FROM web AS web-edu
 COPY --chown=0:0 --chmod=0444 uds_relay.py /usr/local/lib/vibehub_uds_relay.py
 COPY --chown=0:0 --chmod=0555 relay_entrypoint.py /usr/local/bin/vibehub-uds-relay
+# CPU 验收目标也在作品容器中编译教学 C++；不影响 GPU builder 的缓存。
+RUN apt-get update && apt-get install -y --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 FROM web
 # Triton 在运行时编译 launcher，保留 C/C++ 编译器；CUDA 编译器仍来自只读宿主挂载。

@@ -1716,6 +1716,51 @@ class DockerCLI:
             raise VibeHubRuntimeError("Docker container labels 无效")
         return labels
 
+    def execute_edu_cpp(self, container_name: str, payload: dict, *, timeout: float = 40) -> dict:
+        """在既有作品容器执行平台固定 C++ 驱动；不启动额外容器。"""
+        if not re.fullmatch(r"numoj-vh-[0-9a-f]{16}-[0-9a-f]{40}", container_name):
+            raise VibeHubRuntimeError("VibeHub C++ 容器名无效")
+        if type(timeout) not in {int, float} or not math.isfinite(timeout) or not 1 <= timeout <= 45:
+            raise VibeHubRuntimeError("VibeHub C++ 时限无效")
+        raw = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
+        if len(raw) > 512 * 1024:
+            raise VibeHubRuntimeError("VibeHub C++ 请求超过限制")
+        source = Path(__file__).with_name("edu_cpp_runner.py").read_text(encoding="utf-8")
+        # 与作品服务的 65532 不同；不同请求使用独立身份和 0700 临时目录。
+        uid = 100_000 + secrets.randbelow(1_900_000_000)
+        command = ["docker", "exec", "-i", "--user", f"{uid}:{uid}",
+                   container_name, "python3", "-I", "-c", source]
+        try:
+            result = self._binary_command_runner(command, timeout=timeout, input_bytes=raw,
+                stdout_limit=2 * 1024 * 1024, stderr_limit=16 * 1024)
+            if result.returncode != 0 or result.stdout_truncated or result.stderr_truncated:
+                raise VibeHubRuntimeError("作品 C++ 执行服务暂时不可用，请稍后重试")
+            try:
+                response = json.loads(result.stdout)
+            except (TypeError, ValueError) as exc:
+                raise VibeHubRuntimeError("作品 C++ 执行响应无效") from exc
+            if not isinstance(response, dict):
+                raise VibeHubRuntimeError("作品 C++ 执行响应无效")
+            return response
+        except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+            raise VibeHubRuntimeError("作品 C++ 执行服务暂时不可用，请稍后重试") from exc
+        finally:
+            # 杀死宿主 docker exec 客户端并不能保证容器内进程退出。即使驱动
+            # 被学生代码或 OOM 杀死，也另起同 UID 的固定清理命令确认没有后台进程。
+            cleaned = False
+            try:
+                cleanup = self._binary_command_runner([*command, "--cleanup"], timeout=5,
+                    input_bytes=b"", stdout_limit=32, stderr_limit=1024)
+                cleaned = cleanup.returncode == 0 and cleanup.stdout.strip() == b"ok" and not (
+                    cleanup.stdout_truncated or cleanup.stderr_truncated)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if not cleaned:
+                # fork 耗尽容器进程名额等情况可能连清理进程也无法启动，直接回收
+                # 既有实例；下一次 acquire 的存活检查会清除状态并重新启动作品。
+                self.remove_container(container_name)
+                raise VibeHubRuntimeError("作品 C++ 执行清理未完成，运行实例已回收，请重试")
+
     def relay_http(
         self,
         container_name: str,

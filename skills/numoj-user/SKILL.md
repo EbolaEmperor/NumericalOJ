@@ -173,6 +173,11 @@ On a network failure, retry with the original command/request ID and identical
 payload. A `409` means reread the state before continuing. The result command
 also accepts `--submission-id <edu_submission_id>` returned by `submit`.
 Omitting `--assignment-id` starts practice and does not count toward homework.
+The dynamic-balance example provides `A`/`B.insert(x)`, `pop()`, `top()`, and
+`size()` (`int`, zero for an empty heap). Its editor supports C++ highlighting.
+The platform executes the code in the existing VibeHub work container and
+verifies the trace; final scores come from rerunning frozen code on hidden inputs.
+
 Creating an edu work requires `kind: "edu"`, `education.protocol:
 "vibehub-edu/1"`, and its internal teaching socket; read the server's developer
 guide for the exact contract before implementing or uploading one.

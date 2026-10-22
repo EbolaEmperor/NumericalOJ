@@ -82,7 +82,12 @@ def test_edu_relay_changes_do_not_enter_the_gpu_build_parent_chain():
     relay_copy = "COPY --chown=0:0 --chmod=0444 uds_relay.py /usr/local/lib/vibehub_uds_relay.py"
     edu_copy = "COPY --chown=0:0 --chmod=0555 relay_entrypoint.py /usr/local/bin/vibehub-uds-relay"
     cpu_operations = [line for line in cpu.splitlines() if line and not line.startswith("#")]
-    assert cpu_operations == [relay_copy, edu_copy]
+    assert cpu_operations[:2] == [relay_copy, edu_copy]
+    # 仅 CPU 成品补齐教学执行器需要的编译器，保持 GPU 安装父链不变。
+    assert cpu_operations[2:] == [
+        "RUN apt-get update && apt-get install -y --no-install-recommends g++ \\",
+        "    && rm -rf /var/lib/apt/lists/*",
+    ]
     assert production.index(edu_copy) > production.index("USER 65532:65532")
     assert production.index(edu_copy) > production.index("COPY --from=gpu-builder")
 

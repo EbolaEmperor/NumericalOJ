@@ -246,7 +246,12 @@ NUMOJ_DEPLOY_PROFILE=test-cpu bash deploy.sh
 CPU 模式跳过 NVIDIA CDI 准备，使用 VibeHub Dockerfile 的 `web-edu` 阶段，保留完整 Web 依赖与
 普通、教学两种 Unix socket relay，不需要宿主 CUDA，也不构建 vLLM/GPU 环境。基础镜像标记
 `com.numericaloj.vibehub.gpu=0`；生产镜像标记为 `1`，运行器拒绝使用 CPU 基础镜像处理 GPU 申请。
-学生 C++ 仍使用普通判题 Docker 沙箱，不在教学作品中编译或执行。
+CPU 教学运行时也附带 C++ 编译器；学生 C++ 由平台通过固定 `docker exec` 驱动在已经启动的
+VibeHub 作品容器中编译及运行，不再启动额外判题容器。每次请求使用随机非服务 UID、私有临时
+目录和匿名 memfd 可执行文件，执行完清理该 UID 的进程与文件，清理失败则回收该作品实例。
+平台继续根据可信输入重放堆操作并核验结果；宿主机不直接执行学生程序，作品不获得 Docker socket。
+早期 CPU 测试镜像没有 C++ 编译器；已固定到这类旧镜像的测试作业，需要管理员从原作品快照
+使用新的 CPU 基础镜像维护重建固定镜像，或为新发布版本布置作业。首次打开不会自动重建镜像。
 测试模式允许缺少稳定判题镜像的机器首次构建完整的 judger、Lean 与 Agent Judge 候选镜像，
 Agent Judge 始终引用同次发布的 Lean 候选标签；它不会使用 lite 镜像替代完整服务。
 首次完整镜像仍可能需要较多磁盘与下载时间。已有稳定镜像时继续遵守构建输入复用与关键缓存门禁；

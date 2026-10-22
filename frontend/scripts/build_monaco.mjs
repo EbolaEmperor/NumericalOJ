@@ -2,6 +2,7 @@ import { copyFile, mkdir, readFile, rm } from "node:fs/promises";
 import { build } from "esbuild";
 
 const outputDirectory = "public/static/vendor/monaco";
+const eduOutputDirectory = "../vibehub_examples/dynamic-balance/static/editor";
 
 const safariClipboardGuard = {
   name: "monaco-safari-clipboard-guard",
@@ -57,6 +58,34 @@ await build({
   format: "esm",
 });
 
+// 教学作品用经典脚本加载同一套编辑器，避免 opaque iframe 的模块 CORS 限制。
+// Worker 内嵌为经典 IIFE，运行时只创建当前 iframe 所有的 Blob URL。
+const eduWorker = await build({
+  ...shared,
+  entryPoints: ["node_modules/monaco-editor/esm/vs/editor/editor.worker.js"],
+  format: "iife",
+  legalComments: "inline",
+  write: false,
+});
+if (eduWorker.outputFiles.length !== 1) {
+  throw new Error("教学编辑器 Worker 必须是自包含脚本");
+}
+await rm(eduOutputDirectory, { recursive: true, force: true });
+await mkdir(eduOutputDirectory, { recursive: true });
+await build({
+  ...shared,
+  entryPoints: ["monaco/edu-editor.js"],
+  outfile: `${eduOutputDirectory}/editor.js`,
+  format: "iife",
+  globalName: "NumOJEduEditor",
+  define: {
+    __NUMOJ_EDU_WORKER_SOURCE__: JSON.stringify(eduWorker.outputFiles[0].text),
+  },
+  loader: {
+    ".ttf": "dataurl",
+  },
+});
+
 await Promise.all([
   copyFile(
     "node_modules/monaco-editor/LICENSE",
@@ -69,5 +98,17 @@ await Promise.all([
   copyFile(
     "node_modules/@leanprover/unicode-input/LICENSE",
     `${outputDirectory}/lean4-unicode-input.LICENSE`,
+  ),
+  copyFile(
+    "node_modules/monaco-editor/LICENSE",
+    `${eduOutputDirectory}/LICENSE`,
+  ),
+  copyFile(
+    "node_modules/monaco-editor/ThirdPartyNotices.txt",
+    `${eduOutputDirectory}/ThirdPartyNotices.txt`,
+  ),
+  copyFile(
+    "node_modules/@leanprover/unicode-input/LICENSE",
+    `${eduOutputDirectory}/lean4-unicode-input.LICENSE`,
   ),
 ]);
