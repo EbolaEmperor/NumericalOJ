@@ -67,6 +67,7 @@ STANDARD_MEMORY = "4g"
 FEATURED_MEMORY = "8g"
 STANDARD_CPUS = "2"
 FEATURED_CPUS = "4"
+EDUCATION_CPUS = "10"
 STANDARD_PIDS = 256
 FEATURED_PIDS = 512
 
@@ -2412,6 +2413,8 @@ class VibeHubRuntimeManager:
         featured: bool,
         storage_key: str,
         gpu_allocation: dict | None = None,
+        *,
+        education: bool = False,
     ) -> str:
         payload = (
             f"{RUNTIME_ABI}\0{project_key}\0{channel}\0{image_id}\0"
@@ -2419,6 +2422,8 @@ class VibeHubRuntimeManager:
         )
         if gpu_allocation:
             payload += "\0gpu:" + json.dumps(gpu_allocation, sort_keys=True)
+        if education:
+            payload += f"\0education-cpus:{EDUCATION_CPUS}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:40]
 
     def _data_volume_name(self, storage_key: str) -> str:
@@ -2440,10 +2445,12 @@ class VibeHubRuntimeManager:
         featured: bool,
         data_volume: str,
         gpu_allocation: dict | None = None,
+        education: bool = False,
     ) -> list[str]:
         if not _DATA_VOLUME_RE.fullmatch(data_volume):
             raise VibeHubRuntimeError("VibeHub data volume 名称无效")
         limits = limits_for(featured)
+        cpus = EDUCATION_CPUS if education else limits.cpus
         name = self._container_name(runtime_id)
         args = [
             "docker", "run", "--detach", "--init",
@@ -2459,11 +2466,9 @@ class VibeHubRuntimeManager:
             "--user", "65532:65532",
             "--memory", limits.memory,
             "--memory-swap", limits.memory,
-            # 直接使用 cgroup period/quota 表达 CPU 上限。``--cpus 4`` 会在
-            # 只有 2 vCPU 的本地 Docker VM 上被 daemon 拒绝；quota=400000
-            # 在较小宿主上自然受物理 CPU 限制，在生产 4+ 核宿主上仍精确封顶 4 核。
+            # cgroup period/quota 兼容较小的本地 Docker VM，实际使用仍受宿主 CPU 限制。
             "--cpu-period", "100000",
-            "--cpu-quota", str(int(float(limits.cpus) * 100000)),
+            "--cpu-quota", str(int(float(cpus) * 100000)),
             "--pids-limit", str(limits.pids),
             "--ulimit", f"nproc={limits.pids}:{limits.pids}",
             "--ulimit", "nofile=1024:1024",
@@ -2596,6 +2601,7 @@ class VibeHubRuntimeManager:
         featured: bool,
         storage_key: str,
         gpu_allocation: dict | None = None,
+        education: bool = False,
         resume: bool = False,
     ) -> dict:
         name = self._container_name(runtime_id)
@@ -2625,6 +2631,7 @@ class VibeHubRuntimeManager:
                     featured=featured,
                     data_volume=data_volume,
                     gpu_allocation=gpu_allocation,
+                    education=education,
                 ))
             self._wait_ready(name)
         except Exception:
@@ -2637,6 +2644,7 @@ class VibeHubRuntimeManager:
             "image_ref": image.reference,
             "image_id": image.image_id,
             "featured": bool(featured),
+            "education": education,
             "container_name": name,
             "inflight": {},
         }
@@ -3010,9 +3018,12 @@ class VibeHubRuntimeManager:
         package_digest: str,
         storage_key: str,
         gpu_allocation: dict | None = None,
+        education: bool = False,
     ) -> RuntimeLease:
         """取得短期租约；只启动保存时已经构建好的受管镜像。"""
 
+        if type(education) is not bool:
+            raise ValueError("education 必须为布尔值")
         if gpu_allocation:
             base_image = self.docker.inspect_image("numericaloj-vibehub-runtime:1")
             if base_image.labels.get("com.numericaloj.vibehub.gpu") == "0":
@@ -3054,6 +3065,7 @@ class VibeHubRuntimeManager:
             bool(featured),
             selected_storage_key,
             selected_gpu,
+            education=education,
         )
         reservation_id = ""
         ready_probe = None
@@ -3104,6 +3116,7 @@ class VibeHubRuntimeManager:
                     "image_ref": image.reference,
                     "image_id": image.image_id,
                     "featured": bool(featured),
+                    "education": education,
                     "container_name": self._container_name(runtime_id),
                     "inflight": {},
                 }
@@ -3142,6 +3155,7 @@ class VibeHubRuntimeManager:
                 package_digest=expected_digest,
                 storage_key=selected_storage_key,
                 gpu_allocation=selected_gpu,
+                education=education,
             )
 
         try:
@@ -3153,6 +3167,7 @@ class VibeHubRuntimeManager:
                 featured=bool(featured),
                 storage_key=selected_storage_key,
                 gpu_allocation=selected_gpu,
+                education=education,
                 resume=resume,
             )
         except Exception:
@@ -3262,10 +3277,12 @@ class VibeHubRuntimeManager:
             state["leases"][digest] = lease
             return self._lease_from_state(token, lease, runtime)
 
-    def bind_edu_attempt(self, token: str, attempt_id: str) -> None:
+    def bind_edu_attempt(self, token: str, attempt_id: str, *, expected_attempt_id: str | None = None) -> None:
         """仅由已鉴权的教育启动流程绑定匿名作答。"""
         with self._locked_state() as state:
             digest, lease, _runtime = self._lookup_lease(state, token)
+            if expected_attempt_id is not None and lease.get("edu_attempt_id") not in {expected_attempt_id, attempt_id}:
+                raise VibeHubLeaseError("运行会话的作答绑定已变化，请刷新后重试")
             lease["edu_attempt_id"] = str(attempt_id)
             state["leases"][digest] = lease
 

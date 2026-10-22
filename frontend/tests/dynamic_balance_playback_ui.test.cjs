@@ -10,8 +10,8 @@ const SOURCE_A = 'double step(int x) { A.insert(x); return A.top(); } // saved A
 const SOURCE_B = 'double step(int x) { B.insert(x); return B.top(); } // other tab B';
 const operation = (heap, type, value) => ({ heap, type, value });
 
-function executionFixture() {
-  return { compiled: true, passed: 3, total: 5, rounds: [
+function executionFixture(shift = 0) {
+  const execution = { compiled: true, passed: 3, total: 5, rounds: [
     { x: 4, expected: 4, returned: 4, passed: true, left_heap: [4], right_heap: [],
       operations: [operation('A', 'insert', 4), operation('A', 'top', 4)] },
     { x: 9, expected: 6.5, returned: 6.5, passed: true, left_heap: [4], right_heap: [9],
@@ -23,6 +23,15 @@ function executionFixture() {
     { x: 8, expected: 7, returned: 7, passed: true, left_heap: [7, 2, 4], right_heap: [8, 9],
       operations: [operation('B', 'insert', 8), operation('B', 'pop', 7), operation('A', 'insert', 7)] },
   ] };
+  if (shift) for (const round of execution.rounds) {
+    round.x += shift;
+    round.expected += shift;
+    round.returned += shift;
+    round.left_heap = round.left_heap.map(value => value + shift);
+    round.right_heap = round.right_heap.map(value => value + shift);
+    round.operations.forEach(operation => { operation.value += shift; });
+  }
+  return execution;
 }
 
 async function flush() {
@@ -168,7 +177,8 @@ function installGeometry(window) {
   };
 }
 
-async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', initialExecution = false } = {}) {
+async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', initialExecution = false,
+  initialStatus = 'active', deferInitialResult = false, insecureCrypto = false } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => errors.push(error));
@@ -182,14 +192,24 @@ async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', ini
   const animations = installAnimations(window, clock);
   const calls = [], editorValues = [], renders = [], built = [];
   const starter = element('starterSource').textContent.trim() + '\n';
-  const server = { seq: 1, source: SOURCE_A, status: 'active', execution: initialExecution ? executionFixture() : null };
+  const server = { attempt_id: 'att_1', seq: 1, source: SOURCE_A, status: initialStatus,
+    inputs: [4, 9, 7, 2, 8], execution: initialExecution ? executionFixture() : null,
+    attemptCount: 1, submissions: [], continuations: new Map(), continueFailures: 0,
+    resultMode: 'graded', deferNextResult: deferInitialResult, pendingResults: [],
+    deferNextAction: false, pendingActions: [] };
+  if (initialStatus !== 'active') server.submissions.push(Object.freeze({ id: 11,
+    attempt_id: server.attempt_id, source: server.source, seq: server.seq }));
+  let uuidCounter = 0;
+  Object.defineProperty(window.crypto, 'randomUUID', {
+    value: insecureCrypto ? undefined : () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
+  });
   let editorValue = '', onRun;
   const editor = { getValue: () => editorValue,
     setValue: value => { editorValue = value; editorValues.push(value); }, focus() {},
     updateOptions: options => { editor.readOnly = options.readOnly; } };
   window.NumOJEduEditor = { create: (_host, options) => { onRun = options.onRun; return editor; } };
-  const snapshot = () => ({ success: true, seq: server.seq, status: server.status,
-    view: { source: server.source, initial_source: starter, inputs: [4, 9, 7, 2, 8], execution: server.execution } });
+  const snapshot = () => ({ success: true, attempt_id: server.attempt_id, seq: server.seq, status: server.status,
+    view: { source: server.source, initial_source: starter, inputs: server.inputs, execution: server.execution } });
   const response = (status, data) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(data) });
   window.fetch = async (url, options) => {
     assert.equal(editorValues[0], starter, '首次请求之前就应显示默认代码');
@@ -198,20 +218,66 @@ async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', ini
     calls.push({ operation, payload });
     if (operation === 'state') return response(200, snapshot());
     if (operation === 'actions') {
-      if (payload.expected_seq !== server.seq) return response(409, { success: false, message: '操作并发冲突' });
+      if (payload.expected_seq !== server.seq || server.status !== 'active') return response(409, { success: false, message: '操作并发冲突' });
       server.source = payload.action.source;
       server.seq++;
-      server.execution = executionFixture();
+      server.execution = executionFixture(10 * (server.attemptCount - 1));
+      if (server.deferNextAction) {
+        server.deferNextAction = false;
+        const captured = snapshot();
+        return new Promise(resolve => server.pendingActions.push({ attempt_id: server.attempt_id,
+          resolve: () => resolve(response(200, captured)) }));
+      }
       return response(200, snapshot());
+    }
+    if (operation === 'continue') {
+      assert.deepEqual(Object.keys(payload).sort(), ['expected_attempt_id', 'request_id']);
+      assert.match(payload.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      const previous = server.continuations.get(payload.request_id);
+      if (previous) {
+        assert.equal(payload.expected_attempt_id, previous.expected_attempt_id);
+        return response(200, previous.state);
+      }
+      assert.equal(payload.expected_attempt_id, server.attempt_id);
+      assert.ok(['graded', 'error'].includes(server.status), '评分完成或失败后才允许继续');
+      server.attempt_id = `att_${++server.attemptCount}`;
+      server.seq = 0;
+      server.status = 'active';
+      server.source = starter;
+      server.inputs = [4, 9, 7, 2, 8].map(value => value + 10 * (server.attemptCount - 1));
+      server.execution = null;
+      const state = structuredClone(snapshot());
+      server.continuations.set(payload.request_id, { expected_attempt_id: payload.expected_attempt_id, state });
+      if (server.continueFailures > 0) {
+        server.continueFailures--;
+        throw new TypeError('Failed to fetch after continue committed');
+      }
+      return response(200, state);
     }
     if (operation === 'submit') {
       assert.equal(payload.expected_seq, server.seq);
-      assert.equal(server.source, SOURCE_A);
+      let frozen = server.submissions.find(submission => submission.attempt_id === server.attempt_id);
+      if (!frozen) {
+        frozen = Object.freeze({ id: 11 + server.submissions.length, attempt_id: server.attempt_id,
+          source: server.source, seq: server.seq });
+        server.submissions.push(frozen);
+      }
       server.status = 'grading';
-      return response(200, { success: true, submission_id: 11, status: 'grading' });
+      return response(200, { success: true, attempt_id: server.attempt_id, submission_id: frozen.id, status: 'grading' });
     }
-    if (operation === 'result') return response(200, { success: true, status: 'graded',
-      result: { score_bp: 10000, verdict: 'passed', feedback: '已评分' } });
+    if (operation === 'result') {
+      const attempt_id = server.attempt_id;
+      const submission = server.submissions.find(submission => submission.attempt_id === attempt_id);
+      const result = { success: true, attempt_id, submission_id: submission?.id, status: server.resultMode,
+        ...(server.resultMode === 'graded' ? { result: { score_bp: 10000, verdict: 'passed', feedback: '已评分' } } : {}) };
+      if (['graded', 'error'].includes(server.resultMode)) server.status = server.resultMode;
+      if (server.deferNextResult) {
+        server.deferNextResult = false;
+        return new Promise(resolve => server.pendingResults.push({ attempt_id, submission_id: submission?.id,
+          resolve: (overrides = {}) => resolve(response(200, { ...result, ...overrides })) }));
+      }
+      return response(200, result);
+    }
     throw new Error('未预期的请求 ' + operation);
   };
   window.eval(fs.readFileSync(path.join(directory, 'playback.js'), 'utf8'));
@@ -392,5 +458,218 @@ test('online saved source wins and a 409 keeps editor A before saving it again f
   assert.equal(subsequent[1].payload.expected_seq, 3);
   assert.equal(ui.server.source, SOURCE_A);
   assert.equal(ui.element('resultScore').textContent, '100 分');
+  await ui.clock.drain();
+});
+
+test('a graded submission stays immutable while the editor can run and submit a new draft', async t => {
+  const ui = await boot(t, { initialExecution: true });
+  await ui.click('submitButton');
+  assert.equal(ui.server.submissions.length, 1);
+  const original = structuredClone(ui.server.submissions[0]);
+  assert.equal(original.source, SOURCE_A);
+  assert.equal(ui.editor.readOnly, false);
+  assert.equal(ui.element('runButton').disabled, false);
+  assert.equal(ui.element('submitButton').disabled, false);
+  ui.editor.setValue(SOURCE_B);
+  const before = ui.calls.length;
+  await ui.click('runButton');
+  assert.deepEqual(ui.calls.slice(before).map(call => call.operation), ['continue', 'actions']);
+  assert.equal(ui.calls[before].payload.expected_attempt_id, original.attempt_id);
+  assert.equal(ui.calls[before + 1].payload.expected_seq, 0);
+  assert.equal(ui.calls[before + 1].payload.action.source, SOURCE_B);
+  assert.equal(ui.editor.getValue(), SOURCE_B, '新 start 的初始代码不能覆盖当前草稿');
+  assert.equal(ui.server.attempt_id, 'att_2');
+  assert.equal(ui.server.inputs[0], 14);
+  assert.equal(ui.server.seq, 1);
+  assert.equal(ui.server.source, SOURCE_B);
+  assert.equal(ui.element('resultCard').hidden, true);
+  const beforeSubmit = ui.calls.length;
+  await ui.click('submitButton');
+  assert.deepEqual(ui.calls.slice(beforeSubmit).map(call => call.operation), ['submit', 'result']);
+  assert.equal(ui.server.submissions.length, 2);
+  assert.deepEqual(ui.server.submissions[0], original);
+  assert.equal(ui.server.submissions[1].source, SOURCE_B);
+  assert.equal(ui.server.submissions[1].attempt_id, 'att_2');
+  assert.equal(ui.server.submissions[1].seq, 1, '新作答必须先保存一次 run_code 才提交');
+  assert.equal(ui.editor.readOnly, false);
+  await ui.clock.drain();
+});
+
+for (const terminal of ['graded', 'error']) test(`grading permits editing but blocks another attempt until ${terminal}`, async t => {
+  const ui = await boot(t, { initialExecution: true });
+  ui.server.resultMode = 'grading';
+  await ui.click('submitButton');
+  const original = structuredClone(ui.server.submissions[0]);
+  assert.equal(ui.editor.readOnly, false);
+  assert.equal(ui.element('resetButton').disabled, false);
+  assert.equal(ui.element('runButton').disabled, true);
+  assert.equal(ui.element('submitButton').disabled, true);
+  ui.editor.setValue(SOURCE_B);
+  const beforeBlockedClicks = ui.calls.length;
+  ui.element('runButton').dispatchEvent(new ui.window.Event('click'));
+  ui.element('submitButton').dispatchEvent(new ui.window.Event('click'));
+  await ui.onRun();
+  await flush();
+  assert.equal(ui.calls.length, beforeBlockedClicks, '未完成评分时事件或快捷键也不能绕过等待');
+  assert.equal(ui.server.attemptCount, 1);
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  assert.deepEqual(ui.server.submissions[0], original);
+  ui.server.resultMode = terminal;
+  await ui.clock.advance(2000);
+  assert.equal(ui.element('runButton').disabled, false);
+  assert.equal(ui.element('submitButton').disabled, false);
+  assert.equal(ui.editor.readOnly, false);
+  await ui.click('runButton');
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  assert.equal(ui.server.attempt_id, 'att_2');
+  assert.equal(ui.server.status, 'active');
+  assert.deepEqual(ui.server.submissions[0], original);
+  const resultRequests = ui.calls.filter(call => call.operation === 'result').length;
+  await ui.clock.drain();
+  assert.equal(ui.calls.filter(call => call.operation === 'result').length, resultRequests,
+    '继续新作答后不能留下旧作答的定时轮询');
+  assert.equal(ui.editor.readOnly, false);
+  assert.equal(ui.element('submitButton').disabled, false);
+});
+
+test('a submitted state stays editable while polling but cannot continue before its terminal result', async t => {
+  const ui = await boot(t, { initialExecution: true, initialStatus: 'submitted', deferInitialResult: true });
+  assert.equal(ui.editor.readOnly, false);
+  assert.equal(ui.element('runButton').disabled, true);
+  assert.equal(ui.element('submitButton').disabled, true);
+  ui.editor.setValue(SOURCE_B);
+  const before = ui.calls.length;
+  ui.element('runButton').dispatchEvent(new ui.window.Event('click'));
+  ui.element('submitButton').dispatchEvent(new ui.window.Event('click'));
+  await ui.onRun();
+  await flush();
+  assert.equal(ui.calls.length, before);
+  assert.equal(ui.server.attemptCount, 1);
+  ui.server.pendingResults[0].resolve();
+  await flush();
+  assert.equal(ui.element('runButton').disabled, false);
+  assert.equal(ui.element('submitButton').disabled, false);
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  await ui.click('runButton');
+  assert.equal(ui.server.attempt_id, 'att_2');
+  assert.equal(ui.server.source, SOURCE_B);
+  await ui.clock.drain();
+});
+
+test('a delayed old grading result cannot mark a new active draft as graded or replace its UI', async t => {
+  // 初始 state 已确认 graded，允许继续；随后查询旧结果的响应仍可能迟到。
+  const ui = await boot(t, { initialExecution: true, initialStatus: 'graded', deferInitialResult: true });
+  assert.equal(ui.server.pendingResults.length, 1);
+  const pending = ui.server.pendingResults[0];
+  assert.equal(pending.attempt_id, 'att_1');
+  assert.equal(ui.editor.readOnly, false, '等待旧评分响应时也能改草稿');
+  assert.equal(ui.element('runButton').disabled, false);
+  ui.editor.setValue(SOURCE_B);
+  await ui.click('runButton');
+  assert.equal(ui.server.attempt_id, 'att_2');
+  assert.equal(ui.server.source, SOURCE_B);
+  pending.resolve({ status: 'graded', result: { score_bp: 2500, verdict: 'failed', feedback: '旧提交结果' } });
+  await flush();
+  assert.equal(ui.element('resultCard').hidden, true, '旧轮询回包不能显示为新草稿的结果');
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  assert.equal(ui.editor.readOnly, false);
+  assert.equal(ui.element('runButton').disabled, false);
+  const before = ui.calls.length;
+  const nextDraft = SOURCE_B + '\n// still editing the same active attempt';
+  ui.editor.setValue(nextDraft);
+  await ui.click('runButton');
+  assert.deepEqual(ui.calls.slice(before).map(call => call.operation), ['actions'],
+    '旧结果不能把新 active 作答改为 graded 并触发另一次 continue');
+  assert.equal(ui.server.attemptCount, 2);
+  assert.equal(ui.server.source, nextDraft);
+  assert.equal(ui.server.submissions[0].source, SOURCE_A);
+  await ui.clock.drain();
+});
+
+test('retry after a committed continuation loses its response reuses both request and expected attempt IDs', async t => {
+  const ui = await boot(t, { initialExecution: true });
+  await ui.click('submitButton');
+  ui.editor.setValue(SOURCE_B);
+  ui.server.continueFailures = 1;
+  const before = ui.calls.length;
+  await ui.click('runButton');
+  assert.equal(ui.server.attemptCount, 2, '服务端已创建新作答，只是响应丢失');
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  assert.equal(ui.editor.readOnly, false);
+  assert.deepEqual(ui.calls.slice(before).map(call => call.operation), ['continue']);
+  const request = structuredClone(ui.calls[before].payload);
+  assert.equal(request.expected_attempt_id, 'att_1');
+  await ui.click('runButton');
+  const continuations = ui.calls.slice(before).filter(call => call.operation === 'continue');
+  assert.equal(continuations.length, 2);
+  assert.deepEqual(continuations[1].payload, request, '网络失败后不能生成新 request_id 或改为新 expected_attempt_id');
+  assert.deepEqual(ui.calls.slice(before).map(call => call.operation), ['continue', 'continue', 'actions']);
+  assert.equal(ui.server.attemptCount, 2);
+  assert.equal(ui.server.seq, 1);
+  assert.equal(ui.server.source, SOURCE_B);
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  assert.equal(ui.server.submissions.length, 1);
+  assert.equal(ui.server.submissions[0].source, SOURCE_A);
+  await ui.clock.drain();
+});
+
+test('insecure HTTP without crypto.randomUUID still sends a valid UUID4 and continues a graded attempt', async t => {
+  const ui = await boot(t, { url: 'http://example.test/vibehub/runtime/test/',
+    initialExecution: true, initialStatus: 'graded', insecureCrypto: true });
+  assert.equal(ui.window.location.protocol, 'http:');
+  assert.equal(ui.window.crypto.randomUUID, undefined);
+  assert.equal(typeof ui.window.crypto.getRandomValues, 'function');
+  ui.editor.setValue(SOURCE_B);
+  const before = ui.calls.length;
+  await ui.click('runButton');
+  const calls = ui.calls.slice(before);
+  assert.deepEqual(calls.map(call => call.operation), ['continue', 'actions']);
+  assert.match(calls[0].payload.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.equal(calls[0].payload.expected_attempt_id, 'att_1');
+  assert.equal(ui.server.attempt_id, 'att_2');
+  assert.equal(ui.server.seq, 1);
+  assert.equal(ui.server.source, SOURCE_B);
+  assert.equal(ui.editor.getValue(), SOURCE_B);
+  await ui.clock.drain();
+});
+
+test('resubmitting unchanged frozen source queries or retries the same immutable submission', async t => {
+  const ui = await boot(t, { initialExecution: true });
+  await ui.click('submitButton');
+  const original = structuredClone(ui.server.submissions[0]);
+  const before = ui.calls.length;
+  await ui.click('submitButton');
+  const subsequent = ui.calls.slice(before);
+  assert.ok(subsequent.some(call => call.operation === 'result'));
+  assert.ok(subsequent.every(call => ['submit', 'result'].includes(call.operation)));
+  assert.equal(ui.server.attemptCount, 1);
+  assert.equal(ui.server.submissions.length, 1);
+  assert.deepEqual(ui.server.submissions[0], original);
+  assert.equal(ui.editor.readOnly, false);
+  await ui.clock.drain();
+});
+
+test('editing while compilation is pending preserves the captured submission source and the next draft', async t => {
+  const ui = await boot(t);
+  ui.server.deferNextAction = true;
+  await ui.click('submitButton');
+  assert.equal(ui.server.pendingActions.length, 1);
+  assert.equal(ui.element('runButton').disabled, true, '忙时按钮防止并发请求');
+  assert.equal(ui.editor.readOnly, false, '编译期间仍可编辑下一份草稿');
+  ui.editor.setValue(SOURCE_B);
+  ui.server.pendingActions[0].resolve();
+  await flush();
+  assert.equal(ui.server.submissions.length, 1);
+  assert.equal(ui.server.submissions[0].source, SOURCE_A, '本次提交必须使用点击时捕获的源码');
+  assert.equal(ui.editor.getValue(), SOURCE_B, '迟到的编译响应不能覆盖下一份草稿');
+  assert.equal(ui.editor.readOnly, false);
+  const original = structuredClone(ui.server.submissions[0]);
+  const before = ui.calls.length;
+  await ui.click('submitButton');
+  assert.deepEqual(ui.calls.slice(before).map(call => call.operation), ['continue', 'actions', 'submit', 'result']);
+  assert.equal(ui.server.submissions.length, 2);
+  assert.deepEqual(ui.server.submissions[0], original);
+  assert.equal(ui.server.submissions[1].source, SOURCE_B);
+  assert.equal(ui.server.submissions[1].attempt_id, 'att_2');
   await ui.clock.drain();
 });

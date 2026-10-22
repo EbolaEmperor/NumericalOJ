@@ -2,6 +2,7 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   let code;
+  let attemptId = '';
   let seq = 0;
   let status = 'loading';
   let view = {};
@@ -15,11 +16,22 @@
   let speed = 1;
   let timer = null;
   let pollTimer = null;
+  let resultGeneration = 0;
+  let continuationRequest = null;
   let transitioning = false;
   let playbackGeneration = 0;
   const speeds = [1, 2, 4, 0.5];
   const base = new URL('./', window.location.href);
-  const uuid = () => globalThis.crypto?.randomUUID?.() || `cmd-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const uuid = () => {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+    else bytes.forEach((_value, index) => { bytes[index] = Math.floor(Math.random() * 256); });
+    bytes[6] = (bytes[6] & 15) | 64;
+    bytes[8] = (bytes[8] & 63) | 128;
+    const text = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+    return `${text.slice(0, 8)}-${text.slice(8, 12)}-${text.slice(12, 16)}-${text.slice(16, 20)}-${text.slice(20)}`;
+  };
   const endpoint = (name) => new URL(`_edu/v1/${name}`, base).href;
   const heapMotion = window.NumOJHeapMotion.create({
     heapA: $('heapA'), heapB: $('heapB'), conveyor: $('conveyor'),
@@ -50,13 +62,13 @@
   }
 
   function updateButtons() {
-    const active = status === 'active';
-    const editable = active || status === 'preview';
-    $('runButton').disabled = busy || !active;
-    $('submitButton').disabled = busy || !['active', 'submitted', 'error'].includes(status);
-    $('submitButton').textContent = ['submitted', 'error'].includes(status) ? '重试评分 ↗' : '提交作业 ↗';
-    $('resetButton').disabled = busy || !editable;
-    code?.updateOptions({ readOnly: busy || !editable, domReadOnly: busy || !editable });
+    const canAttempt = ['active', 'graded', 'error'].includes(status);
+    const editable = canAttempt || ['preview', 'submitted', 'grading'].includes(status);
+    $('runButton').disabled = busy || !canAttempt;
+    $('submitButton').disabled = busy || !canAttempt;
+    $('submitButton').textContent = '提交作业 ↗';
+    $('resetButton').disabled = !editable;
+    code?.updateOptions({ readOnly: !editable, domReadOnly: !editable });
     $('runButton').innerHTML = busy ? '<span>◌</span> 正在执行' : '<span>▶</span> 试运行';
     $('playButton').disabled = busy || !frames.length;
     $('nextButton').disabled = busy || !frames.length || position >= frames.length - 1 || Boolean(frames[position]?.error);
@@ -66,6 +78,9 @@
 
   async function loadState(restoreCode = true) {
     const data = await api('state');
+    stopResultPolling();
+    attemptId = data.attempt_id || attemptId;
+    if (continuationRequest?.expected_attempt_id !== attemptId) continuationRequest = null;
     seq = data.seq ?? 0;
     status = data.status || 'active';
     view = data.view || data.data?.view || {};
@@ -78,7 +93,7 @@
     if (view.execution?.rounds?.length) preparePlayback(view.execution, false);
     else renderFrame({ left: [], right: [], round: 0, message: '等待试运行' });
     updateButtons();
-    if (['submitted', 'grading', 'graded', 'error'].includes(status)) pollResult();
+    if (['submitted', 'grading', 'graded', 'error'].includes(status)) void pollResult(resultGeneration);
     return data;
   }
 
@@ -149,8 +164,39 @@
     if (autoplay) play();
   }
 
-  async function runCode(autoplay = true) {
-    const source = code.getValue();
+  function stopResultPolling() {
+    resultGeneration++;
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  async function ensureActiveAttempt() {
+    if (status === 'active') return;
+    if (!['graded', 'error'].includes(status)) throw new Error('上一次作答仍在评测，请等待完成后再试。');
+    if (!attemptId) throw new Error('作答信息尚未加载，请刷新页面重试。');
+    if (!continuationRequest || continuationRequest.expected_attempt_id !== attemptId) {
+      continuationRequest = { request_id: uuid(), expected_attempt_id: attemptId };
+    }
+    stopResultPolling();
+    const data = await api('continue', continuationRequest);
+    attemptId = data.attempt_id;
+    seq = data.seq;
+    status = data.status;
+    view = data.view;
+    continuationRequest = null;
+    lastRunSource = '';
+    $('resultCard').hidden = true;
+    frames = [];
+    restartPlayback();
+    renderFrame({ left: [], right: [], round: 0 }, false);
+    if (status !== 'active') {
+      if (['submitted', 'grading', 'graded', 'error'].includes(status)) void pollResult(resultGeneration);
+      throw new Error('作答状态已变化，请重试。');
+    }
+  }
+
+  async function runCode(autoplay = true, source = code.getValue()) {
+    await ensureActiveAttempt();
     const data = await api('actions', { command_id: uuid(), expected_seq: seq, action: { type: 'run_code', source } });
     seq = data.seq;
     view = data.view;
@@ -176,16 +222,19 @@
   }
 
   async function performRun() {
-    if (busy || status !== 'active') return;
+    if (busy || !['active', 'graded', 'error'].includes(status)) return;
     busy = true; stopPlayback(); updateButtons(); message('正在编译并运行 C++ 代码…', true);
     try { await runCode(); } catch (error) { message(error.message); }
     finally { busy = false; updateButtons(); }
   }
 
-  async function pollResult() {
+  async function pollResult(generation = resultGeneration) {
+    if (generation !== resultGeneration) return;
     clearTimeout(pollTimer);
+    pollTimer = null;
     try {
       const data = await api('result');
+      if (generation !== resultGeneration) return;
       const result = data.result || data.grade || data;
       const current = data.status || status;
       status = current;
@@ -202,24 +251,27 @@
       } else {
         $('resultTitle').textContent = '作业已提交，正在评分';
         $('resultFeedback').textContent = '';
-        pollTimer = setTimeout(pollResult, 2000);
+        pollTimer = setTimeout(() => pollResult(generation), 2000);
       }
       updateButtons();
     } catch (error) {
+      if (generation !== resultGeneration) return;
       message(`结果查询暂时失败：${error.message}`);
-      pollTimer = setTimeout(pollResult, 4000);
+      pollTimer = setTimeout(() => pollResult(generation), 4000);
     }
   }
 
   async function submit() {
-    if (busy || !['active', 'submitted', 'error'].includes(status)) return;
+    if (busy || !['active', 'graded', 'error'].includes(status)) return;
+    const source = code.getValue();
     busy = true; stopPlayback(); updateButtons(); message('正在提交…', true);
+    stopResultPolling();
     try {
-      if (status === 'active' && code.getValue() !== lastRunSource) await runCode(false);
+      if (source !== lastRunSource) await runCode(false, source);
       const data = await api('submit', { request_id: uuid(), expected_seq: seq });
       status = data.status || 'grading';
       message('作业已提交。', true);
-      await pollResult();
+      await pollResult(resultGeneration);
     } catch (error) { message(error.message); }
     finally { busy = false; updateButtons(); }
   }

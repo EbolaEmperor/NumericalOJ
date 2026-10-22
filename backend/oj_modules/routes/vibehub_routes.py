@@ -149,6 +149,7 @@ def runtime_acquire(slug):
         lease = get_runtime_manager().acquire(
             project_key,
             featured=bool(package.get("featured")),
+            education=package.get("manifest", {}).get("kind") == "edu",
             channel=channel,
             base_path="/vibehub/runtime",
             package_digest=package["package_sha256"],
@@ -329,12 +330,15 @@ def runtime_proxy(token, path):
                 payload = edu.attempt_state(attempt_id)
             elif request.method == "GET" and operation == "result":
                 payload = edu.submission_result(attempt_id=attempt_id)
-            elif request.method == "POST" and operation in {"actions", "submit"}:
+            elif request.method == "POST" and operation in {"actions", "submit", "continue"}:
                 request.max_content_length = 128 * 1024
                 if request.content_length and request.content_length > 128 * 1024:
                     raise services.VibeHubError("请求过大", status_code=413)
                 body = request.get_json(silent=True)
-                payload = edu.apply_action(attempt_id, body) if operation == "actions" else edu.submit(attempt_id, body)
+                if operation == "continue":
+                    payload = edu.continue_attempt(token, body)
+                else:
+                    payload = edu.apply_action(attempt_id, body) if operation == "actions" else edu.submit(attempt_id, body)
             else:
                 return Response("unknown education endpoint", status=404)
             response = jsonify(success=True, **payload)

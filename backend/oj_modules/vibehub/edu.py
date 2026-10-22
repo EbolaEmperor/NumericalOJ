@@ -6,6 +6,7 @@ from copy import deepcopy
 import json
 import re
 import secrets
+from uuid import UUID
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
 from backend.oj_modules.vibehub import services, storage
@@ -18,6 +19,7 @@ MAX_ACTIONS = 200
 MAX_INTERNAL_EXECUTIONS = 4
 INTERNAL_TIMEOUT_SECONDS = 45
 EXECUTION_TIMEOUT_SECONDS = 40
+MAX_CONCURRENT_EXECUTIONS = 10
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 _grade_task = None
 
@@ -150,6 +152,7 @@ def _lease(version):
     finally:
         conn.close()
     return manager.acquire(key, channel="public", featured=bool(version["is_featured"]),
+        education=True,
         base_path="/vibehub/runtime", package_digest=version["package_sha256"],
         storage_key=f"project-{version['project_id']}-public")
 
@@ -205,7 +208,7 @@ def _execute_process(lease, context, execute):
             if int((cursor.fetchone() or {}).get("acquired") or 0) != 1:
                 raise services.VibeHubError("本次作答正在运行，请等待结果", status_code=429)
             acquired.append(owner_lock)
-            for index in range(4):
+            for index in range(MAX_CONCURRENT_EXECUTIONS):
                 slot = f"edu:process-slot:{index}"
                 cursor.execute("SELECT GET_LOCK(%s,0) AS acquired", (slot,))
                 if int((cursor.fetchone() or {}).get("acquired") or 0) == 1:
@@ -249,6 +252,14 @@ def launch(slug, actor, assignment_id=None, channel="public"):
                 AND assignment_id <=> %s AND version_id=%s AND status='active' ORDER BY created_at DESC LIMIT 1""",
                 (user_id, assignment_id, version["id"]))
             attempt = cursor.fetchone()
+            if attempt is None:
+                # 刷新或另开页面仍回到未评完的作答，不能借重新 launch 绕过继续作答门禁。
+                cursor.execute("""SELECT a.* FROM vibehub_edu_attempts a
+                    JOIN vibehub_edu_submissions s ON s.attempt_id=a.id
+                    WHERE a.user_id=%s AND a.assignment_id <=> %s AND a.version_id=%s
+                    AND s.status IN ('submitted','grading') ORDER BY s.created_at DESC,s.id DESC LIMIT 1""",
+                    (user_id, assignment_id, version["id"]))
+                attempt = cursor.fetchone()
         conn.rollback()
     finally:
         conn.close()
@@ -308,6 +319,99 @@ def attempt_state(attempt_id, actor=None):
             return {"attempt_id": row["id"], "assignment_id": row["assignment_id"], "seq": int(row["seq"]), "status": row["status"], "view": _load(row["view_json"])}
     finally:
         conn.close()
+
+
+def continue_attempt(token, payload, actor=None):
+    """以持久请求编号继续作答；旧提交不变，新操作进入同版本的新 active 作答。"""
+    if not isinstance(payload, dict) or set(payload) != {"request_id", "expected_attempt_id"}:
+        raise services.VibeHubError("继续作答请求字段无效")
+    expected_id = _id(payload["expected_attempt_id"])
+    try:
+        raw_request_id = payload["request_id"]
+        if not isinstance(raw_request_id, str) or len(raw_request_id) > 64:
+            raise ValueError("无效请求编号")
+        request_id = UUID(raw_request_id)
+    except (ValueError, AttributeError) as exc:
+        raise services.VibeHubError("继续作答请求编号必须为 UUID") from exc
+    target_id = "att_" + request_id.hex
+    request_id = str(request_id)
+    if not isinstance(token, str) or not token:
+        raise services.VibeHubError("运行租约无效")
+    manager = get_runtime_manager()
+    bound_id = manager.edu_attempt_for_token(token)
+    if bound_id not in {expected_id, target_id}:
+        raise services.VibeHubError("运行会话的作答已变化，请刷新后重试", status_code=409)
+    conn = get_db_connection()
+    lock = None
+    locked = False
+    try:
+        with conn.cursor() as cursor:
+            source = _get_attempt(cursor, expected_id, actor)
+            scope = (int(source["user_id"]), source["assignment_id"],
+                int(source["project_id"]), int(source["version_id"]))
+            # 名称最多 62 字节，无需哈希或新增索引；同一用户、作业和固定版本的请求串行。
+            lock = f"edu:again:{scope[0]}:{scope[1] or 0}:{scope[3]}"
+            conn.rollback()
+            cursor.execute("SELECT GET_LOCK(%s,10) AS acquired", (lock,))
+            if int((cursor.fetchone() or {}).get("acquired") or 0) != 1:
+                raise services.VibeHubError("作答正在准备，请稍后重试", status_code=429)
+            locked = True
+            current_id = manager.edu_attempt_for_token(token)
+            if current_id not in {expected_id, target_id}:
+                raise services.VibeHubError("运行会话的作答已变化，请刷新后重试", status_code=409)
+            current = _get_attempt(cursor, current_id, actor, for_update=True)
+            current_scope = (int(current["user_id"]), current["assignment_id"],
+                int(current["project_id"]), int(current["version_id"]))
+            if current_scope != scope:
+                raise services.VibeHubPermissionError("运行租约与原作答不匹配")
+            source = current if current_id == expected_id else _get_attempt(cursor, expected_id, actor, for_update=True)
+            lease = manager.heartbeat(token, project_key=f"edu:{scope[2]}:v{scope[3]}", channel="public")
+            cursor.execute("SELECT * FROM vibehub_edu_attempts WHERE id=%s FOR UPDATE", (target_id,))
+            attempt = cursor.fetchone()
+            if attempt is not None:
+                context = _load(attempt["context_json"], {})
+                target_scope = (int(attempt["user_id"]), attempt["assignment_id"],
+                    int(attempt["project_id"]), int(attempt["version_id"]))
+                if target_scope != scope or context.get("continued_from") != expected_id or context.get("continue_request_id") != request_id:
+                    raise services.VibeHubPermissionError("继续作答请求编号已用于其他作答")
+            else:
+                if current_id != expected_id:
+                    raise services.VibeHubError("运行会话的作答已变化，请刷新后重试", status_code=409)
+                if source["status"] not in {"submitted", "graded"}:
+                    raise services.VibeHubError("当前作答尚未提交，请继续编辑", status_code=409)
+                # 不锁 submission，避免与评分流程的 submission -> attempt 加锁顺序相反。
+                cursor.execute("SELECT status FROM vibehub_edu_submissions WHERE attempt_id=%s", (expected_id,))
+                submission = cursor.fetchone()
+                if not submission or submission["status"] not in {"graded", "error"}:
+                    raise services.VibeHubError("上一次作答仍在评测，请等待完成后再试", status_code=409)
+                _version(cursor, scope[2], scope[3])
+                context = {"attempt_id": target_id, "assignment_id": scope[1],
+                    "project_version_id": scope[3], "rubric_version": 1,
+                    "challenge_seed": secrets.token_urlsafe(24),
+                    "parameters": deepcopy(_load(source["context_json"], {}).get("parameters", {})),
+                    "continued_from": expected_id, "continue_request_id": request_id}
+                initial = _transition(_internal(lease, "start", {"context": context}))
+                cursor.execute("""INSERT INTO vibehub_edu_attempts
+                    (id,assignment_id,project_id,version_id,user_id,context_json,state_json,view_json,status)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active')""", (target_id, scope[1],
+                    scope[2], scope[3], scope[0], _dump(context), _dump(initial["state"]), _dump(initial["view"])))
+                attempt = {"id": target_id, "assignment_id": scope[1], "seq": 0,
+                    "status": "active", "view_json": initial["view"]}
+            conn.commit()
+            # 先持久保存，再 compare-and-set 重绑；重试定位同一记录，不会因它后来提交而再分叉。
+            manager.bind_edu_attempt(token, attempt["id"], expected_attempt_id=current_id)
+            return {"attempt_id": attempt["id"], "assignment_id": attempt["assignment_id"],
+                "seq": int(attempt["seq"]), "status": attempt["status"], "view": _load(attempt["view_json"])}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        try:
+            if locked:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock,))
+        finally:
+            conn.close()
 
 
 def apply_action(attempt_id, payload, actor=None):

@@ -222,6 +222,7 @@ my-edu/
 | `POST ./_edu/v1/actions` | `{ "command_id": "本次操作唯一编号", "expected_seq": 0, "action": {...} }` |
 | `POST ./_edu/v1/submit` | `{ "request_id": "本次提交唯一编号", "expected_seq": 1 }` |
 | `GET ./_edu/v1/result` | 读取本次作答最新提交的判定、成绩和反馈 |
+| `POST ./_edu/v1/continue` | `{ "request_id": "UUID", "expected_attempt_id": "原作答 ID" }`，原评测结束后自动开始新的作答 |
 
 这些路径由平台处理，不转发到作品页面服务。`action` 的业务字段由作品定义，例如交换节点或
 提交一份候选程序。学生不填写学号，也不能通过请求参数决定成绩属于谁。
@@ -230,6 +231,17 @@ my-edu/
 返回 `409`，此时重新读取状态。网络重试应复用原 `command_id` 和原请求内容，不能为同一次
 操作生成新编号。提交的 `request_id` 同理：平台冻结记录后调用作品评分，重试查询同一次提交，
 不会把浏览器声称的分数写入成绩。
+
+提交后可以继续编辑草稿；原提交处于 `submitted` 或 `grading` 时，应等待评测结束再允许试运行
+或再次提交。结果为 `graded` 或 `error` 后，作品页面可在下一次试运行或提交时自动调用
+`continue`，不需要增加“继续作答”按钮。平台保留原提交与快照，使用原账号、作业和固定作品
+版本创建新的作答，通过作品 `start` 初始化新状态，并将当前租约绑定到新作答。页面 URL 不变，
+返回值与 `state` 相同，包含新的 `attempt_id`、`seq`、`status`、`view`。
+
+`continue.request_id` 必须是 UUID。网络失败时重用原 UUID 和 `expected_attempt_id`，平台会
+返回同一次续作，不重复创建。页面应保留当前编辑器草稿，使用返回的新序号重新记录源码操作；
+新作答尚无操作时不能直接提交。切换后停止原结果轮询，并丢弃迟到的旧轮询响应，避免将旧
+提交的状态套到新草稿。刷新页面时，尚未完成的评测会被恢复，不会借刷新开始并行的新评测。
 
 OJ 登录态客户端也可使用以下接口，权限同样绑定当前账号：
 
@@ -240,6 +252,7 @@ POST /api/vibehub/edu/attempts/{attempt_id}/actions
 POST /api/vibehub/edu/attempts/{attempt_id}/submit
 GET  /api/vibehub/edu/attempts/{attempt_id}/result
 GET  /api/vibehub/edu/submissions/{submission_id}
+POST /api/vibehub/edu/continue               {lease_token, request_id, expected_attempt_id}
 ```
 
 `launch` 返回 `attempt_id`、`seq` 和运行租约。`assignment_id` 是 edu 全局作业编号，取作业行的
@@ -492,6 +505,8 @@ python3 scripts/numoj_user.py vibehub edit <slug> \
 - 每个用户的持久作品快照逻辑用量上限为 20 GiB；每个作品的版本数量也受站点配额限制。
 - 普通作品运行上限为 4 GiB 内存、2 CPU、256 PID 和 20 GiB 镜像。
 - 精品作品运行上限为 8 GiB 内存、4 CPU、512 PID 和 40 GiB 镜像。
+- `kind: "edu"` 作品的运行 CPU 上限为 10，内存、PID 和镜像大小仍沿用普通或精品档位。
+  学生编译运行共享容器额度，全站执行并发上限为 10；镜像构建不使用这一 CPU 提升。
 - `/tmp` 和 `/run/vibehub` 是有界 tmpfs；`/data` 持久保存，但当前没有可移植的硬配额。
 - 首位玩家打开作品时按需启动已构建的作品。最后一位玩家离开、在途请求结束后，默认立即停止容器，释放 CPU、内存和显存；保留停止的容器、镜像及 `/data`。下一位玩家访问同一版本时重新启动该容器，无需重新构建或下载。断网等未正常退出的情况在访问租约过期后处理；平台可配置关闭宽限。停止会结束进程，应用内存状态不会保留，需恢复的数据和缓存应写入 `/data`。
 - GPU 宿主通过 NVIDIA Container Toolkit Base 1.20.0 的 CDI 描述将现有显卡与驱动接入 Docker；部署脚本固定安装包 SHA-256，并核验 GPU UUID。运行时使用 `--device nvidia.com/gpu=<GPU UUID>` 显式选择 NVIDIA 设备。该组件不安装 CUDA Toolkit 或显卡驱动，也不要求重启 Docker。

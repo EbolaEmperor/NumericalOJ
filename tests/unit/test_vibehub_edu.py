@@ -1,7 +1,10 @@
 """教学协议的权限、不可伪报成绩、去重与冻结回归；不连接外部基础设施。"""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from queue import Queue
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -158,7 +161,7 @@ def test_first_lease_reuses_a_matching_published_image_without_building_or_readi
     assert manager.docker.tags == [(image.image_id, _FIXED_REF)]
     assert manager.builds == manager.promotions == snapshots == []
     assert manager.acquisitions == [(_EDU_KEY, {
-        'channel': 'public', 'featured': False, 'base_path': '/vibehub/runtime',
+        'channel': 'public', 'featured': False, 'education': True, 'base_path': '/vibehub/runtime',
         'package_digest': _PACKAGE, 'storage_key': 'project-3-public',
     })]
 
@@ -512,7 +515,7 @@ def test_launch_preserves_assignment_parameters_without_platform_problem_rules(m
     version = {'id': 9, 'project_id': 3, 'slug': 'balance', 'manifest': {'education': {'executor': executor}}}
     parameters = {'custom_level': 3, 'inputs': ['author-defined']}
     assignment = {'id': 5, 'project_id': 3, 'version_id': 9, 'parameters_json': json.dumps(parameters)}
-    cursor = Cursor(one=[None])
+    cursor = Cursor(one=[None, None])
     monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
     monkeypatch.setattr(edu, '_assignment', lambda *_args: assignment)
     monkeypatch.setattr(edu, '_version', lambda *_args: version)
@@ -705,7 +708,7 @@ def test_generic_process_uses_existing_container_and_releases_all_locks(monkeypa
 
 @pytest.mark.parametrize('owner_available', [False, True])
 def test_generic_process_does_not_execute_when_owner_or_global_capacity_is_busy(monkeypatch, owner_available):
-    cursor = Cursor(one=[{'acquired': int(owner_available)}] + ([{'acquired': 0}] * 4 if owner_available else []))
+    cursor = Cursor(one=[{'acquired': int(owner_available)}] + ([{'acquired': 0}] * 10 if owner_available else []))
     monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
     monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(
         execute_edu_process=lambda *_args, **_kwargs: pytest.fail('没有资源时不能执行'))))
@@ -714,6 +717,81 @@ def test_generic_process_does_not_execute_when_owner_or_global_capacity_is_busy(
     assert captured.value.status_code == 429
     releases = [params[0] for sql, params in cursor.calls if 'RELEASE_LOCK' in sql]
     assert releases == ([f"edu:execute:{ROW['id']}"] if owner_available else [])
+
+
+def test_ten_executions_share_database_slots_and_eleventh_waits_until_a_slot_is_released(monkeypatch):
+    held = {}
+    guard = threading.Lock()
+    entered = Queue()
+    release = [threading.Event() for _ in range(10)]
+
+    class NamedLockConnection:
+        """模拟各 worker 的独立连接共享 MySQL 命名锁，不使用进程内业务计数器。"""
+        def cursor(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute(self, sql, params):
+            name = params[0]
+            with guard:
+                if 'GET_LOCK' in sql:
+                    self.result = {'acquired': int(name not in held)}
+                    if self.result['acquired']:
+                        held[name] = self
+                else:
+                    assert 'RELEASE_LOCK' in sql and held[name] is self
+                    del held[name]
+
+        def fetchone(self):
+            return self.result
+
+        def close(self):
+            with guard:
+                assert self not in held.values(), '每个连接关闭前都应主动释放它持有的锁'
+
+    def execute(_container, payload, **kwargs):
+        assert kwargs == {'timeout': 40}
+        number = payload['number']
+        entered.put(number)
+        if number < 10:
+            assert release[number].wait(timeout=15), '测试未及时释放执行进程'
+        return {'compile': {'returncode': 0}}
+
+    monkeypatch.setattr(edu, 'get_db_connection', NamedLockConnection)
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(execute_edu_process=execute)))
+    lease = SimpleNamespace(container_name='existing-container')
+
+    def run(number):
+        return edu._execute_process(lease, {'attempt_id': f'att_capacity_{number}'}, {'number': number})
+
+    with ThreadPoolExecutor(max_workers=10) as workers:
+        futures = [workers.submit(run, number) for number in range(10)]
+        try:
+            assert {entered.get(timeout=5) for _ in range(10)} == set(range(10))
+            with guard:
+                assert {name for name in held if name.startswith('edu:process-slot:')} == {
+                    f'edu:process-slot:{index}' for index in range(10)}
+                assert len({id(owner) for name, owner in held.items() if name.startswith('edu:process-slot:')}) == 10
+            with pytest.raises(services.VibeHubError) as captured:
+                run(10)
+            assert captured.value.status_code == 429
+            assert entered.empty(), '第 11 个执行不能进入 Docker'
+            with guard:
+                assert 'edu:execute:att_capacity_10' not in held
+            release[9].set()
+            assert futures[9].result(timeout=5) == {'compile': {'returncode': 0}}
+            assert run(10) == {'compile': {'returncode': 0}}
+            assert entered.get(timeout=5) == 10
+        finally:
+            for event in release:
+                event.set()
+        assert all(future.result(timeout=5) == {'compile': {'returncode': 0}} for future in futures)
+    assert held == {}
 
 
 def test_generic_action_keeps_runtime_lease_until_internal_execution_finishes(monkeypatch):

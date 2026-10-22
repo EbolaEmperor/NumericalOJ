@@ -240,6 +240,7 @@ def acquire_runtime_lease(slug):
         lease = get_runtime_manager().acquire(
             package["slug"],
             featured=bool(package.get("featured")),
+            education=package.get("manifest", {}).get("kind") == "edu",
             channel=channel,
             base_path="/vibehub/runtime",
             package_digest=package["package_sha256"],

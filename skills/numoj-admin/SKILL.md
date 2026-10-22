@@ -272,6 +272,12 @@ of the two middle values for even input counts. Its integer heaps provide
 Each round is judged only by its returned median, with runtime errors still
 failing. Heap sizes, element distribution, and element conservation are not
 grading requirements.
+The demo keeps its editor available after submission. While grading is pending,
+students can edit drafts but must wait before running or submitting again. Once
+grading finishes, the next run or changed-source submission starts a new attempt
+automatically, preserving the previous submission and score. CLI clients can
+launch again after the previous evaluation finishes; see `vibehub guide` for the
+lease-bound continuation API and idempotency contract.
 
 Legacy `education.executor` strings are metadata, not execution capabilities.
 Frozen packages relying on the old `context.execution` contract are not

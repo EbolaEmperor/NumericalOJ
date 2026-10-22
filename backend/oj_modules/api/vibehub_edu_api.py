@@ -70,6 +70,16 @@ def submit(attempt_id):
     return json_success(**edu.submit(attempt_id, _payload(), _user()))
 
 
+@vibehub_edu_api_bp.post("/edu/continue")
+def continue_attempt():
+    actor = _user()
+    payload = _payload()
+    if set(payload) != {"lease_token", "request_id", "expected_attempt_id"}:
+        raise services.VibeHubError("继续作答请求字段无效")
+    return json_success(**edu.continue_attempt(payload["lease_token"],
+        {"request_id": payload["request_id"], "expected_attempt_id": payload["expected_attempt_id"]}, actor))
+
+
 @vibehub_edu_api_bp.get("/edu/attempts/<attempt_id>/result")
 def attempt_result(attempt_id):
     return json_success(**edu.submission_result(attempt_id=attempt_id, actor=_user()))

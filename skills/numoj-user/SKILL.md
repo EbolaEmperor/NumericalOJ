@@ -181,6 +181,11 @@ still failing; heap sizes, element distribution, and element conservation are no
 grading requirements. Inputs, execution traces, and grading rules belong to the work;
 NumOJ freezes the attempt and records the score returned through the private
 grading channel. Browser-supplied scores or execution results are not authoritative.
+After submission the editor stays editable. Running and submitting again become
+available automatically when the previous evaluation finishes; the next changed
+attempt preserves the earlier submission and score. No separate continue button
+is needed. CLI clients may launch again after grading finishes; a launch during
+pending grading resumes that pending attempt rather than starting another one.
 
 Legacy packages relying on `context.execution` are not automatically migrated;
 an `education.executor` string no longer selects an executor. Historical scores

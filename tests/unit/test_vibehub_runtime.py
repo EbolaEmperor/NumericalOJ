@@ -701,6 +701,125 @@ def test_runtime_lease_exposes_only_container_internal_socket_path(monkeypatch, 
     assert not (short_tmp / "runtime" / "sessions").exists()
 
 
+@pytest.mark.parametrize("featured", [False, True])
+def test_education_only_raises_container_cpu_without_changing_other_runtime_or_build_limits(monkeypatch, short_tmp, featured):
+    manager = _manager(monkeypatch, short_tmp)
+    kwargs = dict(runtime_id="a" * 40, image_id=_APP_ID, featured=featured,
+        data_volume="numoj-vh-data-" + manager.scope + "-project-1-public")
+    ordinary = manager._container_args(**kwargs)
+    education = manager._container_args(**kwargs, education=True)
+    expected = list(ordinary)
+    expected[expected.index("--cpu-quota") + 1] = "1000000"
+    assert education == expected
+    assert education[education.index("--cpu-period") + 1] == "100000"
+    limits = runtime.limits_for(featured)
+    assert limits.cpus == ("4" if featured else "2")
+    assert limits.memory == ("8g" if featured else "4g")
+    assert limits.pids == (512 if featured else 256)
+
+
+@pytest.mark.parametrize("featured", [False, True])
+def test_education_profile_never_reuses_the_old_cpu_instance_but_reuses_its_own_instance(monkeypatch, short_tmp, featured):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    ordinary = manager.acquire("demo@v1", featured=featured)
+    education = manager.acquire("demo@v1", featured=featured, education=True)
+    again = manager.acquire("demo@v1", featured=featured, education=True)
+    assert education.container_name == again.container_name
+    assert ordinary.container_name != education.container_name
+    assert len(docker.run_commands) == 2
+    assert [command[command.index("--cpu-quota") + 1] for command in docker.run_commands] == [
+        "400000" if featured else "200000", "1000000"]
+    state = json.loads(manager.state_path.read_text())
+    assert len(state["runtimes"]) == 2
+    for runtime_id, record in state["runtimes"].items():
+        assert len(runtime_id) == 40
+        assert record["container_name"] == f"numoj-vh-{manager.scope}-{runtime_id}", "容器名必须保留完整实例身份"
+        assert record["education"] == (record["container_name"] == education.container_name)
+    args = ("demo@v1", "public", _APP_ID, featured, "project-1-public")
+    assert manager._runtime_id(*args) == manager._runtime_id(*args, education=False)
+    assert manager._runtime_id(*args) != manager._runtime_id(*args, education=True)
+    assert manager.release(education.token) is True
+    assert manager.release(again.token) is True
+    resumed = manager.acquire("demo@v1", featured=featured, education=True)
+    assert resumed.container_name == education.container_name
+    assert docker.resumed == [education.container_name]
+    assert len(docker.run_commands) == 2
+
+
+def test_education_profile_survives_dead_runtime_replacement(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    first = manager.acquire("demo@v1", education=True)
+    docker.running.discard(first.container_name)
+    restarted = manager.acquire("demo@v1", education=True)
+    assert restarted.container_name == first.container_name
+    assert len(docker.run_commands) == 2
+    assert all(command[command.index("--cpu-quota") + 1] == "1000000" for command in docker.run_commands)
+
+
+def test_education_cpu_upgrade_does_not_reuse_an_older_eight_cpu_instance(monkeypatch, short_tmp):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    monkeypatch.setattr(runtime, "EDUCATION_CPUS", "8")
+    old = manager.acquire("demo@v1", education=True)
+    monkeypatch.setattr(runtime, "EDUCATION_CPUS", "10")
+    current = manager.acquire("demo@v1", education=True)
+    assert current.container_name != old.container_name
+    assert len(docker.run_commands) == 2
+    assert [command[command.index("--cpu-quota") + 1] for command in docker.run_commands] == ["800000", "1000000"]
+
+
+@pytest.mark.parametrize("education", [None, 1, "edu"])
+def test_education_profile_requires_a_boolean_before_any_docker_inspection(monkeypatch, short_tmp, education):
+    docker = _FakeDocker()
+    manager = _manager(monkeypatch, short_tmp, docker=docker)
+    monkeypatch.setattr(docker, "inspect_image", lambda *_args: pytest.fail("无效资源配置不能访问 Docker"))
+    with pytest.raises(ValueError, match="education 必须为布尔值"):
+        manager.acquire("demo@v1", education=education)
+
+
+@pytest.mark.parametrize("endpoint", ["api", "route"])
+@pytest.mark.parametrize("channel", ["public", "latest", "review"])
+@pytest.mark.parametrize("kind", ["edu", "game"])
+def test_runtime_entry_points_use_authorized_manifest_kind_for_cpu_profile(monkeypatch, endpoint, channel, kind):
+    from flask import Flask
+    from types import SimpleNamespace
+    from backend.oj_modules.api import vibehub_api
+    from backend.oj_modules.routes import vibehub_routes
+    from backend.oj_modules.security import auth
+    from backend.oj_modules.vibehub import services
+
+    actor = {"id": 12, "is_admin": 1}
+    monkeypatch.setattr(auth, "current_user", lambda: actor)
+    monkeypatch.setattr(vibehub_api, "current_user", lambda: actor)
+    monkeypatch.setattr(vibehub_routes, "current_user", lambda: actor)
+    resolutions, acquisitions = [], []
+
+    def resolve(slug, **kwargs):
+        resolutions.append((slug, kwargs))
+        return {"slug": slug, "project_id": 3, "package_sha256": _PACKAGE_DIGEST,
+            "featured": True, "manifest": {"kind": kind}}
+
+    def acquire(*args, **kwargs):
+        acquisitions.append((args, kwargs))
+        return SimpleNamespace(token="lease", proxy_base_path="/vibehub/runtime/lease", expires_at=5000)
+
+    monkeypatch.setattr(services, "resolve_project_package", resolve)
+    manager = SimpleNamespace(acquire=acquire)
+    monkeypatch.setattr(vibehub_api, "get_runtime_manager", lambda: manager)
+    monkeypatch.setattr(vibehub_routes, "get_runtime_manager", lambda: manager)
+    app = Flask(__name__)
+    app.register_blueprint(vibehub_api.vibehub_api_bp)
+    app.register_blueprint(vibehub_routes.vibehub_bp)
+    path = "/api/vibehub/projects/demo/runtime/leases" if endpoint == "api" else "/vibehub/demo/runtime/acquire"
+    response = app.test_client().post(f"{path}?channel={channel}", json={"education": kind != "edu"})
+    assert response.status_code == 200
+    assert resolutions[0][1]["audience"] == channel and resolutions[0][1]["actor"] == actor
+    assert acquisitions == [(("demo",), {"featured": True, "education": kind == "edu", "channel": channel,
+        "base_path": "/vibehub/runtime", "package_digest": _PACKAGE_DIGEST, "storage_key": f"project-3-{channel}"})]
+
+
 def test_acquire_rejects_image_from_a_different_saved_package(monkeypatch, short_tmp):
     docker = _FakeDocker()
     manager = _manager(monkeypatch, short_tmp, docker=docker)
