@@ -255,7 +255,8 @@ def test_image_preparation_lock_timeout_reports_a_specific_retryable_error(lease
     assert not any('RELEASE_LOCK' in sql for sql, _params in cursor.calls)
 
 
-@pytest.mark.parametrize('field,value', [('score', 100), ('completed', True), ('state', {}), ('user_id', 1)])
+@pytest.mark.parametrize('field,value', [('score', 100), ('completed', True), ('state', {}), ('user_id', 1),
+    ('execute', {}), ('execution_result', {}), ('continuation', {})])
 def test_action_cannot_supply_grade_identity_or_state(monkeypatch, field, value):
     monkeypatch.setattr(edu, 'get_db_connection', lambda: pytest.fail('非法请求不能触及数据库'))
     payload = {'command_id': 'command_123', 'expected_seq': 1, 'action': {'type': 'swap'}, field: value}
@@ -361,6 +362,65 @@ def test_internal_protocol_explicitly_uses_education_socket(monkeypatch):
     assert calls[0][1]['edu'] is True
 
 
+@pytest.mark.parametrize('operation', ['start', 'step', 'grade'])
+@pytest.mark.parametrize('status', [400, 422, 403, 500])
+def test_internal_initial_rule_rejection_only_maps_client_operations_to_400(monkeypatch, operation, status):
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(
+        relay_http=lambda *_args, **_kwargs: SimpleNamespace(status=status, body=b'private context and grading data'))))
+    with pytest.raises(services.VibeHubError) as captured:
+        edu._internal(SimpleNamespace(container_name='container'), operation, {'context': {}})
+    client_rejection = operation in {'start', 'step'} and status in {400, 422}
+    assert captured.value.status_code == (400 if client_rejection else 502)
+    assert str(captured.value) == ('操作不符合该作品规则' if client_rejection else '作品无法处理本次操作')
+    assert 'private' not in str(captured.value)
+
+
+@pytest.mark.parametrize('operation', ['start', 'step', 'grade'])
+@pytest.mark.parametrize('status', [400, 422])
+def test_internal_execution_continuation_rule_rejection_remains_server_error(monkeypatch, operation, status):
+    replies = iter([
+        SimpleNamespace(status=200, body=b'{"execute":{},"continuation":null}'),
+        SimpleNamespace(status=status, body=b'private execution result'),
+    ])
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(
+        relay_http=lambda *_args, **_kwargs: next(replies))))
+    monkeypatch.setattr(edu, '_execute_process', lambda *_args: {'compile': {'returncode': 0}})
+    with pytest.raises(services.VibeHubError, match='作品无法处理本次操作') as captured:
+        edu._internal(SimpleNamespace(container_name='container'), operation, {'context': {'attempt_id': ROW['id']}})
+    assert captured.value.status_code == 502
+
+
+@pytest.mark.parametrize('field,value', [('score', 100), ('execution', {'passed': 100}), ('completed', True)])
+def test_browser_invalid_project_action_returns_400_without_writes_or_private_error(monkeypatch, field, value):
+    app = Flask(__name__)
+    app.register_blueprint(vibehub_edu_api.vibehub_edu_api_bp)
+    monkeypatch.setattr(vibehub_edu_api, 'current_user', lambda: ACTOR)
+    cursor = Cursor(one=[None])
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+    monkeypatch.setattr(edu, '_get_attempt', lambda *_args, **_kwargs: dict(ROW))
+    monkeypatch.setattr(edu, '_version', lambda *_args: {'manifest': {}})
+    lease = SimpleNamespace(token='lease', container_name='container')
+    monkeypatch.setattr(edu, '_lease', lambda *_args: lease)
+    relayed, released = [], []
+    action = {'type': 'run_code', 'source': 'student source', field: value}
+
+    def relay(*args, **kwargs):
+        assert args[:3] == ('container', 'POST', '/v1/step') and kwargs['edu'] is True
+        relayed.append(json.loads(args[4]))
+        return SimpleNamespace(status=400, body=b'private test inputs and hidden answer')
+
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(
+        docker=SimpleNamespace(relay_http=relay), release=lambda token: released.append(token)))
+    response = app.test_client().post(f"/api/vibehub/edu/attempts/{ROW['id']}/actions", json={
+        'command_id': 'command_123', 'expected_seq': 1, 'action': action})
+    assert response.status_code == 400
+    assert response.get_json()['message'] == '操作不符合该作品规则'
+    assert 'private' not in response.get_data(as_text=True)
+    assert relayed[0]['action'] == action
+    assert released == ['lease']
+    assert not any(sql.startswith(('INSERT', 'UPDATE')) for sql, _params in cursor.calls)
+
+
 def test_duplicate_action_returns_saved_response_without_running_project(monkeypatch):
     action = {'type': 'swap', 'indices': [0, 1]}
     saved = {'seq': 2, 'view': {'heap': [1, 2]}}
@@ -438,7 +498,6 @@ def test_grading_rejects_out_of_range_or_non_integer_score(monkeypatch, score_bp
     conn = Connection(cursor)
     monkeypatch.setattr(edu, 'get_db_connection', lambda: conn)
     monkeypatch.setattr(edu, '_version', lambda *_args: {'manifest': {}})
-    monkeypatch.setattr(edu, '_execution', lambda context, *_args, **_kwargs: context)
     monkeypatch.setattr(edu, '_lease', lambda *_args: SimpleNamespace(token='lease'))
     monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(release=lambda _token: None))
     monkeypatch.setattr(edu, '_internal', lambda *_args: {'score_bp': score_bp, 'verdict': 'passed'})
@@ -448,45 +507,11 @@ def test_grading_rejects_out_of_range_or_non_integer_score(monkeypatch, score_bp
     assert any("SET status='error'" in sql for sql, _params in cursor.calls)
 
 
-@pytest.mark.parametrize('executor', ['cpp-heap-median-v1', 'cpp-heap-median-v2'])
-@pytest.mark.parametrize('grading', [False, True])
-def test_cpp_execution_uses_recorded_source_and_versioned_inputs(monkeypatch, executor, grading):
-    from backend.oj_modules.vibehub import edu_cpp
-
-    calls = []
-    docker = object()
-    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=docker))
-    monkeypatch.setattr(edu_cpp, 'run_code', lambda source, inputs, **kwargs: calls.append((source, inputs, kwargs)) or {'passed': len(inputs)})
-    cursor = Cursor(one=[{'acquired': 1}, {'acquired': 1}])
-    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
-    context = {'attempt_id': ROW['id'], 'challenge_seed': 'seed', 'parameters': {'inputs': [7, 3]}}
-    result_type = 'double' if executor == 'cpp-heap-median-v2' else 'int'
-    actions = [
-        {'action': {'type': 'run_code', 'source': f'{result_type} step(int x) {{return 0;}}'}},
-        {'action': {'type': 'run_code', 'source': f'{result_type} step(int x) {{return x;}}', 'execution': {'passed': 10000}}},
-    ]
-    result = edu._execution(context, {'education': {'executor': executor}}, actions,
-        lease=SimpleNamespace(container_name='existing-container'), grading=grading)
-    assert calls[0][0] == f'{result_type} step(int x) {{return x;}}'
-    assert calls[0][2] == {'docker': docker, 'container_name': 'existing-container', 'executor': executor}
-    if grading:
-        assert len(calls[0][1]) == 129 and calls[0][1] != [7, 3]
-        if executor == 'cpp-heap-median-v2':
-            inputs = calls[0][1]
-            assert (inputs[0] + inputs[1]) / 2 == 999999999.5
-            assert sum(sorted(inputs[:6])[2:4]) / 2 == -999999997.5
-        else:
-            assert calls[0][1][:6] == [0, 0, -1, 1, 1000000000, -1000000000]
-    else:
-        assert calls[0][1] == [7, 3]
-    assert result['execution'] == {'passed': 129 if grading else 2}
-    assert 'execution' not in context
-
-
-@pytest.mark.parametrize('executor,second', [('cpp-heap-median-v1', 3), ('cpp-heap-median-v2', 4)])
-def test_both_cpp_versions_receive_platform_trial_inputs_at_launch(monkeypatch, executor, second):
+@pytest.mark.parametrize('executor', [None, 'cpp-heap-median-v1', 'cpp-heap-median-v2', 'custom-runtime'])
+def test_launch_preserves_assignment_parameters_without_platform_problem_rules(monkeypatch, executor):
     version = {'id': 9, 'project_id': 3, 'slug': 'balance', 'manifest': {'education': {'executor': executor}}}
-    assignment = {'id': 5, 'project_id': 3, 'version_id': 9, 'parameters_json': '{}'}
+    parameters = {'custom_level': 3, 'inputs': ['author-defined']}
+    assignment = {'id': 5, 'project_id': 3, 'version_id': 9, 'parameters_json': json.dumps(parameters)}
     cursor = Cursor(one=[None])
     monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
     monkeypatch.setattr(edu, '_assignment', lambda *_args: assignment)
@@ -503,13 +528,15 @@ def test_both_cpp_versions_receive_platform_trial_inputs_at_launch(monkeypatch, 
 
     monkeypatch.setattr(edu, '_internal', internal)
     edu.launch('balance', ACTOR, assignment_id=5)
-    inputs = contexts[0]['parameters']['inputs']
-    assert len(inputs) == 24 and inputs[:8] == [7, second, 10, -2, 6, 6, 15, 1]
-    assert all(type(item) is int for item in inputs)
+    assert contexts[0]['parameters'] == parameters
+    assert 'execution' not in contexts[0]
+    assert contexts[0]['project_version_id'] == 9
+    stored = json.loads(next(params[5] for sql, params in cursor.calls if sql.startswith('INSERT')))
+    assert stored == contexts[0]
 
 
-@pytest.mark.parametrize('executor', [None, 'cpp-heap-median-v1', 'cpp-heap-median-v2'])
-def test_manifest_validation_preserves_the_supported_executor_version(tmp_path, monkeypatch, executor):
+@pytest.mark.parametrize('executor', [None, 'cpp-heap-median-v1', 'cpp-heap-median-v2', 'author-specific', ''])
+def test_manifest_validation_preserves_opaque_executor_metadata(tmp_path, monkeypatch, executor):
     manifest = {'schema_version': 1, 'kind': 'edu', 'transport': 'unix',
         'socket_path': '/run/vibehub/app.sock', 'health_path': '/healthz',
         'cover_image': 'static/cover.jpg', 'education': {'protocol': edu.PROTOCOL,
@@ -521,36 +548,222 @@ def test_manifest_validation_preserves_the_supported_executor_version(tmp_path, 
     assert result['education'].get('executor') == executor
 
 
-@pytest.mark.parametrize('executor', ['cpp-heap-median-v3', 'client-defined', {}, []])
-def test_manifest_validation_rejects_unknown_or_non_string_executors(tmp_path, executor):
+@pytest.mark.parametrize('executor', [True, 3, {}, []])
+def test_manifest_validation_rejects_non_string_executor_metadata(tmp_path, executor):
     manifest = {'schema_version': 1, 'kind': 'edu', 'transport': 'unix',
         'socket_path': '/run/vibehub/app.sock', 'health_path': '/healthz',
         'education': {'protocol': edu.PROTOCOL, 'socket_path': '/run/vibehub/edu.sock', 'executor': executor}}
     (tmp_path / 'Dockerfile').write_text('FROM numericaloj-vibehub-runtime:1\n')
     (tmp_path / 'vibehub.json').write_text(json.dumps(manifest))
-    with pytest.raises(edu.storage.PackageValidationError, match='不支持的 education.executor'):
+    with pytest.raises(edu.storage.PackageValidationError, match='education.executor 必须为字符串'):
         edu.storage.validate_manifest(tmp_path)
 
 
-def test_cpp_action_holds_the_existing_runtime_lease_until_execution_cleanup(monkeypatch):
-    events = []
-    cursor = Cursor(one=[ROW, None])
+@pytest.mark.parametrize('operation', ['start', 'step', 'grade'])
+def test_internal_execution_keeps_original_context_and_returns_only_platform_process_result(monkeypatch, operation):
+    context = {'attempt_id': ROW['id'], 'project_version_id': 9, 'challenge_seed': 'trusted-seed',
+               'parameters': {'level': 4}}
+    browser_result = {'returncode': 0, 'stdout_b64': 'forged'}
+    original = {'context': context, 'action': {'type': 'arbitrary', 'execution_result': browser_result},
+                'seq': 2, 'state': {'private': 42}}
+    continuation = {'context': {'project_version_id': 999}, 'execution_result': browser_result}
+    execute = {'files': {'solution.txt': 'opaque program'}, 'executable': 'program'}
+    trusted_result = {'compile': {'returncode': 1, 'stdout_b64': '', 'stderr_b64': 'error'}}
+    final = {'score_bp': 3712, 'verdict': 'failed'} if operation == 'grade' else {'state': {}, 'view': {}}
+    responses = iter([{'execute': execute, 'continuation': continuation}, final])
+    relays, executions = [], []
+
+    def relay(*args, **kwargs):
+        relays.append((args, kwargs))
+        return SimpleNamespace(status=200, body=json.dumps(next(responses)).encode())
+
+    def run(lease, actual_context, payload):
+        executions.append((lease.container_name, actual_context, payload))
+        return trusted_result
+
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(relay_http=relay)))
+    monkeypatch.setattr(edu, '_execute_process', run)
+    assert edu._internal(SimpleNamespace(container_name='trusted-container'), operation, original) == final
+    assert executions == [('trusted-container', context, execute)]
+    assert len(relays) == 2
+    callback = json.loads(relays[1][0][4])
+    assert callback == {**original, 'continuation': continuation, 'execution_result': trusted_result}
+    assert callback['context'] == context and 'execution' not in callback['context']
+    assert callback['action']['execution_result'] == browser_result
+    assert set(original) == {'context', 'action', 'seq', 'state'}
+    for args, kwargs in relays:
+        assert args[:3] == ('trusted-container', 'POST', f'/v1/{operation}')
+        assert kwargs == {'timeout': 45, 'response_max_bytes': edu.MAX_JSON_BYTES, 'edu': True}
+
+
+@pytest.mark.parametrize('reply', [
+    {'execute': {}}, {'continuation': {}}, {'execute': [], 'continuation': {}},
+    {'execute': {}, 'continuation': {}, 'context': {}},
+    {'execute': {}, 'continuation': {}, 'state': {}, 'view': {}},
+])
+def test_internal_execution_request_requires_exactly_two_fields(monkeypatch, reply):
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(
+        relay_http=lambda *_args, **_kwargs: SimpleNamespace(status=200, body=json.dumps(reply).encode()))))
+    monkeypatch.setattr(edu, '_execute_process', lambda *_args: pytest.fail('非法请求不能执行进程'))
+    with pytest.raises(services.VibeHubError, match='执行请求字段无效'):
+        edu._internal(SimpleNamespace(container_name='container'), 'step', {'context': {}})
+
+
+@pytest.mark.parametrize('requests,should_finish', [(4, True), (5, False)])
+def test_internal_execution_has_a_bounded_continuation_loop(monkeypatch, requests, should_finish):
+    relays, executions = [], []
+    original = {'context': {'attempt_id': ROW['id']}, 'actions': [{'action': {'type': 'custom'}}]}
+
+    def relay(*args, **_kwargs):
+        relays.append(json.loads(args[4]))
+        result = {'execute': {'number': len(relays)}, 'continuation': len(relays)} if len(relays) <= requests else {'score_bp': 1234, 'verdict': 'failed'}
+        return SimpleNamespace(status=200, body=json.dumps(result).encode())
+
+    def run(_lease, _context, execute):
+        executions.append(execute)
+        return {'finished': execute['number']}
+
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(relay_http=relay)))
+    monkeypatch.setattr(edu, '_execute_process', run)
+    if should_finish:
+        assert edu._internal(SimpleNamespace(container_name='container'), 'grade', original)['score_bp'] == 1234
+    else:
+        with pytest.raises(services.VibeHubError, match='执行请求次数超过限制'):
+            edu._internal(SimpleNamespace(container_name='container'), 'grade', original)
+    assert len(executions) == 4 and len(relays) == 5
+    for index, payload in enumerate(relays[1:], 1):
+        assert payload['context'] == original['context']
+        assert payload['actions'] == original['actions']
+        assert payload['execution_result'] == {'finished': index}
+        assert payload['continuation'] == index
+
+
+def test_oversized_internal_response_never_executes(monkeypatch):
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(
+        relay_http=lambda *_args, **_kwargs: SimpleNamespace(status=200, body=b' ' * (edu.MAX_JSON_BYTES + 1)))))
+    monkeypatch.setattr(edu, '_execute_process', lambda *_args: pytest.fail('超限请求不能执行进程'))
+    with pytest.raises(services.VibeHubError, match='教育协议响应无效'):
+        edu._internal(SimpleNamespace(container_name='container'), 'step', {'context': {}})
+
+
+def test_internal_callback_size_includes_original_payload_continuation_and_execution_result(monkeypatch):
+    calls = []
+    monkeypatch.setattr(edu, 'MAX_JSON_BYTES', 256)
+
+    def relay(*_args, **_kwargs):
+        calls.append('relay')
+        return SimpleNamespace(status=200, body=b'{"execute":{},"continuation":"opaque"}')
+
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(relay_http=relay)))
+    monkeypatch.setattr(edu, '_execute_process', lambda *_args: {'stdout_b64': 'x' * 180})
+    with pytest.raises(services.VibeHubError, match='作答数据超过限制'):
+        edu._internal(SimpleNamespace(container_name='container'), 'step',
+            {'context': {'attempt_id': ROW['id']}, 'action': {'type': 'custom'}})
+    assert calls == ['relay']
+
+
+def test_internal_response_does_not_promote_browser_execute_or_execution_result(monkeypatch):
+    payload = {'context': {'attempt_id': ROW['id']}, 'action': {'type': 'custom',
+        'execute': {'files': {'spoof': 'browser'}}, 'execution_result': {'score_bp': 10000}}}
+    calls = []
+
+    def relay(*args, **_kwargs):
+        calls.append(json.loads(args[4]))
+        return SimpleNamespace(status=200, body=b'{"state":{},"view":{"saved":true}}')
+
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(relay_http=relay)))
+    monkeypatch.setattr(edu, '_execute_process', lambda *_args: pytest.fail('浏览器动作不能自行执行进程'))
+    assert edu._internal(SimpleNamespace(container_name='container'), 'step', payload)['view'] == {'saved': True}
+    assert calls == [payload]
+
+
+@pytest.mark.parametrize('runtime_failure', [False, True])
+def test_generic_process_uses_existing_container_and_releases_all_locks(monkeypatch, runtime_failure):
+    cursor = Cursor(one=[{'acquired': 1}, {'acquired': 0}, {'acquired': 1}])
     monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
-    monkeypatch.setattr(edu, '_version', lambda *_args: {'manifest': {'education': {'executor': 'cpp-heap-median-v1'}}})
+    calls = []
+    execute = {'files': {'program.c': 'author program'}, 'run': {'stdin': 'test'}}
+    result = {'compile': {'returncode': 0}}
+
+    def run(container, payload, **kwargs):
+        calls.append((container, payload, kwargs))
+        if runtime_failure:
+            raise RuntimeError('process unavailable')
+        return result
+
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(execute_edu_process=run)))
+    lease = SimpleNamespace(container_name='existing-container')
+    if runtime_failure:
+        with pytest.raises(RuntimeError, match='process unavailable'):
+            edu._execute_process(lease, {'attempt_id': ROW['id']}, execute)
+    else:
+        assert edu._execute_process(lease, {'attempt_id': ROW['id']}, execute) == result
+    assert calls == [('existing-container', execute, {'timeout': 40})]
+    assert [params[0] for sql, params in cursor.calls if 'RELEASE_LOCK' in sql] == [
+        'edu:process-slot:1', f"edu:execute:{ROW['id']}"]
+
+
+@pytest.mark.parametrize('owner_available', [False, True])
+def test_generic_process_does_not_execute_when_owner_or_global_capacity_is_busy(monkeypatch, owner_available):
+    cursor = Cursor(one=[{'acquired': int(owner_available)}] + ([{'acquired': 0}] * 4 if owner_available else []))
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(docker=SimpleNamespace(
+        execute_edu_process=lambda *_args, **_kwargs: pytest.fail('没有资源时不能执行'))))
+    with pytest.raises(services.VibeHubError) as captured:
+        edu._execute_process(SimpleNamespace(container_name='container'), {'attempt_id': ROW['id']}, {})
+    assert captured.value.status_code == 429
+    releases = [params[0] for sql, params in cursor.calls if 'RELEASE_LOCK' in sql]
+    assert releases == ([f"edu:execute:{ROW['id']}"] if owner_available else [])
+
+
+def test_generic_action_keeps_runtime_lease_until_internal_execution_finishes(monkeypatch):
+    events = []
+    cursor = Cursor(one=[None])
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+    monkeypatch.setattr(edu, '_get_attempt', lambda *_args, **_kwargs: dict(ROW))
+    monkeypatch.setattr(edu, '_version', lambda *_args: {'manifest': {'education': {'executor': 'opaque-value'}}})
     lease = SimpleNamespace(token='existing-lease', container_name='existing-container')
     monkeypatch.setattr(edu, '_lease', lambda *_args: events.append('lease') or lease)
     monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(release=lambda token: events.append(('release', token))))
 
-    def fail_execution(*_args, **kwargs):
-        assert kwargs['lease'] is lease
+    def internal(actual_lease, operation, payload):
+        assert actual_lease is lease and operation == 'step'
+        assert payload['context'] == json.loads(ROW['context_json'])
+        assert payload['action'] == {'type': 'rotate', 'target': 'node-1'}
         events.append('execute')
-        raise RuntimeError('C++ unavailable')
+        raise RuntimeError('process unavailable')
 
-    monkeypatch.setattr(edu, '_execution', fail_execution)
-    with pytest.raises(RuntimeError, match=r'C\+\+ unavailable'):
+    monkeypatch.setattr(edu, '_internal', internal)
+    with pytest.raises(RuntimeError, match='process unavailable'):
         edu.apply_action(ROW['id'], {'command_id': 'command_123', 'expected_seq': 1,
-            'action': {'type': 'run_code', 'source': 'int step(int x){return x;}' }}, ACTOR)
+            'action': {'type': 'rotate', 'target': 'node-1'}}, ACTOR)
     assert events == ['lease', 'execute', ('release', 'existing-lease')]
+
+
+def test_grading_passes_frozen_snapshot_and_stores_private_project_score_without_recomputing(monkeypatch):
+    snapshot = {'context': {'attempt_id': ROW['id'], 'parameters': {'arbitrary': 3}},
+                'actions': [{'seq': 1, 'action': {'type': 'rotate', 'value': 2, 'score_bp': 10000}}]}
+    row = {'id': 21, 'attempt_id': ROW['id'], 'project_id': 3, 'version_id': 9,
+           'user_id': 12, 'status': 'submitted', 'snapshot_json': json.dumps(snapshot)}
+    cursor = Cursor(one=[{'acquired': 1}, row])
+    monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+    versions, requests = [], []
+    monkeypatch.setattr(edu, '_version', lambda _cursor, project_id, version_id: versions.append((project_id, version_id)) or {'manifest': {}})
+    monkeypatch.setattr(edu, '_lease', lambda *_args: SimpleNamespace(token='lease'))
+    monkeypatch.setattr(edu, 'get_runtime_manager', lambda: SimpleNamespace(release=lambda _token: None))
+    result = {'score_bp': 3712, 'verdict': 'failed', 'metrics': {'author-defined': 14}}
+
+    def internal(_lease, operation, payload):
+        requests.append((operation, payload))
+        return result
+
+    monkeypatch.setattr(edu, '_internal', internal)
+    monkeypatch.setattr('backend.oj_modules.problems.catalog.invalidate_problem_list_cache_for_user', lambda **_kwargs: None)
+    edu.grade_submission(21)
+    assert versions == [(3, 9)]
+    assert requests == [('grade', snapshot)]
+    score_update = next(params for sql, params in cursor.calls if "SET status='graded',score_bp=" in sql)
+    assert score_update == (3712, 37.12, edu._dump(result), 21)
 
 
 def test_education_api_requires_login_and_rejects_identity_override(monkeypatch):

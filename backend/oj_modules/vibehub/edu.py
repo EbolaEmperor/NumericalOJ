@@ -4,19 +4,20 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
-import random
 import re
 import secrets
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
 from backend.oj_modules.vibehub import services, storage
-from backend.oj_modules.vibehub.edu_cpp import CPP_HEAP_EXECUTORS, MEDIAN_EXECUTOR
 from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
 PROTOCOL = "vibehub-edu/1"
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_ACTIONS = 200
+MAX_INTERNAL_EXECUTIONS = 4
+INTERNAL_TIMEOUT_SECONDS = 45
+EXECUTION_TIMEOUT_SECONDS = 40
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 _grade_task = None
 
@@ -156,19 +157,73 @@ def _lease(version):
 def _internal(lease, operation, payload):
     if operation not in {"start", "step", "grade"}:
         raise ValueError("未知教育协议操作")
-    response = get_runtime_manager().docker.relay_http(lease.container_name, "POST", f"/v1/{operation}",
-        {"Content-Type": "application/json"}, _dump(payload).encode(), timeout=20,
-        response_max_bytes=MAX_JSON_BYTES, edu=True)
-    if response.status != 200:
-        raise services.VibeHubError("作品无法处理本次操作", status_code=502, code="edu_protocol_error")
+    # 每次续调都重新使用平台原始载荷；作品只能指定 opaque continuation，不能覆盖可信上下文。
+    original = deepcopy(payload)
+    request = original
+    for executed in range(MAX_INTERNAL_EXECUTIONS + 1):
+        response = get_runtime_manager().docker.relay_http(lease.container_name, "POST", f"/v1/{operation}",
+            {"Content-Type": "application/json"}, _dump(request).encode(), timeout=INTERNAL_TIMEOUT_SECONDS,
+            response_max_bytes=MAX_JSON_BYTES, edu=True)
+        if response.status != 200:
+            if operation in {"start", "step"} and executed == 0 and response.status in {400, 422}:
+                raise services.VibeHubError("操作不符合该作品规则", status_code=400)
+            raise services.VibeHubError("作品无法处理本次操作", status_code=502, code="edu_protocol_error")
+        try:
+            if len(response.body) > MAX_JSON_BYTES:
+                raise ValueError("响应过大")
+            result = json.loads(response.body)
+            _dump(result)
+        except (TypeError, ValueError) as exc:
+            raise services.VibeHubError("作品教育协议响应无效", status_code=502) from exc
+        if not isinstance(result, dict):
+            raise services.VibeHubError("作品教育协议响应必须为对象", status_code=502)
+        if not ({"execute", "continuation"} & result.keys()):
+            return result
+        if set(result) != {"execute", "continuation"} or not isinstance(result["execute"], dict):
+            raise services.VibeHubError("作品执行请求字段无效", status_code=502)
+        if executed >= MAX_INTERNAL_EXECUTIONS:
+            raise services.VibeHubError("作品执行请求次数超过限制", status_code=502)
+        execution_result = _execute_process(lease, original.get("context", {}), result["execute"])
+        # execution_result 只来自受控执行接口；浏览器 action 内的同名字段不会提升为可信结果。
+        request = {**deepcopy(original), "continuation": result["continuation"],
+            "execution_result": execution_result}
+        _dump(request)
+    raise AssertionError("教育协议执行次数检查失效")
+
+
+def _execute_process(lease, context, execute):
+    """对通用执行施加作答串行与全站并发限制，不解释作品的程序或评分规则。"""
+    attempt_id = context.get("attempt_id") if isinstance(context, dict) else None
+    if not isinstance(attempt_id, str) or not _IDENTIFIER.fullmatch(attempt_id):
+        raise services.VibeHubError("作品执行上下文无效", status_code=502)
+    conn = get_db_connection()
+    acquired = []
     try:
-        result = json.loads(response.body)
-        _dump(result)
-    except (TypeError, ValueError) as exc:
-        raise services.VibeHubError("作品教育协议响应无效", status_code=502) from exc
-    if not isinstance(result, dict):
-        raise services.VibeHubError("作品教育协议响应必须为对象", status_code=502)
-    return result
+        with conn.cursor() as cursor:
+            owner_lock = f"edu:execute:{attempt_id}"
+            cursor.execute("SELECT GET_LOCK(%s,0) AS acquired", (owner_lock,))
+            if int((cursor.fetchone() or {}).get("acquired") or 0) != 1:
+                raise services.VibeHubError("本次作答正在运行，请等待结果", status_code=429)
+            acquired.append(owner_lock)
+            for index in range(4):
+                slot = f"edu:process-slot:{index}"
+                cursor.execute("SELECT GET_LOCK(%s,0) AS acquired", (slot,))
+                if int((cursor.fetchone() or {}).get("acquired") or 0) == 1:
+                    acquired.append(slot)
+                    break
+            else:
+                raise services.VibeHubError("试运行资源繁忙，请稍后重试", status_code=429)
+            result = get_runtime_manager().docker.execute_edu_process(
+                lease.container_name, execute, timeout=EXECUTION_TIMEOUT_SECONDS)
+            _dump(result)
+            return result
+    finally:
+        try:
+            with conn.cursor() as cursor:
+                for lock in reversed(acquired):
+                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock,))
+        finally:
+            conn.close()
 
 
 def _transition(value):
@@ -202,12 +257,7 @@ def launch(slug, actor, assignment_id=None, channel="public"):
         if attempt is None:
             attempt_id = "att_" + secrets.token_urlsafe(20)
             seed = secrets.token_urlsafe(24)
-            generator = random.Random(seed)
             parameters = _load(assignment["parameters_json"], {}) if assignment else {}
-            executor = version["manifest"].get("education", {}).get("executor")
-            if executor in CPP_HEAP_EXECUTORS:
-                prefix = [7, 4 if executor == MEDIAN_EXECUTOR else 3, 10, -2, 6, 6, 15, 1]
-                parameters = {**parameters, "inputs": prefix + [generator.randint(-30, 30) for _ in range(16)]}
             context = {"attempt_id": attempt_id, "assignment_id": assignment_id,
                 "project_version_id": int(version["id"]), "rubric_version": 1,
                 "challenge_seed": seed, "parameters": parameters}
@@ -260,56 +310,6 @@ def attempt_state(attempt_id, actor=None):
         conn.close()
 
 
-def _execution(context, manifest, actions, *, lease, grading=False):
-    """只能由平台从已记录源码和可信输入构造 execution；客户端无此字段。"""
-    executor = manifest.get("education", {}).get("executor")
-    if executor not in CPP_HEAP_EXECUTORS:
-        return context
-    source = next((a["action"].get("source") for a in reversed(actions) if a["action"].get("type") == "run_code"), "")
-    if not isinstance(source, str) or not source.strip():
-        raise services.VibeHubError("请先填写并试运行 C++ 代码")
-    from backend.oj_modules.vibehub.edu_cpp import run_code
-    inputs = context["parameters"]["inputs"]
-    if grading:
-        rng = random.Random("grade:" + context["challenge_seed"])
-        if executor == MEDIAN_EXECUTOR:
-            # 固定覆盖大正数和大负数的 .5，防止整数除法或过宽相对误差漏判。
-            prefix = [999999999, 1000000000, -1000000000, -999999999,
-                      -999999998, -999999997, 0, 0, -1, 1]
-        else:
-            # 旧作业的输入与较小中位数规则均保持原样。
-            prefix = [0, 0, -1, 1, 1000000000, -1000000000]
-        inputs = prefix + [rng.randint(-10000, 10000) for _ in range(129 - len(prefix))]
-    enriched = deepcopy(context)
-    conn = get_db_connection()
-    acquired = []
-    try:
-        with conn.cursor() as cursor:
-            owner_lock = f"edu:execute:{context['attempt_id']}"
-            cursor.execute("SELECT GET_LOCK(%s,0) AS acquired", (owner_lock,))
-            if int((cursor.fetchone() or {}).get("acquired") or 0) != 1:
-                raise services.VibeHubError("本次作答正在运行，请等待结果", status_code=429)
-            acquired.append(owner_lock)
-            for index in range(4):
-                slot = f"edu:cpp-slot:{index}"
-                cursor.execute("SELECT GET_LOCK(%s,0) AS acquired", (slot,))
-                if int((cursor.fetchone() or {}).get("acquired") or 0) == 1:
-                    acquired.append(slot)
-                    break
-            else:
-                raise services.VibeHubError("试运行资源繁忙，请稍后重试", status_code=429)
-            enriched["execution"] = run_code(source, inputs,
-                docker=get_runtime_manager().docker, container_name=lease.container_name, executor=executor)
-    finally:
-        try:
-            with conn.cursor() as cursor:
-                for lock in reversed(acquired):
-                    cursor.execute("SELECT RELEASE_LOCK(%s)", (lock,))
-        finally:
-            conn.close()
-    return enriched
-
-
 def apply_action(attempt_id, payload, actor=None):
     if not isinstance(payload, dict) or set(payload) != {"command_id", "expected_seq", "action"}:
         raise services.VibeHubError("操作请求字段无效")
@@ -338,11 +338,9 @@ def apply_action(attempt_id, payload, actor=None):
         conn.rollback()
     finally:
         conn.close()
-    if version["manifest"].get("education", {}).get("executor") and (set(action) != {"type", "source"} or action["type"] != "run_code"):
-        raise services.VibeHubError("该作品只接受 run_code/source 操作")
     lease = _lease(version)
     try:
-        context = _execution(_load(row["context_json"]), version["manifest"], [{"action": action}], lease=lease)
+        context = _load(row["context_json"])
         transition = _transition(_internal(lease, "step", {"context": context, "state": _load(row["state_json"]), "action": action, "seq": int(row["seq"]) + 1}))
     finally:
         get_runtime_manager().release(lease.token)
@@ -467,8 +465,7 @@ def grade_submission(submission_id):
                 conn.commit()
                 lease = _lease(version)
                 try:
-                    context = _execution(snapshot["context"], version["manifest"], snapshot["actions"], lease=lease, grading=True)
-                    result = _internal(lease, "grade", {"context": context, "actions": snapshot["actions"]})
+                    result = _internal(lease, "grade", {"context": snapshot["context"], "actions": snapshot["actions"]})
                 finally:
                     get_runtime_manager().release(lease.token)
                 score_bp = result.get("score_bp")

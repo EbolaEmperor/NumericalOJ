@@ -261,13 +261,20 @@ are included in the existing class score export, while edu submissions are
 separate from ordinary `submission list`. A work receives an anonymous attempt
 ID, not the player's student number or OJ login cookie.
 
-The current dynamic-balance example uses `cpp-heap-median-v2` and
-`double step(int x)`; even input counts return the mean of the two middle values.
-Frozen `cpp-heap-median-v1` works retain `int step(int x)` and the lower-middle rule.
-Both provide `A`/`B.insert(x)`, `pop()`, `top()`, and `size()` (`int`, zero for an
-empty heap); heap values remain integers. The C++ executor uses the existing
-VibeHub work container, with platform-verified traces and a fresh hidden run
-for grading; it does not start additional judging containers.
+The work owns its inputs, student API, execution driver, and grading rules.
+NumOJ records the attempt and accepts a format-validated score only through the
+private `edu.sock` grading channel; it does not recompute the problem. A work can
+request generic compilation/execution inside its existing container, then
+interpret the trusted result itself. Read `vibehub guide` for that contract.
+The current dynamic-balance example defines `double step(int x)` and the mean
+of the two middle values for even input counts. Its integer heaps provide
+`insert(x)`, `pop()`, `top()`, and `size()`; these are work rules, not platform APIs.
+
+Legacy `education.executor` strings are metadata, not execution capabilities.
+Frozen packages relying on the old `context.execution` contract are not
+automatically migrated. Keep their historical scores and snapshots; unfinished
+homework requires the author to publish a compatible package and an explicit
+new assignment by the administrator. Do not silently replace a pinned version.
 
 Use `vibehub edu --help` for current-account testing. `launch <slug>
 --assignment-id <edu_assignment_id>` binds a run to homework; obtain this value

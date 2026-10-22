@@ -6,8 +6,7 @@
   "health_path": "/healthz",
   "education": {
     "protocol": "vibehub-edu/1",
-    "socket_path": "/run/vibehub/edu.sock",
-    "executor": "cpp-heap-median-v2"
+    "socket_path": "/run/vibehub/edu.sock"
   },
   "title": "动态平衡术",
   "summary": "使用两棵二叉堆计算输入流的中位数。",

@@ -1,11 +1,19 @@
-"""教学 C++ 只在已有 VibeHub 容器执行，分数与堆状态由平台独立重放。"""
+"""作品内部的 C++ 执行请求、中位数规则与可信轨迹重放。"""
 
 import base64
-from types import SimpleNamespace
+import importlib.util
+from pathlib import Path
 
 import pytest
 
-from backend.oj_modules.vibehub import edu_cpp
+EXAMPLE = Path(__file__).resolve().parents[2] / "vibehub_examples" / "dynamic-balance"
+_spec = importlib.util.spec_from_file_location("dynamic_balance_cpp_test", EXAMPLE / "cpp.py")
+cpp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cpp)
+
+
+def _replay(stdout, inputs, *, executor=cpp.LEGACY_EXECUTOR, **kwargs):
+    return cpp._replay(stdout, inputs, executor=executor, **kwargs)
 
 
 VALID_TRACE = """ROUND 0 7 2
@@ -27,7 +35,7 @@ A T 7
 
 
 def test_replay_uses_lower_median_and_reconstructs_real_heap_snapshots():
-    rounds = edu_cpp._replay(VALID_TRACE, [7, 3, 10])
+    rounds = _replay(VALID_TRACE, [7, 3, 10])
     assert [item["expected"] for item in rounds] == [7, 3, 7]
     assert all(item["passed"] for item in rounds)
     assert rounds[1]["left_heap"] == [3]
@@ -37,7 +45,7 @@ def test_replay_uses_lower_median_and_reconstructs_real_heap_snapshots():
 
 
 def test_correct_return_without_storing_the_input_does_not_pass():
-    result = edu_cpp._replay("ROUND 0 7 0\n", [7])[0]
+    result = _replay("ROUND 0 7 0\n", [7])[0]
     assert result["returned"] == result["expected"]
     assert result["passed"] is False
     assert "保存所有已经输入的数" in result["feedback"]
@@ -55,15 +63,15 @@ def test_correct_return_without_storing_the_input_does_not_pass():
 ])
 def test_replay_rejects_fabricated_or_unbounded_operation_records(trace):
     with pytest.raises(ValueError):
-        edu_cpp._replay(trace, [7])
+        _replay(trace, [7])
 
 
 def test_replay_checks_balance_and_partition_separately_from_answer():
-    rounds = edu_cpp._replay("ROUND 0 3 1\nA I 3\nROUND 1 3 1\nA I 7\n", [3, 7])
+    rounds = _replay("ROUND 0 3 1\nA I 3\nROUND 1 3 1\nA I 7\n", [3, 7])
     assert rounds[0]["passed"] is True
     assert rounds[1]["passed"] is False
     assert "元素数" in rounds[1]["feedback"]
-    rounds = edu_cpp._replay("ROUND 0 3 1\nA I 3\nROUND 1 1 1\nB I 1\n", [3, 1])
+    rounds = _replay("ROUND 0 3 1\nA I 3\nROUND 1 1 1\nB I 1\n", [3, 1])
     assert rounds[1]["passed"] is False
     assert "全部不大于" in rounds[1]["feedback"]
 
@@ -75,32 +83,24 @@ def command_result(returncode=0, stdout="", stderr="", **overrides):
         "stdout_truncated": False, "stderr_truncated": False, **overrides}
 
 
-def execute(source, inputs, response, *, executor=edu_cpp.LEGACY_EXECUTOR):
-    return edu_cpp.run_code(source, inputs, container_name="existing-container",
-        docker=SimpleNamespace(execute_edu_cpp=lambda *_args, **_kwargs: response), executor=executor)
+def execute(source, inputs, response, *, executor=cpp.LEGACY_EXECUTOR):
+    cpp.build_request(source, inputs, executor=executor)
+    return cpp.finish_execution(response, inputs, executor=executor)
 
 
-def test_compile_and_execute_use_one_existing_vibehub_container():
-    calls = []
+def test_compile_request_keeps_student_macros_out_of_the_driver():
     source = "#define main ignored\nint step(int x) { A.insert(x); return A.top(); }"
-
-    def run(container_name, payload, **kwargs):
-        calls.append((container_name, payload, kwargs))
-        assert payload["source"] == source
-        assert source not in payload["harness"]
-        assert "int main()" in payload["harness"]
-        assert "int size();" in payload["api_header"]
-        return {"compile": command_result(), "run": command_result(stdout=VALID_TRACE)}
-
-    result = edu_cpp.run_code(source, [7, 3, 10], container_name="existing-container",
-        docker=SimpleNamespace(execute_edu_cpp=run))
-    assert result["compiled"] is True
-    assert result["passed"] == result["total"] == 3
-    assert len(calls) == 1
-    assert calls[0][0] == "existing-container"
-    assert calls[0][1]["inputs"] == [7, 3, 10]
-    assert calls[0][1]["timeout_seconds"] == 5
-    assert calls[0][2]["timeout"] == 35
+    request = cpp.build_request(source, [7, 3, 10], executor=cpp.LEGACY_EXECUTOR)
+    assert set(request) == {"files", "compile", "run", "executable"}
+    assert set(request["files"]) == {"api.hpp", "student.cpp", "driver.cpp"}
+    assert request["files"]["student.cpp"] == '#include "api.hpp"\n' + source
+    assert source not in request["files"]["driver.cpp"]
+    assert "int main()" in request["files"]["driver.cpp"]
+    assert "int size();" in request["files"]["api.hpp"]
+    assert request["compile"] == {"argv": ["/usr/bin/g++", "-std=c++20", "-O2", "-pipe", "-I", "${WORKDIR}",
+        "${WORKDIR}/student.cpp", "${WORKDIR}/driver.cpp", "-o", "${WORKDIR}/program"], "seconds": 25}
+    assert request["run"] == {"stdin": "3\n7\n3\n10\n", "seconds": 5}
+    assert request["executable"] == "program"
 
 
 def test_score_counts_only_the_correct_prefix():
@@ -131,7 +131,7 @@ def test_runtime_exception_preserves_completed_rounds_and_current_heap_operation
 
 
 def test_timeout_without_error_frame_adds_a_failure_after_the_complete_prefix():
-    rounds = edu_cpp._replay("ROUND 0 7 2\nA I 7\nA T 7\n", [7, 3, 10], runtime_error="运行超时")
+    rounds = _replay("ROUND 0 7 2\nA I 7\nA T 7\n", [7, 3, 10], runtime_error="运行超时")
     assert len(rounds) == 2
     assert rounds[0]["passed"] is True
     assert rounds[1]["passed"] is False and rounds[1]["x"] == 3
@@ -141,7 +141,7 @@ def test_timeout_without_error_frame_adds_a_failure_after_the_complete_prefix():
 
 def test_a_successful_process_cannot_pass_by_printing_a_runtime_error_frame():
     with pytest.raises(ValueError):
-        edu_cpp._replay("ERROR 0 0\n", [7])
+        _replay("ERROR 0 0\n", [7])
 
 
 def test_compile_failure_does_not_require_a_user_executable_result():
@@ -171,22 +171,27 @@ def test_student_exit_255_remains_a_student_runtime_error():
     assert result["rounds"][0]["returned"] is None
 
 
-def test_empty_and_oversized_source_do_not_execute():
-    docker = SimpleNamespace(execute_edu_cpp=lambda *_a, **_k: pytest.fail("不应执行"))
-    kwargs = {"docker": docker, "container_name": "existing-container"}
-    assert edu_cpp.run_code("", [7], **kwargs)["compiled"] is False
-    assert edu_cpp.run_code("x" * (edu_cpp.MAX_SOURCE_BYTES + 1), [7], **kwargs)["compiled"] is False
+@pytest.mark.parametrize("source", ["", "   ", "x" * (cpp.MAX_SOURCE_BYTES + 1), "double step(int x) {\x00}"])
+def test_empty_and_oversized_source_cannot_create_an_execution_request(source):
     with pytest.raises(ValueError):
-        edu_cpp.run_code("int step(int x){return x;}", [True], **kwargs)
+        cpp.build_request(source, [7])
+
+
+@pytest.mark.parametrize("inputs", [[], [True], [1.5], [1000000001], [-1000000001], [0] * 513])
+def test_invalid_inputs_are_rejected_by_request_and_result_processing(inputs):
+    with pytest.raises(ValueError):
+        cpp.build_request("double step(int x){return x;}", inputs)
+    with pytest.raises(ValueError):
+        cpp.finish_execution({}, inputs)
 
 
 def test_size_reads_empty_and_nonempty_heaps_without_mutating_them():
-    result = edu_cpp._replay("ROUND 0 7 5\nA S 0\nB S 0\nA I 7\nA S 1\nA T 7\n", [7])[0]
+    result = _replay("ROUND 0 7 5\nA S 0\nB S 0\nA I 7\nA S 1\nA T 7\n", [7])[0]
     assert result["passed"] is True
     assert result["left_heap"] == [7] and result["right_heap"] == []
     assert [item["value"] for item in result["operations"] if item["type"] == "size"] == [0, 0, 1]
     with pytest.raises(ValueError, match="实际堆大小"):
-        edu_cpp._replay("ROUND 0 7 2\nA I 7\nA S 99\n", [7])
+        _replay("ROUND 0 7 2\nA I 7\nA S 99\n", [7])
 
 
 @pytest.mark.parametrize("response", [None, {}, {"compile": {}},
@@ -201,14 +206,14 @@ def test_invalid_runner_results_never_become_a_grade(response):
 
 def test_v2_uses_the_average_and_keeps_the_legacy_lower_median_unchanged():
     trace = VALID_TRACE.replace('ROUND 1 3 ', 'ROUND 1 5 ')
-    rounds = edu_cpp._replay(trace, [7, 3, 10], executor=edu_cpp.MEDIAN_EXECUTOR)
+    rounds = _replay(trace, [7, 3, 10], executor=cpp.MEDIAN_EXECUTOR)
     assert [item['expected'] for item in rounds] == [7.0, 5.0, 7.0]
     assert all(item['passed'] for item in rounds)
-    legacy = edu_cpp._replay(VALID_TRACE, [7, 3, 10], executor=edu_cpp.LEGACY_EXECUTOR)
+    legacy = _replay(VALID_TRACE, [7, 3, 10], executor=cpp.LEGACY_EXECUTOR)
     assert [item['expected'] for item in legacy] == [7, 3, 7]
     assert all(item['passed'] for item in legacy)
     with pytest.raises(ValueError, match='无效整数'):
-        edu_cpp._replay('ROUND 0 7.0 1\nA I 7\n', [7])
+        _replay('ROUND 0 7.0 1\nA I 7\n', [7])
 
 
 @pytest.mark.parametrize('left,right,returned', [(1, 2, '1.5'), (-4, -1, '-2.5'),
@@ -217,7 +222,7 @@ def test_v2_uses_the_average_and_keeps_the_legacy_lower_median_unchanged():
     (-1000000000, 1000000000, '0'), (1000000000, 1000000000, '1e9')])
 def test_v2_accepts_exact_half_integer_and_extreme_medians(left, right, returned):
     trace = f'ROUND 0 {left} 1\nA I {left}\nROUND 1 {returned} 1\nB I {right}\n'
-    result = edu_cpp._replay(trace, [left, right], executor=edu_cpp.MEDIAN_EXECUTOR)
+    result = _replay(trace, [left, right], executor=cpp.MEDIAN_EXECUTOR)
     assert all(item['passed'] for item in result)
     assert result[-1]['returned'] == result[-1]['expected'] == (left + right) / 2
 
@@ -227,7 +232,7 @@ def test_v2_accepts_exact_half_integer_and_extreme_medians(left, right, returned
     (-1000000000, -999999999, '-999999999')])
 def test_v2_rejects_integer_division_and_half_unit_errors_at_large_magnitudes(left, right, wrong):
     trace = f'ROUND 0 {left} 1\nA I {left}\nROUND 1 {wrong} 1\nB I {right}\n'
-    result = edu_cpp._replay(trace, [left, right], executor=edu_cpp.MEDIAN_EXECUTOR)
+    result = _replay(trace, [left, right], executor=cpp.MEDIAN_EXECUTOR)
     assert result[0]['passed'] is True
     assert result[1]['valid'] is True and result[1]['passed'] is False
     assert '中位数不正确' in result[1]['feedback']
@@ -237,45 +242,61 @@ def test_v2_rejects_integer_division_and_half_unit_errors_at_large_magnitudes(le
     '1e309', '-1e999', '1_000', '0x1p0'])
 def test_v2_never_accepts_nonfinite_or_nondecimal_return_values(returned):
     with pytest.raises(ValueError, match='有限浮点数'):
-        edu_cpp._replay(f'ROUND 0 {returned} 1\nA I 7\n', [7], executor=edu_cpp.MEDIAN_EXECUTOR)
+        _replay(f'ROUND 0 {returned} 1\nA I 7\n', [7], executor=cpp.MEDIAN_EXECUTOR)
 
 
 @pytest.mark.parametrize('operation', ['A I 7.0', 'A I 7e0', 'A I 7_0', 'A S 0.0'])
 def test_v2_keeps_heap_operation_values_strictly_integer(operation):
     with pytest.raises(ValueError, match='无效整数'):
-        edu_cpp._replay(f'ROUND 0 7 1\n{operation}\n', [7], executor=edu_cpp.MEDIAN_EXECUTOR)
+        _replay(f'ROUND 0 7 1\n{operation}\n', [7], executor=cpp.MEDIAN_EXECUTOR)
 
 
 @pytest.mark.parametrize('executor,result_type,returned,expected', [
-    (edu_cpp.LEGACY_EXECUTOR, 'int', '7', 7),
-    (edu_cpp.MEDIAN_EXECUTOR, 'double', '7.0', 7.0),
+    (cpp.LEGACY_EXECUTOR, 'int', '7', 7),
+    (cpp.MEDIAN_EXECUTOR, 'double', '7.0', 7.0),
 ])
-def test_run_code_selects_the_matching_frozen_function_abi_and_replay(executor, result_type, returned, expected):
-    calls = []
-
-    def run(container_name, payload, **_kwargs):
-        calls.append((container_name, payload))
-        assert f'{result_type} step(int x);' in payload['api_header']
-        assert f'using NumOJStepResult = {result_type};' in payload['harness']
-        assert 'std::numeric_limits<NumOJStepResult>::max_digits10' in payload['harness']
-        return {'compile': command_result(), 'run': command_result(stdout=f'ROUND 0 {returned} 1\nA I 7\n')}
-
-    result = edu_cpp.run_code(f'{result_type} step(int x){{A.insert(x);return A.top();}}', [7],
-        docker=SimpleNamespace(execute_edu_cpp=run), container_name='existing-container', executor=executor)
-    assert len(calls) == 1 and result['passed'] == 1
+def test_request_selects_the_matching_work_owned_function_abi_and_replay(executor, result_type, returned, expected):
+    request = cpp.build_request(f'{result_type} step(int x){{A.insert(x);return A.top();}}', [7], executor=executor)
+    assert f'{result_type} step(int x);' in request['files']['api.hpp']
+    assert f'using NumOJStepResult = {result_type};' in request['files']['driver.cpp']
+    assert 'std::numeric_limits<NumOJStepResult>::max_digits10' in request['files']['driver.cpp']
+    result = cpp.finish_execution({'compile': command_result(),
+        'run': command_result(stdout=f'ROUND 0 {returned} 1\nA I 7\n')}, [7], executor=executor)
+    assert result['passed'] == 1
     assert result['rounds'][0]['expected'] == expected
 
 
 def test_v2_nonfinite_program_output_is_a_student_failure():
     result = execute('double step(int x){return 0.0/0.0;}', [7],
         {'compile': command_result(), 'run': command_result(stdout='ROUND 0 nan 1\nA I 7\n')},
-        executor=edu_cpp.MEDIAN_EXECUTOR)
+        executor=cpp.MEDIAN_EXECUTOR)
     assert result['compiled'] is True and result['passed'] == 0
     assert '有限浮点数' in result['error']
 
 
-def test_unknown_executor_cannot_start_any_program():
-    docker = SimpleNamespace(execute_edu_cpp=lambda *_a, **_k: pytest.fail('不应执行'))
+def test_unknown_work_owned_abi_cannot_create_any_program():
     with pytest.raises(ValueError, match='不支持'):
-        edu_cpp.run_code('double step(int x){return x;}', [7], docker=docker,
-            container_name='existing-container', executor='client-defined-executor')
+        cpp.build_request('double step(int x){return x;}', [7], executor='client-defined-executor')
+
+
+def test_default_abi_is_double_and_even_median_is_an_average():
+    request = cpp.build_request('double step(int x){return x;}', [1, 2])
+    assert 'double step(int x);' in request['files']['api.hpp']
+    result = cpp.finish_execution({'compile': command_result(), 'run': command_result(
+        stdout='ROUND 0 1 1\nA I 1\nROUND 1 1.5 1\nB I 2\n')}, [1, 2])
+    assert result['passed'] == 2
+    assert result['rounds'][1]['returned'] == result['rounds'][1]['expected'] == 1.5
+
+
+def test_work_implementation_has_no_platform_or_process_dependency():
+    source = (EXAMPLE / 'cpp.py').read_text()
+    assert 'from backend' not in source and 'import backend' not in source
+    assert 'subprocess' not in source and 'docker.' not in source
+
+
+def test_work_request_satisfies_the_generic_execution_resource_contract():
+    from backend.oj_modules.vibehub.edu_execution import validate_request
+
+    request = cpp.build_request('double step(int x){A.insert(x);return A.top();}',
+        [1, 2, -1000000000, 1000000000])
+    assert validate_request(request) == request

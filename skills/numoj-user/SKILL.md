@@ -173,18 +173,25 @@ On a network failure, retry with the original command/request ID and identical
 payload. A `409` means reread the state before continuing. The result command
 also accepts `--submission-id <edu_submission_id>` returned by `submit`.
 Omitting `--assignment-id` starts practice and does not count toward homework.
-The current dynamic-balance example uses `cpp-heap-median-v2` with
-`double step(int x)` and averages the two middle values for even input counts.
-Check the assigned frozen version: `cpp-heap-median-v1` still uses
-`int step(int x)` and the lower-middle rule. Both provide `A`/`B.insert(x)`,
-`pop()`, `top()`, and `size()` (`int`, zero for an empty heap); heap values remain
-integers. Its editor supports C++ highlighting.
-The platform executes the code in the existing VibeHub work container and
-verifies the trace; final scores come from rerunning frozen code on hidden inputs.
+The current dynamic-balance work defines `double step(int x)` and averages the
+two middle values for even input counts. Its integer heaps provide `A`/`B.insert(x)`,
+`pop()`, `top()`, and `size()` (`int`, zero for an empty heap). Its editor supports
+C++ highlighting. Inputs, execution traces, and grading rules belong to the work;
+NumOJ freezes the attempt and records the score returned through the private
+grading channel. Browser-supplied scores or execution results are not authoritative.
+
+Legacy packages relying on `context.execution` are not automatically migrated;
+an `education.executor` string no longer selects an executor. Historical scores
+and snapshots remain, but unfinished old homework needs a compatible published
+package and explicit reassignment by the administrator. Follow the assigned
+version and report this case to the author or administrator.
 
 Creating an edu work requires `kind: "edu"`, `education.protocol:
 "vibehub-edu/1"`, and its internal teaching socket; read the server's developer
-guide for the exact contract before implementing or uploading one.
+guide for the exact contract before implementing or uploading one. The work
+implements `start`, `step`, and `grade` itself. Optional generic execution returns
+trusted process output to that private interface; the work interprets it and
+computes `score_bp`. It does not require a platform-specific problem executor.
 
 Use Git submission when the competition enables it. The user does not provide a Git URL; NumOJ derives the URL from the competition's Git rule and the logged-in username. Always check first, then submit:
 

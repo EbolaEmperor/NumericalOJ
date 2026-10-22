@@ -1,4 +1,4 @@
-"""动态平衡术教学作品。平台在既有作品容器执行 C++，后端独立核验轨迹。"""
+"""动态平衡术教学作品：作品定义 C++ 接口、题目输入、轨迹核验与评分。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ import os
 from pathlib import Path
 import random
 import socketserver
+import stat
 import threading
 from urllib.parse import urlsplit
+
+import cpp
 
 
 ROOT = Path(__file__).resolve().parent
@@ -22,44 +25,74 @@ double step(int x) {
     return A.top();
 }
 """
+_MISSING = object()
+
+
+def practice_inputs(context):
+    generator = random.Random("practice:" + str(context.get("challenge_seed", "balance")))
+    return [7, 4, 10, -2, 6, 6, 15, 1] + [generator.randint(-30, 30) for _ in range(16)]
+
+
+def hidden_inputs(context):
+    generator = random.Random("grade:" + str(context.get("challenge_seed", "balance")))
+    prefix = [999999999, 1000000000, -1000000000, -999999999,
+              -999999998, -999999997, 0, 0, -1, 1]
+    return prefix + [generator.randint(-10000, 10000) for _ in range(129 - len(prefix))]
 
 
 def start(context):
-    parameters = context.get("parameters") or {}
-    inputs = parameters.get("inputs")
-    if not isinstance(inputs, list) or not inputs:
-        generator = random.Random(str(context.get("challenge_seed", "balance")))
-        inputs = [generator.randrange(-20, 100) for _ in range(20)]
+    inputs = practice_inputs(context)
     state = {"source": DEFAULT_SOURCE, "inputs": inputs, "execution": None,
              "assignment_id": context.get("assignment_id")}
     return {"state": state, "view": {**state, "initial_source": DEFAULT_SOURCE}}
 
 
-def step(context, state, action):
-    if action.get("type") != "run_code":
-        raise ValueError("只支持试运行 C++ 代码")
+def action_source(action):
+    if not isinstance(action, dict) or set(action) != {"type", "source"} or action["type"] != "run_code":
+        raise ValueError("只接受 run_code/source 操作，不能传入执行结果或分数")
     source = action.get("source")
-    if not isinstance(source, str) or len(source.encode("utf-8")) > 64 * 1024:
-        raise ValueError("代码必须是 64 KiB 以内的文本")
-    execution = context.get("execution")
-    if not isinstance(execution, dict):
-        raise ValueError("平台没有提供可信的 C++ 执行结果")
-    new_state = {"source": source, "inputs": list(state["inputs"]), "execution": execution,
+    if not isinstance(source, str) or not source.strip() or len(source.encode("utf-8")) > cpp.MAX_SOURCE_BYTES or "\x00" in source:
+        raise ValueError("代码必须是 64 KiB 以内的非空文本")
+    return source
+
+
+def _resume(continuation, execution_result, operation, fields):
+    if (not isinstance(continuation, dict) or set(continuation) != {"operation", *fields}
+            or continuation.get("operation") != operation or execution_result is _MISSING):
+        raise ValueError("执行续调数据无效")
+    return continuation
+
+
+def step(context, state, action, *, continuation=None, execution_result=_MISSING):
+    if continuation is None and execution_result is _MISSING:
+        source = action_source(action)
+        inputs = list(state["inputs"])
+        return {"execute": cpp.build_request(source, inputs),
+                "continuation": {"operation": "step", "source": source, "inputs": inputs}}
+    saved = _resume(continuation, execution_result, "step", {"source", "inputs"})
+    source = action_source({"type": "run_code", "source": saved["source"]})
+    inputs = saved["inputs"]
+    execution = cpp.finish_execution(execution_result, inputs)
+    new_state = {"source": source, "inputs": list(inputs), "execution": execution,
                  "assignment_id": context.get("assignment_id")}
     return {"state": new_state, "view": {**new_state, "initial_source": DEFAULT_SOURCE}}
 
 
-def grade(context, actions):
-    # execution 由平台从冻结的最后一份源码重新执行隐藏测试得到。
-    source = next((item.get("action", {}).get("source") for item in reversed(actions)
-                   if item.get("action", {}).get("type") == "run_code"), None)
-    if not isinstance(source, str) or not source.strip():
-        raise ValueError("提交快照中没有 C++ 代码")
-    execution = context.get("execution") or {}
-    total = execution.get("total", 0)
-    passed = execution.get("passed", 0)
-    if type(total) is not int or type(passed) is not int or not 0 <= passed <= total or total <= 0:
-        raise ValueError("平台评分结果无效")
+def grade(context, actions, *, continuation=None, execution_result=_MISSING):
+    inputs = hidden_inputs(context)
+    if continuation is None and execution_result is _MISSING:
+        if not isinstance(actions, list) or not actions:
+            raise ValueError("提交快照中没有 C++ 代码")
+        sources = [action_source(item.get("action")) for item in actions if isinstance(item, dict)]
+        if len(sources) != len(actions):
+            raise ValueError("提交快照的操作格式无效")
+        source = sources[-1]
+        return {"execute": cpp.build_request(source, inputs),
+                "continuation": {"operation": "grade", "source": source}}
+    saved = _resume(continuation, execution_result, "grade", {"source"})
+    action_source({"type": "run_code", "source": saved["source"]})
+    execution = cpp.finish_execution(execution_result, inputs)
+    total, passed = execution["total"], execution["passed"]
     compiled = execution.get("compiled") is True
     score = 10000 * passed // total if compiled else 0
     # 隐藏测试的输入、堆状态与源码均不放进成绩反馈。
@@ -70,7 +103,7 @@ def grade(context, actions):
         "feedback": (
             f"隐藏测试通过 {passed}/{total} 轮。"
             if compiled and not execution.get("error")
-            else "隐藏测试未能完成：" + str(execution.get("error", "编译失败"))[:3000]
+            else "隐藏测试未能完成，请在试运行中检查代码。"
         ),
     }
 
@@ -112,19 +145,28 @@ class EducationHandler(SimpleHTTPRequestHandler):
             context = payload.get("context") or {}
             if not isinstance(context, dict):
                 raise ValueError("作答上下文无效")
+            resumed = {}
+            if "continuation" in payload or "execution_result" in payload:
+                if not {"continuation", "execution_result"} <= payload.keys():
+                    raise ValueError("执行续调数据无效")
+                resumed = {"continuation": payload["continuation"], "execution_result": payload["execution_result"]}
             path = urlsplit(self.path).path
             if path == "/v1/start":
+                if resumed:
+                    raise ValueError("启动不接受执行续调")
                 response = start(context)
             elif path == "/v1/step":
-                response = step(context, payload.get("state") or {}, payload.get("action") or {})
+                response = step(context, payload.get("state") or {}, payload.get("action") or {}, **resumed)
             elif path == "/v1/grade":
-                response = grade(context, payload.get("actions") or [])
+                response = grade(context, payload.get("actions") or [], **resumed)
             else:
                 self.send_error(404)
                 return
             status = 200
         except (ValueError, KeyError, TypeError) as exc:
             response, status = {"error": str(exc)}, 400
+        except RuntimeError:
+            response, status = {"error": "执行资源暂时不可用，请稍后重试"}, 503
         body = json.dumps(response, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -139,7 +181,18 @@ class EducationHandler(SimpleHTTPRequestHandler):
         pass
 
 
+def protect_data_directory(path=Path("/data")):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise PermissionError("持久数据目录必须是作品服务拥有的真实目录")
+    path.chmod(0o700)
+
+
 def serve():
+    protect_data_directory()
     app_socket = Path(os.environ.get("VIBEHUB_SOCKET", "/run/vibehub/app.sock"))
     edu_socket = Path(os.environ.get("VIBEHUB_EDU_SOCKET", "/run/vibehub/edu.sock"))
     servers = []

@@ -1,7 +1,7 @@
-"""动态平衡术的 C++ 执行器：在既有 VibeHub 容器中编译与运行。
+"""作品自有的 C++ 接口、执行请求与中位数评分规则。
 
-C++ 只输出返回值和堆 API 调用记录。Python 根据可信输入独立重放记录，
-重建两棵堆、检查多重集与平衡条件，并重新计算中位数，不接收程序自报的成绩。
+这里只构造通用执行请求，不启动进程或调用 Docker。平台返回有界的字节结果后，
+作品根据自己的输入重放堆 API 记录并计算成绩，不接收程序自报的通过状态。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ int step(int x);
 """
 
 # 用户代码与驱动分开编译；学生的预处理宏不能改变驱动入口或堆实现。
-_HARNESS = r'''#include "heap_api.hpp"
+_HARNESS = r'''#include "api.hpp"
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
@@ -174,7 +174,7 @@ def _finite_double(value):
     return parsed
 
 
-def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "", executor: str = LEGACY_EXECUTOR) -> list[dict]:
+def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "", executor: str = MEDIAN_EXECUTOR) -> list[dict]:
     """所有展示数据与通过状态都来自 Python 重放，不信任 C++ 自报快照。"""
     if executor not in CPP_HEAP_EXECUTORS:
         raise ValueError("不支持的 C++ 执行器")
@@ -296,26 +296,46 @@ def _command_result(value):
     return result
 
 
-def run_code(source: str, inputs: list[int], *, docker, container_name: str,
-             timeout_seconds: int = 5, executor: str = LEGACY_EXECUTOR) -> dict:
-    """按固定版本执行 step，仅接受平台选择的输入和有界资源参数。"""
+def _validate_inputs(inputs, executor):
     if executor not in CPP_HEAP_EXECUTORS:
         raise ValueError("不支持的 C++ 执行器")
     if not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_INPUTS:
         raise ValueError("输入序列长度应在 1 到 512 之间")
     if any(type(value) is not int or abs(value) > MAX_INTEGER for value in inputs):
         raise ValueError("输入必须为 -10^9 到 10^9 之间的整数")
+
+
+def build_request(source: str, inputs: list[int], *, timeout_seconds: int = 5,
+                  executor: str = MEDIAN_EXECUTOR) -> dict:
+    """把作品源码、驱动和输入交给通用执行资源；学生源码独立编译。"""
+    _validate_inputs(inputs, executor)
     if not isinstance(source, str) or not source.strip():
         return_type = "double" if executor == MEDIAN_EXECUTOR else "int"
-        return _failure(len(inputs), f"请先填写 {return_type} step(int x) 函数")
+        raise ValueError(f"请先填写 {return_type} step(int x) 函数")
     if len(source.encode("utf-8")) > MAX_SOURCE_BYTES or "\x00" in source:
-        return _failure(len(inputs), "代码超过 64 KiB 或包含无效字符")
+        raise ValueError("代码超过 64 KiB 或包含无效字符")
     timeout_seconds = max(1, min(10, int(timeout_seconds)))
     api_header, harness = _PROGRAMS[executor]
-    response = docker.execute_edu_cpp(container_name, {
-        "source": source, "api_header": api_header, "harness": harness,
-        "inputs": inputs, "timeout_seconds": timeout_seconds,
-    }, timeout=timeout_seconds + 30)
+    return {
+        "files": {
+            "api.hpp": api_header,
+            "student.cpp": '#include "api.hpp"\n' + source,
+            "driver.cpp": harness,
+        },
+        "compile": {
+            "argv": ["/usr/bin/g++", "-std=c++20", "-O2", "-pipe", "-I", "${WORKDIR}",
+                     "${WORKDIR}/student.cpp", "${WORKDIR}/driver.cpp", "-o", "${WORKDIR}/program"],
+            "seconds": 25,
+        },
+        "run": {"stdin": str(len(inputs)) + "\n" + "\n".join(map(str, inputs)) + "\n",
+                "seconds": timeout_seconds},
+        "executable": "program",
+    }
+
+
+def finish_execution(response: dict, inputs: list[int], *, executor: str = MEDIAN_EXECUTOR) -> dict:
+    """只使用通用执行的编译/运行结果，独立重建每一轮的答案与堆状态。"""
+    _validate_inputs(inputs, executor)
     if not isinstance(response, dict) or set(response) not in ({"compile"}, {"compile", "run"}):
         raise RuntimeError("作品 C++ 执行响应无效")
     compiled = _command_result(response["compile"])
