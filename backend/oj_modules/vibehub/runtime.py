@@ -2858,6 +2858,35 @@ class VibeHubRuntimeManager:
         image = self.docker.find_image(image_ref)
         return image.image_id if image is not None else None
 
+    def pin_existing_image(
+        self,
+        target_project_key: str,
+        source_project_key: str,
+        *,
+        package_digest: str,
+        featured: bool = False,
+    ) -> bool:
+        """复用同一已验证作品包的现成镜像，按不可变 ID 固定版本别名。"""
+        expected_digest = str(package_digest or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+            raise VibeHubImageError("VibeHub 作品包摘要无效")
+        target_ref = image_reference_for(target_project_key, channel="public")
+        for channel in ("public", "latest"):
+            image = self.docker.find_image(image_reference_for(source_project_key, channel=channel))
+            if image is None or (
+                image.labels.get(MANAGED_IMAGE_LABEL) != "1"
+                or image.labels.get(PACKAGE_DIGEST_LABEL) != expected_digest
+            ):
+                continue
+            if image.volumes:
+                raise VibeHubImageError("VibeHub 镜像不得声明持久化 VOLUME")
+            if image.size_bytes > limits_for(featured).image_bytes:
+                raise VibeHubImageError("VibeHub 镜像超过当前资源预算")
+            # 不从可能被同时发布替换的 source tag 打标签，保留本次校验的镜像身份。
+            self.docker.tag_image(image.image_id, target_ref)
+            return True
+        return False
+
     def restore_image_tag(
         self, project_key: str, *, channel: str, image_id: str | None,
     ) -> None:

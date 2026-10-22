@@ -1,13 +1,14 @@
 """教学协议的权限、不可伪报成绩、去重与冻结回归；不连接外部基础设施。"""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from flask import Flask
 
 from backend.oj_modules.api import vibehub_edu_api
-from backend.oj_modules.vibehub import edu, services
+from backend.oj_modules.vibehub import edu, runtime, services
 
 
 ACTOR = {'id': 12, 'username': '2026001', 'is_admin': 0}
@@ -61,6 +62,197 @@ class Connection:
 
     def close(self):
         pass
+
+
+_PACKAGE = 'a' * 64
+_EDU_KEY = 'edu:3:v9'
+_PUBLIC_REF = runtime.image_reference_for('balance', channel='public')
+_LATEST_REF = runtime.image_reference_for('balance', channel='latest')
+_FIXED_REF = runtime.image_reference_for(_EDU_KEY, channel='public')
+_LEASE_VERSION = {'id': 9, 'project_id': 3, 'slug': 'balance', 'version_number': 2,
+                  'package_sha256': _PACKAGE, 'is_featured': 0}
+
+
+def _lease_image(reference, *, number='1', labels=None, size=1024, volumes=()):
+    return runtime.ImageInfo(reference, 'sha256:' + number * 64, size,
+        labels if labels is not None else {runtime.MANAGED_IMAGE_LABEL: '1', runtime.PACKAGE_DIGEST_LABEL: _PACKAGE},
+        volumes)
+
+
+class _LeaseDocker:
+    def __init__(self, images):
+        self.images = dict(images)
+        self.lookups = []
+        self.tags = []
+        self.after_find = None
+
+    def find_image(self, reference):
+        self.lookups.append(reference)
+        found = self.images.get(reference)
+        if self.after_find is not None:
+            self.after_find(reference)
+        return found
+
+    def tag_image(self, captured_id, target):
+        self.tags.append((captured_id, target))
+
+
+class _LeaseManager:
+    def __init__(self, images, *, fixed_id=None):
+        self.docker = _LeaseDocker(images)
+        self.fixed_id = fixed_id
+        self.captures, self.pins, self.builds, self.promotions, self.acquisitions = [], [], [], [], []
+        self.lease = SimpleNamespace(token='prepared-lease')
+
+    def capture_image_tag(self, key, *, channel):
+        self.captures.append((key, channel))
+        return self.fixed_id
+
+    def pin_existing_image(self, target, source, **kwargs):
+        self.pins.append((target, source, kwargs))
+        # 保留生产 helper 的实际标签/容量/immutable ID 逻辑，只替换 Docker I/O。
+        return runtime.VibeHubRuntimeManager.pin_existing_image(self, target, source, **kwargs)
+
+    def build_latest_image(self, key, app_dir, **kwargs):
+        self.builds.append((key, app_dir, kwargs))
+
+    def promote_latest_to_public(self, key, **kwargs):
+        self.promotions.append((key, kwargs))
+
+    def acquire(self, key, **kwargs):
+        self.acquisitions.append((key, kwargs))
+        return self.lease
+
+
+@pytest.fixture
+def lease_environment(monkeypatch):
+    def prepare(images=(), *, fixed_id=None, acquired=1):
+        manager = _LeaseManager(images, fixed_id=fixed_id)
+        cursor = Cursor(one=[{'acquired': acquired}])
+        snapshots = []
+        monkeypatch.setattr(edu, 'get_db_connection', lambda: Connection(cursor))
+        monkeypatch.setattr(edu, 'get_runtime_manager', lambda: manager)
+        def snapshot(slug, version_number):
+            snapshots.append((slug, version_number))
+            return Path('/retained/balance/v2/app')
+        monkeypatch.setattr(edu.storage, 'resolve_snapshot_app', snapshot)
+        return manager, cursor, snapshots
+    return prepare
+
+
+def test_lease_keeps_an_existing_fixed_alias_without_reading_mutable_project_tags(lease_environment):
+    manager, cursor, snapshots = lease_environment(fixed_id='sha256:' + '9' * 64)
+    assert edu._lease(dict(_LEASE_VERSION)) is manager.lease
+    assert manager.captures == [(_EDU_KEY, 'public')]
+    assert manager.pins == manager.docker.lookups == manager.docker.tags == []
+    assert manager.builds == manager.promotions == snapshots == []
+    assert any('RELEASE_LOCK' in sql for sql, _params in cursor.calls)
+
+
+def test_first_lease_reuses_a_matching_published_image_without_building_or_reading_the_snapshot(lease_environment):
+    image = _lease_image(_PUBLIC_REF)
+    manager, _cursor, snapshots = lease_environment({_PUBLIC_REF: image})
+    assert edu._lease(dict(_LEASE_VERSION)) is manager.lease
+    assert manager.pins == [(_EDU_KEY, 'balance', {'package_digest': _PACKAGE, 'featured': False})]
+    assert manager.docker.lookups == [_PUBLIC_REF]
+    assert manager.docker.tags == [(image.image_id, _FIXED_REF)]
+    assert manager.builds == manager.promotions == snapshots == []
+    assert manager.acquisitions == [(_EDU_KEY, {
+        'channel': 'public', 'featured': False, 'base_path': '/vibehub/runtime',
+        'package_digest': _PACKAGE, 'storage_key': 'project-3-public',
+    })]
+
+
+def test_lease_checks_latest_only_when_public_does_not_match_the_pinned_package(lease_environment):
+    public = _lease_image(_PUBLIC_REF, labels={runtime.MANAGED_IMAGE_LABEL: '1', runtime.PACKAGE_DIGEST_LABEL: 'b' * 64})
+    latest = _lease_image(_LATEST_REF, number='2')
+    manager, _cursor, snapshots = lease_environment({_PUBLIC_REF: public, _LATEST_REF: latest})
+    edu._lease(dict(_LEASE_VERSION))
+    assert manager.docker.lookups == [_PUBLIC_REF, _LATEST_REF]
+    assert manager.docker.tags == [(latest.image_id, _FIXED_REF)]
+    assert manager.builds == manager.promotions == snapshots == []
+
+
+def test_lease_tags_the_captured_image_id_even_if_the_mutable_public_tag_changes(lease_environment):
+    original = _lease_image(_PUBLIC_REF)
+    replaced = _lease_image(_PUBLIC_REF, number='2')
+    manager, _cursor, _snapshots = lease_environment({_PUBLIC_REF: original})
+    manager.docker.after_find = lambda reference: manager.docker.images.update({reference: replaced})
+    edu._lease(dict(_LEASE_VERSION))
+    assert manager.docker.images[_PUBLIC_REF].image_id == replaced.image_id
+    assert manager.docker.tags == [(original.image_id, _FIXED_REF)]
+    assert not manager.builds
+
+
+@pytest.mark.parametrize('images', [
+    {},
+    {_PUBLIC_REF: _lease_image(_PUBLIC_REF, labels={runtime.MANAGED_IMAGE_LABEL: '1', runtime.PACKAGE_DIGEST_LABEL: 'b' * 64}),
+     _LATEST_REF: _lease_image(_LATEST_REF, number='2', labels={runtime.MANAGED_IMAGE_LABEL: '1', runtime.PACKAGE_DIGEST_LABEL: 'c' * 64})},
+])
+def test_unavailable_historical_images_keep_the_retained_snapshot_build_fallback(lease_environment, images):
+    manager, _cursor, snapshots = lease_environment(images)
+    edu._lease(dict(_LEASE_VERSION))
+    assert manager.docker.lookups == [_PUBLIC_REF, _LATEST_REF]
+    assert manager.docker.tags == []
+    assert snapshots == [('balance', 2)]
+    assert manager.builds == [(_EDU_KEY, Path('/retained/balance/v2/app'), {'package_digest': _PACKAGE, 'featured': False})]
+    assert manager.promotions == [(_EDU_KEY, {'package_digest': _PACKAGE})]
+
+
+@pytest.mark.parametrize('labels', [
+    {},
+    {runtime.MANAGED_IMAGE_LABEL: '1'},
+    {runtime.PACKAGE_DIGEST_LABEL: _PACKAGE},
+    {runtime.MANAGED_IMAGE_LABEL: '0', runtime.PACKAGE_DIGEST_LABEL: _PACKAGE},
+])
+def test_lease_never_reuses_legacy_or_unmanaged_images_without_both_trusted_labels(lease_environment, labels):
+    manager, _cursor, snapshots = lease_environment({_PUBLIC_REF: _lease_image(_PUBLIC_REF, labels=labels)})
+    edu._lease(dict(_LEASE_VERSION))
+    assert manager.docker.tags == []
+    assert snapshots == [('balance', 2)]
+    assert len(manager.builds) == len(manager.promotions) == 1
+
+
+@pytest.mark.parametrize('unsafe', ['volume', 'oversized'])
+def test_matching_image_with_unsafe_resources_fails_without_tagging_or_rebuilding(lease_environment, unsafe):
+    image = _lease_image(_PUBLIC_REF,
+        size=runtime.limits_for(False).image_bytes + 1 if unsafe == 'oversized' else 1024,
+        volumes=('/unexpected',) if unsafe == 'volume' else ())
+    manager, cursor, snapshots = lease_environment({_PUBLIC_REF: image})
+    with pytest.raises(runtime.VibeHubImageError):
+        edu._lease(dict(_LEASE_VERSION))
+    assert manager.docker.tags == manager.builds == manager.promotions == manager.acquisitions == snapshots == []
+    assert any('RELEASE_LOCK' in sql for sql, _params in cursor.calls)
+
+
+def test_pinning_a_featured_work_uses_its_current_larger_image_budget(lease_environment):
+    image = _lease_image(_PUBLIC_REF, size=runtime.limits_for(False).image_bytes + 1)
+    manager, _cursor, snapshots = lease_environment({_PUBLIC_REF: image})
+    edu._lease({**_LEASE_VERSION, 'is_featured': 1})
+    assert manager.docker.tags == [(image.image_id, _FIXED_REF)]
+    assert manager.pins[0][2]['featured'] is True
+    assert manager.builds == snapshots == []
+
+
+def test_docker_inspection_failure_is_not_treated_as_a_missing_image(lease_environment):
+    manager, cursor, snapshots = lease_environment()
+    def unavailable(_reference):
+        raise runtime.VibeHubImageError('Docker inspect 暂时不可用')
+    manager.docker.after_find = unavailable
+    with pytest.raises(runtime.VibeHubImageError, match='inspect'):
+        edu._lease(dict(_LEASE_VERSION))
+    assert manager.docker.tags == manager.builds == manager.acquisitions == snapshots == []
+    assert any('RELEASE_LOCK' in sql for sql, _params in cursor.calls)
+
+
+def test_image_preparation_lock_timeout_reports_a_specific_retryable_error(lease_environment):
+    manager, cursor, snapshots = lease_environment(acquired=0)
+    with pytest.raises(services.VibeHubError, match='教学作品镜像正在准备') as error:
+        edu._lease(dict(_LEASE_VERSION))
+    assert error.value.status_code == 503
+    assert error.value.code == 'edu_image_preparing'
+    assert manager.captures == manager.pins == manager.docker.lookups == manager.builds == manager.acquisitions == snapshots == []
+    assert not any('RELEASE_LOCK' in sql for sql, _params in cursor.calls)
 
 
 @pytest.mark.parametrize('field,value', [('score', 100), ('completed', True), ('state', {}), ('user_id', 1)])

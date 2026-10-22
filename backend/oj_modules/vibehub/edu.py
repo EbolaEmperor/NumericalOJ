@@ -10,7 +10,7 @@ import secrets
 
 from backend.oj_modules.infrastructure.mysql import get_db_connection, safe_table_name
 from backend.oj_modules.vibehub import services, storage
-from backend.oj_modules.vibehub.runtime import get_runtime_manager, VibeHubRuntimeError
+from backend.oj_modules.vibehub.runtime import get_runtime_manager
 
 
 PROTOCOL = "vibehub-edu/1"
@@ -129,12 +129,20 @@ def _lease(version):
         with conn.cursor() as cursor:
             cursor.execute("SELECT GET_LOCK(%s,60) AS acquired", (lock,))
             if int((cursor.fetchone() or {}).get("acquired") or 0) != 1:
-                raise VibeHubRuntimeError("教学镜像正在准备，请稍后重试")
+                raise services.VibeHubError(
+                    "教学作品镜像正在准备，请稍后重试。",
+                    status_code=503, code="edu_image_preparing",
+                )
             try:
                 if manager.capture_image_tag(key, channel="public") is None:
-                    app_dir = storage.resolve_snapshot_app(version["slug"], version["version_number"])
-                    manager.build_latest_image(key, app_dir, package_digest=version["package_sha256"], featured=bool(version["is_featured"]))
-                    manager.promote_latest_to_public(key, package_digest=version["package_sha256"])
+                    reused = manager.pin_existing_image(
+                        key, version["slug"], package_digest=version["package_sha256"],
+                        featured=bool(version["is_featured"]),
+                    )
+                    if not reused:
+                        app_dir = storage.resolve_snapshot_app(version["slug"], version["version_number"])
+                        manager.build_latest_image(key, app_dir, package_digest=version["package_sha256"], featured=bool(version["is_featured"]))
+                        manager.promote_latest_to_public(key, package_digest=version["package_sha256"])
             finally:
                 cursor.execute("SELECT RELEASE_LOCK(%s)", (lock,))
     finally:
