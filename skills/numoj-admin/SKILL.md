@@ -269,6 +269,9 @@ interpret the trusted result itself. Read `vibehub guide` for that contract.
 The current dynamic-balance example defines `double step(int x)` and the mean
 of the two middle values for even input counts. Its integer heaps provide
 `insert(x)`, `pop()`, `top()`, and `size()`; these are work rules, not platform APIs.
+Each round is judged only by its returned median, with runtime errors still
+failing. Heap sizes, element distribution, and element conservation are not
+grading requirements.
 
 Legacy `education.executor` strings are metadata, not execution capabilities.
 Frozen packages relying on the old `context.execution` contract are not

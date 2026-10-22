@@ -44,11 +44,12 @@ def test_replay_uses_lower_median_and_reconstructs_real_heap_snapshots():
     assert rounds[2]["right_heap"] == [10]
 
 
-def test_correct_return_without_storing_the_input_does_not_pass():
+def test_correct_return_without_storing_the_input_passes():
     result = _replay("ROUND 0 7 0\n", [7])[0]
     assert result["returned"] == result["expected"]
-    assert result["passed"] is False
-    assert "保存所有已经输入的数" in result["feedback"]
+    assert result["passed"] is True
+    assert result["left_heap"] == result["right_heap"] == []
+    assert result["feedback"] == "中位数正确"
 
 
 @pytest.mark.parametrize("trace", [
@@ -66,14 +67,35 @@ def test_replay_rejects_fabricated_or_unbounded_operation_records(trace):
         _replay(trace, [7])
 
 
-def test_replay_checks_balance_and_partition_separately_from_answer():
+def test_replay_does_not_require_balanced_sizes_or_a_fixed_partition():
     rounds = _replay("ROUND 0 3 1\nA I 3\nROUND 1 3 1\nA I 7\n", [3, 7])
     assert rounds[0]["passed"] is True
-    assert rounds[1]["passed"] is False
-    assert "元素数" in rounds[1]["feedback"]
+    assert rounds[1]["passed"] is True
+    assert rounds[1]["left_heap"] == [7, 3] and rounds[1]["right_heap"] == []
     rounds = _replay("ROUND 0 3 1\nA I 3\nROUND 1 1 1\nB I 1\n", [3, 1])
-    assert rounds[1]["passed"] is False
-    assert "全部不大于" in rounds[1]["feedback"]
+    assert rounds[1]["passed"] is True
+    assert rounds[1]["left_heap"] == [3] and rounds[1]["right_heap"] == [1]
+
+
+@pytest.mark.parametrize("operations", ["", "A I 7\nB I 7\n", "A I 7\nA P 7\n"])
+def test_correct_median_passes_even_with_missing_duplicate_or_discarded_heap_elements(operations):
+    count = len(operations.splitlines())
+    result = cpp._replay(f"ROUND 0 7 {count}\n" + operations, [7])[0]
+    assert result["passed"] is True
+    assert result["feedback"] == "中位数正确"
+
+
+def test_standard_median_uses_the_input_history_with_no_heap_operations():
+    rounds = cpp._replay("ROUND 0 7 0\nROUND 1 5 0\nROUND 2 7 0\n", [7, 3, 10])
+    assert all(item["passed"] for item in rounds)
+    assert all(item["left_heap"] == item["right_heap"] == [] for item in rounds)
+    assert [item["expected"] for item in rounds] == [7, 5, 7]
+
+
+def test_wrong_return_still_fails_even_with_a_normal_heap_trace():
+    result = cpp._replay("ROUND 0 9 1\nA I 7\n", [7])[0]
+    assert result["passed"] is False
+    assert result["feedback"] == "返回的中位数不正确"
 
 
 def command_result(returncode=0, stdout="", stderr="", **overrides):

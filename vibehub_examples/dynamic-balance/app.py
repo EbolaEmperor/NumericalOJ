@@ -117,6 +117,7 @@ def grade(context, actions, *, continuation=None, execution_result=_MISSING):
     action_source({"type": "run_code", "source": saved["source"]})
     execution = cpp.finish_execution(execution_result, inputs)
     total, passed = execution["total"], execution["passed"]
+    # 只按正确返回中位数的连续前缀计分；堆大小和元素分配不参与评分。
     compiled = execution.get("compiled") is True
     score = 10000 * passed // total if compiled else 0
     # 隐藏测试的输入、堆状态与源码均不放进成绩反馈。

@@ -135,8 +135,7 @@
         settle(right, result.right_heap, 'B', round);
         median = result.expected;
         conveyorOffset = Math.max(conveyorOffset, round + 1);
-        const failure = result.error ? (execution.error || '程序运行异常')
-          : result.returned !== result.expected ? '返回值不正确' : '堆状态未通过检查';
+        const failure = result.error ? (execution.error || '程序运行异常') : '返回值不正确';
         add(round, { checked: true, returned: result.returned ?? '未返回', error: !result.passed,
           success: result.passed, message: result.passed
             ? `第 ${round + 1} 轮通过，返回 ${result.returned}。`

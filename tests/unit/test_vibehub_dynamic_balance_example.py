@@ -61,6 +61,22 @@ def reference_execution(inputs, *, wrong_at=None):
     return {"compile": command_result(), "run": command_result(stdout="\n".join(output) + "\n")}
 
 
+def answer_only_execution(inputs, heap_usage):
+    seen, output = [], []
+    for index, value in enumerate(inputs):
+        seen.append(value)
+        ordered = sorted(seen)
+        median = (ordered[(len(seen) - 1) // 2] + ordered[len(seen) // 2]) / 2
+        operations = {
+            "unused": [],
+            "duplicates": [f"A I {value}", f"B I {value}"],
+            "one_heap": [f"A I {value}"],
+            "discarded": [f"A I {value}", f"A P {value}"],
+        }[heap_usage]
+        output.extend([f"ROUND {index} {median} {len(operations)}", *operations])
+    return {"compile": command_result(), "run": command_result(stdout="\n".join(output) + "\n")}
+
+
 def request_inputs(request):
     numbers = [int(value) for value in request["run"]["stdin"].split()]
     assert numbers[0] == len(numbers) - 1
@@ -183,6 +199,41 @@ def test_grade_counts_only_the_correct_prefix_even_if_later_rounds_pass(balance)
     assert result["score_bp"] == 10000 // 129
     assert result["metrics"] == {"passed_rounds": 1, "total_rounds": 129}
     assert result["verdict"] == "failed"
+
+
+@pytest.mark.parametrize("heap_usage", ["unused", "duplicates", "one_heap", "discarded"])
+def test_trial_and_grade_only_require_correct_medians_regardless_of_heap_strategy(balance, heap_usage):
+    context = {"challenge_seed": "answer-only"}
+    state = balance.start(context)["state"]
+    action = {"type": "run_code", "source": SOURCE}
+    trial = balance.step(context, state, action)
+    updated = resume_step(balance, context, trial, answer_only_execution(state["inputs"], heap_usage))
+    execution = updated["view"]["execution"]
+    assert execution["passed"] == execution["total"] == 24
+    assert all(item["feedback"] == "中位数正确" for item in execution["rounds"])
+    final = execution["rounds"][-1]
+    if heap_usage in {"unused", "discarded"}:
+        assert final["left_heap"] == final["right_heap"] == []
+    elif heap_usage == "one_heap":
+        assert len(final["left_heap"]) == 24 and final["right_heap"] == []
+    else:
+        assert len(final["left_heap"]) == len(final["right_heap"]) == 24
+    request = balance.grade(context, [{"action": action}])
+    hidden = request_inputs(request["execute"])
+    result = resume_grade(balance, context, request, answer_only_execution(hidden, heap_usage))
+    assert result["verdict"] == "passed" and result["score_bp"] == 10000
+    assert result["metrics"] == {"passed_rounds": 129, "total_rounds": 129}
+
+
+def test_runtime_error_still_prevents_full_credit_after_all_correct_medians(balance):
+    context = {"challenge_seed": "runtime-failure"}
+    request = balance.grade(context, [{"action": {"type": "run_code", "source": SOURCE}}])
+    response = answer_only_execution(request_inputs(request["execute"]), "unused")
+    response["run"].update(returncode=3, stderr_b64=base64.b64encode(b"runtime exception").decode())
+    result = resume_grade(balance, context, request, response)
+    assert result["verdict"] == "failed"
+    assert result["score_bp"] == 10000 * 128 // 129
+    assert result["metrics"] == {"passed_rounds": 128, "total_rounds": 129}
 
 
 @pytest.mark.parametrize("returned", ["nan", "-inf", "1e309"])

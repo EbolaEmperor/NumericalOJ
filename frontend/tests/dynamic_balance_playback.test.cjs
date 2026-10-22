@@ -97,14 +97,16 @@ test('duplicate values from consecutive inputs keep separate stable node identit
   assert.equal(final.message, '全部 3 轮通过。');
 });
 
-test('an incorrect example inserting x into both heaps still creates two visible tokens', () => {
-  const frames = buildFrames(single([operation('A', 'insert', 9), operation('B', 'insert', 9)], [9], [9]));
+test('inserting x into both heaps keeps both tokens and a correct return can pass', () => {
+  const frames = buildFrames(single([operation('A', 'insert', 9), operation('B', 'insert', 9)], [9], [9], { passed: true }));
   const inserts = frames.filter(frame => frame.motion.kind === 'insert');
   assert.equal(inserts.length, 2);
   assert.deepEqual(inserts.map(frame => frame.motion.from), [{ kind: 'conveyor', round: 0 }, { kind: 'conveyor', round: 0 }]);
   assert.notEqual(inserts[0].motion.nodeId, inserts[1].motion.nodeId);
   assert.deepEqual(inserts.map(frame => frame.conveyorOffset), [1, 1], '重复插入本轮 x 不能消费下一块');
   assert.equal(frames.at(-1).left.length + frames.at(-1).right.length, 2);
+  assert.equal(frames.at(-1).success, true);
+  assert.equal(frames.at(-1).error, false);
 });
 
 test('the conveyor advances only when a fresh block enters and transfers do not consume the next input', () => {

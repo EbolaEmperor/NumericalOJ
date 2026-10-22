@@ -176,7 +176,9 @@ Omitting `--assignment-id` starts practice and does not count toward homework.
 The current dynamic-balance work defines `double step(int x)` and averages the
 two middle values for even input counts. Its integer heaps provide `A`/`B.insert(x)`,
 `pop()`, `top()`, and `size()` (`int`, zero for an empty heap). Its editor supports
-C++ highlighting. Inputs, execution traces, and grading rules belong to the work;
+C++ highlighting. Each round checks only the returned median, with runtime errors
+still failing; heap sizes, element distribution, and element conservation are not
+grading requirements. Inputs, execution traces, and grading rules belong to the work;
 NumOJ freezes the attempt and records the score returned through the private
 grading channel. Browser-supplied scores or execution results are not authoritative.
 

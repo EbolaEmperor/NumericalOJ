@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import base64
 import heapq
 import math
@@ -242,17 +241,9 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "", executor
         correct_return = not failed and (
             abs(returned - expected) <= 1e-9 if executor == MEDIAN_EXECUTOR else returned == expected
         )
-        conserved = Counter(left_values + right_values) == Counter(seen)
-        balanced = len(left) in {len(right), len(right) + 1}
-        ordered = not left or not right or -left[0] <= right[0]
-        valid = conserved and balanced and ordered and not failed
+        # 堆快照仅用于播放；不要求学生采用特定大小、分配或保存策略。
+        valid = not failed
         reasons = [runtime_error] if failed else []
-        if not conserved:
-            reasons.append("两堆必须恰好保存所有已经输入的数")
-        if not balanced:
-            reasons.append("A 的元素数应等于 B，或比 B 多一个")
-        if not ordered:
-            reasons.append("A 中的数应全部不大于 B 中的数")
         if not failed and not correct_return:
             reasons.append("返回的中位数不正确")
         rounds.append({
@@ -263,9 +254,9 @@ def _replay(stdout: str, inputs: list[int], *, runtime_error: str = "", executor
             "right_heap": right_values,
             "operations": operations,
             "valid": valid,
-            "passed": valid and correct_return,
+            "passed": correct_return,
             "error": failed,
-            "feedback": "；".join(reasons) if reasons else "两堆平衡，中位数正确",
+            "feedback": "；".join(reasons) if reasons else "中位数正确",
         })
         if failed:
             break
