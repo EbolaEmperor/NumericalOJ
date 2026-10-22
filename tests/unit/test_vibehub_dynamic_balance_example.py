@@ -129,6 +129,45 @@ def test_start_owns_a_deterministic_public_sequence_and_never_exposes_hidden_inp
     assert initial != balance.start({"challenge_seed": "other"})
 
 
+def test_public_animation_inputs_are_unique_across_many_deterministic_seeds(balance):
+    seeds = ["", "balance", "example", "中文种子", "0" * 200, *range(200)]
+    sequences = []
+    for seed in seeds:
+        context = {"challenge_seed": seed}
+        inputs = balance.practice_inputs(context)
+        assert inputs == balance.practice_inputs(context)
+        assert len(inputs) == len(set(inputs)) == 24
+        assert all(type(value) is int and -30 <= value <= 30 for value in inputs)
+        assert set(inputs[:8]).isdisjoint(inputs[8:])
+        assert any(value < 0 for value in inputs) and any(value > 0 for value in inputs)
+        sequences.append(tuple(inputs))
+    assert len(set(sequences)) > 190
+
+
+def test_public_tail_can_include_range_boundaries_without_reusing_prefix_numbers(balance, monkeypatch):
+    prefix = [7, 4, 10, -2, 6, 12, 15, 1]
+    calls = []
+
+    class BoundaryGenerator:
+        def sample(self, candidates, count):
+            assert count == 16
+            assert len(candidates) == len(set(candidates))
+            assert set(prefix).isdisjoint(candidates)
+            assert candidates[0] == -30 and candidates[-1] == 30
+            return candidates[:8] + candidates[-8:]
+
+    def generator(seed):
+        calls.append(seed)
+        return BoundaryGenerator()
+
+    monkeypatch.setattr(balance.random, "Random", generator)
+    inputs = balance.practice_inputs({"challenge_seed": "boundary"})
+    assert calls == ["practice:boundary"]
+    assert inputs[:8] == prefix
+    assert -30 in inputs and 30 in inputs
+    assert len(inputs) == len(set(inputs)) == 24
+
+
 @pytest.mark.parametrize("extra", ["execution", "execution_result", "continuation", "score", "completed"])
 def test_action_cannot_supply_execution_or_score_fields(balance, extra):
     state = balance.start({"challenge_seed": "example"})["state"]

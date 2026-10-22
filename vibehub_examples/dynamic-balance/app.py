@@ -54,7 +54,9 @@ _MISSING = object()
 
 def practice_inputs(context):
     generator = random.Random("practice:" + str(context.get("challenge_seed", "balance")))
-    return [7, 4, 10, -2, 6, 6, 15, 1] + [generator.randint(-30, 30) for _ in range(16)]
+    prefix = [7, 4, 10, -2, 6, 12, 15, 1]
+    candidates = [value for value in range(-30, 31) if value not in prefix]
+    return prefix + generator.sample(candidates, 16)
 
 
 def hidden_inputs(context):
