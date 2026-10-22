@@ -248,7 +248,7 @@
       return false;
     }
     if (!execution?.rounds?.length) throw new Error('本次试运行没有返回可播放的堆操作记录。');
-    message(`真实执行完成：连续通过 ${execution.passed}/${execution.total} 轮。${execution.passed < execution.total ? '播放会在首个错误处停止，并标注原因。' : '现在可以提交作业。'}`, execution.passed === execution.total);
+    message(`试运行通过 ${execution.passed}/${execution.total} 轮。`, execution.passed === execution.total);
     preparePlayback(execution, autoplay);
     return true;
   }
@@ -279,7 +279,7 @@
         $('resultFeedback').textContent = result.feedback || data.error || '提交记录已保留，可点击“重试评分”。';
       } else {
         $('resultTitle').textContent = '作业已提交，正在评分';
-        $('resultFeedback').textContent = '平台正在使用隐藏数据重新执行你的代码，成绩会自动显示在这里。';
+        $('resultFeedback').textContent = '';
         pollTimer = setTimeout(pollResult, 2000);
       }
       setBadge(data); updateButtons();
@@ -291,12 +291,12 @@
 
   async function submit() {
     if (busy) return;
-    busy = true; stopPlayback(); updateButtons(); message('正在保存当前代码并提交…', true);
+    busy = true; stopPlayback(); updateButtons(); message('正在提交…', true);
     try {
       if (status === 'active' && code.getValue() !== lastRunSource) await runCode(false);
       const data = await api('submit', { request_id: uuid(), expected_seq: seq });
       status = data.status || 'grading';
-      message('当前代码已冻结并提交，平台将使用隐藏数据重新评分。', true);
+      message('作业已提交。', true);
       setBadge(data);
       await pollResult();
     } catch (error) { message(error.message); }

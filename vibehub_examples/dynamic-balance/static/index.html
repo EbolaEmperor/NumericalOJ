@@ -39,10 +39,9 @@
   <div id="taskOverlay" class="task-overlay open">
     <div id="taskBackdrop" class="task-backdrop"></div>
     <section id="taskInstructions" class="panel instruction-panel modal-panel" role="dialog" aria-modal="true" aria-label="任务说明" tabindex="-1">
-      <p>实现 <code>int step(int x)</code>，每次接收一个整数，返回所有已输入数字的较小中位数。</p>
-      <p>较小中位数是排序后第 ⌈n/2⌉ 个数。只提交函数及辅助代码，不写 main。输入范围为 −10⁹ 到 10⁹。</p>
-      <div class="api-table"><div><code>A.insert(x)</code><span>向 A 插入 x</span></div><div><code>A.pop()</code><span>删除 A 的堆顶，无返回值</span></div><div><code>A.top()</code><span>读取 A 的堆顶</span></div><div><code>A.size()</code><span>返回 A 的元素个数</span></div></div>
-      <p>A、B 均可调用上述函数。空堆不能调用 top 或 pop；size 在空堆上返回 0。</p>
+      <p>实现 <code>int step(int x)</code>，接收下一个数，返回所有已输入数字的中位数。偶数个数时取较小的中位数。</p>
+      <div class="api-table"><div><code>A.insert(x)</code><span>向 A 插入 x</span></div><div><code>A.pop()</code><span>删除 A 的堆顶</span></div><div><code>A.top()</code><span>读取 A 的堆顶</span></div><div><code>A.size()</code><span>返回 A 的元素个数</span></div></div>
+      <p>A、B 均可调用上述函数。</p>
       <button id="acknowledgeButton" class="button button-primary acknowledge-button" type="button">我知道了</button>
     </section>
   </div>
