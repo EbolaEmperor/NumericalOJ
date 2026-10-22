@@ -96,14 +96,21 @@ def _visible_items_from_context(context):
             for p in context.get("problems") or []
         ]
 
+    homeworks = context.get("selected_homeworks")
+    if homeworks is None:
+        homeworks = context.get("homeworks")
+    # 当前班列表和全班分组是同一批作业的不同视图，空的当前班列表也应直接返回。
+    if homeworks is not None:
+        return [
+            _homework_problem_item(
+                hw,
+                class_en=context.get("selected_class_en") or context.get("single_class_en"),
+                class_cn=context.get("selected_class_cn") or context.get("single_class_cn"),
+            )
+            for hw in homeworks
+        ]
+
     items = []
-    selected_homeworks = context.get("selected_homeworks")
-    for hw in selected_homeworks if selected_homeworks is not None else context.get("homeworks") or []:
-        items.append(_homework_problem_item(
-            hw,
-            class_en=context.get("selected_class_en") or context.get("single_class_en"),
-            class_cn=context.get("selected_class_cn") or context.get("single_class_cn"),
-        ))
     for class_block in context.get("homeworks_by_class") or []:
         for hw in class_block.get("hw_list") or []:
             items.append(_homework_problem_item(

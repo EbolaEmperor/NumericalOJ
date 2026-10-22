@@ -10,6 +10,7 @@
   if (starter) starter += '\n';
   let lastRunSource = '';
   let busy = false;
+  let submitting = false;
   let frames = [];
   let position = 0;
   let playing = false;
@@ -61,6 +62,24 @@
     $('codeMessage').className = `code-message${error ? ' visible' : ''}`;
   }
 
+  function resultPending() {
+    $('resultCard').hidden = false;
+    $('resultCard').classList.add('is-grading');
+    $('resultCard').setAttribute('aria-busy', 'true');
+    $('resultTitle').textContent = '正在评测';
+    $('resultFeedback').textContent = '';
+    $('resultScore').textContent = '评测中';
+  }
+
+  function resultSettled(title, feedback = '', score = '—') {
+    $('resultCard').hidden = false;
+    $('resultCard').classList.remove('is-grading');
+    $('resultCard').setAttribute('aria-busy', 'false');
+    $('resultTitle').textContent = title;
+    $('resultFeedback').textContent = feedback;
+    $('resultScore').textContent = score;
+  }
+
   function updateButtons() {
     const canAttempt = ['active', 'graded', 'error'].includes(status);
     const editable = canAttempt || ['preview', 'submitted', 'grading'].includes(status);
@@ -83,6 +102,7 @@
     if (continuationRequest?.expected_attempt_id !== attemptId) continuationRequest = null;
     seq = data.seq ?? 0;
     status = data.status || 'active';
+    if (['submitted', 'grading'].includes(status)) resultPending();
     view = data.view || data.data?.view || {};
     if (view.initial_source) starter = view.initial_source;
     else if (!starter) starter = view.source || '';
@@ -185,7 +205,8 @@
     view = data.view;
     continuationRequest = null;
     lastRunSource = '';
-    $('resultCard').hidden = true;
+    if (submitting) resultPending();
+    else $('resultCard').hidden = true;
     frames = [];
     restartPlayback();
     renderFrame({ left: [], right: [], round: 0 }, false);
@@ -237,20 +258,22 @@
       if (generation !== resultGeneration) return;
       const result = data.result || data.grade || data;
       const current = data.status || status;
-      status = current;
-      $('resultCard').hidden = false;
-      if (result.score_bp != null || result.score != null) {
-        $('resultTitle').textContent = '作业已评分';
-        $('resultFeedback').textContent = result.feedback || '评分结果已经保存到本次作业。';
-        const score = result.score_bp !== undefined ? result.score_bp / 100 : Number(result.score);
-        $('resultScore').textContent = `${Number(score.toFixed(2))} 分`;
-        status = 'graded';
+      const hasScore = result.score_bp != null || result.score != null;
+      if (current === 'submitted' || current === 'grading') {
+        status = current;
+        resultPending();
+        pollTimer = setTimeout(() => pollResult(generation), 2000);
       } else if (current === 'error') {
-        $('resultTitle').textContent = '评分暂时失败';
-        $('resultFeedback').textContent = result.feedback || data.error || '提交记录已保留，可点击“重试评分”。';
+        status = current;
+        resultSettled('评分暂时失败', data.error || (!hasScore && result.feedback)
+          || '提交记录已保留，可再次提交重试。');
+      } else if (current === 'graded' && hasScore) {
+        const score = result.score_bp !== undefined ? result.score_bp / 100 : Number(result.score);
+        resultSettled('作业已评分', result.feedback || '评分结果已经保存到本次作业。', `${Number(score.toFixed(2))} 分`);
+        status = 'graded';
       } else {
-        $('resultTitle').textContent = '作业已提交，正在评分';
-        $('resultFeedback').textContent = '';
+        status = 'grading';
+        resultPending();
         pollTimer = setTimeout(() => pollResult(generation), 2000);
       }
       updateButtons();
@@ -264,16 +287,25 @@
   async function submit() {
     if (busy || !['active', 'graded', 'error'].includes(status)) return;
     const source = code.getValue();
+    submitting = true;
+    resultPending();
     busy = true; stopPlayback(); updateButtons(); message('正在提交…', true);
     stopResultPolling();
     try {
       if (source !== lastRunSource) await runCode(false, source);
       const data = await api('submit', { request_id: uuid(), expected_seq: seq });
       status = data.status || 'grading';
+      resultPending();
       message('作业已提交。', true);
       await pollResult(resultGeneration);
-    } catch (error) { message(error.message); }
-    finally { busy = false; updateButtons(); }
+    } catch (error) {
+      if (!['submitted', 'grading'].includes(status)) {
+        stopResultPolling();
+        resultSettled('提交未完成');
+      }
+      message(error.message);
+    }
+    finally { submitting = false; busy = false; updateButtons(); }
   }
 
   $('runButton').addEventListener('click', performRun);

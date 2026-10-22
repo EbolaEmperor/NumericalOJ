@@ -2,6 +2,7 @@ from datetime import date, datetime
 from unittest.mock import MagicMock
 
 from flask import Flask
+import pytest
 
 from backend.oj_modules.problems import catalog as problem_catalog
 from backend.oj_modules.problems import context as problem_context
@@ -247,6 +248,154 @@ def _problem_list_api_context(selected_class_en=None):
         "selected_homeworks": [],
         "homeworks_by_class": [],
     }
+
+
+def _student_workspace_api_client(monkeypatch, homeworks_by_class):
+    """保留真实上下文构造与 HTTP 序列化，只替换基础数据读取。"""
+    _stub_base_context(monkeypatch)
+    user = {"id": 8, "username": "student", "is_admin": 0}
+    classes = [
+        {"class_en": "C1", "class_cn": "一班"},
+        {"class_en": "C2", "class_cn": "二班"},
+    ]
+    monkeypatch.setattr(problem_api, "current_user", lambda: user)
+    monkeypatch.setattr(problem_context, "get_user_classes_cached", lambda _uid: classes)
+    monkeypatch.setattr(
+        problem_context,
+        "get_homeworks_and_grades_map",
+        lambda *_args: (homeworks_by_class, {}),
+    )
+    monkeypatch.setattr(
+        problem_context,
+        "attach_submission_metrics",
+        lambda rows, **_kwargs: [dict(row, submission_metrics={"submission_count": 3}) for row in rows],
+    )
+    monkeypatch.setattr(
+        problem_context,
+        "get_class_activity",
+        lambda *_args: pytest.fail("作业列表 API 不应读取活跃度"),
+    )
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    return app.test_client()
+
+
+def test_problem_list_api_selected_class_returns_each_homework_kind_once(monkeypatch):
+    client = _student_workspace_api_client(monkeypatch, {
+        "C1": [{"id": 9, "kind": "problem", "problem_id": 99, "problem_title": "其他班作业"}],
+        "C2": [
+            {"id": 1, "kind": "problem", "problem_id": 11, "problem_title": "堆的基础"},
+            {"id": 2, "kind": "ranking", "competition_id": 22, "problem_title": "堆的竞赛"},
+            {"id": 3, "kind": "edu", "problem_id": None, "vibehub_project_id": 33,
+                "vibehub_edu_assignment_id": 44, "vibehub_slug": "dynamic-balance",
+                "problem_title": "动态平衡术"},
+        ],
+    })
+
+    response = client.get("/api/problems?class_en=C2")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["view_mode"] == "student_multi_class"
+    assert payload["selected_class_en"] == "C2"
+    assert payload["count"] == 3
+    assert [(item["class_en"], item["homework_id"], item["kind"]) for item in payload["problems"]] == [
+        ("C2", 1, "problem"), ("C2", 2, "ranking"), ("C2", 3, "edu"),
+    ]
+    assert [item["url"] for item in payload["problems"]] == [
+        "/problems/11", "/rankings/22", "/vibehub/dynamic-balance/play?assignment=44",
+    ]
+    assert all(item["submission_metrics"]["submission_count"] == 3 for item in payload["problems"])
+    assert payload["homeworks_by_class"][0]["hw_list"][0]["id"] == 9
+
+
+def test_problem_list_api_empty_selected_class_does_not_fall_back_to_other_classes(monkeypatch):
+    client = _student_workspace_api_client(monkeypatch, {
+        "C1": [{"id": 9, "kind": "problem", "problem_id": 99, "problem_title": "其他班作业"}],
+        "C2": [],
+    })
+
+    response = client.get("/api/problems?class_en=C2")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["selected_class_en"] == "C2"
+    assert payload["homeworks_by_class"][0]["hw_list"]
+    assert payload["problems"] == []
+    assert payload["count"] == 0
+
+
+@pytest.mark.parametrize("flat_rows", [
+    [],
+    [{"id": 1, "kind": "problem", "problem_id": 11, "problem_title": "旧单班作业"}],
+])
+def test_problem_list_api_legacy_flat_homeworks_take_precedence_over_groups(monkeypatch, flat_rows):
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    monkeypatch.setattr(problem_api, "current_user", lambda: {"id": 8, "is_admin": 0})
+    monkeypatch.setattr(problem_api, "build_problem_list_context", lambda *_args, **_kwargs: {
+        "view_mode": "student_single_class", "single_class_en": "C2", "single_class_cn": "二班",
+        "homeworks": flat_rows,
+        "homeworks_by_class": [{"class_en": "C1", "class_cn": "一班", "hw_list": [
+            {"id": 9, "kind": "problem", "problem_id": 99, "problem_title": "其他班作业"},
+        ]}],
+    })
+
+    response = app.test_client().get("/api/problems")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["count"] == len(flat_rows)
+    assert [(item["class_en"], item["homework_id"]) for item in payload["problems"]] == [
+        ("C2", row["id"]) for row in flat_rows
+    ]
+
+
+def test_problem_list_api_legacy_grouped_homeworks_keep_each_class(monkeypatch):
+    app = Flask(__name__)
+    app.register_blueprint(problem_api.problem_api_bp)
+    monkeypatch.setattr(problem_api, "current_user", lambda: {"id": 8, "is_admin": 0})
+    monkeypatch.setattr(problem_api, "build_problem_list_context", lambda *_args, **_kwargs: {
+        "view_mode": "student_multi_class",
+        "homeworks_by_class": [
+            {"class_en": "C1", "class_cn": "一班", "hw_list": [
+                {"id": 1, "kind": "problem", "problem_id": 11, "problem_title": "一班作业"},
+            ]},
+            {"class_en": "C2", "class_cn": "二班", "hw_list": [
+                {"id": 1, "kind": "problem", "problem_id": 22, "problem_title": "二班作业"},
+            ]},
+        ],
+    })
+
+    response = app.test_client().get("/api/problems")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["count"] == 2
+    assert [(item["class_en"], item["homework_id"], item["id"]) for item in payload["problems"]] == [
+        ("C1", 1, 11), ("C2", 1, 22),
+    ]
+
+
+def test_problem_list_api_keeps_distinct_assignments_of_the_same_problem(monkeypatch):
+    client = _student_workspace_api_client(monkeypatch, {
+        "C1": [],
+        "C2": [
+            {"id": 1, "kind": "problem", "problem_id": 11, "problem_title": "同一道题",
+                "ddl": "2026-10-22T10:00:00"},
+            {"id": 2, "kind": "problem", "problem_id": 11, "problem_title": "同一道题",
+                "ddl": "2026-10-29T10:00:00"},
+        ],
+    })
+
+    response = client.get("/api/problems?class_en=C2")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["count"] == 2
+    assert [(item["homework_id"], item["problem_id"], item["ddl"]) for item in payload["problems"]] == [
+        (1, 11, "2026-10-22T10:00:00"), (2, 11, "2026-10-29T10:00:00"),
+    ]
 
 
 def test_problem_list_api_remembers_url_selected_class_for_one_year(monkeypatch):

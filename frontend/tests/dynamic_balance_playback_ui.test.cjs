@@ -178,7 +178,8 @@ function installGeometry(window) {
 }
 
 async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', initialExecution = false,
-  initialStatus = 'active', deferInitialResult = false, insecureCrypto = false } = {}) {
+  initialStatus = 'active', deferInitialResult = false, insecureCrypto = false,
+  resultMode = 'graded', resultFields = {} } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => errors.push(error));
@@ -195,8 +196,9 @@ async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', ini
   const server = { attempt_id: 'att_1', seq: 1, source: SOURCE_A, status: initialStatus,
     inputs: [4, 9, 7, 2, 8], execution: initialExecution ? executionFixture() : null,
     attemptCount: 1, submissions: [], continuations: new Map(), continueFailures: 0,
-    resultMode: 'graded', deferNextResult: deferInitialResult, pendingResults: [],
-    deferNextAction: false, pendingActions: [] };
+    resultMode, resultFields, deferNextResult: deferInitialResult, pendingResults: [],
+    deferNextAction: false, pendingActions: [], submitFailures: 0,
+    deferNextSubmit: false, pendingSubmits: [] };
   if (initialStatus !== 'active') server.submissions.push(Object.freeze({ id: 11,
     attempt_id: server.attempt_id, source: server.source, seq: server.seq }));
   let uuidCounter = 0;
@@ -255,6 +257,10 @@ async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', ini
       return response(200, state);
     }
     if (operation === 'submit') {
+      if (server.submitFailures > 0) {
+        server.submitFailures--;
+        throw new TypeError('Failed to fetch during submit');
+      }
       assert.equal(payload.expected_seq, server.seq);
       let frozen = server.submissions.find(submission => submission.attempt_id === server.attempt_id);
       if (!frozen) {
@@ -263,13 +269,19 @@ async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', ini
         server.submissions.push(frozen);
       }
       server.status = 'grading';
-      return response(200, { success: true, attempt_id: server.attempt_id, submission_id: frozen.id, status: 'grading' });
+      const submitted = { success: true, attempt_id: server.attempt_id, submission_id: frozen.id, status: 'grading' };
+      if (server.deferNextSubmit) {
+        server.deferNextSubmit = false;
+        return new Promise(resolve => server.pendingSubmits.push({ resolve: () => resolve(response(200, submitted)) }));
+      }
+      return response(200, submitted);
     }
     if (operation === 'result') {
       const attempt_id = server.attempt_id;
       const submission = server.submissions.find(submission => submission.attempt_id === attempt_id);
       const result = { success: true, attempt_id, submission_id: submission?.id, status: server.resultMode,
-        ...(server.resultMode === 'graded' ? { result: { score_bp: 10000, verdict: 'passed', feedback: '已评分' } } : {}) };
+        ...(server.resultMode === 'graded' ? { result: { score_bp: 10000, verdict: 'passed', feedback: '已评分' } } : {}),
+        ...server.resultFields };
       if (['graded', 'error'].includes(server.resultMode)) server.status = server.resultMode;
       if (server.deferNextResult) {
         server.deferNextResult = false;
@@ -671,5 +683,127 @@ test('editing while compilation is pending preserves the captured submission sou
   assert.deepEqual(ui.server.submissions[0], original);
   assert.equal(ui.server.submissions[1].source, SOURCE_B);
   assert.equal(ui.server.submissions[1].attempt_id, 'att_2');
+  await ui.clock.drain();
+});
+
+function assertGrading(ui) {
+  assert.equal(ui.element('resultCard').hidden, false);
+  assert.equal(ui.element('resultCard').classList.contains('is-grading'), true);
+  assert.equal(ui.element('resultCard').getAttribute('aria-busy'), 'true');
+  assert.equal(ui.element('resultScore').textContent, '评测中');
+  assert.equal(ui.element('resultFeedback').textContent, '');
+  assert.equal(ui.element('runButton').disabled, true);
+  assert.equal(ui.element('submitButton').disabled, true);
+}
+
+test('submission immediately covers the previous score throughout continuation, compilation, submit and polling', async t => {
+  const ui = await boot(t, { initialExecution: true, initialStatus: 'graded' });
+  assert.equal(ui.element('resultScore').textContent, '100 分');
+  ui.editor.setValue(SOURCE_B);
+  ui.server.deferNextAction = ui.server.deferNextSubmit = ui.server.deferNextResult = true;
+  ui.server.resultMode = 'grading';
+  ui.server.resultFields = { score: 100, result: { score_bp: 10000, feedback: '旧成绩说明' } };
+
+  ui.element('submitButton').click();
+  assertGrading(ui); // 在任何异步请求返回之前就必须遮住上次得分。
+  await flush();
+  assert.equal(ui.server.pendingActions.length, 1);
+  assert.equal(ui.server.attempt_id, 'att_2');
+  assertGrading(ui); // continue 不能把本次评测动画隐藏。
+  ui.server.pendingActions[0].resolve();
+  await flush();
+  assert.equal(ui.server.pendingSubmits.length, 1);
+  assertGrading(ui);
+  ui.server.pendingSubmits[0].resolve();
+  await flush();
+  assert.equal(ui.server.pendingResults.length, 1);
+  assertGrading(ui);
+  ui.server.pendingResults[0].resolve();
+  await flush();
+  assertGrading(ui); // pending 回包中的残留分数既不能显示，也不能解锁按钮。
+
+  ui.server.resultMode = 'graded';
+  ui.server.resultFields = { result: { score_bp: 6100, feedback: '本次成绩' } };
+  await ui.clock.advance(2000);
+  assert.equal(ui.element('resultScore').textContent, '61 分');
+  assert.equal(ui.element('resultFeedback').textContent, '本次成绩');
+  assert.equal(ui.element('resultCard').classList.contains('is-grading'), false);
+  assert.equal(ui.element('resultCard').getAttribute('aria-busy'), 'false');
+  assert.equal(ui.element('submitButton').disabled, false);
+  await ui.clock.drain();
+});
+
+for (const initialStatus of ['submitted', 'grading']) test(`restoring ${initialStatus} displays grading before a delayed result and ignores stale scores`, async t => {
+  const ui = await boot(t, { initialExecution: true, initialStatus, deferInitialResult: true,
+    resultMode: initialStatus, resultFields: { score: 99, result: { score_bp: 9900, feedback: '旧成绩' } } });
+  assertGrading(ui);
+  ui.server.pendingResults[0].resolve();
+  await flush();
+  assertGrading(ui);
+  ui.server.resultMode = 'graded';
+  ui.server.resultFields = { result: { score_bp: 4300, feedback: '新成绩' } };
+  await ui.clock.advance(2000);
+  assert.equal(ui.element('resultScore').textContent, '43 分');
+  assert.equal(ui.element('resultCard').classList.contains('is-grading'), false);
+  assert.equal(ui.element('runButton').disabled, false);
+  await ui.clock.drain();
+});
+
+test('a grading error clears its spinner and does not present residual score or feedback as the new result', async t => {
+  const ui = await boot(t, { initialExecution: true, initialStatus: 'graded' });
+  assert.equal(ui.element('resultScore').textContent, '100 分');
+  ui.server.resultMode = 'error';
+  ui.server.resultFields = { score: 100, result: { score_bp: 10000, feedback: '过期的成绩说明' } };
+  await ui.click('submitButton');
+  assert.equal(ui.element('resultTitle').textContent, '评分暂时失败');
+  assert.equal(ui.element('resultScore').textContent, '—');
+  assert.doesNotMatch(ui.element('resultFeedback').textContent, /过期/);
+  assert.equal(ui.element('resultCard').classList.contains('is-grading'), false);
+  assert.equal(ui.element('resultCard').getAttribute('aria-busy'), 'false');
+  assert.equal(ui.element('submitButton').disabled, false);
+  await ui.clock.drain();
+});
+
+test('a failed submit stops grading without restoring the old score and can retry the same submission', async t => {
+  const ui = await boot(t, { initialExecution: true, initialStatus: 'graded' });
+  const original = structuredClone(ui.server.submissions[0]);
+  ui.server.submitFailures = 1;
+  ui.element('submitButton').click();
+  assertGrading(ui);
+  await flush();
+  assert.equal(ui.element('resultTitle').textContent, '提交未完成');
+  assert.equal(ui.element('resultScore').textContent, '—');
+  assert.equal(ui.element('resultFeedback').textContent, '');
+  assert.equal(ui.element('resultCard').classList.contains('is-grading'), false);
+  assert.equal(ui.element('resultCard').getAttribute('aria-busy'), 'false');
+  assert.equal(ui.element('submitButton').disabled, false);
+  assert.match(ui.element('codeMessage').textContent, /Failed to fetch/);
+  await ui.clock.drain();
+  await ui.click('submitButton');
+  assert.equal(ui.element('resultScore').textContent, '100 分');
+  assert.equal(ui.server.attemptCount, 1);
+  assert.equal(ui.server.submissions.length, 1);
+  assert.deepEqual(ui.server.submissions[0], original);
+  await ui.clock.drain();
+});
+
+test('a late result from the previous attempt cannot uncover its score over the new grading animation', async t => {
+  const ui = await boot(t, { initialExecution: true, initialStatus: 'graded', deferInitialResult: true });
+  const previous = ui.server.pendingResults[0];
+  ui.editor.setValue(SOURCE_B);
+  ui.server.deferNextResult = true;
+  ui.server.resultMode = 'grading';
+  await ui.click('submitButton');
+  assert.equal(ui.server.pendingResults.length, 2);
+  assertGrading(ui);
+  previous.resolve({ status: 'graded', result: { score_bp: 2500, feedback: '迟到旧结果' } });
+  await flush();
+  assertGrading(ui);
+  ui.server.pendingResults[1].resolve({ status: 'graded', result: { score_bp: 7200, feedback: '本次结果' } });
+  await flush();
+  assert.equal(ui.element('resultScore').textContent, '72 分');
+  assert.equal(ui.element('resultFeedback').textContent, '本次结果');
+  assert.equal(ui.element('resultCard').classList.contains('is-grading'), false);
+  assert.equal(ui.element('submitButton').disabled, false);
   await ui.clock.drain();
 });
