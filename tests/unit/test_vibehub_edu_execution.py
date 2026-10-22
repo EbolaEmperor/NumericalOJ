@@ -135,3 +135,44 @@ def test_combined_maximum_stage_output_fits_transport_and_remains_a_student_erro
     assert result['compiled'] is True
     assert result['passed'] == 0
     assert result['error'] == '程序输出超过限制'
+
+
+@pytest.mark.parametrize('padding_unit', ['\\\n', '\x01'])
+def test_maximum_source_survives_json_expansion_and_reaches_existing_container(padding_unit):
+    prefix = 'int step(int x) { A.insert(x); return A.top(); }\n/*\n'
+    suffix = '\n*/\n'
+    available = edu_cpp.MAX_SOURCE_BYTES - len(prefix.encode()) - len(suffix.encode())
+    repeats, remainder = divmod(available, len(padding_unit.encode()))
+    source = prefix + padding_unit * repeats + ' ' * remainder + suffix
+    inputs = [1_000_000_000] * edu_cpp.MAX_INPUTS
+    assert len(source.encode()) == edu_cpp.MAX_SOURCE_BYTES
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == '--cleanup':
+            return runtime._BinaryCommandResult(0, b'ok\n', b'')
+        raw = kwargs['input_bytes']
+        assert 128 * 1024 < len(raw) <= runtime.EDU_CPP_REQUEST_MAX_BYTES
+        assert runtime.EDU_CPP_REQUEST_MAX_BYTES == edu_cpp_runner.MAX_PAYLOAD_BYTES == 512 * 1024
+        payload = json.loads(raw)
+        assert payload['source'] == source and payload['inputs'] == inputs
+        assert command[:4] == ['docker', 'exec', '-i', '--user']
+        response = {'compile': {'returncode': 1, 'stdout_b64': '',
+            'stderr_b64': base64.b64encode(b'compiler diagnostic').decode(),
+            'stdout_truncated': False, 'stderr_truncated': False}}
+        return runtime._BinaryCommandResult(0, json.dumps(response).encode(), b'')
+
+    result = edu_cpp.run_code(source, inputs, docker=runtime.DockerCLI(binary_command_runner=run),
+        container_name=CONTAINER)
+    assert result['compiled'] is False and result['error'] == 'compiler diagnostic'
+    assert len(calls) == 2
+
+
+def test_request_over_512_kib_is_rejected_before_any_docker_command():
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('超限请求不得调用 Docker')
+
+    payload = {'source': 'x' * runtime.EDU_CPP_REQUEST_MAX_BYTES}
+    with pytest.raises(runtime.VibeHubRuntimeError, match='请求超过限制'):
+        runtime.DockerCLI(binary_command_runner=forbidden).execute_edu_cpp(CONTAINER, payload)

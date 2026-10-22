@@ -6,7 +6,18 @@ import {afterEach, expect, it, vi} from 'vitest'
 
 import {FaithSieveLaunchModal} from './FaithSieveLaunchModal'
 
-afterEach(() => {cleanup(); vi.unstubAllGlobals()})
+const {modalCommit} = vi.hoisted(() => ({modalCommit: {current: undefined as (() => void) | undefined}}))
+vi.mock('./ReactModal', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./ReactModal')>()
+  const {useLayoutEffect} = await import('react')
+  return {...original, ReactModal: (props: React.ComponentProps<typeof original.ReactModal>) => {
+    // 在 DOM 已提交、父组件被动 effect 尚未同步 mutation options 时交互。
+    useLayoutEffect(() => {modalCommit.current?.()})
+    return <original.ReactModal {...props} />
+  }}
+})
+
+afterEach(() => {modalCommit.current = undefined; cleanup(); vi.unstubAllGlobals()})
 
 const launchOptions = {
   success: true,
@@ -55,6 +66,37 @@ it('偏好模型已失效时回退到该 Harness 的有效模型', async () => {
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/admin/submissions/12/faithsieve', expect.objectContaining({method: 'POST', body: JSON.stringify({harness: 'pi', endpoint_id: 8, execution_mode: 'workflow'})})))
 })
 
+it('回退模型刚显示即可立即提交，不依赖被动 effect 同步旧闭包', async () => {
+  let submitted = false
+  modalCommit.current = () => {
+    const model = screen.queryByRole('combobox', {name: 'LLM 节点'})
+    const start = screen.queryByRole('button', {name: '启动 FaithSieve'}) as HTMLButtonElement | null
+    if (submitted || !model?.textContent?.includes('qwen-text') || !start || start.disabled) return
+    submitted = true
+    start.click()
+  }
+  setup({...launchOptions, preference: {harness: 'pi', endpoint_id: 99}})
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/admin/submissions/12/faithsieve', expect.objectContaining({method: 'POST', body: JSON.stringify({harness: 'pi', endpoint_id: 8, execution_mode: 'workflow'})})))
+  expect(submitted).toBe(true)
+})
+
+it('切换Harness后的首个提交使用界面上的新选择', async () => {
+  setup()
+  await waitFor(() => expect(screen.getByRole('combobox', {name: 'LLM 节点'}).textContent).toContain('qwen-text'))
+  let submitted = false
+  modalCommit.current = () => {
+    const model = screen.queryByRole('combobox', {name: 'LLM 节点'})
+    const start = screen.queryByRole('button', {name: '启动 FaithSieve'}) as HTMLButtonElement | null
+    if (submitted || !model?.textContent?.includes('claude-sonnet') || !start || start.disabled) return
+    submitted = true
+    start.click()
+  }
+  fireEvent.click(screen.getByRole('combobox', {name: 'Harness'}))
+  fireEvent.click(screen.getByRole('option', {name: 'Claude Code'}))
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/admin/submissions/12/faithsieve', expect.objectContaining({method: 'POST', body: JSON.stringify({harness: 'claude_code', endpoint_id: 9, execution_mode: 'workflow'})})))
+  expect(submitted).toBe(true)
+})
+
 it('没有兼容且有价格的模型时禁用启动并提示配置', async () => {
   setup({...launchOptions, endpoints_by_harness: {claude_code: [], pi: []}})
   expect((await screen.findByRole('alert')).textContent).toContain('兼容且已配置完整价格')
@@ -92,4 +134,30 @@ it('重新打开弹窗仍默认Workflow', async () => {
   rerender(<QueryClientProvider client={client}><FaithSieveLaunchModal open={false} action="/api/admin/submissions/12/faithsieve" onClose={onClose} onQueued={onQueued} /></QueryClientProvider>)
   rerender(<QueryClientProvider client={client}><FaithSieveLaunchModal open action="/api/admin/submissions/12/faithsieve" onClose={onClose} onQueued={onQueued} /></QueryClientProvider>)
   await waitFor(() => expect(screen.getByRole('combobox', {name: '执行方式'}).textContent).toContain('Workflow'))
+})
+
+it('重开后立即提交使用恢复的偏好与Workflow，并投递到当前提交地址', async () => {
+  const {client, onClose, onQueued, rerender} = setup()
+  await waitFor(() => expect(screen.getByRole('combobox', {name: 'LLM 节点'}).textContent).toContain('qwen-text'))
+  fireEvent.click(screen.getByRole('combobox', {name: 'Harness'}))
+  fireEvent.click(screen.getByRole('option', {name: 'Claude Code'}))
+  fireEvent.click(screen.getByRole('combobox', {name: '执行方式'}))
+  fireEvent.click(screen.getByRole('option', {name: 'Skill'}))
+  expect(screen.getByRole('combobox', {name: 'LLM 节点'}).textContent).toContain('claude-sonnet')
+  expect(screen.getByRole('combobox', {name: '执行方式'}).textContent).toContain('Skill')
+  rerender(<QueryClientProvider client={client}><FaithSieveLaunchModal open={false} action="/api/admin/submissions/12/faithsieve" onClose={onClose} onQueued={onQueued} /></QueryClientProvider>)
+
+  let submitted = false
+  modalCommit.current = () => {
+    const model = screen.queryByRole('combobox', {name: 'LLM 节点'})
+    const mode = screen.queryByRole('combobox', {name: '执行方式'})
+    const start = screen.queryByRole('button', {name: '启动 FaithSieve'}) as HTMLButtonElement | null
+    if (submitted || !model?.textContent?.includes('qwen-text') || !mode?.textContent?.includes('Workflow') || !start || start.disabled) return
+    submitted = true
+    start.click()
+  }
+  rerender(<QueryClientProvider client={client}><FaithSieveLaunchModal open action="/api/admin/submissions/13/faithsieve" onClose={onClose} onQueued={onQueued} /></QueryClientProvider>)
+  await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/admin/submissions/13/faithsieve', expect.objectContaining({method: 'POST', body: JSON.stringify({harness: 'pi', endpoint_id: 8, execution_mode: 'workflow'})})))
+  expect(submitted).toBe(true)
+  expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes('/submissions/12/') && init?.method === 'POST')).toBe(false)
 })

@@ -85,6 +85,8 @@ STOP_RESERVATION_TTL_SECONDS = 45.0
 PROXY_CONCURRENCY = 8
 RELAY_POOL_SIZE = 4
 _COMMAND_OUTPUT_LIMIT = 128 * 1024
+# 64 KiB 学生源码最坏可能被 JSON 控制字符转义为六倍，再加驱动和输入。
+EDU_CPP_REQUEST_MAX_BYTES = 512 * 1024
 _BUILDKIT_DIAGNOSTIC_MAX_CHARS = 2_048
 _MAX_STATE_BYTES = 4 * 1024 * 1024
 _MAX_DOCKERFILE_BYTES = 256 * 1024
@@ -1723,7 +1725,7 @@ class DockerCLI:
         if type(timeout) not in {int, float} or not math.isfinite(timeout) or not 1 <= timeout <= 45:
             raise VibeHubRuntimeError("VibeHub C++ 时限无效")
         raw = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
-        if len(raw) > 512 * 1024:
+        if len(raw) > EDU_CPP_REQUEST_MAX_BYTES:
             raise VibeHubRuntimeError("VibeHub C++ 请求超过限制")
         source = Path(__file__).with_name("edu_cpp_runner.py").read_text(encoding="utf-8")
         # 与作品服务的 65532 不同；不同请求使用独立身份和 0700 临时目录。
