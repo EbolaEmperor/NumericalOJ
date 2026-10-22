@@ -33,7 +33,7 @@ def test_cpu_profile_uses_web_target_without_host_cuda_or_nvidia_cdi():
     definition = _function("configure_deployment_profile")
     result = _bash(definition + '\nNUMOJ_DEPLOY_PROFILE=test-cpu\nconfigure_deployment_profile\nprintf "%s\\n" "$VIBEHUB_RUNTIME_GPU" "${VIBEHUB_RUNTIME_BUILD_ARGS[@]}"')
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["0", "--target", "web"]
+    assert result.stdout.splitlines() == ["0", "--target", "web-edu"]
     block_start = SCRIPT.index('if [[ "$DEPLOY_PROFILE" == \'production\' ]]; then')
     block_end = SCRIPT.index("phase='准备并校验 VibeHub 专属 builder'", block_start)
     block = SCRIPT[block_start:block_end]
@@ -96,7 +96,7 @@ docker() {
 
 def test_cpu_profile_keeps_the_full_release_state_machine():
     assert SCRIPT.index("configure_deployment_profile\n") < SCRIPT.index('install -d -m 0700 "$STATE_DIR"')
-    assert '--target web' in _function("configure_deployment_profile")
+    assert '--target web-edu' in _function("configure_deployment_profile")
     assert "judger-lite" not in SCRIPT and "agent_judge_lite" not in SCRIPT
     for operation in (
         "deploy/preflight.py validate-config", "deploy/backup_database.py backup",

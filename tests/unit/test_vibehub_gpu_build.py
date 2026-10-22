@@ -60,12 +60,31 @@ def test_only_trusted_base_build_receives_host_cuda_context():
     configuration = deploy[configuration_start:configuration_end]
     assert "production)" in configuration
     assert "VIBEHUB_RUNTIME_BUILD_ARGS=(--build-context host_cuda=/usr/local/cuda-12.6)" in configuration
-    assert "VIBEHUB_RUNTIME_BUILD_ARGS=(--target web)" in configuration
+    assert "VIBEHUB_RUNTIME_BUILD_ARGS=(--target web-edu)" in configuration
     assert deploy.count('"${VIBEHUB_RUNTIME_BUILD_ARGS[@]}"') == 1
     dockerfile = (ROOT / "docker/vibehub-runtime/Dockerfile").read_text()
     assert "--mount=type=bind,from=host_cuda,target=/usr/local/cuda-12.6" in dockerfile
     assert "COPY --from=gpu-builder /opt/vibehub-gpu /opt/vibehub-gpu" in dockerfile
     assert "COPY --from=host_cuda" not in dockerfile
+
+
+def test_edu_relay_changes_do_not_enter_the_gpu_build_parent_chain():
+    dockerfile = (ROOT / "docker/vibehub-runtime/Dockerfile").read_text()
+    web, remaining = dockerfile.split("FROM web AS gpu-builder\n", 1)
+    gpu, remaining = remaining.split("FROM web AS web-edu\n", 1)
+    cpu, production = remaining.split("\nFROM web\n", 1)
+
+    # GPU 仍继承稳定 web；教学源文件不得成为安装或编译阶段的输入。
+    assert "relay_entrypoint.py" not in web + gpu
+    assert "COPY uds_relay.py /usr/local/bin/vibehub-uds-relay" in web
+    assert "RUN python /opt/vibehub-runtime/install_gpu.py" in gpu
+    assert "python /opt/vibehub-runtime/build_gpu.py" in gpu
+    relay_copy = "COPY --chown=0:0 --chmod=0444 uds_relay.py /usr/local/lib/vibehub_uds_relay.py"
+    edu_copy = "COPY --chown=0:0 --chmod=0555 relay_entrypoint.py /usr/local/bin/vibehub-uds-relay"
+    cpu_operations = [line for line in cpu.splitlines() if line and not line.startswith("#")]
+    assert cpu_operations == [relay_copy, edu_copy]
+    assert production.index(edu_copy) > production.index("USER 65532:65532")
+    assert production.index(edu_copy) > production.index("COPY --from=gpu-builder")
 
 
 def load_compiler(monkeypatch):

@@ -77,7 +77,7 @@ configure_deployment_profile() {
       ;;
     test-cpu)
       VIBEHUB_RUNTIME_GPU=0
-      VIBEHUB_RUNTIME_BUILD_ARGS=(--target web)
+      VIBEHUB_RUNTIME_BUILD_ARGS=(--target web-edu)
       ;;
     *)
       printf '未知部署模式：%s；仅支持 production 或 test-cpu。\n' \

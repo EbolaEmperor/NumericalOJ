@@ -176,11 +176,6 @@ def _request(request, output):
 
 
 def main() -> int:
-    global SOCKET_PATH
-    if sys.argv[1:] == ["--edu"]:
-        SOCKET_PATH = "/run/vibehub/edu.sock"
-    elif sys.argv[1:]:
-        return 64
     try:
         source = sys.stdin.buffer
         output = sys.stdout.buffer

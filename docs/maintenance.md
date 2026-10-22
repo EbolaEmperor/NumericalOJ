@@ -243,8 +243,8 @@ NUMOJ_DEPLOY_PROFILE=test-cpu bash deploy.sh
 ```
 
 `NUMOJ_DEPLOY_PROFILE` 默认是 `production`，只允许 `production` 或 `test-cpu`。
-CPU 模式跳过 NVIDIA CDI 准备，使用 VibeHub Dockerfile 的 `web` 阶段，保留完整 Web 依赖与
-Unix socket relay，不需要宿主 CUDA，也不构建 vLLM/GPU 环境。基础镜像标记
+CPU 模式跳过 NVIDIA CDI 准备，使用 VibeHub Dockerfile 的 `web-edu` 阶段，保留完整 Web 依赖与
+普通、教学两种 Unix socket relay，不需要宿主 CUDA，也不构建 vLLM/GPU 环境。基础镜像标记
 `com.numericaloj.vibehub.gpu=0`；生产镜像标记为 `1`，运行器拒绝使用 CPU 基础镜像处理 GPU 申请。
 学生 C++ 仍使用普通判题 Docker 沙箱，不在教学作品中编译或执行。
 测试模式允许缺少稳定判题镜像的机器首次构建完整的 judger、Lean 与 Agent Judge 候选镜像，
@@ -254,6 +254,12 @@ Agent Judge 始终引用同次发布的 Lean 候选标签；它不会使用 lite
 两种模式都执行配置校验、备份、停服、schema 同步、示例发布、任务恢复与服务启动，
 不会在部署脚本内运行测试。浏览器、接口和可丢弃基础设施测试应在部署成功后的独立测试阶段执行。
 CPU 模式只用于明确隔离的测试站；不应在生产部署时设置。
+
+VibeHub 的稳定 `web` 阶段与 GPU 安装、编译阶段共用缓存；教学 relay 只追加到 `web-edu`
+和生产最终镜像的末层。入口包装复用普通 relay 的帧协议，并保留原命令与 `--edu` 参数，
+兼容已经发布的作品镜像；教学请求固定连接独立的 `edu.sock`。
+调整教学入口时不要修改稳定 relay 或让 `gpu-builder` 继承 `web-edu`，否则会使后续 GPU
+依赖和 vLLM 编译缓存失效。旧构建输入保持一致时可以复用仍然存在的缓存；被清理的缓存无法恢复。
 
 VibeHub 候选基础镜像在停服前完成静态供应链核验：只读证明生产专属 Buildx builder 是
 `docker-container` driver、全部节点为 running，且逐节点容器使用 `NetworkMode=bridge`；再将

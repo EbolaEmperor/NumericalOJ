@@ -37,6 +37,11 @@ COPY sources-gpu.json /opt/vibehub-runtime/sources-gpu.json
 RUN --mount=type=bind,from=host_cuda,target=/usr/local/cuda-12.6 \
     python /opt/vibehub-runtime/build_gpu.py
 
+# 教学入口只追加到成品；GPU builder 继续继承未变动的 web 层。
+FROM web AS web-edu
+COPY --chown=0:0 --chmod=0444 uds_relay.py /usr/local/lib/vibehub_uds_relay.py
+COPY --chown=0:0 --chmod=0555 relay_entrypoint.py /usr/local/bin/vibehub-uds-relay
+
 FROM web
 # Triton 在运行时编译 launcher，保留 C/C++ 编译器；CUDA 编译器仍来自只读宿主挂载。
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -47,3 +52,7 @@ COPY --from=gpu-builder /opt/vibehub-runtime/ /opt/vibehub-runtime/
 
 # 运行器仍会强制 --user 65532:65532；这里让直接调试也保持非 root。
 USER 65532:65532
+
+# 放在所有 GPU 安装和编译步骤之后，避免教学入口变化使旧缓存失效。
+COPY --chown=0:0 --chmod=0444 uds_relay.py /usr/local/lib/vibehub_uds_relay.py
+COPY --chown=0:0 --chmod=0555 relay_entrypoint.py /usr/local/bin/vibehub-uds-relay
