@@ -204,7 +204,8 @@
       left.splice(0, left.length, ...(result.left_heap || []));
       right.splice(0, right.length, ...(result.right_heap || []));
       median = result.expected;
-      add(round, { checked: true, returned: result.returned ?? '未返回', error: !result.passed, success: result.passed, message: result.passed ? `第 ${round + 1} 轮通过，返回 ${result.returned}。` : `第 ${round + 1} 轮停止：${result.feedback}。应返回 ${result.expected}，${result.returned == null ? '函数未能返回。' : `实际返回 ${result.returned}。`}` });
+      const failure = result.error ? (execution.error || '程序运行异常') : result.returned !== result.expected ? '返回值不正确' : '堆状态未通过检查';
+      add(round, { checked: true, returned: result.returned ?? '未返回', error: !result.passed, success: result.passed, message: result.passed ? `第 ${round + 1} 轮通过，返回 ${result.returned}。` : `第 ${round + 1} 轮停止：${failure}。应返回 ${result.expected}，${result.returned == null ? '函数未能返回。' : `实际返回 ${result.returned}。`}` });
       if (!result.passed || output.length >= 5000) break;
     }
     if (execution.passed === execution.total && output.length) output[output.length - 1].message = `全部 ${execution.total} 轮通过。`;
