@@ -45,6 +45,14 @@
       <button id="acknowledgeButton" class="button button-primary acknowledge-button" type="button">我知道了</button>
     </section>
   </div>
+  <script id="starterSource" type="text/plain">
+// 下面这个提供了一个示例写法，它仅用于展示如何使用两个 heap，但并不是标准答案
+double step(int x) {
+    A.insert(x);
+    B.insert(x);
+    return (A.top() + B.top()) / 2.0;
+}
+  </script>
   <script src="./editor/editor.js"></script>
   <script src="app.js"></script>
 </body>

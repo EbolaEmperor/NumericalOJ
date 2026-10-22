@@ -5,7 +5,8 @@
   let seq = 0;
   let status = 'loading';
   let view = {};
-  let starter = '';
+  let starter = $('starterSource')?.textContent.trim() || '';
+  if (starter) starter += '\n';
   let lastRunSource = '';
   let busy = false;
   let frames = [];
@@ -42,11 +43,12 @@
 
   function updateButtons() {
     const active = status === 'active';
+    const editable = active || status === 'preview';
     $('runButton').disabled = busy || !active;
     $('submitButton').disabled = busy || !['active', 'submitted', 'error'].includes(status);
     $('submitButton').textContent = ['submitted', 'error'].includes(status) ? '重试评分 ↗' : '提交作业 ↗';
-    $('resetButton').disabled = busy || !active;
-    code?.updateOptions({ readOnly: busy || !active, domReadOnly: busy || !active });
+    $('resetButton').disabled = busy || !editable;
+    code?.updateOptions({ readOnly: busy || !editable, domReadOnly: busy || !editable });
     $('runButton').innerHTML = busy ? '<span>◌</span> 正在执行' : '<span>▶</span> 试运行';
     $('playButton').disabled = !frames.length;
     $('nextButton').disabled = !frames.length || position >= frames.length - 1;
@@ -56,7 +58,7 @@
 
   function setBadge(data) {
     const homework = data.assignment_id || data.homework_id || data.assignment || view.assignment_id;
-    const label = { active: homework ? '作业模式' : '练习模式', submitted: '作业已提交', grading: '正在评分', graded: '评分完成', error: '评分暂时失败' }[status] || '正在连接';
+    const label = { preview: '本地预览', active: homework ? '作业模式' : '练习模式', submitted: '作业已提交', grading: '正在评分', graded: '评分完成', error: '评分暂时失败' }[status] || '正在连接';
     $('assignmentBadge').textContent = '● ' + label;
   }
 
@@ -65,7 +67,8 @@
     seq = data.seq ?? 0;
     status = data.status || 'active';
     view = data.view || data.data?.view || {};
-    if (!starter) starter = view.initial_source || view.source || '';
+    if (view.initial_source) starter = view.initial_source;
+    else if (!starter) starter = view.source || '';
     if (restoreCode) {
       code.setValue(view.source || starter);
     }
@@ -254,7 +257,7 @@
   }
 
   async function performRun() {
-    if (busy) return;
+    if (busy || status !== 'active') return;
     busy = true; stopPlayback(); updateButtons(); message('正在编译并运行 C++ 代码…', true);
     try { await runCode(); } catch (error) { message(error.message); }
     finally { busy = false; updateButtons(); }
@@ -290,7 +293,7 @@
   }
 
   async function submit() {
-    if (busy) return;
+    if (busy || !['active', 'submitted', 'error'].includes(status)) return;
     busy = true; stopPlayback(); updateButtons(); message('正在提交…', true);
     try {
       if (status === 'active' && code.getValue() !== lastRunSource) await runCode(false);
@@ -355,6 +358,7 @@
   showTask();
   try {
     code = window.NumOJEduEditor.create($('code'), { onRun: performRun });
+    code.setValue(starter);
     $('editorLoading').hidden = true;
   } catch (error) {
     status = 'unavailable';
@@ -363,5 +367,12 @@
     updateButtons();
     return;
   }
-  loadState().catch((error) => { status = 'unavailable'; message(error.message); $('assignmentBadge').textContent = '● 未连接作答'; updateButtons(); });
+  if (base.protocol === 'file:') {
+    status = 'preview';
+    setBadge({});
+    renderFrame({ left: [], right: [], round: 0, message: '等待试运行' });
+    updateButtons();
+  } else {
+    loadState().catch((error) => { status = 'unavailable'; message(error.message); $('assignmentBadge').textContent = '● 未连接作答'; updateButtons(); });
+  }
 })();

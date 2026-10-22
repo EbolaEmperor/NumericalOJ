@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http.server import SimpleHTTPRequestHandler
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -17,14 +18,37 @@ import cpp
 
 ROOT = Path(__file__).resolve().parent
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
-DEFAULT_SOURCE = """// A 是大顶堆，B 是小顶堆。两棵堆在各次 step 调用之间保留。
-// 可调用 insert(int)、pop()、top()、size()。
-double step(int x) {
-    // TODO：完成你的实现。
-    A.insert(x);
-    return A.top();
-}
-"""
+
+
+class _StarterSourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.selected = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self.selected = dict(attrs).get("id") == "starterSource"
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.selected = False
+
+    def handle_data(self, data):
+        if self.selected:
+            self.parts.append(data)
+
+
+def _default_source():
+    parser = _StarterSourceParser()
+    parser.feed((ROOT / "static" / "index.html").read_text(encoding="utf-8"))
+    source = "".join(parser.parts).strip()
+    if not source:
+        raise RuntimeError("页面缺少初始示例代码")
+    return source + "\n"
+
+
+DEFAULT_SOURCE = _default_source()
 _MISSING = object()
 
 
