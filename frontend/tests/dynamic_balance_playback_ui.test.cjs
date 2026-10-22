@@ -246,6 +246,9 @@ async function boot(t, { url = 'https://example.test/vibehub/runtime/test/', ini
 test('autoplay awaits every actual render, including 200 ms swaps, and stops at the first error', async t => {
   const ui = await boot(t);
   await ui.click('runButton');
+  assert.equal(ui.element('statusLine').hidden, true);
+  assert.equal(ui.element('statusText').textContent, '');
+  assert.equal(ui.element('codeMessage').textContent, '');
   const frames = ui.built.at(-1);
   await ui.clock.until(() => ui.current()?.frame.motion.kind === 'swap' && !ui.current().done);
   const swap = ui.current(), before = ui.renders.length;
@@ -253,6 +256,7 @@ test('autoplay awaits every actual render, including 200 ms swaps, and stops at 
   await ui.clock.advance(199);
   assert.equal(ui.renders.length, before, '200 ms 交换未完成前不能进入下一帧');
   assert.equal(swap.done, false);
+  assert.equal(ui.element('statusLine').hidden, true, '正常调整不应显示状态小字');
   await ui.clock.advance(1);
   assert.equal(swap.done, true);
   assert.ok(swap.end - swap.start >= 200);
@@ -261,8 +265,8 @@ test('autoplay awaits every actual render, including 200 ms swaps, and stops at 
   assert.equal(ui.current().frame.error, true);
   assert.equal(ui.current().frame.round, 3);
   assert.ok(ui.renders.every(record => record.frame.round < 4));
-  assert.equal(ui.element('median').textContent, '5.5');
-  assert.equal(ui.element('returned').textContent, '0');
+  assert.equal(ui.element('statusLine').hidden, false);
+  assert.match(ui.element('statusText').textContent, /应返回 5\.5，实际返回 0/);
   assert.equal(ui.element('nextButton').disabled, true);
   assert.equal(ui.element('playButton').textContent, '▶');
   assert.equal(ui.active().length, 0);

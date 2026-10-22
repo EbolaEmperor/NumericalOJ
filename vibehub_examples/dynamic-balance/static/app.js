@@ -44,8 +44,9 @@
   }
 
   function message(text, good = false) {
-    $('codeMessage').textContent = text || '';
-    $('codeMessage').className = `code-message${text ? ' visible' : ''}${good ? ' good' : ''}`;
+    const error = good ? '' : text || '';
+    $('codeMessage').textContent = error;
+    $('codeMessage').className = `code-message${error ? ' visible' : ''}`;
   }
 
   function updateButtons() {
@@ -63,12 +64,6 @@
     $('playButton').textContent = playing ? 'Ⅱ' : '▶';
   }
 
-  function setBadge(data) {
-    const homework = data.assignment_id || data.homework_id || data.assignment || view.assignment_id;
-    const label = { preview: '本地预览', active: homework ? '作业模式' : '练习模式', submitted: '作业已提交', grading: '正在评分', graded: '评分完成', error: '评分暂时失败' }[status] || '正在连接';
-    $('assignmentBadge').textContent = '● ' + label;
-  }
-
   async function loadState(restoreCode = true) {
     const data = await api('state');
     seq = data.seq ?? 0;
@@ -80,7 +75,6 @@
       code.setValue(view.source || starter);
     }
     lastRunSource = view.execution ? (view.source || '') : '';
-    setBadge(data);
     if (view.execution?.rounds?.length) preparePlayback(view.execution, false);
     else renderFrame({ left: [], right: [], round: 0, message: '等待试运行' });
     updateButtons();
@@ -89,26 +83,10 @@
   }
 
   function renderFrame(frame, animate = true) {
-    const left = frame.left || [], right = frame.right || [];
     const rendered = heapMotion.render(frame, { animate });
-    $('sizeA').textContent = `${left.length} 个`;
-    $('sizeB').textContent = `${right.length} 个`;
-    const checked = frame.checked;
-    const round = frame.round || 0;
-    $('roundLabel').textContent = view.inputs?.length ? `第 ${Math.min(round + 1, view.inputs.length)} / ${view.inputs.length} 轮` : '等待试运行';
-    $('currentInput').textContent = frame.x === undefined ? '等待输入' : `x = ${frame.x}`;
-    $('median').textContent = frame.median === undefined ? '—' : frame.median;
-    $('returned').textContent = checked ? frame.returned : '—';
-    $('executionMessage').textContent = frame.message || '';
-    $('executionMessage').className = `execution-message${frame.error ? ' error' : frame.success ? ' success' : ''}`;
-    $('timelineProgress').style.width = frames.length > 1 ? `${100 * position / (frames.length - 1)}%` : '0%';
-    $('operationLog').replaceChildren();
-    (frame.log || []).slice(-5).forEach((entry, index, all) => {
-      const span = document.createElement('span');
-      span.className = `operation-chip${entry.startsWith('B') ? ' b' : ''}${index === all.length - 1 ? ' current' : ''}`;
-      span.textContent = entry;
-      $('operationLog').append(span);
-    });
+    const error = frame.error ? frame.message || '' : '';
+    $('statusLine').hidden = !error;
+    $('statusText').textContent = error;
     updateButtons();
     return rendered;
   }
@@ -179,19 +157,20 @@
     lastRunSource = source;
     const execution = view.execution;
     if (execution?.error) {
-      message(execution.error);
       stopPlayback();
       if (execution.rounds?.length) {
+        message('');
         preparePlayback(execution, autoplay);
         return false;
       }
+      message(execution.error);
       frames = [];
       restartPlayback();
-      renderFrame({ left: [], right: [], round: 0, error: true, message: '试运行未能完成，请根据右侧提示修改代码。' });
+      renderFrame({ left: [], right: [], round: 0 });
       return false;
     }
     if (!execution?.rounds?.length) throw new Error('本次试运行没有返回可播放的堆操作记录。');
-    message(`试运行通过 ${execution.passed}/${execution.total} 轮。`, execution.passed === execution.total);
+    message('');
     preparePlayback(execution, autoplay);
     return true;
   }
@@ -225,7 +204,7 @@
         $('resultFeedback').textContent = '';
         pollTimer = setTimeout(pollResult, 2000);
       }
-      setBadge(data); updateButtons();
+      updateButtons();
     } catch (error) {
       message(`结果查询暂时失败：${error.message}`);
       pollTimer = setTimeout(pollResult, 4000);
@@ -240,7 +219,6 @@
       const data = await api('submit', { request_id: uuid(), expected_seq: seq });
       status = data.status || 'grading';
       message('作业已提交。', true);
-      setBadge(data);
       await pollResult();
     } catch (error) { message(error.message); }
     finally { busy = false; updateButtons(); }
@@ -319,10 +297,9 @@
   }
   if (base.protocol === 'file:') {
     status = 'preview';
-    setBadge({});
     renderFrame({ left: [], right: [], round: 0, message: '等待试运行' });
     updateButtons();
   } else {
-    loadState().catch((error) => { status = 'unavailable'; message(error.message); $('assignmentBadge').textContent = '● 未连接作答'; updateButtons(); });
+    loadState().catch((error) => { status = 'unavailable'; message(error.message); updateButtons(); });
   }
 })();

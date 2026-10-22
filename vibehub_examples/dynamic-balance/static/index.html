@@ -9,29 +9,23 @@
 </head>
 <body>
   <main class="lab">
-    <header class="status-bar">
-      <div class="assignment-badge" id="assignmentBadge"><span class="status-dot"></span> 正在连接作答</div>
-    </header>
     <section class="workspace" aria-label="动态中位数实验室">
       <div class="visual-column">
-        <section class="panel conveyor-panel">
-          <div class="stream-heading"><span class="quiet" id="roundLabel">等待试运行</span></div>
+        <section class="panel visualization-panel">
           <div class="conveyor-window"><div class="pickup-label" aria-hidden="true"><span>↓</span></div><div id="conveyor" class="conveyor" aria-label="待输入数字"></div><div class="belt-line"></div></div>
-          <div class="stream-footer"><span id="currentInput">等待输入</span></div>
-        </section>
-        <section class="panel heap-panel">
-          <div class="heap-grid">
-            <div class="heap-region heap-a"><div class="heap-heading"><div><span class="heap-letter">A</span><span class="heap-name">大顶堆</span></div><span class="heap-size" id="sizeA">0 个</span></div><svg id="heapA" viewBox="0 0 400 245" role="img" aria-label="A 大顶堆的二叉树结构"></svg></div>
-            <div class="heap-divider"><span>⇄</span></div>
-            <div class="heap-region heap-b"><div class="heap-heading"><div><span class="heap-letter">B</span><span class="heap-name">小顶堆</span></div><span class="heap-size" id="sizeB">0 个</span></div><svg id="heapB" viewBox="0 0 400 245" role="img" aria-label="B 小顶堆的二叉树结构"></svg></div>
+          <div class="heap-stage">
+            <div class="heap-grid">
+              <div class="heap-region heap-a"><div class="heap-heading"><div><span class="heap-letter">A</span><span class="heap-name">大顶堆</span></div></div><svg id="heapA" viewBox="0 0 400 245" role="img" aria-label="A 大顶堆的二叉树结构"></svg></div>
+              <div class="heap-divider"><span>⇄</span></div>
+              <div class="heap-region heap-b"><div class="heap-heading"><div><span class="heap-letter">B</span><span class="heap-name">小顶堆</span></div></div><svg id="heapB" viewBox="0 0 400 245" role="img" aria-label="B 小顶堆的二叉树结构"></svg></div>
+            </div>
           </div>
-          <div class="median-strip"><div><span class="value-label">当前中位数</span><div class="median-number" id="median">—</div></div><div class="return-value"><span>你的函数返回</span><strong id="returned">—</strong></div></div>
         </section>
-        <section class="panel playback-panel"><div class="playback-actions"><button type="button" class="icon-button" id="playButton" aria-label="暂停或继续播放" disabled>▶</button><button type="button" class="button button-ghost" id="nextButton" disabled>单步 →</button><button type="button" class="button button-ghost" id="replayButton" disabled>↺ 重播</button><span class="playback-spacer"></span><button type="button" class="speed-button" id="speedButton" aria-label="切换播放速度">1× 速度</button></div><div class="timeline"><span id="timelineProgress"></span></div><div class="execution-message" id="executionMessage" role="status" aria-live="polite">等待试运行</div><div class="operation-log" id="operationLog" aria-label="最近的堆操作"></div></section>
+        <section class="panel playback-panel"><div class="playback-actions"><button type="button" class="icon-button" id="playButton" aria-label="暂停或继续播放" disabled>▶</button><button type="button" class="button button-ghost" id="nextButton" disabled>单步 →</button><button type="button" class="button button-ghost" id="replayButton" disabled>↺ 重播</button><span class="playback-spacer"></span><button type="button" class="speed-button" id="speedButton" aria-label="切换播放速度">1× 速度</button></div><div class="status-line" id="statusLine" role="status" aria-live="polite" hidden><span id="statusText"></span></div></section>
         <section class="result-card" id="resultCard" hidden aria-live="polite"><div><h3 id="resultTitle">正在评分</h3><p id="resultFeedback"></p></div><strong id="resultScore">—</strong></section>
       </div>
       <div class="editor-column">
-        <section class="panel editor-panel"><div class="editor-tab"><span class="code-file-dot"></span> solution.cpp <span class="language-tag">C++ 20</span></div><div class="editor-container"><div id="editorLoading" class="editor-loading" role="status">正在加载代码编辑器…</div><div id="code" aria-label="C++ step 函数代码"></div></div><div class="editor-bottom"><button type="button" class="text-button" id="resetButton">恢复初始代码</button></div><div class="run-actions"><button type="button" class="button button-primary" id="runButton" disabled><span>▶</span> 试运行</button><button type="button" class="button button-submit" id="submitButton" disabled>提交作业 ↗</button></div><div class="code-message" id="codeMessage" role="status" aria-live="polite"></div></section>
+        <section class="panel editor-panel"><div class="editor-container"><div id="editorLoading" class="editor-loading" role="status">正在加载代码编辑器…</div><div id="code" aria-label="C++ step 函数代码"></div></div><div class="editor-bottom"><button type="button" class="text-button" id="resetButton">恢复初始代码</button></div><div class="run-actions"><button type="button" class="button button-primary" id="runButton" disabled><span>▶</span> 试运行</button><button type="button" class="button button-submit" id="submitButton" disabled>提交作业 ↗</button></div><div class="code-message" id="codeMessage" role="status" aria-live="polite"></div></section>
         <div id="instructionDock" class="instruction-dock"></div>
       </div>
     </section>

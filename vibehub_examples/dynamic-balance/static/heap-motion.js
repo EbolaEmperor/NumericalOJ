@@ -26,9 +26,8 @@
     const heaps = [heapA, heapB].map((element) => {
       const edges = svg('g', { class: 'heap-edges' });
       const nodes = svg('g', { class: 'heap-nodes' });
-      const notes = svg('g', { class: 'heap-notes' });
-      element.replaceChildren(edges, nodes, notes);
-      return { element, edges, nodes, notes, edgeRecords: new Map() };
+      element.replaceChildren(edges, nodes);
+      return { element, edges, nodes, edgeRecords: new Map() };
     });
 
     function animate(element, keyframes, duration, cleanup) {
@@ -120,7 +119,6 @@
       for (let index = nextOffset; index < Math.min(values.length, nextOffset + 11); index++) wanted.add(index);
       // 让刚离开的方块也走完这一格，再从裁剪窗口移除。
       if (duration) for (const index of blocks.keys()) if (index < nextOffset && index >= oldOffset) wanted.add(index);
-      conveyor.querySelector('.quiet')?.remove();
       for (const index of wanted) {
         let record = blocks.get(index);
         if (!record) {
@@ -162,12 +160,6 @@
         ], duration));
       }
       offset = nextOffset;
-      if (offset >= values.length && values.length) {
-        const text = document.createElement('span');
-        text.className = 'quiet';
-        text.textContent = '本次输入已全部处理';
-        conveyor.append(text);
-      }
       return jobs;
     }
 
@@ -294,9 +286,6 @@
         for (const [slot, line] of heap.edgeRecords) {
           if (!edgeSlots.has(slot)) { line.remove(); heap.edgeRecords.delete(slot); }
         }
-        heap.notes.replaceChildren();
-        if (!items.length) heap.notes.append(svg('text', { x: 200, y: 126, class: 'empty-heap' }, '等待第一个数字'));
-        if (items.length > shape.shown.length) heap.notes.append(svg('text', { x: 200, y: 238, class: 'heap-extra' }, `另有 ${items.length - shape.shown.length} 个节点，已省略显示`));
         for (const node of shape.shown) {
           const record = records.get(node.id) || makeNode(node);
           const origin = oldOrigin(node.id, before);
@@ -374,7 +363,7 @@
         inputOrigins.clear();
         conveyor.replaceChildren();
         if (belt) belt.style.backgroundPosition = '0px 0px';
-        for (const heap of heaps) { heap.edges.replaceChildren(); heap.notes.replaceChildren(); heap.edgeRecords.clear(); }
+        for (const heap of heaps) { heap.edges.replaceChildren(); heap.edgeRecords.clear(); }
         offset = 0;
         lastFrame = undefined;
       },
