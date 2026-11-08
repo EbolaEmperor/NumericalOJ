@@ -910,11 +910,9 @@ def verify_clangd_runtime(*, require_official_toolchain: bool = False) -> None:
                     "auto *official_lapacke = &LAPACKE_dgesv;\n",
                     {"LAPACKE_dgesv": {"function"}},
                 ),
-                (
-                    "mkl",
-                    *_MKL_SEMANTIC_PROBE,
-                ),
             )
+            if service.editor_toolchain.has_mkl:
+                official_probes += (("mkl", *_MKL_SEMANTIC_PROBE),)
             official_missing: list[str] = []
             for probe_name, probe_source, expected_tokens in official_probes:
                 probe_data = service.semantic_tokens(

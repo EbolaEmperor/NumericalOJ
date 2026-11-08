@@ -11,6 +11,10 @@ import time
 from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.ranking.db import get_ranking_submission
 from backend.oj_modules.ranking.agent_judge import rules as aj
+from backend.oj_modules.ranking.reverse_judge.settings import (
+    normalize_quality_gate_timeout,
+    quality_gate_timeout_seconds,
+)
 
 _aj_tables_ready = False
 
@@ -812,7 +816,8 @@ def save_quality_gate_endpoints(competition_id, items):
 
 def save_reverse_quality_gate_configuration(
         competition_id, *, enabled=_QUALITY_GATE_UNSET,
-        prompt=_QUALITY_GATE_UNSET, endpoints=_QUALITY_GATE_UNSET):
+        prompt=_QUALITY_GATE_UNSET, endpoints=_QUALITY_GATE_UNSET,
+        timeout_seconds=_QUALITY_GATE_UNSET):
     """原子地部分更新质量门禁配置及其独立端点池。
 
     先锁定比赛配置与质量门禁端点，再按最终合并状态完成校验；端点正规化、
@@ -825,7 +830,8 @@ def save_reverse_quality_gate_configuration(
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT reverse_quality_gate_enabled, reverse_quality_gate_prompt
+                SELECT reverse_quality_gate_enabled, reverse_quality_gate_prompt,
+                       reverse_quality_gate_timeout_seconds
                 FROM ranking_competitions
                 WHERE id = %s
                 FOR UPDATE
@@ -861,6 +867,11 @@ def save_reverse_quality_gate_configuration(
             )
             if len(merged_prompt) > 20000:
                 raise ValueError('审核标准不能超过 20000 字')
+            merged_timeout = (
+                quality_gate_timeout_seconds(competition)
+                if timeout_seconds is _QUALITY_GATE_UNSET
+                else normalize_quality_gate_timeout(timeout_seconds)
+            )
 
             normalized = current_endpoints
             if endpoints is not _QUALITY_GATE_UNSET:
@@ -895,6 +906,9 @@ def save_reverse_quality_gate_configuration(
             if prompt is not _QUALITY_GATE_UNSET:
                 updates.append('reverse_quality_gate_prompt = %s')
                 params.append(merged_prompt)
+            if timeout_seconds is not _QUALITY_GATE_UNSET:
+                updates.append('reverse_quality_gate_timeout_seconds = %s')
+                params.append(merged_timeout)
             if updates:
                 params.append(competition_id)
                 cursor.execute(
@@ -911,6 +925,7 @@ def save_reverse_quality_gate_configuration(
     return {
         'enabled': merged_enabled,
         'prompt': merged_prompt,
+        'timeout_seconds': merged_timeout,
         'enabled_endpoint_count': enabled_count,
     }
 

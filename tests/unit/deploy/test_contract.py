@@ -88,15 +88,15 @@ def test_deploy_prepares_plan_then_backs_up_while_stopped_and_restarts_everythin
     positions = [script.index(phase) for phase in phases]
     assert positions == sorted(positions)
     assert (
-        '"$JUDGER_STABLE" "$JUDGER_CANDIDATE" docker/judger' in script
+        '"$JUDGER_STABLE" "$JUDGER_CANDIDATE" "$JUDGER_CONTEXT"' in script
     )
     assert (
         '"$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" '
-        "docker/agent_judge" in script
+        '"$AGENT_JUDGE_CONTEXT"' in script
     )
     assert '"$LEAN4_STABLE" "$LEAN4_CANDIDATE" docker/lean4' in script
     assert 'build_candidate_image' in script
-    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 3
+    assert script.count('--label "$MANAGED_IMAGE_LABEL"') == 2
     assert "numericaloj-judger:deploy-*" in script
     assert "numericaloj-agent-judge:deploy-*" in script
     assert "numericaloj-lean4:deploy-*" in script
@@ -253,8 +253,8 @@ def test_deploy_detects_and_uses_daemon_docker_build_cache():
         "playwright install chromium",
     ):
         assert marker in script
-    assert "为避免冷构建，拒绝继续部署" in script
-    assert "本次将冷构建" not in script
+    assert "为避免冷构建，拒绝继续部署" not in script
+    assert "将自动构建缺失层" in script
     assert "已检测到 Docker builder %s 的基础镜像及关键步骤缓存记录" in script
     assert "构建将逐层确认命中" in script
     assert "使用 Docker builder %s 的步骤缓存" not in script
@@ -324,7 +324,7 @@ def test_deploy_tracks_sudo_keepalive_as_a_shell_job_without_signalling_its_pid(
     script = _read("deploy.sh")
     start = script.index("start_sudo_keepalive()")
     assertion = script.index("assert_sudo_keepalive()")
-    cleanup = script.index("if (($#))")
+    cleanup = script.index("while (($#)); do")
     helpers = script[start:cleanup]
     stop_helper = script[script.index("stop_sudo_keepalive()"):start]
 
@@ -336,7 +336,7 @@ def test_deploy_tracks_sudo_keepalive_as_a_shell_job_without_signalling_its_pid(
     assert 'kill "$sudo_keepalive_pid"' not in stop_helper
     assert 'kill "$sudo_keepalive_pid"' not in helpers
     assert "jobs -pr" in script[assertion:cleanup]
-    assert script.count("assert_sudo_keepalive '") == 3
+    assert script.count("assert_sudo_keepalive '") == 4
     assert "assert_sudo_keepalive '停止 Celery'" in script
     assert "assert_sudo_keepalive 'Celery 停止完成'" in script
     assert "assert_sudo_keepalive '数据库备份'" in script

@@ -54,7 +54,8 @@ def _necessary_competition(
     if include_description:
         keys.insert(3, "description")
     if include_quality_gate:
-        keys.extend(("reverse_quality_gate_enabled", "reverse_quality_gate_prompt"))
+        keys.extend(("reverse_quality_gate_enabled", "reverse_quality_gate_prompt",
+                     "reverse_quality_gate_timeout_seconds"))
     out = {key: row[key] for key in keys if key in row}
     if include_description_meta and not include_description and row.get("description"):
         out["description_chars"] = len(str(row.get("description") or ""))
@@ -496,6 +497,15 @@ def ranking_download_attachment(args: argparse.Namespace) -> None:
     print_or_save_response(resp, output=args.output or ".")
 
 
+def _attachment_download_id(value: str):
+    if value == "harbor-template":
+        return value
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("附件编号必须为整数或 harbor-template") from exc
+
+
 def ranking_upload_reference(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     files = {"reference": require_file(args.file)}
@@ -654,8 +664,13 @@ def ranking_save_quality_gate(args: argparse.Namespace) -> None:
         payload["enabled"] = bool(args.enabled)
     if args.prompt is not None:
         payload["prompt"] = read_text_value(args.prompt)
+    timeout = getattr(args, "timeout_seconds", None)
+    if timeout is not None:
+        if not 60 <= timeout <= 7200:
+            raise CliError("Quality-gate timeout must be between 60 and 7200 seconds.")
+        payload["timeout_seconds"] = timeout
     if not payload:
-        raise CliError("Quality-gate configuration requires --enabled, --disabled, or --prompt.")
+        raise CliError("Quality-gate configuration requires --enabled, --disabled, --prompt, or --timeout-seconds.")
     resp = client_from_args(args).request(
         "POST",
         f"/api/ranking/competitions/{args.competition_id}/reverse-judge/quality-gate",
@@ -1082,7 +1097,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--elo-max-pairs-per-round", type=int, help="Maximum number of ELO match pairs generated per scheduler round.")
     pa.add_argument("--elo-runtime-mode", choices=["legacy", "isolated"], help="ELO match runtime: legacy single container, or isolated arbiter with network-disabled worker containers.")
     pa.add_argument("--agent-timeout", type=int, help="Timeout in seconds for Agent-as-Judge evaluation or reverse-judge AI answering.")
-    pa.add_argument("--reverse-finalize-timeout", type=int, help="Timeout in seconds for reverse-judge forced finalization after AI answering is cut off.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Legacy compatibility field; ignored by Harbor reverse judging.")
     pa.set_defaults(func=ranking_edit)
     pa = add_cli_parser(rs, "delete", "Delete a ranking competition.")
     pa.add_argument("competition_id", type=int, help="Competition ID to delete.")
@@ -1097,7 +1112,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.set_defaults(func=ranking_delete_attachment)
     pa = add_cli_parser(rs, "download-attachment", "Download a ranking competition attachment.")
     pa.add_argument("competition_id", type=int, help="Competition ID that owns the attachment.")
-    pa.add_argument("file_id", type=int, help="Attachment file ID to download.")
+    pa.add_argument("file_id", type=_attachment_download_id,
+                    help="Attachment file ID, or harbor-template for the built-in Harbor template.")
     pa.add_argument("-o", "--output", help="Path to write the downloaded attachment.")
     pa.add_argument("--inline", action="store_true", help="Request inline display semantics from the server when supported.")
     pa.set_defaults(func=ranking_download_attachment)
@@ -1133,7 +1149,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     pa.add_argument("--env-file", help="Optional .env file used by endpoint api_key_env fields.")
     pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
-    pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Legacy compatibility field; ignored by Harbor reverse judging.")
     pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
     pa.set_defaults(func=ranking_endpoints)
     pa = add_cli_parser(rs, "save-endpoint", "Replace the AI-judge endpoint pool with one endpoint.")
@@ -1150,7 +1166,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("--concurrency-limit", type=int, default=1, help="Maximum concurrent jobs for this endpoint.")
     pa.add_argument("--status", choices=["enabled", "paused", "disabled"], default="enabled", help="Endpoint status.")
     pa.add_argument("--timeout-seconds", type=int, help="AI-judge timeout in seconds.")
-    pa.add_argument("--reverse-finalize-timeout", type=int, help="Reverse-judge forced-finalization timeout in seconds.")
+    pa.add_argument("--reverse-finalize-timeout", type=int, help="Legacy compatibility field; ignored by Harbor reverse judging.")
     pa.add_argument("--orchestration-mode", choices=["single", "topological"], help="AI-judge orchestration mode.")
     pa.set_defaults(func=ranking_save_endpoint)
     pa = add_cli_parser(rs, "save-quality-gate", "Save reverse-judge quality-gate policy and enabled state.")
@@ -1171,6 +1187,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Disable quality-gate review.",
     )
     pa.add_argument("--prompt", help="Quality-gate review prompt, or @file to read it from a file.")
+    pa.add_argument("--timeout-seconds", type=int, help="Quality-gate time limit in seconds (60–7200; default 1800).")
     pa.set_defaults(func=ranking_save_quality_gate)
     pa = add_cli_parser(
         rs,
@@ -1328,13 +1345,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument("competition_id", type=int, help="Competition ID whose leaderboard should be fetched.")
     pa.add_argument("--limit", type=int, help="Maximum number of leaderboard rows to return.")
     pa.set_defaults(func=ranking_leaderboard)
-    pa = add_cli_parser(rs, "submit", "Submit a ZIP-based ranking entry; for reverse_judge, --code-zip is the problem package.")
+    pa = add_cli_parser(rs, "submit", "Submit a ZIP-based ranking entry; for reverse_judge, --code-zip contains one Harbor task.")
     pa.add_argument("competition_id", type=int, help="Competition ID to submit to.")
     pa.add_argument("--base-model", help="Base model name associated with the submission. Required unless the competition is reverse_judge.")
     pa.add_argument(
         "--code-zip",
         required=True,
-        help="Submitted ZIP archive; this is the only uploaded artifact for ELO, and the problem/code package for other ZIP modes.",
+        help="Submitted ZIP archive; ELO takes a work, reverse_judge takes one Harbor task, and other ZIP modes take code.",
     )
     pa.add_argument("--answer-file", help="Additional answer file required by absolute scoring only.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge submissions.")
@@ -1345,7 +1362,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument(
         "--code-zip",
         required=True,
-        help="Submitted ZIP archive; this is the only uploaded artifact for ELO, and the problem/code package for other ZIP modes.",
+        help="Submitted ZIP archive; ELO takes a work, reverse_judge takes one Harbor task, and other ZIP modes take code.",
     )
     pa.add_argument("--answer-file", help="Additional answer file required by absolute scoring only.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint id selected for reverse_judge submissions.")

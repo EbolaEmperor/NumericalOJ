@@ -1,0 +1,43 @@
+# Managed by NumericalOJ: editor Bubblewrap user namespace policy.
+# AppArmor v4.0.1, profiles/apparmor/profiles/extras/bwrap-userns-restrict.
+# https://gitlab.com/apparmor/apparmor/-/blob/v4.0.1/profiles/apparmor/profiles/extras/bwrap-userns-restrict
+# The upstream policy permits namespace setup only to bwrap; its children
+# are stacked with a capability-denying profile. Names are scoped to this
+# deployment; optional system-local include files are omitted.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile numericaloj-editor-bwrap /usr/bin/bwrap flags=(attach_disconnected) {
+  allow capability,
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+  allow px /** -> numericaloj-editor-bwrap//&numericaloj-editor-unpriv-bwrap,
+}
+
+profile numericaloj-editor-unpriv-bwrap flags=(attach_disconnected) {
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+  allow pix /** -> &numericaloj-editor-unpriv-bwrap,
+  audit deny capability,
+}

@@ -80,6 +80,9 @@ def judge_workspace_submission(monkeypatch, tmp_path):
     monkeypatch.setattr(judge, "judge_session_write_lock", lambda *_: nullcontext())
     monkeypatch.setattr(judge, "get_agent_session", lambda _: state.session)
     monkeypatch.setattr(judge, "get_agent_session_turns", lambda _: state.turns)
+    monkeypatch.setattr(judge, "get_agent_session_runtime_config", lambda _: (
+        state.creates[0]["runtime_config"] if state.creates else {}
+    ))
     monkeypatch.setattr(judge, "create_agent_session", create)
     monkeypatch.setattr(judge, "begin_agent_session_turn", begin)
 
@@ -108,6 +111,35 @@ def test_workflow_judge_explicitly_disables_skill_projection_and_freezes_choice(
     monkeypatch.setattr(judge, "get_agent_session_runtime_config", lambda _: {})
     with pytest.raises(ValueError, match="skill 投影"):
         state.submit("faithsieve", "pi", {}, project_skill=False)
+
+
+def test_harbor_judge_freezes_server_runtime_and_rejects_replay_changes(
+        judge_workspace_submission, monkeypatch, tmp_path):
+    from backend.oj_modules.integrations import harbor_runtime
+
+    state = judge_workspace_submission
+    root = tmp_path / "reverse"
+    task = root / "7" / "attempt" / "quality_gate_source"
+    task.mkdir(parents=True)
+    monkeypatch.setattr(harbor_runtime.config, "REVERSE_JUDGE_WORKSPACE_ROOT", str(root))
+    runtime = {
+        "task_path": str(task), "trial_dir": str(task.parent / "agent_trial"),
+        "verifier_timeout_seconds": 120, "finalize_timeout_seconds": 60,
+    }
+    state.submit("reverse_answer", "pi", {"instruction.md": "任务说明"},
+                 harbor_runtime=runtime, project_skill=False)
+    assert state.creates[0]["runtime_config"]["harbor_runtime"] == runtime
+    state.submit("reverse_answer", "pi", {}, harbor_runtime=runtime, project_skill=False)
+    assert len(state.creates) == 1
+    with pytest.raises(ValueError, match="Harbor 运行配置不一致"):
+        state.submit("reverse_answer", "pi", {}, harbor_runtime=dict(runtime, finalize_timeout_seconds=90))
+    with pytest.raises(ValueError, match="Harbor 运行配置不一致"):
+        state.submit("reverse_answer", "pi", {})
+
+
+def test_harbor_runtime_is_restricted_to_reverse_answer(judge_workspace_submission):
+    with pytest.raises(ValueError, match="仅允许反向评测"):
+        judge_workspace_submission.submit("reverse_quality", "pi", {}, harbor_runtime={})
 
 
 _JUDGE_MATERIAL_WARNING = (
@@ -260,6 +292,7 @@ def test_internal_continuation_is_only_writer_of_judge_turns(monkeypatch):
 
 
 def test_internal_submit_replay_never_rewrites_workspace_or_creates_turn(monkeypatch):
+    monkeypatch.setattr(judge, "get_agent_session_runtime_config", lambda _: {})
     conn = _ScriptedConnection(one_values=[{"acquired": 1}])
     monkeypatch.setattr(judge, "get_db_connection", lambda: conn)
     monkeypatch.setattr(judge, "get_agent_session", lambda _: _session())
@@ -430,7 +463,7 @@ def test_dispatch_guard_is_checked_after_input_copy_before_publishing_outbox(mon
     events = []
     monkeypatch.setattr(judge, "inject_agent_workspace_files", lambda *_: events.append("copy"))
     monkeypatch.setattr(judge, "create_agent_session", lambda **_: pytest.fail("名额已丢失，不能发布outbox"))
-    with pytest.raises(sessions.AgentSessionBusyError, match="停止派发"):
+    with pytest.raises(sessions.AgentSessionBusyError, match="评测状态已变化，请刷新后重试"):
         judge.submit_judge_turn(
             session_id="jd-test", task_id="jd-test-turn", requested_by="owner",
             judge_kind="reverse_answer", submission_id=12, attempt_id="attempt-1",

@@ -24,6 +24,11 @@ _TERMINAL_STATUSES = frozenset({
 })
 _MAX_PUBLIC_TEXT = 64 * 1024
 _MAX_INTERNAL_TEXT = 1200
+_FULL_TEXT_SCHEMA = "numoj-trace-full-v1"
+_FULL_TEXT_META = "numoj-harbor-trace-full-v1"
+_MAX_FULL_EVENT_BYTES = 8 * 1024 * 1024
+_MAX_FULL_TRACE_BYTES = 64 * 1024 * 1024
+_HARBOR_TRACE_KINDS = _TRACE_KINDS | {"user", "system", "error"}
 _TOKEN_USAGE_COUNTER_FIELDS = (
     "request_count",
     "input_uncached_tokens",
@@ -78,6 +83,124 @@ def _truncate_text(value, limit):
     return text[:max(0, limit - 1)] + "…"
 
 
+def _truncate_harbor_reasoning_source(payload):
+    """仅截断入库副本中的 CoT 字段，不改写原始来源或工具字面数据。"""
+    if not isinstance(payload, dict):
+        return payload
+
+    def block(value):
+        if not isinstance(value, dict) or value.get("type") not in {"thinking", "reasoning"}:
+            return value
+        return {key: _truncate_text(text, _MAX_INTERNAL_TEXT)
+                if key in {"thinking", "reasoning", "text"} and isinstance(text, str) else text
+                for key, text in value.items()}
+
+    def step(value):
+        if not isinstance(value, dict) or value.get("source") != "agent":
+            return value
+        reasoning = value.get("reasoning_content")
+        if not isinstance(reasoning, str):
+            return value
+        return {**value, "reasoning_content": _truncate_text(reasoning, _MAX_INTERNAL_TEXT)}
+
+    result = dict(payload)
+    if "block" in result:
+        result["block"] = block(result["block"])
+    if "atif_step" in result:
+        result["atif_step"] = step(result["atif_step"])
+    if isinstance(result.get("atif_steps"), list):
+        result["atif_steps"] = [step(value) for value in result["atif_steps"]]
+    native = result.get("native_event")
+    if isinstance(native, dict):
+        message = native.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant" and isinstance(message.get("content"), list):
+            result["native_event"] = {**native, "message": {
+                **message, "content": [block(value) for value in message["content"]],
+            }}
+    return result
+
+
+def _full_text_json(value):
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        encoded.encode("utf-8")
+        return encoded
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise AgentTraceStoreError("Harbor 完整轨迹包含不可保存的字段，已保留原始文件") from exc
+
+
+def _harbor_snapshot_batch(records):
+    marked = any(isinstance(record, dict) and (
+        record.get("source") == "harbor" or record.get("full_text") is True
+        or record.get("replace_snapshot") is True
+    ) for record in records)
+    if not marked:
+        return False
+    snapshot_ids = set()
+    total = 0
+    for record in records:
+        if not isinstance(record, dict) or not (
+            record.get("source") == "harbor" and record.get("full_text") is True
+            and record.get("replace_snapshot") is True
+            and record.get("type") == "numoj_trace" and type(record.get("version")) is int
+            and record.get("version") == 1
+        ):
+            raise AgentTraceStoreError("Harbor 完整快照不能混入普通轨迹事件")
+        snapshot_id = record.get("snapshot_id")
+        if (not isinstance(snapshot_id, str) or not snapshot_id.strip()
+                or len(snapshot_id) > 256 or any(ord(c) < 32 for c in snapshot_id)):
+            raise AgentTraceStoreError("Harbor 官方会话 ID 无效")
+        snapshot_ids.add(snapshot_id)
+        size = len(_full_text_json(record).encode("utf-8"))
+        if size > _MAX_FULL_EVENT_BYTES:
+            raise AgentTraceStoreError("Harbor 单个完整事件超过 8 MiB，已保留原始文件")
+        total += size
+    if len(snapshot_ids) != 1:
+        raise AgentTraceStoreError("Harbor 完整快照必须属于同一官方会话")
+    if total > _MAX_FULL_TRACE_BYTES:
+        raise AgentTraceStoreError("Harbor 完整轨迹超过 64 MiB，已保留原始文件")
+    return True
+
+
+def _require_harbor_judge_task(cursor, task_id):
+    cursor.execute(
+        """
+        SELECT s.task_kind, s.judge_kind, s.runtime_config_json
+        FROM agent_sessions AS s
+        INNER JOIN agent_session_turns AS t ON t.session_id=s.session_id
+        WHERE t.task_id=%s
+        LIMIT 1
+        """, (task_id,),
+    )
+    row = cursor.fetchone() or {}
+    if row.get("task_kind") != "judge" or row.get("judge_kind") != "reverse_answer":
+        raise AgentTraceStoreError("只有 Harbor 反向作答 Judge 会话可以替换完整轨迹")
+    try:
+        config = row.get("runtime_config_json")
+        config = json.loads(config) if isinstance(config, (str, bytes)) else config
+        from backend.oj_modules.integrations.harbor_runtime import normalize_harbor_runtime
+        normalize_harbor_runtime(config["harbor_runtime"], require_task=False)
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise AgentTraceStoreError("Judge 会话没有有效的冻结 Harbor 执行配置") from exc
+
+
+def _stored_event_content(row):
+    if row.get("meta") != _FULL_TEXT_META or row.get("format") != "json":
+        return {"text": str(row.get("text") or "")}
+    try:
+        content = json.loads(row.get("text") or "")
+        if (not isinstance(content, dict) or content.get("schema") != _FULL_TEXT_SCHEMA
+                or content.get("source") not in {'harbor', 'harness'} or not isinstance(content.get("text"), str)
+                or content.get("kind") not in _HARBOR_TRACE_KINDS):
+            raise ValueError("invalid full trace envelope")
+    except (TypeError, ValueError) as exc:
+        raise AgentTraceStoreError("Harbor 完整正文存储无效，不能以摘要替代") from exc
+    return {key: content.get(key) for key in (
+        'text', 'kind', 'title', 'meta', 'format', 'role', 'source_payload',
+        'source_event_id', 'snapshot_id', 'source',
+    )} | {'full_text': True}
+
+
 def _normalize_sequence(value):
     if isinstance(value, bool):
         raise ValueError("Agent 轨迹 sequence 无效")
@@ -123,6 +246,37 @@ def _normalize_canonical_record(task_id, record):
     if not isinstance(event, dict):
         return None
     kind = str(event.get("kind") or "").strip().lower()
+    full_text = record.get("source") == "harbor" and record.get("full_text") is True
+    if full_text:
+        if kind not in _HARBOR_TRACE_KINDS:
+            raise AgentTraceStoreError("Harbor 完整轨迹事件类型无效")
+        source_id = event.get("id")
+        if not isinstance(source_id, str) or not source_id or len(source_id) > 512:
+            raise AgentTraceStoreError("Harbor 官方事件 ID 无效")
+        if not isinstance(event.get("text"), str):
+            raise AgentTraceStoreError("Harbor 完整事件缺少正文")
+        content = {
+            "schema": _FULL_TEXT_SCHEMA, "source": "harbor",
+            "snapshot_id": record.get("snapshot_id"), "source_event_id": source_id,
+            "kind": kind, "role": event.get("role") or kind,
+            "text": (_truncate_text(event["text"], _MAX_INTERNAL_TEXT)
+                     if kind in {"thinking", "reasoning"} else event["text"]),
+            "title": event.get("title") or "",
+            "meta": event.get("meta") or "", "format": event.get("format") or "text",
+            "source_payload": _truncate_harbor_reasoning_source(event.get("source_payload")),
+        }
+        encoded = _full_text_json(content)
+        if len(encoded.encode("utf-8")) > _MAX_FULL_EVENT_BYTES:
+            raise AgentTraceStoreError("Harbor 单个完整事件超过 8 MiB，已保留原始文件")
+        return {
+            "event_id": _event_storage_id(task_id, source_id), "event_order": sequence,
+            # 复用既有 CHECK；对外读取时从 envelope 恢复真实 kind/role。
+            "kind": "tool_result" if kind in {"system", "error"} else kind,
+            "title": _truncate_text(event.get("title"), 255), "text": encoded,
+            "meta": _FULL_TEXT_META, "format": "json",
+            "is_error": bool(event.get("is_error")) or kind == "error",
+            "message_id": None, "is_subagent_status": False,
+        }
     if kind not in _TRACE_KINDS:
         return None
     source_id = str(event.get("id") or "").strip()
@@ -190,17 +344,34 @@ def ingest_agent_trace_records(task_id, records, *, final=False):
     """幂等写入 adapter v1 事件，并建立 v2 时间线/工作块索引。"""
 
     task_id = _normalize_task_id(task_id)
+    records = list(records or ())
+    replace_snapshot = _harbor_snapshot_batch(records)
     normalized = []
-    for record in records or ():
-        item = _normalize_canonical_record(task_id, record)
+    for record in records:
+        try:
+            item = _normalize_canonical_record(task_id, record)
+        except (TypeError, ValueError) as exc:
+            if replace_snapshot:
+                raise AgentTraceStoreError("Harbor 完整快照事件无效，不能部分导入") from exc
+            raise
+        if replace_snapshot and item is None:
+            raise AgentTraceStoreError("Harbor 完整快照包含无效事件，不能部分导入")
         if item is not None:
             normalized.append(item)
     normalized.sort(key=lambda item: item["event_order"])
+    if replace_snapshot:
+        if (len({item["event_order"] for item in normalized}) != len(normalized)
+                or len({item["event_id"] for item in normalized}) != len(normalized)):
+            raise AgentTraceStoreError("Harbor 完整快照含重复事件顺序或 ID")
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             state = _ensure_sync_state(cursor, task_id)
+            if replace_snapshot:
+                _require_harbor_judge_task(cursor, task_id)
+                cursor.execute("DELETE FROM agent_trace_events WHERE task_id=%s", (task_id,))
+                state = {"last_event_order": 0, "next_item_index": 1}
             last_order = max(0, int(state.get("last_event_order") or 0))
             next_item_index = max(1, int(state.get("next_item_index") or 1))
             active_block_id = str(state.get("active_block_id") or "").strip()
@@ -279,6 +450,8 @@ def ingest_agent_trace_records(task_id, records, *, final=False):
                     active_item_index = None
                     next_item_index += 1
 
+            if replace_snapshot and inserted != len(normalized):
+                raise AgentTraceStoreError("Harbor 完整快照未全部保存，已回滚并保留原始文件")
             if final:
                 active_block_id = ""
                 active_item_index = None
@@ -328,7 +501,7 @@ def list_agent_trace_timeline(task_id, *, status="", steer_records=()):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT item_index, event_order, event_id, kind, text, message_id
+                SELECT item_index, event_order, event_id, kind, text, message_id, meta, format
                 FROM agent_trace_events
                 WHERE task_id=%s AND block_id IS NULL
                   AND kind IN ('assistant','user')
@@ -383,8 +556,13 @@ def list_agent_trace_timeline(task_id, *, status="", steer_records=()):
             "item_index": int(row.get("item_index") or 0),
             "event_order": int(row.get("event_order") or 0),
         }
+        content = _stored_event_content(row)
+        if content.get('source') in {'harbor', 'harness'}:
+            item.update(content)
+            items.append(item)
+            continue
         if kind == "assistant":
-            item["text"] = str(row.get("text") or "")
+            item.update(content)
         elif kind == "user":
             message_id = str(row.get("message_id") or "").strip()
             record = steer_by_id.get(message_id)
@@ -425,7 +603,8 @@ def list_agent_trace_timeline(task_id, *, status="", steer_records=()):
     if str(status or "").strip().lower() == "completed":
         for index in range(len(items) - 1, -1, -1):
             if items[index].get("kind") == "assistant":
-                del items[index]
+                if items[index].get('source') != 'harbor':
+                    del items[index]
                 break
     return items
 
@@ -438,7 +617,7 @@ def get_agent_trace_work_block(task_id, block_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT kind, title, text, meta, format, is_error, event_order
+                SELECT kind, title, text, meta, format, is_error, event_order, event_id
                 FROM agent_trace_events
                 WHERE task_id=%s AND block_id=%s
                   AND kind NOT IN ('assistant','user')
@@ -460,6 +639,11 @@ def get_agent_trace_work_block(task_id, block_id):
             "meta": str(row.get("meta") or ""),
             "format": str(row.get("format") or "text"),
         }
+        content = _stored_event_content(row)
+        message.update(content)
+        if content.get('source') in {'harbor', 'harness'}:
+            message["event_order"] = int(row.get("event_order") or 0)
+            message["event_id"] = str(row.get("event_id") or "")
         if bool(row.get("is_error")):
             message["is_error"] = True
         messages.append(message)
@@ -522,7 +706,7 @@ def get_last_agent_trace_assistant(task_id):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT text
+                SELECT text, meta, format
                 FROM agent_trace_events
                 WHERE task_id=%s AND kind='assistant'
                 ORDER BY event_order DESC
@@ -533,7 +717,8 @@ def get_last_agent_trace_assistant(task_id):
             row = cursor.fetchone()
     finally:
         conn.close()
-    return str((row or {}).get("text") or "").strip()
+    content = _stored_event_content(row or {})
+    return content['text'] if content.get('source') in {'harbor', 'harness'} else content['text'].strip()
 
 
 def _normalized_token_usage(usage):

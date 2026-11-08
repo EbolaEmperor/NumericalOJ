@@ -704,7 +704,16 @@ def register_agent_run_turn_task(celery_app):
                 normalized_role,
                 judge_kind=session.get("judge_kind"),
             )
-            run_result = run_agent_harness(
+            runner = run_agent_harness
+            runner_options = {}
+            if runtime_config.get("harbor_runtime"):
+                if session.get("judge_kind") != "reverse_answer":
+                    raise ValueError("Harbor 运行配置只能用于反向评测作答")
+                from backend.oj_modules.integrations.harbor_runtime import run_harbor_agent
+
+                runner = run_harbor_agent
+                runner_options["harbor_runtime"] = runtime_config["harbor_runtime"]
+            run_result = runner(
                 task_id=task_id,
                 session_id=normalized_session_id,
                 task_kind=session_task_kind,
@@ -742,6 +751,7 @@ def register_agent_run_turn_task(celery_app):
                     "timeout_seconds": runtime_config.get("timeout_seconds"),
                     "enable_site_identity": False,
                 } if site_funded else {}),
+                **runner_options,
             )
         except AgentUsageHardStopError:
             conclusion = extract_agent_conclusion(task_id)
@@ -810,7 +820,9 @@ def register_agent_run_turn_task(celery_app):
                 "Agent 未记录可恢复的原生会话",
                 conclusion=conclusion,
             )
-        if not conclusion:
+        # Harbor 以官方 verifier 结果收束；超时前可能只有思考和工具调用，
+        # 仍可提交有效产物，不能再用额外聊天回复否决官方的有效奖励。
+        if not conclusion and not runtime_config.get("harbor_runtime"):
             return _generic_failure(
                 state,
                 AGENT_EMPTY_CONCLUSION_MESSAGE,

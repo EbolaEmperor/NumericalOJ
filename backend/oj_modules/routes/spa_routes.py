@@ -12,6 +12,7 @@ _SPA_EXACT_PATHS = frozenset({
     "/problems",
     "/submissions",
     "/rankings",
+    "/rankings/harbor-guide",
     "/agents",
     "/forum",
     "/repository",

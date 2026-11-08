@@ -1226,8 +1226,12 @@ def test_admin_usage_settlement_immediately_publishes_realtime_cost(monkeypatch)
 
 
 @pytest.mark.parametrize("continuation", [False, True])
-def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monkeypatch, continuation):
+@pytest.mark.parametrize("use_harbor", [False, True])
+@pytest.mark.parametrize("conclusion", ["已写入答案", ""])
+def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monkeypatch, continuation, use_harbor, conclusion):
+    import json
     from backend.oj_modules.agents import sessions
+    from backend.oj_modules.integrations import harbor_runtime
     from tests.unit.test_agent_sessions import _ScriptedConnection
 
     task_id = "judge-turn-c1" if continuation else "judge-turn"
@@ -1238,10 +1242,13 @@ def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monk
         "access_role": "user", "harness": "pi", "endpoint_id": 8,
         "endpoint_revision": 1, "native_session_id": native_session_id, "turn_count": 2 if continuation else 1,
     }
-    _patch_generic(monkeypatch, session)
+    snapshots = _patch_generic(monkeypatch, session)
     monkeypatch.setattr(generic, "get_user_by_username", lambda _: {"id": 9, "is_admin": 0})
+    runtime = {"timeout_seconds": 600, "project_skill": False}
+    if use_harbor:
+        runtime["harbor_runtime"] = {"task_path": "/server/task", "trial_dir": "/server/trial"}
     runtime_connection = _ScriptedConnection(one_values=[
-        {"runtime_config_json": '{"timeout_seconds":600,"project_skill":false}'},
+        {"runtime_config_json": json.dumps(runtime)},
         {"dispatch_payload_json": '{"timeout_seconds":6000}' if continuation else '{"timeout_seconds":600}'},
     ])
     monkeypatch.setattr(sessions, "get_db_connection", lambda: runtime_connection)
@@ -1257,16 +1264,27 @@ def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monk
     monkeypatch.setattr(generic, "build_agent_control_bridge", lambda *_a, **_kw: (None, None))
     accountants = []
     monkeypatch.setattr(generic, "ResilientAgentUsageAccountant", lambda **kw: accountants.append(kw) or SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _: "已写入答案")
+    monkeypatch.setattr(generic, "extract_agent_conclusion", lambda _: conclusion)
     runs = []
-    monkeypatch.setattr(generic, "run_agent_harness", lambda **kw: runs.append(kw) or HarnessRunResult(
+    runner = lambda **kw: runs.append(kw) or HarnessRunResult(
         0, False, "", "", native_session_id="19191919-1919-4919-8919-191919191919",
-    ))
+    )
+    if use_harbor:
+        monkeypatch.setattr(harbor_runtime, "run_harbor_agent", runner)
+        monkeypatch.setattr(generic, "run_agent_harness", lambda **kw: pytest.fail("Harbor 作答必须使用官方执行器"))
+    else:
+        monkeypatch.setattr(generic, "run_agent_harness", runner)
     task = generic.register_agent_run_turn_task(_FakeCelery())
     result = task(_task_self(task_id), "judge-session", "owner", "user", "pi", 8, "", "请作答",
                   resume_session_id=native_session_id,
                   restore_runtime_checkpoint_id=task_id if continuation else "")
-    assert result["success"]
+    expected_success = bool(conclusion) or use_harbor
+    assert result["success"] is expected_success
+    assert snapshots[-1]["status"] == ("Completed" if expected_success else "Failed")
+    assert result["conclusion"] == conclusion
+    assert snapshots[-1]["conclusion"] == conclusion
+    if not expected_success:
+        assert result["message"] == generic.AGENT_EMPTY_CONCLUSION_MESSAGE
     assert runs[0]["task_kind"] == "judge"
     assert runs[0]["enable_site_identity"] is False
     assert runs[0]["timeout_seconds"] == (6000 if continuation else 600)
@@ -1275,6 +1293,7 @@ def test_judge_uses_generic_runtime_without_site_identity_or_personal_quota(monk
     assert runs[0]["resume_session_id"] == native_session_id
     assert runs[0]["restore_runtime_checkpoint_id"] == (task_id if continuation else "")
     assert runs[0]["project_skill"] is False
+    assert runs[0].get("harbor_runtime") == runtime.get("harbor_runtime")
     assert runtime_connection.cursor_instance.calls[1][1] == ("judge-session", task_id)
     assert all(query.startswith("SELECT ") for query, _ in runtime_connection.cursor_instance.calls)
     assert runs[0]["access_role"] == "user"

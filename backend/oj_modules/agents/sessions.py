@@ -942,7 +942,7 @@ def set_agent_turn_attachments(session_id, task_id, attachments):
         conn.close()
 
 
-def sync_agent_session_state_in_transaction(cursor, state):
+def sync_agent_session_state_in_transaction(cursor, state, *, cleanup_confirmed=False):
     """在调用方事务内投影会话状态；run 与 session 可据此原子提交。"""
 
     if not isinstance(state, dict):
@@ -982,11 +982,18 @@ def sync_agent_session_state_in_transaction(cursor, state):
     # 已提交的 Completed/Failed 以及取消、清理失败都必须保持 sticky，
     # 避免 late-ack 或异常收束的迟到快照重开或改写会话。CleanupFailed
     # 仍允许从 Canceled 升级，以表达 revoke 或容器清理失败。
+    # 唯一反向例外是控制入口已确认物理清理后，显式修复同一当前轮次；
+    # 普通快照中的字段不能开启此例外。
     current_status = str(current.get("status") or "").strip().lower()
     incoming_status = status.strip().lower()
+    cleanup_repaired = (
+        cleanup_confirmed is True
+        and current_status in {"cleanupfailed", "cleanup_failed"}
+        and incoming_status in _TERMINAL_STATUSES
+    )
     if (
-        current_status
-        in {"completed", "failed", "cleanupfailed", "cleanup_failed"}
+        current_status in {"completed", "failed"}
+        or current_status in {"cleanupfailed", "cleanup_failed"} and not cleanup_repaired
         or (
             current_status in {"canceled", "cancelled"}
             and incoming_status not in {"cleanupfailed", "cleanup_failed"}
@@ -1098,13 +1105,14 @@ def sync_agent_session_state_in_transaction(cursor, state):
     return True
 
 
-def sync_agent_session_state(state):
+def sync_agent_session_state(state, *, cleanup_confirmed=False):
     """把单轮执行状态投影到当前会话；迟到的旧轮次不能覆盖新一轮。"""
 
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            changed = sync_agent_session_state_in_transaction(cursor, state)
+            options = {"cleanup_confirmed": True} if cleanup_confirmed is True else {}
+            changed = sync_agent_session_state_in_transaction(cursor, state, **options)
         if not changed:
             return False
         conn.commit()

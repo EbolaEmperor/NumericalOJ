@@ -175,6 +175,7 @@ function contentClass(pathname: string, pageDisplayMode: PageDisplayMode) {
   if (pathname === '/submissions') return 'container-fluid submission-page-shell'
   if (/^\/admin\/faithsieve\/[^/]+/.test(pathname)) return 'container-fluid submission-detail-shell'
   if (pathname === '/admin/faithsieve') return 'container-fluid submission-page-shell'
+  if (pathname === '/rankings/harbor-guide') return 'container-fluid p-0 vibehub-page vibehub-page--guide'
   if (/^\/rankings\/[^/]+/.test(pathname)) return 'container-fluid p-0 ranking-detail-shell'
   if (pathname.startsWith('/forum')) return 'forum-content-container'
   if (pathname === '/repository') return 'container-fluid p-0 repository-page-shell'

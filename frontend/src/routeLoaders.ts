@@ -11,6 +11,7 @@ export const routeLoaders = {
   faithsieveDetail: () => import('./pages/FaithSieveDetailPage'),
   rankings: () => import('./pages/RankingsPage'),
   rankingDetail: () => import('./pages/RankingDetailPage'),
+  harborGuide: () => import('./pages/HarborGuidePage'),
   rankingAppealReview: () => import('./pages/RankingAppealReviewPage'),
   forum: () => import('./pages/ForumPage'),
   repository: () => import('./pages/RepositoryPage'),

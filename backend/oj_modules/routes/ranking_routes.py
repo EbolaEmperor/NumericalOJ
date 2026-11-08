@@ -102,6 +102,10 @@ from backend.oj_modules.ranking.agent_judge.db import (
     save_reverse_quality_gate_configuration,
 )
 from backend.oj_modules.ranking.agent_judge.rules import max_score as _aj_max_score
+from backend.oj_modules.ranking.reverse_judge.settings import (
+    normalize_quality_gate_timeout,
+    quality_gate_timeout_seconds,
+)
 from backend.oj_modules.ranking.agent_judge.rules import normalize_orchestration_mode as _normalize_aj_orchestration
 from backend.oj_modules.ranking.agent_judge.rules import render_snapshot_html as _render_snapshot_html
 from backend.oj_modules.ranking.artifacts import (
@@ -110,6 +114,9 @@ from backend.oj_modules.ranking.artifacts import (
     can_access_submission as _can_access_submission,
     resolve_reverse_agent_answer_archive,
     send_reverse_agent_answer_archive,
+)
+from backend.oj_modules.ranking.reverse_judge.template import (
+    HARBOR_TEMPLATE_FILENAME, build_harbor_template_archive, harbor_template_attachment,
 )
 from backend.oj_modules.ranking.batch import (
     BATCH_DEFAULT_TEMPLATE,
@@ -188,7 +195,7 @@ REVERSE_AGENT_TIMEOUT_DEFAULT = int(
     getattr(_cfg, 'AGENT_JUDGE_DEFAULT_TIMEOUT', 1800)
 )
 REVERSE_QUALITY_GATE_TIMEOUT_DEFAULT = max(
-    10, int(getattr(_cfg, 'REVERSE_QUALITY_GATE_TIMEOUT_SECONDS', 300))
+    60, int(getattr(_cfg, 'REVERSE_QUALITY_GATE_TIMEOUT_SECONDS', 1800))
 )
 REVERSE_STREAM_MIN_TIMEOUT_SECONDS = 3600
 # 与任务侧的两个模型槽位 TTL 余量保持同一数量级，覆盖容器收尾、SSE 发布延迟
@@ -210,18 +217,13 @@ def _reverse_judge_stream_timeout_seconds(comp):
         comp.get('agent_judge_timeout_seconds')
         or REVERSE_AGENT_TIMEOUT_DEFAULT
     )
-    finalize_timeout = int(
-        comp.get('reverse_judge_finalize_timeout_seconds')
-        or REVERSE_FINALIZE_TIMEOUT_DEFAULT
-    )
     quality_gate_timeout = (
-        REVERSE_QUALITY_GATE_TIMEOUT_DEFAULT
+        quality_gate_timeout_seconds(comp)
         if _reverse_quality_gate_enabled(comp) else 0
     )
     legal_upper_bound = (
         judge_timeout * 2
         + agent_timeout * 2
-        + finalize_timeout
         + quality_gate_timeout
         + REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
     )
@@ -910,6 +912,8 @@ def _build_ranking_detail_context(competition_id, user, comp, args):
     is_ai_judge = is_agent_judge or is_reverse_judge
 
     files = list_competition_files(competition_id)
+    if is_reverse_judge:
+        files = [harbor_template_attachment(competition_id), *files]
     for item in files:
         # 标注可直接预览的图片/视频，模板据此显示「播放/查看」按钮。
         item['media_kind'] = _attachment_media_kind(item.get('filename'))
@@ -2367,6 +2371,11 @@ def ranking_save_reverse_quality_gate(competition_id):
         update_fields['prompt'] = proposed_prompt
     if proposed_endpoints is not None:
         update_fields['endpoints'] = proposed_endpoints
+    if 'timeout_seconds' in payload:
+        try:
+            update_fields['timeout_seconds'] = normalize_quality_gate_timeout(payload['timeout_seconds'])
+        except ValueError as e:
+            return jsonify(success=False, message=str(e)), 400
     try:
         save_reverse_quality_gate_configuration(competition_id, **update_fields)
     except ValueError as e:
@@ -2390,6 +2399,7 @@ def ranking_save_reverse_quality_gate(competition_id):
         enabled=gate_enabled,
         quality_gate_enabled=gate_enabled,
         prompt=prompt,
+        timeout_seconds=quality_gate_timeout_seconds(comp_after),
         ready=ready,
         count=len(saved),
         enabled_count=enabled_count,
@@ -3045,6 +3055,23 @@ def ranking_delete_attachment(competition_id, file_id):
 # 可在浏览器里直接预览（图片/视频）的扩展名 -> 显式 MIME。仅白名单类型允许 inline 展示，且强制
 # nosniff，避免上传的任意文件被浏览器当 HTML/SVG 在本站点 origin 下执行（存储型 XSS）。
 # SVG 故意不在其列（可内嵌 <script>，直接打开 URL 会执行）。
+@ranking_bp.route('/<int:competition_id>/attachment/harbor-template/download', methods=['GET'])
+def ranking_download_harbor_template(competition_id):
+    user, response = _require_user()
+    if response is not None:
+        return response
+    competition = get_competition(competition_id)
+    if not competition or _competition_scoring_mode(competition) != 'reverse_judge':
+        abort(404)
+    if user.get('is_admin') != 1 and competition.get('is_active') != 1:
+        abort(403)
+    response = send_file(build_harbor_template_archive(), mimetype='application/zip',
+                         as_attachment=True, download_name=HARBOR_TEMPLATE_FILENAME)
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 @ranking_bp.route('/<int:competition_id>/attachment/<int:file_id>/download', methods=['GET'])
 def ranking_download_attachment(competition_id, file_id):
     user, resp = _require_user()

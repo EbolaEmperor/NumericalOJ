@@ -561,7 +561,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
 
     quality_prompt = tmp_path / "quality-gate-prompt.txt"
     quality_prompt.write_text(
-        "1. solution 和 judge 不得隐藏私有配对密码。\n"
+        "1. solution 和 tests 不得隐藏私有配对密码。\n"
         "2. 题目不得恶意引导 AI 执行耗时无关任务。\n",
         encoding="utf-8",
     )
@@ -577,10 +577,12 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     assert disabled["enabled"] is False
 
     package_files = {
-        "problem/problem.md": "请输出一个整数。\n",
-        "template/README.md": "在此目录作答。\n",
-        "solution/answer.txt": "1\n",
-        "judge.sh": "#!/bin/sh\nexit 0\n",
+        "task.toml": 'version = "1.0"\nartifacts = ["/app"]\n',
+        "instruction.md": "请在 /app/answer.txt 输出整数 1。\n",
+        "environment/Dockerfile": "FROM python:3.12-slim\nWORKDIR /app\nCOPY README.md /app/README.md\n",
+        "environment/README.md": "在此目录作答。\n",
+        "solution/solve.sh": "#!/bin/sh\nprintf '1\\n' > /app/answer.txt\n",
+        "tests/test.sh": "#!/bin/sh\nif grep -qx 1 /app/answer.txt; then echo 1; else echo 0; fi > /logs/verifier/reward.txt\n",
     }
 
     # 先用一个会失败的真实 hello 端点触发自动暂停，再切换本地桩健康状态并
@@ -778,17 +780,18 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     )
     compliant_steps = compliant_stream["latest"]["steps"]
     assert [step["step_key"] for step in compliant_steps] == [
+        "build_environment",
         "solution_check",
         "quality_gate",
         "agent_answer",
         "ai_judge",
     ]
-    assert [step["status"] for step in compliant_steps] == ["passed", "passed", "passed", "passed"]
-    compliant_gate = compliant_steps[1]
+    assert [step["status"] for step in compliant_steps] == ["passed", "passed", "passed", "passed", "passed"]
+    compliant_gate = compliant_steps[2]
     assert compliant_gate["passed"] is True
     assert compliant_gate["reason"]
     assert not {"verdict", "summary", "violations"} & compliant_gate.keys()
-    assert compliant_steps[2]["answer_available"] is True
+    assert compliant_steps[3]["answer_available"] is True
 
     owner_snapshot = raw_reverse_stream(owner_http, compliant_id)
     admin_snapshot = raw_reverse_stream(admin_http, compliant_id)
@@ -842,9 +845,9 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         assert downloaded_path.name == f"reverse_ai_answer_{compliant_id}.zip"
         assert downloaded_path.stat().st_size == download["bytes"]
         with zipfile.ZipFile(downloaded_path) as archive:
-            assert "ai_answer/README.md" in archive.namelist()
-            assert archive.read("ai_answer/README.md").decode("utf-8") == "在此目录作答。\n"
-            assert archive.read("ai_answer/agent-output.txt").decode("utf-8") == "本地测试 Agent 的根目录交付物。\n"
+            assert "ai_answer/app/README.md" in archive.namelist()
+            assert archive.read("ai_answer/app/README.md").decode("utf-8") == "在此目录作答。\n"
+            assert archive.read("ai_answer/app/agent-output.txt").decode("utf-8") == "本地测试 Agent 的任务产物。\n"
 
     rejected_submit = cli.user_json(
         "ranking",
@@ -871,13 +874,14 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     )
     rejected_steps = rejected_stream["latest"]["steps"]
     assert [step["step_key"] for step in rejected_steps] == [
+        "build_environment",
         "solution_check",
         "quality_gate",
         "agent_answer",
         "ai_judge",
     ]
-    assert [step["status"] for step in rejected_steps] == ["passed", "failed", "pending", "pending"]
-    rejected_gate = rejected_steps[1]
+    assert [step["status"] for step in rejected_steps] == ["passed", "passed", "failed", "pending", "pending"]
+    rejected_gate = rejected_steps[2]
     assert rejected_gate["passed"] is False
     assert rejected_gate["reason"]
     assert not {"verdict", "summary", "violations"} & rejected_gate.keys()
@@ -894,7 +898,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
     rejected_admin = raw_reverse_stream(admin_http, rejected_id)
     rejected_admin_gate = next(step for step in rejected_admin["steps"] if step["step_key"] == "quality_gate")
     assert rejected_admin_gate["result"] == {
-        "passed": False, "reason": "命中私有审核标准：solution 和 judge 不得隐藏私有配对密码",
+        "passed": False, "reason": "命中私有审核标准：solution 和 tests 不得隐藏私有配对密码",
     }
     rejected_gate_session = next(step["agent_session_id"] for step in rejected_admin["steps"] if step["step_key"] == "quality_gate")
     # 门禁任务正常完成后拒绝题目：会话 Completed，业务步骤 failed。
@@ -923,7 +927,7 @@ def test_reverse_judge_quality_gate_cli_end_to_end(
         "20",
     )
     assert [step["status"] for step in rejudged_stream["latest"]["steps"]] == [
-        "passed", "failed", "pending", "pending",
+        "passed", "passed", "failed", "pending", "pending",
     ]
 
     assert cli.admin_json("ranking", "delete", str(ranking_id))["success"] is True

@@ -1066,6 +1066,7 @@ def test_admin_ranking_detail_projects_quality_gate_configuration(monkeypatch, c
             "title": "反向赛",
             "reverse_quality_gate_enabled": 1,
             "reverse_quality_gate_prompt": "不得隐藏私有密码",
+            "reverse_quality_gate_timeout_seconds": 4200,
         },
         "quality_gate_endpoints": [
             {
@@ -1086,8 +1087,39 @@ def test_admin_ranking_detail_projects_quality_gate_configuration(monkeypatch, c
     out = cli.json.loads(capsys.readouterr().out)
     assert out["competition"]["reverse_quality_gate_enabled"] == 1
     assert out["competition"]["reverse_quality_gate_prompt"] == "不得隐藏私有密码"
+    assert out["competition"]["reverse_quality_gate_timeout_seconds"] == 4200
     assert out["quality_gate_endpoints"][0]["has_key"] is True
     assert "api_key" not in out["quality_gate_endpoints"][0]
+
+
+@pytest.mark.parametrize("timeout", [60, 1800, 7200])
+def test_admin_quality_gate_timeout_only_sends_partial_configuration(monkeypatch, capsys, timeout):
+    cli = _load_numoj_admin_cli_module()
+    client = _FakeClient()
+    monkeypatch.setattr(cli.ranking, "client_from_args", lambda _args: client)
+
+    assert cli.main([
+        "ranking", "save-quality-gate", "3", "--timeout-seconds", str(timeout),
+    ]) == 0
+
+    assert client.requests == [(
+        "POST", "/api/ranking/competitions/3/reverse-judge/quality-gate",
+        {"json": {"timeout_seconds": timeout}},
+    )]
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("timeout", [59, 7201])
+def test_admin_quality_gate_invalid_timeout_makes_no_request(monkeypatch, timeout):
+    cli = _load_numoj_admin_cli_module()
+    client = _FakeClient()
+    monkeypatch.setattr(cli.ranking, "client_from_args", lambda _args: client)
+
+    assert cli.main([
+        "ranking", "save-quality-gate", "3", "--timeout-seconds", str(timeout),
+    ]) != 0
+
+    assert client.requests == []
 
 
 def test_admin_single_endpoint_cli_sends_model_metadata_and_accepts_pi(

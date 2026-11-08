@@ -36,6 +36,26 @@ backend/oj.py 只负责把上述组件装配起来
 
 该方向用于约束新增代码和高频修改点的渐进收口。不要为了“分层”创建只转发一次调用的空壳类。
 
+Harbor 反向评测实际调用官方 CLI `harbor trial start -c <私有配置文件>`，从官方
+`result.json` 读取浮点奖励与指标并保留部分分。仅对新版本后续新执行的任务，CLI 终态的 ATIF
+与 Pi 原生 JSONL 只导入初始 instruction 对应的 user 事件之后的记录；该 user 事件及此前的
+会话头、初始化等前缀不入库，后续分支、CoT、工具结果、错误和用户补充仍导入既有
+`judge/reverse_answer` 会话，不再投递一次模型。仅有前缀或初始指令时，零条工作记录也是合法结果；
+过去任务与已有记录不补导、不回填或修改。
+验证器统一在该轮作答环境中执行，`tests/` 仅在验证阶段由 Harbor 提供，`artifacts` 仅用于产物归档。
+实时只对官方可用日志尽力预览；完整导入事务、来源覆盖计数及私有清单必须在
+`Completed` 之前完成。清单位于会话 workspace 的
+`.runtime/harbor/agent/numoj-import-manifest.json`，核验时应比对其预期/导入事件数、
+原生/ATIF 总来源数、跳过前缀数、保留来源数及来源 ID，并核验保留来源的完整覆盖，
+不能仅凭工具次数判定完整。CoT 入库时与通用 Agent
+保持一致，每条最多 1200 字符（含截断省略号），来源信息中的 CoT 字段也遵循该限制。
+来源信息继续保存；面向用户的全部中间及最终 assistant 回复、工具参数与结果、错误和用量
+完整保存，按需展开。
+原始来源不改写；私有 ATIF/JSONL 和 gzip 归档完整保留 CoT 与其他原始内容，继续执行既有密钥脱敏。
+原始导入单事件 8 MiB、
+整体 64 MiB 超限明确失败并保留现场；除上述前缀排除与 CoT 入库限制外，不通过截断丢弃内容。
+普通 Agent 既有读写和历史 full/plain 记录读取保持原行为。
+
 ### 依赖与复用规则
 
 - 路由和任务共享的逻辑下沉到服务/helper，不互相导入私有函数。
@@ -123,7 +143,7 @@ python3 scripts/benchmark_http.py http://127.0.0.1:2025/health/live \
 脚本默认拒绝非回环地址；只有明确隔离的测试网络才可加 `--allow-non-loopback-test-host`。
 上述基准属于测试，**不得在生产主机或生产服务上运行**，也不得加入 `deploy.sh`。
 
-真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、详情四步和下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `backend/requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再通过测试专用环境变量 `NUMOJ_REVERSE_LIVE_API_KEY` 提供密钥（不要写入站点 `.env`），最后运行：
+真实反向评测浏览器 E2E 位于 `tests/e2e/test_reverse_judge_live_ui.py`。它会真实创建比赛和 Harbor 算法题包，用 Claude Code、Pi 各提交一次，并通过 Chromium 点击排行榜、构建环境与评测详情、下载入口。该用例会产生真实模型费用，只允许在本地一次性 MySQL/Redis 上显式运行：先从 `backend/requirements/test.txt` 安装测试依赖并执行 `python -m playwright install chromium`，再通过测试专用环境变量 `NUMOJ_REVERSE_LIVE_API_KEY` 提供密钥（不要写入站点 `.env`），最后运行：
 
 ```bash
 NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 NUMOJ_REVERSE_LIVE_API_KEY='...' python -m pytest -q \
@@ -134,6 +154,10 @@ NUMOJ_TEST_ENV=1 OJ_LIVE_AI=1 NUMOJ_REVERSE_LIVE_API_KEY='...' python -m pytest 
 `--basetemp` 必须位于 Docker daemon 可双向访问的宿主路径；macOS + Colima 不要使用 pytest 默认的 `/private/var/...` 临时目录，否则容器内写入不会回写到宿主测试进程。GitHub CI 固定 `OJ_LIVE_AI=0`，不会下载浏览器或调用外部模型。
 
 该用例在任何容器变更前都会校验当前 Docker context 与 `DOCKER_HOST`，只接受本机 Unix socket、Windows named pipe 或 loopback TCP，拒绝 SSH 和非 loopback daemon；测试 Web 也只监听 `127.0.0.1`。结束时会显式删除提交、比赛和端点 Key，并验证相应 DB 行与 workspace 目录均已消失，清理失败会让用例失败而不是静默遗留。
+
+`tests/e2e/test_harbor_runtime.py` 的纯 Docker 测试不会连接或重置数据库，但也必须显式设置
+`NUMOJ_TEST_ENV=1`，并使用一次性测试库与大于 0 的 Redis DB。它在任何容器变更前根据当前
+实际主机名、检出路径和有效配置调用同一环境守卫，再校验 Docker daemon 位于本机。
 
 生产健康检查不属于测试矩阵，也不得嵌入 `deploy.sh`。部署完成后，运维人员可以在生产主机人工执行只读的 `curl -f http://127.0.0.1:2025/health/live` 与 `curl -f http://127.0.0.1:2025/health/ready`；前者只证明 Web 可响应，后者还检查 MySQL 与 Redis。它们不能替代发布前测试。
 
@@ -176,6 +200,18 @@ DB/E2E 命令只有在 `backend/oj_modules/config.py` 加载后的有效配置�
 
 ### 已完成的历史 Judge 迁移与提示词补齐
 
+若官方 Harbor Trial 已结束且奖励有效，仅因完整轨迹导入或原生日志保存失败而留下
+`CleanupFailed`，可通过唯一部署入口执行 `bash deploy.sh --finalize-harbor-task <TASK_ID>`。
+部署在停掉全部 worker 并完成数据库备份后，把同名选项交给
+`scripts/recover_pending_tasks.py --confirm-celery-stopped`；脚本仍检查本机进程与远端 Celery ping。
+恢复只接受原提交、原 attempt、当前 `judge/reverse_answer` 及精确保存故障，拒绝真实取消、
+新 attempt、活进程和无效官方结果。它重新保存已有轨迹、压缩原始日志并注入产物，事务修复
+同一 Judge 轮次后，让原编排读取已有分数并归档，不重新调用模型、不改变原始结果，也不自动回灌数据库。
+旧停止入口会同时写 `.cancel-requested`；仅在 DB 未取消、官方结果有效且已完成时，允许普通文件标记
+的修改时间严格晚于官方完成时间，作为结束后的清理记录保留并审计。早于或等于完成时间、符号链接
+或时间不明确均拒绝。保存、事务、Redis 读回验证、编排入队或任务 ID 持久化失败时保留恢复标记；
+全部成功后才清除保存故障标记，已提交事务可用同一命令幂等重试。
+
 提交 `3f864ce` 对应的历史 Judge 会话与 workspace 迁移，以及后续历史提示词和真实轮次补齐均已完成。按用户确认，一次性脚本、两个冻结恢复辅助模块、专用测试及部署调用已移除。后续 `deploy.sh` 不再执行历史补齐，也不重新搬迁目录或创建历史会话。
 
 保留原迁移报告、数据库备份及 `.deploy/judge-history-prompts.json` 补齐报告。版本 2 已按真实输入边界恢复历史轮次及对应回复、思考和工具详情；缺失内容保留明确标记，不使用现行提示词替代。报告记录原正文、原聚合结论、新增轮次 ID、各轮事件数量及无法恢复的信息；旧聚合记录也可从 workspace 的 `historical_record.json` 追溯。已有会话链接、历史汇总用量及费用记录继续保留。
@@ -214,6 +250,7 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 
 ### 发布原则
 
+- 生产 `why-server:/home/ebola/oj/`（主机名 `computing`）默认只读，只允许查询、日志和进程检查。开发站部署授权不包含生产；没有单独明确的生产发布指令时，不执行 `deploy.sh`、引导脚本、写数据库、结构更新或重启服务。生产主机始终禁止运行单测、pytest、Compose 测试或业务冒烟测试。
 - 发布对象必须对应已知提交；禁止把未记录的远端手改当作新基线。
 - `.env`、根目录 `static/` 的生产额外资产、上传、运行目录和密钥不随代码全量覆盖。
 - Web 与 Celery 是两个发布边界；Python 变更按项目既定顺序完成显式停机恢复后再启动 `celery -> web`，避免 Web 在 worker 尚不可用时接受新任务。
@@ -221,19 +258,76 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 - schema 先采用向后兼容扩展，再发布读取新结构的代码；没有验证兼容窗口时不做不可逆 DDL。
 - 代码或镜像回退必须视为一次新的已知提交部署，并先验证当前 schema 与数据语义兼容。当前流程不持久保留旧镜像标签，不得假设本机仍存在可直接恢复的旧镜像。
 
+本次质量审核时限通过新增 `ranking_competitions.reverse_quality_gate_timeout_seconds`
+整型列保存，现有比赛默认 1800 秒。直接运行 `bash deploy.sh` 会先停服并验证备份，再由
+结构同步自动补列，成功后才启动新服务。回退旧代码时保留该列及已保存的时限，旧代码可
+忽略此扩展；不要为回退删除列或自动回灌数据库。结构同步失败时保持停服并保留现场，
+按已验证的备份与回滚流程决定向前修复或人工恢复。
+
 ### 发布步骤
 
-生产发布由运维人员先在目标 checkout 执行 `git pull --ff-only`，再运行根目录的 `bash deploy.sh`。脚本不拉取代码，也不校验主机名、用户名、固定目录或 Git 状态；调用方负责确认当前版本。其原地部署顺序为：
+发布统一使用目标 checkout 中的 `git pull --ff-only` 与 `bash deploy.sh`。开发站与生产站使用同一入口；
+脚本不根据主机名或用户名选择环境，也不拉取代码，调用方负责确认当前版本。首次安装的配置、
+宿主依赖、数据库服务、管理员和开机启动都由这个入口处理，不需要另行执行初始化脚本。
 
-1. 取得覆盖主机共享 Supervisor、Docker 和备份状态的主机级锁。引导解释器必须是 Python 3.12；在安装依赖、构建镜像或连接数据库前，fail-closed 校验生产 `.env` 的加载状态、属主、文件类型、权限与必填配置。
-2. 在停服前核验 clangd 实际主版本至少为 17，并核验 `bwrap --version`。若没有合格 clangd，只允许在 Debian 上先模拟再通过 APT 安装版本化 `clangd-19` 仓库 candidate 的精确版本；不得替换或升级既有的旧版无后缀 `clangd`。应用运行时按 `clangd-20`、`clangd-19`、`clangd-18`、`clangd-17` 的顺序选择版本化可执行文件，最后才回退到版本合格的无后缀 `clangd`。模拟必须拒绝卸载、升级或降级既有依赖，以及 MySQL、Docker、Python 等宿主关键包的变更，安装后核验 dpkg 版本和 `clangd-19` 可执行文件。clangd 与 BasedPyright 必须在禁网、只读运行时加可写临时工作区的 Bubblewrap 沙箱内运行；缺少沙箱时失败关闭。随后重建非活动 venv，并准备 ARC-AGI-3 公开集、VibeHub 受信基础候选镜像和普通判题、Agent-as-Judge 候选镜像。ARC-AGI-3 优先验证 `.deploy/arc-agi-3/sets/` 中的完整本地缓存，存在可用集合时跳过线上访问和下载；只有本地没有完整集合时，才访问 ARC Prize 官方匿名目录，校验恰好 25 个唯一游戏 ID，并把 25 份元数据和源码全部下载到 staging 后逐文件计算 SHA-256 与集合指纹。网络、鉴权、格式、数量或任一下载异常均失败关闭；部署宿主不得导入或执行下载的 Python。VibeHub 基础镜像只构建到带 run-id 的候选标签并成功 `inspect`，停服前不得覆盖 stable。普通判题候选镜像是官方 C/C++ 库集合的唯一事实源：部署必须分别读取镜像内 gcc/g++ 的真实 include search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与 `/opt/library` 等头文件安全导出到 `.deploy/editor-toolchains/` 的非活动槽，解引用镜像内软链并拒绝导出结果中的软链、特殊文件、路径逃逸或异常体积；clangd 对 C/C++ 都禁用宿主默认 include search，只显式读取该槽位，再对 STL、Eigen、CBLAS、LAPACKE 与 MKL 做真实语义自检，同时核验 BasedPyright 与 Tree-sitter MATLAB。完整候选环境准备成功后才允许继续。判题镜像构建输入未变化时可以复用稳定镜像；发生变化时必须证明本地稳定镜像和关键构建缓存可用，否则在停服前退出。具体指纹、缓存条件和基础镜像由 `deploy.sh`、Dockerfile 与契约测试维护，不在手册复制。
+`bash deploy.sh --mode lite` 显式选择轻量镜像，`--mode full` 选择完整镜像。没有选择记录的
+新站点和既有生产站点都默认 `full`；只有显式参数会改变选择，并保存到当前用户私有的
+`.deploy/deployment-mode`，后续裸 `bash deploy.sh` 沿用该选择。该模式与 CPU/GPU 运行配置独立，
+不会根据机器硬件自动把完整环境切为轻量环境；每次部署都会打印实际模式。
+`full` 保留完整普通判题与通用 Agent 工具链，`lite` 使用仓库已有的 `judger-lite` 和
+`agent_judge-lite`。轻量普通判题仍保留已有的基础 TeX/中文绘图支持，但不含 Intel MKL；
+轻量 Agent 和所有模式的 Harbor 通用基座都不安装 TeX。Lean 没有轻量版本，继续使用既有
+Lean/Mathlib 镜像。服务仍使用原 stable 镜像接口，选择模式不修改 `.env`。
+
+首次没有 `.env` 时，脚本在当前交互终端确认是否创建本机托管的新站点，再生成随机站点密钥和
+数据库密码，文件权限为 `0600`，密钥不会输出到终端。已有 `.env` 始终原样保留：最小 Python/flock
+引导前先验证属主、普通文件类型与 `0400/0600` 权限；配置加载器可用后再校验必填项，
+通过后才供应其余宿主依赖、启动数据库或连接数据。配置无效就停止。
+非交互调用不会猜测缺失的旧站点配置。新 CPU 开发站默认库名为 `numoj_dev_test`、Redis DB 为 `15`，
+便于后续显式设置 `NUMOJ_TEST_ENV=1` 运行受环境守卫保护的测试；生产既有配置完全不变。
+
+引导只补齐缺失宿主工具，APT 使用精确 candidate 并先模拟，拒绝删除或升级既有系统包；
+不在数据库备份前升级、替换 MySQL 服务或改写账号凭据。缺少 Python 3.12 时，通过固定版本的
+uv 在项目 `.deploy/` 内供应隔离解释器，不修改系统 Python。Docker 新增组权限通过同一入口的
+受控 `sg` 重入立即应用；sudo 凭据在停服前认证并全程保活。已有 MySQL/Redis 优先复用，
+已安装的本机服务可自动启动；明确新建的本机站点由带归属标记的 Docker 容器托管依赖，
+仅监听 loopback，数据、状态和私有凭据放在 `.deploy/services/`，重复发布继续使用同一份数据。
+托管 MySQL 不提前创建应用库，首次备份仍准确记录“应用库不存在”；使用容器内同版本客户端
+走既有逻辑备份，已有生产数据库继续沿用原备份策略。
+
+新站点根据受支持的 CUDA/GPU 能力选择运行配置，并将选择存入权限 `0600` 的 `.deploy/profile`；
+已有站点没有该文件时保持原 `production` 默认。显式 `NUMOJ_DEPLOY_PROFILE` 可更新持久选择，
+之后直接执行 `bash deploy.sh` 即可。Docker Hub 不可达而官方 ECR 入口可用时，可持久切换官方
+镜像入口；生成的等价 Dockerfile 只替换官方 `FROM` 地址，保留既有版本、摘要和安装层，
+受 Git 管理的 Dockerfile 不变。首次空库准备和失败重试使用私有 journal，不会因中途建过表而
+丢失首装状态；只有完整发布成功才清除首装标记。镜像缺失或缓存不完整时，入口会在停服前
+自动构建独立候选镜像，保留既有服务、稳定标签和可用缓存。
+
+首次下载所需的 HTTP(S) 代理可保存为 `.deploy/` 内的私有配置，供后续 APT、pip、Docker
+供应继续使用。依赖供应与备份完成后，部署会清除大小写下载代理环境变量，再执行业务初始化、
+任务恢复和启动 Supervisor；临时 SSH 下载隧道不会成为 Web/Celery 的运行时配置。
+业务长期需要的代理应在站点 `.env` 或常驻服务中独立配置。
+
+首次空库在 schema 同步后创建 `admin` 管理员，使用既有密码存储实现，不导入示例用户或覆盖旧账号。
+生产管理员密码在同一部署流程内交互设置；CPU 开发站首装会生成随机密码并保存到私有凭据文件，
+仅输出文件路径。三组现有 Supervisor 同时获得 systemd 开机启动单元；安装时只启用，
+当前发布继续由原状态机管理，避免重复启动。其原地部署顺序为：
+
+1. 先完成现有 `.env` 元数据门禁和缺失 flock 的最小供应，再取得覆盖主机共享 Supervisor、Docker 和备份状态的主机级锁。发行版 Python 3 执行标准库引导，业务候选解释器固定为 Python 3.12；其余依赖供应、镜像构建或数据库连接前，fail-closed 校验 `.env` 的加载状态与必填配置。
+2. 在停服前核验 clangd 实际主版本至少为 17，并核验 `bwrap --version`。若没有合格 clangd，只允许在 Debian/Ubuntu 上先模拟再通过 APT 安装版本化 `clangd-19` 仓库 candidate 的精确版本；不得替换或升级既有的旧版无后缀 `clangd`。应用运行时按 `clangd-20`、`clangd-19`、`clangd-18`、`clangd-17` 的顺序选择版本化可执行文件，最后才回退到版本合格的无后缀 `clangd`。模拟必须拒绝卸载、升级或降级既有依赖，以及 MySQL、Docker、Python 等宿主关键包的变更，安装后核验 dpkg 版本和 `clangd-19` 可执行文件。clangd 与 BasedPyright 必须在禁网、只读运行时加可写临时工作区的 Bubblewrap 沙箱内运行；缺少沙箱时失败关闭。随后重建非活动 venv，并准备 ARC-AGI-3 公开集、VibeHub 受信基础候选镜像和普通判题、Agent-as-Judge 候选镜像。ARC-AGI-3 优先验证 `.deploy/arc-agi-3/sets/` 中的完整本地缓存，存在可用集合时跳过线上访问和下载；只有本地没有完整集合时，才访问 ARC Prize 官方匿名目录，校验恰好 25 个唯一游戏 ID，并把 25 份元数据和源码全部下载到 staging 后逐文件计算 SHA-256 与集合指纹。网络、鉴权、格式、数量或任一下载异常均失败关闭；部署宿主不得导入或执行下载的 Python。VibeHub 基础镜像只构建到带 run-id 的候选标签并成功 `inspect`，停服前不得覆盖 stable。普通判题候选镜像是官方 C/C++ 库集合的唯一事实源：部署必须分别读取镜像内 gcc/g++ 的真实 include search，把 `/usr/include`、GCC internal include、`/opt/mkl/include` 与 `/opt/library` 等头文件安全导出到 `.deploy/editor-toolchains/` 的非活动槽，解引用镜像内软链并拒绝导出结果中的软链、特殊文件、路径逃逸或异常体积；clangd 对 C/C++ 都禁用宿主默认 include search，只显式读取该槽位，再对 STL、Eigen、CBLAS、LAPACKE 做真实语义自检，full 模式另外强制验证 MKL，同时核验 BasedPyright 与 Tree-sitter MATLAB。完整候选环境准备成功后才允许继续。full 判题镜像沿用既有构建输入记录复用稳定镜像，lite 使用 Docker 原生层缓存；需要构建时准备独立候选并逐层复用可用缓存，缺失层由同一流程补齐。所有镜像必须在停服前完成构建和核验；失败时保留旧服务及稳定镜像。具体构建输入和基础镜像由 `deploy.sh`、Dockerfile 与契约测试维护，不在手册复制。
 3. 以 MySQL 服务端查询结果生成唯一备份计划，兼容矩阵只在 `deploy/backup/policy.py` 维护。兼容的本机 Oracle MySQL/Percona Server 使用固定版本 XtraBackup；无兼容映射时使用逻辑备份。XtraBackup 缺失或版本不匹配时，先通过交互式 `sudo` 与 Debian APT 供应固定版本；APT 动作必须先模拟、限制在审核后的包集合内，并拒绝连带改动 MySQL、Docker 等宿主关键服务。供应阶段的 sudo、APT、仓库、dpkg 或二进制校验失败可以把计划确定为逻辑备份。一旦供应成功，物理 plan 的 MySQL 身份、socket/datadir、本地 socket 认证、容量或后续执行条件验证失败都必须直接停止；计划冻结后不得因备份或 prepare 失败临时换策略。MySQL 认证复用严格加载的部署配置，并通过位于私有 plans 目录、权限 `0600` 的短期 option file 交给提权后的客户端；凭据值不得进入 plan、manifest、argv、环境或输出，option file 无论成功失败都必须删除。sudo 交互认证与凭据保活必须在停服前完成，停服后只能使用 `sudo -n`，凭据失效立即停止。
 4. 确认 Web/Celery 均可由受管 Supervisor 精确管理后，先优雅停止 Celery，再停止 Web，并最佳努力停止日志采集器。停止完成后再次拒绝任何漂移的 Web/worker 进程；不能证明应用写入者已全部停止时不得备份或更新结构。
 5. 在零应用写入窗口创建结构变更前回滚点。物理路径备份整个 MySQL 实例、不压缩且必须完成 `xtrabackup --prepare` 与产物验证；它直接写入隔离的 run-id 目录，失败目录保留现场，只有 prepare 和验证完成后才发布 complete manifest。逻辑路径只导出配置的 `MYSQL_DB`，使用 gzip level 1、显示进度，并完整校验 gzip CRC、大小与 SHA-256；逻辑产物和 manifest 均原子发布。凭据不得进入备份子进程 argv/环境、输出或清单。相对于已停止且作为唯一写入者的 NumericalOJ，这一回滚点是 RPO 0。
-6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步。结构就绪后，把 Git 跟踪的示例通过普通创建、发布和管理员精品设置链路同步为 admin 的个人作品；仓库包变化时创建并发布新版本，slug 属于其他用户时失败关闭。随后显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程使用普通作品版本内的本地数据，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
+6. 只有回滚点验证成功后，才再次确认 Web/Celery 仍全部停止，记录部署前 VibeHub stable 镜像 ID，再把已核验候选镜像切为 stable；之后原子切换 `.deploy/current-venv`、`.deploy/current-editor-toolchain` 与 `.deploy/arc-agi-3/current`，执行带独立前置检查的显式迁移和一次非破坏性结构同步。结构就绪后，把 Git 跟踪的示例通过普通创建、发布和管理员精品设置链路同步为 admin 的个人作品；仓库包变化时创建并发布新版本，slug 属于其他用户时失败关闭。随后显式清理过期上传暂存并运行仓库存储 doctor，再执行停机任务恢复，最后切换判题生产镜像标签。过期暂存清理必须携带 `--apply --confirm-expired-staging-delete`，文件系统审计失败时必须停止。ARC-AGI-3 的 Web 请求和游玩过程使用普通作品版本内的本地数据，不访问官方 API，官方 Python 只会在隔离的 VibeHub 容器中执行。任一步骤失败都立即保持业务服务停止并保留现场，不自动恢复数据库，也不自动重启业务服务；退出清理会恢复部署前的 VibeHub 与 Harbor stable 标签，但数据库、运行环境或其它镜像仍须先判断写入是否已提交，再向前修复或使用本次已验证的数据库回滚点人工恢复。
 7. 最佳努力启动日志采集器，再依次启动 Celery、Web，并按 Supervisor 的精确进程集合确认两组业务服务稳定进入 `RUNNING`。随后重新核验真实备份产物，成功后才把本次 deployment 标记为成功；标记成功之后才尝试清理历史备份，以及带 VibeHub 专用受管 label 的 dangling 旧版本镜像层。带稳定 `latest`/`public` 别名或仍被运行容器引用的镜像不会被 prune。任一清理失败只告警并保留旧产物供人工检查。日志采集异常必须告警，但不能阻断健康的业务服务。
 
-`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试、Compose 或 HTTP 探针。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。`vibehub_examples/` 会通过普通作品链路同步为 admin 的个人作品；同名公开包与仓库内容不同时创建并发布新版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、根目录 `static/` 的未跟踪额外资产、上传与其它业务运行目录，也不修改系统 Python 或全局 site-packages；根目录 `static/` 完全不由部署脚本写入，仅由 Flask 在新前端静态目录未命中时只读回退。显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
+Ubuntu 24 等启用 AppArmor 非特权 user namespace 限制的宿主，会在同一部署流程中先核验
+实际 Bubblewrap 隔离能力，必要时安装基于官方 AppArmor 4.0.1 的逐程序 bwrap 策略。
+只有 bwrap 的命名空间准备可获得所需能力，其子进程继续叠加 deny capability 策略；
+全局 AppArmor 与 userns 限制保持启用。已有外部 bwrap 策略不覆盖；本轮新建策略若未通过
+后续核验会卸载回收，回收失败则保留现场并停止部署。
+
+`deploy.sh` 不负责拉取代码，不检查 hostname、用户名、固定目录或 Git 状态，也不运行测试或业务 HTTP 探针；镜像供应可以只读探测官方 registry 的可达性。它可以写入项目内受管的 `.deploy/` 与 `logs/`，其中 ARC-AGI-3 的官方游戏源码、清单和预览只作为部署缓存存在于 `.deploy/arc-agi-3/`，判题镜像导出的编辑器头文件只存在于 `.deploy/editor-toolchains/`，均不进入 Git 仓库。`vibehub_examples/` 会通过普通作品链路同步为 admin 的个人作品；同名公开包与仓库内容不同时创建并发布新版本。脚本会更新数据库结构和停机任务恢复状态，管理 Docker 标签/缓存、Supervisor 进程与 `/tmp` 运行态文件，并在缺少合格 clangd 时通过 APT 旁路安装版本化 `clangd-19` 的精确 candidate、在缺少 Bubblewrap 时安装其精确 candidate、在需要 XtraBackup 时管理固定的 Percona 软件源和包。它不因代码发布而全量同步或清理 `.env`、根目录 `static/` 的未跟踪额外资产、上传与其它业务运行目录，也不替换系统 Python 或写全局 site-packages；根目录 `static/` 完全不由部署脚本写入，仅由 Flask 在新前端静态目录未命中时只读回退。显式停机任务恢复仍会按照既有持久 journal 协议完成或回滚受管业务产物。
 
 独立的 CPU 测试站可以在完整发布入口显式选择测试配置：
 
@@ -242,7 +336,21 @@ git pull --ff-only
 NUMOJ_DEPLOY_PROFILE=test-cpu bash deploy.sh
 ```
 
-`NUMOJ_DEPLOY_PROFILE` 默认是 `production`，只允许 `production` 或 `test-cpu`。
+`NUMOJ_DEPLOY_PROFILE` 只允许 `production` 或 `test-cpu`。第一次显式选择会保存在 `.deploy/profile`，
+后续不再需要重复设置环境变量；既有生产站点的默认值仍为 `production`。
+逻辑备份默认在估算产物空间之外保留磁盘总容量的 10%，且至少保留 2 GiB。CPU 开发站仅在
+只读资格查询确认全部条件符合时请求 `--development-reserve`，将额外预留固定为 2 GiB：辅助程序必须
+确认当前用户私有的持久 profile 为 `test-cpu`、库名以 `_test` 结尾、MySQL 地址为 loopback、
+Docker endpoint 为本机 Unix socket，并重新核验容器归属；`computing`、`why-server` 及其 FQDN
+禁止使用此模式。模式与这些事实写入备份 plan，在实际备份前再次逐项核验，所需产物空间与
+inode 检查保持不变。生产配置、原生 MySQL、远程 MySQL 和旧 plan 继续使用原有容量策略；
+自定义非 `_test` 库名的 CPU 站点继续使用默认预算；显式请求开发模式但不符合条件时拒绝执行。
+这个部署选项不设置 `NUMOJ_TEST_ENV`，也不改变测试环境守卫。
+选择 `full` 镜像模式、同样满足完整开发资格，且确认 Docker 为稳定 `29.x`、版本至少 `29.1.3`、使用 containerd
+image store 和 `docker` builder 时，三组完整判题候选通过官方 `unpack=false` 导出选项延迟解包。
+完整镜像与标签仍进入 image store；首次创建容器时才按需解包。候选全部就绪后、首次运行前，
+开发缓存辅助程序仅在空间紧张且能严格证明项目缓存归属时按精确记录回收私有构建缓存，
+保留镜像与业务数据；不执行全局 prune。资格或引擎能力未知时保持原有导出方式，生产配置不启用。
 CPU 模式跳过 NVIDIA CDI 准备，使用 VibeHub Dockerfile 的 `web-edu` 阶段，保留完整 Web 依赖与
 普通、教学两种 Unix socket relay，不需要宿主 CUDA，也不构建 vLLM/GPU 环境。基础镜像标记
 `com.numericaloj.vibehub.gpu=0`；生产镜像标记为 `1`，运行器拒绝使用 CPU 基础镜像处理 GPU 申请。
@@ -252,11 +360,19 @@ VibeHub 作品容器中编译及运行，不再启动额外判题容器。每次
 平台继续根据可信输入重放堆操作并核验结果；宿主机不直接执行学生程序，作品不获得 Docker socket。
 早期 CPU 测试镜像没有 C++ 编译器；已固定到这类旧镜像的测试作业，需要管理员从原作品快照
 使用新的 CPU 基础镜像维护重建固定镜像，或为新发布版本布置作业。首次打开不会自动重建镜像。
-测试模式允许缺少稳定判题镜像的机器首次构建完整的 judger、Lean 与 Agent Judge 候选镜像，
-Agent Judge 始终引用同次发布的 Lean 候选标签；它不会使用 lite 镜像替代完整服务。
-首次完整镜像仍可能需要较多磁盘与下载时间。已有稳定镜像时继续遵守构建输入复用与关键缓存门禁；
-生产默认的冷构建拒绝规则保持不变，Lean 首次供应仍按原有规则处理。
-两种模式都执行配置校验、备份、停服、schema 同步、示例发布、任务恢复与服务启动，
+CPU/GPU 两种运行配置都能在缺少稳定判题镜像时自动构建所选模式的候选镜像；Agent Judge
+始终引用同次发布的 Lean 候选标签。编辑器导出与语义检查读取同一模式：`full` 仍强制验证 MKL，
+`lite` 在明确记录无 MKL 能力后跳过该项，标准库、Eigen、CBLAS 与 LAPACKE 校验继续执行。
+首次完整镜像仍可能需要较多磁盘与下载时间。`full` 沿用既有构建输入记录复用稳定镜像；
+`lite` 始终使用 Docker 原生层缓存，不新增文件摘要或版本校验。输入变化或缓存被清理时，
+部署在停服前自动补齐缺失层，不要求人工提前准备缓存，也不会为构建清空现有缓存。
+`full` 稳定镜像缺失或输入不匹配时，先查找同仓库已有 `deploy-*` 完整镜像，
+仅复用受管 label 和既有构建输入记录均匹配的候选，再按镜像 ID 创建本次候选标签；
+失败的中间 BuildKit 层、未受管镜像和输入不匹配的候选不会被选用。只有所有候选准备完成后才
+清理旧候选标签，清理时跳过本次候选。反向评测模板的 `numericaloj-harbor-base:1` 始终采用
+无 TeX 的轻量 Agent 镜像；`lite` 直接复用同次 Agent 候选，`full` 独立准备并缓存 Harbor 候选。
+Harbor stable 标签只在备份成功后的镜像切换阶段更新，失败时恢复其原标签。
+`full`/`lite` 都执行配置校验、备份、停服、schema 同步、示例发布、任务恢复与服务启动，
 不会在部署脚本内运行测试。浏览器、接口和可丢弃基础设施测试应在部署成功后的独立测试阶段执行。
 CPU 模式只用于明确隔离的测试站；不应在生产部署时设置。
 
@@ -308,12 +424,13 @@ install-before-commit 崩溃留下的 DB 未知 `vN`、clone 和无 DB 社区项
 `.deploy/venvs/` 只使用两个轮换槽。数据库备份按物理产物、逻辑产物、计划与 manifest 分区；留存使用持久化单调 generation，而不是可能回拨的墙上时间，并始终保护本次 run。只有 Web/Celery 恢复且真实产物再次验证成功后，才保留最近 2 个成功部署回滚点；`pending`、`failed`、未知或旧格式产物永不自动删除。停服前失败可能留下候选 venv/镜像、日志目录、APT 或备份目录状态，但现有 Web/Celery 不会被停止；停服后失败则恢复部署前的 VibeHub stable 镜像标签，并让服务停止、现场留存。任何失败都不得触发机械回灌，应先判断 DDL 是否已提交，再选择向前修复或人工恢复。
 
 Dockerfile 的外部基础镜像固定到不可变镜像摘要，避免上游标签更新使重型依赖缓存整体失效。
-基础系统升级必须显式更新 Dockerfile 和对应部署缓存条件，并在维护窗口准备新缓存；业务文件更新
+基础系统升级必须显式更新 Dockerfile，并由部署在停服前构建和核验候选镜像；业务文件更新
 不自动升级基础系统。部署日志中的“检测到缓存记录”仅表示存在对应基础镜像和关键步骤记录，
 实际命中以构建输出的 `CACHED` 为准。
 
-在停服前的“构建判题镜像”阶段按 Ctrl+C，退出清理只移除本次候选标签，不主动清理 BuildKit
-缓存或删除稳定镜像。已完成的旧层可以继续复用，未完成的 `RUN` 不构成成功缓存层；恢复构建时
+在停服前的“构建判题镜像”阶段按 Ctrl+C，失败退出保留已经完整导出的 Judger、Lean、Agent 和 Harbor
+候选标签，供下一次发布重新核验并复用，不主动清理 BuildKit 缓存或删除稳定镜像。
+VibeHub 候选继续按其独立回滚流程清理。已完成的旧层可以继续复用，未完成的 `RUN` 不构成成功缓存层；恢复构建时
 仍须使用相同的固定基础镜像、builder 和前序指令。已进入停服阶段时，应按失败现场处理，
 不能把这条构建中断说明当作服务会自动恢复的保证。
 

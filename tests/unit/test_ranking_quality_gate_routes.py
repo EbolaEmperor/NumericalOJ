@@ -55,7 +55,6 @@ def test_reverse_stream_timeout_covers_abort_retry_and_optional_gate():
     assert routes._reverse_judge_stream_timeout_seconds(comp) == (
         401 * 2
         + 2201 * 2
-        + 601
         + routes.REVERSE_QUALITY_GATE_TIMEOUT_DEFAULT
         + routes.REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
     )
@@ -64,8 +63,12 @@ def test_reverse_stream_timeout_covers_abort_retry_and_optional_gate():
     assert routes._reverse_judge_stream_timeout_seconds(comp) == (
         401 * 2
         + 2201 * 2
-        + 601
         + routes.REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
+    )
+
+    comp['reverse_judge_finalize_timeout_seconds'] = 7200
+    assert routes._reverse_judge_stream_timeout_seconds(comp) == (
+        401 * 2 + 2201 * 2 + routes.REVERSE_STREAM_TIMEOUT_BUFFER_SECONDS
     )
 
 
@@ -76,6 +79,46 @@ def test_reverse_stream_timeout_never_drops_below_previous_one_hour_floor():
         "reverse_judge_finalize_timeout_seconds": 30,
         "reverse_quality_gate_enabled": 0,
     }) == routes.REVERSE_STREAM_MIN_TIMEOUT_SECONDS
+
+
+def test_reverse_stream_respects_competition_quality_time():
+    comp = {'reverse_quality_gate_enabled': True, 'reverse_quality_gate_timeout_seconds': 7200}
+    default = routes._reverse_judge_stream_timeout_seconds(comp)
+    comp['reverse_quality_gate_timeout_seconds'] = 1800
+    assert default - routes._reverse_judge_stream_timeout_seconds(comp) == 5400
+
+
+def test_time_only_save_preserves_quality_prompt_and_enabled_state(monkeypatch):
+    comp = {'id': 7, 'scoring_mode': 'reverse_judge', 'reverse_quality_gate_enabled': 0,
+            'reverse_quality_gate_prompt': '原审核标准', 'reverse_quality_gate_timeout_seconds': 1800}
+    fields_saved = []
+    monkeypatch.setattr(routes, '_admin_json_guard', lambda: ({'is_admin': 1}, None))
+    monkeypatch.setattr(routes, 'get_competition', lambda _id: comp)
+    monkeypatch.setattr(routes, 'list_quality_gate_endpoints', lambda _id: [])
+
+    def save(_id, **fields):
+        fields_saved.append(fields)
+        comp['reverse_quality_gate_timeout_seconds'] = fields['timeout_seconds']
+
+    monkeypatch.setattr(routes, 'save_reverse_quality_gate_configuration', save)
+    with _app().test_request_context(json={'timeout_seconds': 3600}):
+        response = routes.ranking_save_reverse_quality_gate(7)
+    assert fields_saved == [{'timeout_seconds': 3600}]
+    data = response.get_json()
+    assert data['timeout_seconds'] == 3600
+    assert data['prompt'] == '原审核标准'
+    assert data['enabled'] is False
+
+
+@pytest.mark.parametrize('timeout', [True, 59, 7201, 1800.5, None])
+def test_invalid_quality_time_never_reaches_database_write(monkeypatch, timeout):
+    monkeypatch.setattr(routes, '_admin_json_guard', lambda: ({'is_admin': 1}, None))
+    monkeypatch.setattr(routes, 'get_competition', lambda _id: {'id': 7, 'scoring_mode': 'reverse_judge'})
+    monkeypatch.setattr(routes, 'save_reverse_quality_gate_configuration', lambda *_a, **_k: pytest.fail('不应写入'))
+    with _app().test_request_context(json={'timeout_seconds': timeout}):
+        response, status = routes.ranking_save_reverse_quality_gate(7)
+    assert status == 400
+    assert '审核时限' in response.get_json()['message']
 
 
 def test_quality_gate_partial_update_uses_atomic_merged_state_validation(monkeypatch):

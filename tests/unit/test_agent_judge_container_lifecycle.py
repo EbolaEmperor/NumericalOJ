@@ -661,7 +661,7 @@ def test_single_cleanup_failure_never_reads_results_or_releases_slot(single_flow
     flow = single_flow
     _saved_turn(flow, status='CleanupFailed')
     _write_results(flow, [{'rule_id': 3, 'result': 'pass'}])
-    with pytest.raises(ValueError, match='通用 Agent'):
+    with pytest.raises(ValueError, match='评测未完成，请联系管理员处理'):
         m._advance_agent_judge(flow.task, flow.client, flow.submission, flow.competition)
     assert flow.submissions == flow.writes == []
     assert flow.releases == flow.reads == []

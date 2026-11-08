@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -519,6 +520,62 @@ def test_mkl_runtime_probe_matches_public_header_declaration_kinds():
         "MKL_INT": {"macro"},
         "MKL_Get_Version": {"function"},
     }
+
+
+def _mock_official_runtime(monkeypatch, *, has_mkl, missing=None):
+    documents = []
+    toolchain = SimpleNamespace(has_mkl=has_mkl)
+
+    class RuntimeService:
+        editor_toolchain = toolchain
+
+        def legend(self):
+            return {"tokenTypes": ["variable", "class", "function", "macro"]}
+
+        def semantic_tokens(self, document_key, source, *_args):
+            documents.append(document_key)
+            return {"data": [0, 0, 1, 0, 0], "inactive_regions_supported": True,
+                    "inactive_regions": [{"start": {"line": 1, "character": 0},
+                                           "end": {"line": 1, "character": 31}}]}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(clangd_services, "ClangdService", lambda _language: RuntimeService())
+    monkeypatch.setattr(clangd_services, "RepositoryClangdService", lambda _language, **_kwargs: RuntimeService())
+
+    def observed(source, _legend, _data):
+        if "HostFileVisible" in source:
+            return {"HostFileVisible": {"variable"}}
+        result = {
+            "vector": {"class"}, "string": {"class"}, "deque": {"class"}, "tuple": {"class"},
+            "memset": {"function"}, "SparseMatrix": {"class"}, "SparseLU": {"class"},
+            "cblas_dgemm": {"function"}, "LAPACKE_dgesv": {"function"},
+            "MKLVersion": {"class"}, "MKL_INT": {"macro"}, "MKL_Get_Version": {"function"},
+            "RelativeDependency": {"class"},
+        }
+        if missing:
+            result.pop(missing)
+        return result
+
+    monkeypatch.setattr(clangd_services, "_semantic_token_types_by_spelling", observed)
+    return documents
+
+
+@pytest.mark.parametrize("has_mkl", [False, True])
+def test_official_runtime_uses_declared_mkl_capability_without_skipping_other_probes(monkeypatch, has_mkl):
+    documents = _mock_official_runtime(monkeypatch, has_mkl=has_mkl)
+    clangd_services.verify_clangd_runtime(require_official_toolchain=True)
+    assert {"runtime-self-check", "runtime-official-library-eigen", "runtime-official-library-cblas",
+            "runtime-official-library-lapacke", "runtime-host-file-probe"} <= set(documents)
+    assert ("runtime-official-library-mkl" in documents) is has_mkl
+
+
+@pytest.mark.parametrize("missing", ["SparseLU", "cblas_dgemm", "LAPACKE_dgesv"])
+def test_lite_official_runtime_still_rejects_other_missing_library_semantics(monkeypatch, missing):
+    _mock_official_runtime(monkeypatch, has_mkl=False, missing=missing)
+    with pytest.raises(RuntimeError, match=missing):
+        clangd_services.verify_clangd_runtime(require_official_toolchain=True)
 
 
 @pytest.mark.parametrize("inactive_supported", (True, False))

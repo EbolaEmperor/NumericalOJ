@@ -10,11 +10,13 @@ from backend.oj_modules.infrastructure.mysql import get_db_connection
 from backend.oj_modules.ranking.db import get_ranking_submission, submission_dir
 
 
+STEP_BUILD = 'build_environment'
 STEP_SOLUTION = 'solution_check'
 STEP_QUALITY_GATE = 'quality_gate'
 STEP_AGENT = 'agent_answer'
 STEP_AI_JUDGE = 'ai_judge'
 STEP_DEFS = (
+    (STEP_BUILD, 0, '构建环境'),
     (STEP_SOLUTION, 1, '标准答案自检'),
     (STEP_QUALITY_GATE, 2, '质量门禁'),
     (STEP_AGENT, 3, 'AI 作答'),
@@ -79,7 +81,7 @@ def clear_reverse_judge_steps(submission_id):
 
 
 def init_reverse_judge_steps_for_attempt(submission_id, attempt_id):
-    """重置并预置四步记录。仅在 submission 当前 attempt 仍匹配时生效。"""
+    """重置并预置构建和四步评测记录，仅作用于当前 attempt。"""
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
@@ -246,7 +248,7 @@ def list_reverse_judge_steps(submission_id):
     out = []
     for key, order, title in STEP_DEFS:
         row = dict(by_key.get(key) or {})
-        # 历史三步记录仍保存着旧的 1/2/3 顺序；对外始终投影为当前四步定义，
+        # 历史记录可能没有构建或质量门禁；对外始终投影为当前步骤定义，
         # 避免质量门禁和 AI 作答同时显示 step_order=2。
         row['step_key'] = key
         row['step_order'] = order
@@ -255,13 +257,13 @@ def list_reverse_judge_steps(submission_id):
             # 质量门禁上线前的历史提交没有对应 DB 行。终态历史记录应明确展示为
             # “未执行”，而不是永久多出一个 pending 步骤；新排队/评测中的提交仍
             # 等待 worker 通过 ensure_reverse_judge_steps_for_attempt 补齐真实记录。
-            if key == STEP_QUALITY_GATE and str((submission or {}).get('status') or '') not in (
+            if key in {STEP_BUILD, STEP_QUALITY_GATE} and str((submission or {}).get('status') or '') not in (
                     'Judging', 'Pending', 'Queued'):
                 row['status'] = 'skipped'
                 row['result_json'] = {
                     'enabled': False,
                     'skipped': True,
-                    'summary': '历史评测未执行质量门禁',
+                    'summary': '历史评测未记录构建过程' if key == STEP_BUILD else '历史评测未执行质量门禁',
                 }
             else:
                 row['status'] = 'pending'
@@ -270,6 +272,7 @@ def list_reverse_judge_steps(submission_id):
 
 
 __all__ = [
+    "STEP_BUILD",
     "STEP_SOLUTION",
     "STEP_QUALITY_GATE",
     "STEP_AGENT",

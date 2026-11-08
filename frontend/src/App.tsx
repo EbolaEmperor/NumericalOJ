@@ -18,6 +18,7 @@ const FaithSieveListPage = lazy(routeLoaders.faithsieve)
 const FaithSieveDetailPage = lazy(routeLoaders.faithsieveDetail)
 const RankingsPage = lazy(routeLoaders.rankings)
 const RankingDetailPage = lazy(routeLoaders.rankingDetail)
+const HarborGuidePage = lazy(routeLoaders.harborGuide)
 const RankingAppealReviewPage = lazy(routeLoaders.rankingAppealReview)
 const ForumPage = lazy(routeLoaders.forum)
 const RepositoryPage = lazy(routeLoaders.repository)
@@ -89,6 +90,7 @@ export function App() {
           <Route path="submissions" element={<SubmissionsPage />} />
           <Route path="submissions/:submissionId" element={<SubmissionDetailPage />} />
           <Route path="rankings" element={<RankingsPage />} />
+          <Route path="rankings/harbor-guide" element={<HarborGuidePage />} />
           <Route path="rankings/:competitionId" element={<RankingDetailPage />} />
           <Route path="rankings/:competitionId/appeals/:appealId" element={<RankingAppealReviewPage />} />
           <Route path="agents" element={<AgentTasksPage />} />

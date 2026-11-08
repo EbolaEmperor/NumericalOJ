@@ -69,6 +69,22 @@ def test_lite_agent_judge_contains_every_selectable_harness():
         assert f'{package}@${{{build_arg}}}' in lite
 
 
+def test_harbor_lite_base_omits_tex_but_build_checks_all_four_clis_and_timeout():
+    lite = _dockerfile('docker/agent_judge-lite/Dockerfile')
+    full = _dockerfile('docker/agent_judge/Dockerfile')
+    assert 'texlive' not in lite and 'ghostscript' not in lite
+    assert 'texlive-full' in full
+    for command in ('claude --version', 'codex --version', 'opencode --version', 'pi --version', 'timeout --version'):
+        assert command in lite
+    assert 'for executable in tex latex pdflatex xelatex lualatex latexmk' in lite
+    assert 'bash coreutils' in lite and 'bubblewrap' in lite
+    assert 'COPY --from=lean4_runtime /opt/numoj-lean-project /opt/numoj-lean-project' in lite
+    assert 'COPY agent_judge/run_harness /usr/local/bin/run_harness' in lite
+    assert 'mkdir -p /app;' in lite
+    assert lite.index('mkdir -p /app;') < lite.index('claude --version')
+    assert lite.rstrip().endswith('WORKDIR /workspace')
+
+
 @pytest.mark.parametrize(
     ('path', 'expected_base'),
     (

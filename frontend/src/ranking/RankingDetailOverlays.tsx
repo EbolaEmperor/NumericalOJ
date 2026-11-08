@@ -7,6 +7,8 @@ import {MathCurveLoader} from '../components/MathCurveLoader'
 import {ReactModal} from '../components/ReactModal'
 import {useRuleTopology} from './ruleTopology'
 import {useMatchHtmlFrame} from './useMatchHtmlFrame'
+import {HarborBuildStep} from './HarborBuildStep'
+import {ReverseJudgeOutcome} from './ReverseJudgeOutcome'
 
 export type RankingSubmissionOverlayTarget = {
   id: number
@@ -273,12 +275,12 @@ export function JudgeDetailModal({competitionId, target, canAppeal, onClose, onT
 }
 
 function JudgeSessionLink({sessionId}: {sessionId: unknown}) {
-  return sessionId ? <a className="btn btn-sm btn-outline-secondary" href={`/agents/${encodeURIComponent(String(sessionId))}`} target="_blank" rel="noopener noreferrer"><i className="fas fa-arrow-up-right-from-square me-1" />查看 Agent 会话</a> : null
+  return sessionId ? <a className="btn btn-sm btn-outline-secondary" href={`/agents/${encodeURIComponent(String(sessionId))}`} target="_blank" rel="noopener noreferrer"><i className="fas fa-arrow-up-right-from-square me-1" />查看评测过程</a> : null
 }
 
-const reverseStepLabels: Record<string, string> = {solution_check: '标准答案', quality_gate: '质量门禁', agent_answer: 'AI 作答', ai_judge: '评测 AI 答案'}
+const reverseStepLabels: Record<string, string> = {build_environment: '构建环境', solution_check: '标准答案', quality_gate: '质量门禁', agent_answer: 'AI 作答', ai_judge: '评测 AI 答案'}
 
-function stepVisible(step: JsonRecord) { return String(step.step_key) !== 'quality_gate' || (String(step.status) !== 'skipped' && !(step.result as JsonRecord | undefined)?.skipped) }
+function stepVisible(step: JsonRecord) { return !['quality_gate', 'build_environment'].includes(String(step.step_key)) || (String(step.status) !== 'skipped' && !(step.result as JsonRecord | undefined)?.skipped) }
 
 function chooseReverseStep(status: string, steps: JsonRecord[], current: string, manual: boolean) {
   const ordered = [...steps].sort((left, right) => numberValue(left.step_order, Number.POSITIVE_INFINITY) - numberValue(right.step_order, Number.POSITIVE_INFINITY))
@@ -291,14 +293,19 @@ function chooseReverseStep(status: string, steps: JsonRecord[], current: string,
   selected ||= [...ordered].reverse().find((step) => selectable(step) && String(step.status) === 'running')
   selected ||= [...ordered].reverse().find(selectable)
   selected ||= ordered.find(stepVisible)
-  return String(selected?.step_key || 'solution_check')
+  return String(selected?.step_key || 'build_environment')
 }
 
 function ReverseResult({step, title}: {step: JsonRecord; title: string}) {
   const result = step.result as JsonRecord | undefined
-  if (!result) return <div className="rj-empty">暂无 result.json</div>
+  if (!result) return <div className="rj-empty">暂无评分结果</div>
   const points = result.test_points && typeof result.test_points === 'object' ? result.test_points as Record<string, JsonRecord> : {}
-  return <><div className="rj-result-head"><div className="rj-result-title">{title}</div><div className="rj-score-pill"><strong>{numberValue(result.score)}</strong><small>/ {numberValue(result.max_score)}</small></div></div>{Object.entries(points).map(([key, point]) => <div className="rj-point" key={key}><div className="rj-point-head"><strong>{key}</strong><span className="rj-point-score">{numberValue(point.score)} / {numberValue(point.max_score)}</span></div><div className="rj-point-desc">{String(point.description || '')}</div></div>)}<details className="rj-raw-json"><summary>展开原始 JSON</summary><pre className="rj-pre mt-2">{textValue(result)}</pre></details></>
+  return <><div className="rj-result-head"><div className="rj-result-title">{title}</div><ReverseJudgeOutcome status={step.status}>{numberValue(result.score)} / {numberValue(result.max_score)}</ReverseJudgeOutcome></div>{Object.entries(points).map(([key, point]) => <div className="rj-point" key={key}><div className="rj-point-head"><strong>{key}</strong><span className="rj-point-score">{numberValue(point.score)} / {numberValue(point.max_score)}</span></div><div className="rj-point-desc">{String(point.description || '')}</div></div>)}<details className="rj-raw-json"><summary>展开原始 JSON</summary><pre className="rj-pre mt-2">{textValue(result)}</pre></details></>
+}
+
+function ReverseAgentAnswer({step}: {step: JsonRecord}) {
+  if (step.status === 'passed') return <div className="rj-result-head"><ReverseJudgeOutcome status={step.status}>作答完成。</ReverseJudgeOutcome></div>
+  return <div className="rj-empty">{['failed', 'error'].includes(String(step.status)) ? 'AI 作答未完成。' : '暂无 AI 作答结果。'}</div>
 }
 
 function QualityGate({step}: {step: JsonRecord}) {
@@ -309,7 +316,7 @@ function QualityGate({step}: {step: JsonRecord}) {
   const positive = result.passed === true || result.compliant === true || result.approved === true || ['pass', 'passed', 'accepted', 'approved', 'compliant', 'ok', '通过', '合规'].includes(rawVerdict)
   const negative = result.passed === false || result.compliant === false || result.approved === false || ['fail', 'failed', 'rejected', 'denied', 'noncompliant', 'violation', '不通过', '拒绝', '违规'].includes(rawVerdict)
   const verdict = String(step.status) === 'skipped' || result.skipped ? {label: '未执行', cls: 'skip', icon: 'fa-forward-step'} : String(step.status) === 'error' ? {label: '审核异常', cls: 'fail', icon: 'fa-triangle-exclamation'} : positive ? {label: '通过', cls: 'pass', icon: 'fa-check'} : negative ? {label: '不通过', cls: 'fail', icon: 'fa-xmark'} : {label: String(result.verdict || (String(step.status) === 'running' ? '审核中' : '待确认')), cls: 'skip', icon: 'fa-minus'}
-  return <>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}<div className="rj-result-head"><div className="rj-result-title">质量门禁</div><span className={`rj-gate-verdict ${verdict.cls}`}><i className={`fas ${verdict.icon}`} />{verdict.label}</span></div><div className="rj-gate-label">{legacyDetails ? '审核摘要' : '判定原因'}</div><div className="rj-gate-summary">{String(result.summary || result.reason || (String(step.status) === 'skipped' ? '本次评测未执行质量门禁' : '—'))}</div>{legacyDetails ? <><div className="rj-gate-label">违规项 · {violations.length}</div>{violations.length ? violations.map((entry, index) => {
+  return <>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}<div className="rj-result-head"><div className="rj-result-title">质量门禁</div><ReverseJudgeOutcome status={verdict.cls === 'pass' ? 'passed' : verdict.cls === 'fail' ? 'failed' : 'pending'} icon={verdict.cls === 'pass' ? undefined : verdict.icon}>{verdict.label}</ReverseJudgeOutcome></div><div className="rj-gate-label">{legacyDetails ? '审核摘要' : '判定原因'}</div><div className="rj-gate-summary">{String(result.summary || result.reason || (String(step.status) === 'skipped' ? '本次评测未执行质量门禁' : '—'))}</div>{legacyDetails ? <><div className="rj-gate-label">违规项 · {violations.length}</div>{violations.length ? violations.map((entry, index) => {
     const item = entry && typeof entry === 'object' ? entry as JsonRecord : {description: String(entry)}
     const evidence = Array.isArray(item.evidence) ? item.evidence as JsonRecord[] : []
     return <div className="rj-violation" key={index}><div className="rj-violation-title">{String(item.title || item.rule || item.code || `违规项 ${index + 1}`)}</div><div className="rj-violation-body">{String(item.description || item.message || item.reason || item.detail || textValue(item))}</div>{evidence.length ? <div className="rj-evidence-list">{evidence.map((record, evidenceIndex) => <div className="rj-evidence" key={evidenceIndex}>{record.path || record.line ? <div className="rj-evidence-path">{String(record.path || '')}{record.line ? `${record.path ? ':' : '第 '}${record.line}${record.path ? '' : ' 行'}` : ''}</div> : null}{record.excerpt ? <div className="rj-evidence-excerpt">{String(record.excerpt)}</div> : null}</div>)}</div> : null}</div>
@@ -321,9 +328,9 @@ export function ReverseJudgeDetailModal({competitionId, target, onClose, onTermi
   const url = target ? `/api/ranking/competitions/${competitionId}/submissions/${target.id}/reverse-judge-events` : null
   const {snapshot, streamError} = useRankingEventSnapshot(url, open, onTerminal, true)
   const steps = useMemo(() => Array.isArray(snapshot?.steps) ? snapshot.steps as JsonRecord[] : [], [snapshot?.steps])
-  const [activeStep, setActiveStep] = useState('solution_check')
+  const [activeStep, setActiveStep] = useState('build_environment')
   const [manual, setManual] = useState(false)
-  useEffect(() => {setActiveStep('solution_check'); setManual(false)}, [target])
+  useEffect(() => {setActiveStep('build_environment'); setManual(false)}, [target])
   useEffect(() => setActiveStep((current) => chooseReverseStep(String(snapshot?.status || ''), steps, current, manual)), [manual, snapshot?.status, steps])
   const step = steps.find((item) => String(item.step_key) === activeStep)
   const status = String(snapshot?.status || '')
@@ -334,7 +341,7 @@ export function ReverseJudgeDetailModal({competitionId, target, onClose, onTermi
     <div className="modal-content rj-modal"><div className="modal-header"><div><h5 className="modal-title" id="reverseJudgeDetailModalLabel"><i className="fas fa-list-check me-2 text-warning" />反向评测详情</h5><div className="text-muted small">#{target?.id}{target?.createdAt ? ` · ${target.createdAt}` : ''}</div></div><button type="button" className="btn-close" aria-label="关闭" onClick={onClose} /></div><div className="modal-body"><div className="rj-summary"><span>{streamError || `${statusLabels[status] || status || '正在连接评测进度…'}${snapshot?.error_message ? ` · ${snapshot.error_message}` : ''}`}</span><span className="rj-summary-actions">{agentStep?.answer_available && answerDownloadUrl ? <a className="rj-answer-download" href={answerDownloadUrl} download><i className="fas fa-download" />下载 AI 解答</a> : null}<span className="rj-total">学生得分 <strong>{snapshot?.total_score == null ? '—' : numberValue(snapshot.total_score)}</strong><small>/100</small></span></span></div>
       <div className="rj-tabs mb-3" role="tablist" aria-label="反向评测步骤">{steps.filter(stepVisible).map((item) => {const key = String(item.step_key); const itemStatus = String(item.status || 'pending'); return <button type="button" className={`rj-tab${activeStep === key ? ' active' : ''}`} disabled={itemStatus === 'pending'} onClick={() => {setActiveStep(key); setManual(true)}} key={key}>{reverseStepLabels[key] || key} <span className={`rj-dot${itemStatus === 'running' ? ' running' : itemStatus === 'passed' ? ' ok' : ['failed', 'error'].includes(itemStatus) ? ' err' : itemStatus === 'skipped' ? ' skip' : ''}`} /></button>})}</div>
       {step?.agent_session_id ? <div className="mb-3"><JudgeSessionLink sessionId={step.agent_session_id} /></div> : null}
-      {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : String(step.status) === 'running' ? <div className="rj-step-running"><MathCurveLoader size="lg" label={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <div className="rj-empty">{step.answer_available ? 'AI 作答已完成，可下载 AI 解答。' : ['failed', 'error'].includes(String(step.status)) ? 'AI 作答未完成。' : '暂无 AI 作答结果。'}</div> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
+      {!snapshot ? <div className="text-muted text-center py-5"><MathCurveLoader size="md" label="正在加载…" /></div> : !step ? <div className="rj-empty">暂无步骤数据</div> : activeStep === 'build_environment' ? <HarborBuildStep step={step} /> : String(step.status) === 'running' ? <div className="rj-step-running"><MathCurveLoader size="lg" label={`${reverseStepLabels[activeStep] || activeStep}正在运行`} /></div> : <div>{step.error_message ? <div className="rj-alert">{String(step.error_message)}</div> : null}{activeStep === 'agent_answer' ? <ReverseAgentAnswer step={step} /> : activeStep === 'quality_gate' ? <QualityGate step={step} /> : <ReverseResult step={step} title={reverseStepLabels[activeStep] || String(step.title || activeStep)} />}{activeStep !== 'agent_answer' && activeStep !== 'quality_gate' ? <>{step.stdout ? <details className="rj-raw-json"><summary>stdout</summary><pre className="rj-pre mt-2">{String(step.stdout)}</pre></details> : null}{step.stderr ? <details className="rj-raw-json"><summary>stderr</summary><pre className="rj-pre mt-2">{String(step.stderr)}</pre></details> : null}</> : null}</div>}
     </div></div>
   </ReactModal>
 }

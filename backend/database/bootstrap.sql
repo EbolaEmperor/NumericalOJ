@@ -1677,6 +1677,7 @@ CREATE TABLE `ranking_competitions` (
   `reverse_judge_finalize_timeout_seconds` int NOT NULL DEFAULT '180',
   `reverse_quality_gate_enabled` tinyint(1) NOT NULL DEFAULT '0',
   `reverse_quality_gate_prompt` mediumtext,
+  `reverse_quality_gate_timeout_seconds` int NOT NULL DEFAULT '1800',
   `agent_judge_orchestration_mode` varchar(32) NOT NULL DEFAULT 'single',
   `submit_limit_per_window` int DEFAULT NULL,
   `limit_window_start` datetime DEFAULT NULL,

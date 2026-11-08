@@ -865,7 +865,7 @@ def _advance_agent_judge(task, client, submission, competition):
     current = turns.get(session['current_task_id'])
     status = str((current or {}).get('status') or '').lower()
     if status in {'cleanupfailed', 'cleanup_failed'}:
-        raise ValueError('通用 Agent 清理失败，端点名额保留，需管理员处理')
+        raise ValueError('评测未完成，请联系管理员处理。')
     # 已开始的会话按实际首轮固定模式，管理端改配置只影响下一次评测。
     single = f'{session_id}-single' in turns
     if single and not _ingest_single_results(sid, attempt, session_id, rules):

@@ -68,12 +68,14 @@ def test_clangd_requires_major_17_or_newer(monkeypatch):
     assert system_packages._clangd_works("clangd-19", run=run) is True
 
 
+@pytest.mark.parametrize("distribution", ["debian", "ubuntu"])
 def test_ensure_clangd_installs_exact_versioned_apt_candidate(
     monkeypatch,
     tmp_path,
+    distribution,
 ):
     os_release = tmp_path / "os-release"
-    os_release.write_text('ID="debian"\nVERSION_CODENAME="bookworm"\n')
+    os_release.write_text(f'ID="{distribution}"\nVERSION_CODENAME="bookworm"\n')
     works = iter((False, True))
     monkeypatch.setattr(
         system_packages,
@@ -116,7 +118,7 @@ def test_ensure_clangd_installs_exact_versioned_apt_candidate(
         command_exists=lambda path: True,
     ) is True
     flattened = [" ".join(command) for command, _ in commands]
-    assert any("apt-get --simulate" in command for command in flattened)
+    assert any(system_packages.APT_GET in command and "--simulate" in command for command, _ in commands)
     assert any(
         "clangd-19=1:19.1.7-3~deb12u1" in command
         for command in flattened
@@ -161,12 +163,14 @@ def test_system_package_cli_loads_from_script_path():
     assert "ensure-editor-runtime" in result.stdout
 
 
+@pytest.mark.parametrize("distribution", ["debian", "ubuntu"])
 def test_ensure_editor_runtime_installs_clangd_and_bubblewrap_once(
     monkeypatch,
     tmp_path,
+    distribution,
 ):
     os_release = tmp_path / "os-release"
-    os_release.write_text('ID="debian"\nVERSION_CODENAME="bookworm"\n')
+    os_release.write_text(f'ID="{distribution}"\nVERSION_CODENAME="bookworm"\n')
     clangd_works = iter((False, True))
     bubblewrap_works = iter((False, True))
     monkeypatch.setattr(
@@ -181,6 +185,8 @@ def test_ensure_editor_runtime_installs_clangd_and_bubblewrap_once(
     )
     commands = []
     installed: dict[str, str] = {}
+    sandbox_checks = []
+    monkeypatch.setattr(system_packages.prepare_editor_sandbox, "ensure", lambda **kwargs: sandbox_checks.append(dict(installed)))
 
     def run(command, **kwargs):
         commands.append(command)
@@ -217,3 +223,4 @@ def test_ensure_editor_runtime_installs_clangd_and_bubblewrap_once(
         for command in commands
     ) == 1
     assert installed == {"clangd-19": "1:19.1.7", "bubblewrap": "0.8.0"}
+    assert sandbox_checks == [installed]

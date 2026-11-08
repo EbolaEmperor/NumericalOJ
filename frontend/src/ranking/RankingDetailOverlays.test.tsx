@@ -58,6 +58,57 @@ function withQueryClient(node: ReactNode) {
 }
 
 describe('打榜赛评测详情实时连接', () => {
+  it('构建前置步骤同时显示数学曲线动画与持续更新的终端日志', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 41, status: 'Judging'}} onClose={vi.fn()} />)
+    const source = MockEventSource.instances[0]
+    act(() => source.emit('progress', {status: 'Judging', steps: [
+      {step_key: 'build_environment', step_order: 0, status: 'running', stdout: '#1 FROM numericaloj-harbor-base:1\n#1 CACHED'},
+      {step_key: 'solution_check', step_order: 1, status: 'pending'},
+    ]}))
+    expect(screen.getByRole('button', {name: '构建环境'})).toBeTruthy()
+    expect(screen.getByText('正在构建任务环境…')).toBeTruthy()
+    expect(document.querySelector('.rj-build .math-curve-loader')).toBeTruthy()
+    expect(screen.getByRole('log', {name: '构建日志'}).textContent).toContain('CACHED')
+    expect(document.querySelector('.rj-build-line.is-success')?.textContent).toContain('CACHED')
+    act(() => source.emit('progress', {status: 'Judging', steps: [
+      {step_key: 'build_environment', step_order: 0, status: 'passed', stdout: '#1 CACHED\n环境已就绪', result: {cached: true}},
+      {step_key: 'solution_check', step_order: 1, status: 'running'},
+    ]}))
+    fireEvent.click(screen.getByRole('button', {name: '构建环境'}))
+    expect(screen.getByRole('log', {name: '构建日志'}).textContent).toContain('环境已就绪')
+  })
+
+  it('AI 作答完成时无需有可下载文件，评测结果保留部分分', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 49}} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('done', {
+      status: 'Accepted', total_score: 62.5,
+      steps: [
+        {step_key: 'agent_answer', step_order: 3, status: 'passed', answer_available: false},
+        {step_key: 'ai_judge', step_order: 4, status: 'passed', result: {score: 0.375, max_score: 1}},
+      ],
+    }))
+
+    expect(screen.getByText('0.375 / 1')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', {name: 'AI 作答'}))
+    expect(screen.getByText('作答完成。')).toBeTruthy()
+    expect(screen.queryByText('暂无 AI 作答结果。')).toBeNull()
+    expect(screen.queryByRole('link', {name: /下载 AI 解答/})).toBeNull()
+  })
+
+  it('构建失败停留在前置步骤并以文本安全展示日志', () => {
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<ReverseJudgeDetailModal competitionId={7} target={{id: 40}} onClose={vi.fn()} />)
+    act(() => MockEventSource.instances[0].emit('done', {status: 'Error', steps: [
+      {step_key: 'build_environment', step_order: 0, status: 'error', stdout: '\u001b[31mERROR <script>alert(1)</script>\u001b[0m', error_message: '构建失败，请检查 Dockerfile'},
+      {step_key: 'solution_check', step_order: 1, status: 'pending'},
+    ]}))
+    expect(screen.getByRole('alert').textContent).toContain('请检查 Dockerfile')
+    expect(screen.getByRole('log', {name: '构建日志'}).textContent).toContain('<script>alert(1)</script>')
+    expect(document.querySelector('.rj-build script')).toBeNull()
+  })
+
   it('反向评测在单次 SSE 租约超时后保留快照并交给浏览器续接', () => {
     vi.stubGlobal('EventSource', MockEventSource)
     render(<ReverseJudgeDetailModal competitionId={7} target={{id: 42, status: 'Judging'}} onClose={vi.fn()} />)
@@ -94,7 +145,7 @@ describe('打榜赛评测详情实时连接', () => {
       execution_trace: {trace_messages: [{kind: 'thinking', text: '检查提交目录'}]},
     }))
 
-    expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/judge-session')
+    expect(screen.getByRole('link', {name: '查看评测过程'}).getAttribute('href')).toBe('/agents/judge-session')
     expect(screen.getByRole('tab', {name: '详情'}).getAttribute('aria-selected')).toBe('true')
     expect(screen.queryByRole('tab', {name: '执行轨迹'})).toBeNull()
     expect(screen.queryByText('检查提交目录')).toBeNull()
@@ -104,7 +155,7 @@ describe('打榜赛评测详情实时连接', () => {
     vi.stubGlobal('EventSource', MockEventSource)
     withQueryClient(<JudgeDetailModal competitionId={7} target={{id: 44}} canAppeal={false} onClose={vi.fn()} />)
     act(() => MockEventSource.instances[0].emit('done', {status: 'Accepted', rules: []}))
-    expect(screen.queryByRole('link', {name: '查看 Agent 会话'})).toBeNull()
+    expect(screen.queryByRole('link', {name: '查看评测过程'})).toBeNull()
   })
 
   it('反向评测仅在对应步骤携带可见会话 ID 时展示链接', async () => {
@@ -118,10 +169,10 @@ describe('打榜赛评测详情实时连接', () => {
       ],
     }))
 
-    await waitFor(() => expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/answer-session'))
+    await waitFor(() => expect(screen.getByRole('link', {name: '查看评测过程'}).getAttribute('href')).toBe('/agents/answer-session'))
     expect(screen.queryByText('读取题目附件')).toBeNull()
     fireEvent.click(screen.getByRole('button', {name: '质量门禁'}))
-    expect(screen.queryByRole('link', {name: '查看 Agent 会话'})).toBeNull()
+    expect(screen.queryByRole('link', {name: '查看评测过程'})).toBeNull()
     expect(screen.getByText('通过')).toBeTruthy()
   })
 
@@ -131,7 +182,7 @@ describe('打榜赛评测详情实时连接', () => {
     act(() => MockEventSource.instances[0].emit('progress', {
       status: 'Judging', steps: [{step_key: 'quality_gate', status: 'running', agent_session_id: 'quality-session'}],
     }))
-    expect(screen.getByRole('link', {name: '查看 Agent 会话'}).getAttribute('href')).toBe('/agents/quality-session')
+    expect(screen.getByRole('link', {name: '查看评测过程'}).getAttribute('href')).toBe('/agents/quality-session')
   })
 
   it.each([
@@ -150,7 +201,7 @@ describe('打榜赛评测详情实时连接', () => {
     expect(screen.getByText(reason)).toBeTruthy()
     expect(screen.queryByText('审核摘要')).toBeNull()
     expect(screen.queryByText(/违规项/)).toBeNull()
-    expect(screen.queryByRole('link', {name: '查看 Agent 会话'})).toBeNull()
+    expect(screen.queryByRole('link', {name: '查看评测过程'})).toBeNull()
   })
 
   it('历史质量门禁保留审核摘要、违规项和证据', () => {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Blueprint, jsonify, make_response, request
+from flask import Blueprint, jsonify, make_response, request, send_file
 
 from backend.oj_modules.api.helpers import apply_limit, clamp_limit, clamp_page, json_error, json_success, public_user
 from backend.oj_modules.security.auth import current_user
@@ -20,6 +20,10 @@ from backend.oj_modules.ranking.agent_judge.db import (
 from backend.oj_modules.ranking.reverse_judge.db import (
     available_reverse_agent_answer_archive_path,
 )
+from backend.oj_modules.ranking.reverse_judge.template import (
+    HARBOR_TEMPLATE_FILENAME, build_harbor_template_archive, harbor_template_attachment,
+)
+from backend.oj_modules.ranking.reverse_judge.guide import render_harbor_guide
 from backend.oj_modules.ranking.db import (
     get_appeal,
     get_appeal_stats,
@@ -65,6 +69,13 @@ from backend.oj_modules.ranking.readiness import (
 
 
 ranking_api_bp = Blueprint("ranking_api", __name__, url_prefix="/api/ranking")
+
+
+@ranking_api_bp.get("/harbor-guide/rendered")
+def rendered_harbor_guide():
+    guide_html, toc_html = render_harbor_guide()
+    return json_success(html=guide_html, toc_html=toc_html)
+
 
 _DIRECT_RANKING_HANDLER_NAMES = frozenset({
     "ranking_submit",
@@ -153,6 +164,7 @@ def _safe_competition(comp, include_admin=False):
         # 防御性过滤：即便未来公共字段扩展，也不向参赛者暴露审核标准。
         out.pop("reverse_quality_gate_prompt", None)
         out.pop("reverse_quality_gate_enabled", None)
+        out.pop("reverse_quality_gate_timeout_seconds", None)
     out["answer_format"] = _normalize_answer_format(out.get("answer_format"))
     out["scoring_mode"] = _competition_scoring_mode(out)
     if "agent_judge_orchestration_mode" in out:
@@ -297,6 +309,8 @@ def competition_detail(competition_id):
         return json_error("该比赛不支持批量评测标签", 400)
 
     files = _files_with_media(list_competition_files(competition_id))
+    if is_reverse_judge:
+        files.insert(0, harbor_template_attachment(competition_id))
     judge_rules = list_competition_rules(competition_id) if (is_agent_judge and is_admin) else []
     aj_endpoints = []
     answer_endpoints = []
@@ -496,6 +510,25 @@ def download_competition_attachment(competition_id, file_id):
         competition_id=competition_id,
         file_id=file_id,
     )
+
+
+@ranking_api_bp.route(
+    "/competitions/<int:competition_id>/attachments/harbor-template/download", methods=["GET"],
+)
+def download_harbor_template(competition_id):
+    user, error = _require_user()
+    if error is not None:
+        return error
+    competition, error = _competition_for_user(user, competition_id)
+    if error is not None:
+        return error
+    if _competition_scoring_mode(competition) != "reverse_judge":
+        return json_error("该比赛没有 Harbor 模板附件", 404)
+    response = send_file(build_harbor_template_archive(), mimetype="application/zip",
+                         as_attachment=True, download_name=HARBOR_TEMPLATE_FILENAME)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @ranking_api_bp.route("/submissions/<int:submission_id>/answer", methods=["GET"])

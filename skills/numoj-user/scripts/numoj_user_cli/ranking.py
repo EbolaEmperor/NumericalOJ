@@ -449,7 +449,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     pa.add_argument(
         "--code-zip",
         required=True,
-        help="Submitted ZIP archive; this is the only uploaded artifact for ELO.",
+        help="Submitted ZIP archive; ELO takes a work and reverse-judge takes one Harbor task.",
     )
     pa.add_argument("--answer-file", help="Additional answer file required by absolute scoring only.")
     pa.add_argument("--agent-endpoint-id", type=int, help="AI endpoint ID for reverse-judge submissions.")

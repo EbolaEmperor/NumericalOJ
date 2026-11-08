@@ -3,6 +3,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -113,36 +114,34 @@ def test_pi_anthropic_hello_probe_uses_messages_and_x_api_key():
     assert body["messages"][0]["content"]
 
 
-def test_pi_test_worker_preserves_root_template_and_creates_root_deliverable(monkeypatch, tmp_path):
+def test_pi_test_worker_exports_harbor_artifacts_without_private_inputs(monkeypatch, tmp_path):
     from backend.oj_modules.agents import sessions, workspace
+    from backend.oj_modules.integrations.harbor_results import load_harbor_result
     from tests.e2e import loopback_worker
 
     monkeypatch.setattr(workspace, 'AGENT_WORKSPACE_ROOT', tmp_path / 'workspaces')
     monkeypatch.setattr(sessions, 'get_agent_session', lambda _: {'judge_kind': 'reverse_answer'})
     package = tmp_path / 'package'
-    for name, content in {
-        'problem/problem.md': '公开题面', 'template/main.py': 'print(42)',
-        'solution/main.py': '私密标准答案', 'judge.sh': '私密评分程序',
-    }.items():
-        source = package / name
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text(content)
-    sid = 'pi-reverse-root'
+    package.mkdir()
+    (package / 'instruction.md').write_text('公开题面')
+    (package / 'tests').mkdir()
+    (package / 'tests/test.sh').write_text('私密评分程序')
+    sid = 'pi-reverse-harbor'
     root = workspace.initialize_agent_task_workspace(sid, harness='pi', access_role='user')
     workspace.inject_agent_workspace_files(sid, rj._workspace_input_files(package, rj.STEP_AGENT))
     native_ids, trace = [], []
-
-    result = loopback_worker._run_reverse_agent(
+    trial_dir = tmp_path / 'agent_trial'
+    result = loopback_worker._run_harbor_agent(
         session_id=sid, task_kind='judge', harness='pi',
+        harbor_runtime={'task_path': str(package), 'trial_dir': str(trial_dir)},
         native_session_callback=native_ids.append,
         trace_records_callback=lambda records, **kwargs: trace.extend(records),
     )
-
     assert result.returncode == 0 and native_ids == [result.native_session_id]
-    assert (root / 'main.py').read_text() == 'print(42)'
-    assert (root / 'agent-output.txt').read_text() == '本地测试 Agent 的根目录交付物。\n'
-    assert (root / 'problem' / 'problem.md').read_text() == '公开题面'
-    assert not any((root / name).exists() for name in ('template', 'solution', 'judge.sh'))
+    assert (root / 'instruction.md').read_text() == '公开题面'
+    assert (root / 'harbor-artifacts/app/agent-output.txt').is_file()
+    assert not any((root / name).exists() for name in ('tests', 'solution', 'environment'))
+    assert load_harbor_result(trial_dir)['result']['score'] == .25
     assert trace[0]['event']['kind'] == 'assistant'
 
 
@@ -216,7 +215,7 @@ def test_sync_pi_agent_sessions_mirrors_native_tree_and_streams_combined_trace(
     assert "follow_symlinks=False" in args[-1]
     assert "O_NOFOLLOW" in args[-1]
     assert "capture_output" not in kwargs
-    assert kwargs["stderr"] == rj.subprocess.DEVNULL
+    assert kwargs["stderr"] == subprocess.DEVNULL
 
 
 def test_sync_pi_agent_sessions_omits_empty_runtime_user(monkeypatch, tmp_path):

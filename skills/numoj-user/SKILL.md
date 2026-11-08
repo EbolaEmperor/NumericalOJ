@@ -63,7 +63,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 - `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
-- `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge four-step progress), submit/check appeals, and download own visible ranking submission files.
+- `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge build step and four evaluation steps), submit/check appeals, and download own visible ranking submission files.
 - `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, edit versioned metadata, permanently delete owned works, and launch/operate/submit edu homework with separate result queries. Featured status is assigned only by administrators and cannot be requested by users.
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
@@ -139,6 +139,14 @@ python3 "$NUMOJ_USER_CLI" ranking appeal-status <competition_id> <submission_id>
 ```
 
 For a reverse-judge submission, first read `answer_endpoints` from `ranking detail` and use one of its `id` values. This list contains only enabled answer-pool endpoints; quality-gate endpoints are selected automatically by the server and are never user-selectable.
+
+Reverse-judge entries must contain one Linux Harbor task (`task.toml`,
+`instruction.md`, a Dockerfile or prebuilt Docker environment, `tests/test.sh`,
+and `solution/solve.sh`). Declare output paths in top-level `artifacts`, such as
+`artifacts = ["/app"]`; Compose and multi-step tasks are not supported. Upload the
+task as a ZIP, or use the competition's configured Git repository. The reference
+solution must pass verification before the AI answers. The legacy
+`problem/` + `template/` + `judge.sh` package format is no longer accepted.
 
 Create a VibeHub work. Saving automatically submits it for review. The ZIP root
 must contain `Dockerfile` and `vibehub.json`:

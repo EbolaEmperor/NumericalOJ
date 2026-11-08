@@ -170,6 +170,7 @@ def submit_judge_turn(
     attempt_id, competition_id, harness, endpoint, prompt, files=None,
     title="", timeout_seconds=None, celery_app=None, dispatch_guard=None,
     problem_id=None, problem_title=None, project_skill=True,
+    harbor_runtime=None,
 ):
     """幂等持久化首轮或内部续聊，然后唤醒唯一通用 Agent outbox。
 
@@ -197,9 +198,17 @@ def submit_judge_turn(
     }
     if not project_skill:
         runtime["project_skill"] = False
+    if harbor_runtime is not None:
+        if judge_kind != "reverse_answer":
+            raise ValueError("Harbor 运行配置仅允许反向评测作答使用")
+        from backend.oj_modules.integrations.harbor_runtime import normalize_harbor_runtime
+
+        runtime["harbor_runtime"] = normalize_harbor_runtime(harbor_runtime)
     with judge_session_write_lock(session_id):
         session = get_agent_session(session_id)
         if session:
+            if judge_kind == "reverse_answer" and get_agent_session_runtime_config(session_id).get("harbor_runtime") != runtime.get("harbor_runtime"):
+                raise ValueError("Judge 会话的 Harbor 运行配置不一致")
             if not project_skill and get_agent_session_runtime_config(session_id).get("project_skill") is not False:
                 raise ValueError("Judge 会话的 skill 投影设置不一致")
             expected = {
@@ -221,7 +230,7 @@ def submit_judge_turn(
                     inject_agent_workspace_files(session_id, files)
                 create_agent_runtime_checkpoint(session_id, task_id)
                 if callable(dispatch_guard) and not dispatch_guard():
-                    raise AgentSessionBusyError("评测 attempt 或端点名额已变化，停止派发")
+                    raise AgentSessionBusyError("评测状态已变化，请刷新后重试。")
                 begin_agent_session_turn(
                     session_id, task_id=task_id, user_message=prompt,
                     internal_judge=True, base_runtime_checkpoint_id=task_id,
@@ -242,7 +251,7 @@ def submit_judge_turn(
             inject_agent_workspace_files(session_id, files)
             create_empty_agent_runtime_checkpoint(session_id, task_id)
             if callable(dispatch_guard) and not dispatch_guard():
-                raise AgentSessionBusyError("评测 attempt 或端点名额已变化，停止派发")
+                raise AgentSessionBusyError("评测状态已变化，请刷新后重试。")
             session = create_agent_session(
                 session_id=session_id, task_id=task_id,
                 requested_by=requested_by, harness=harness,

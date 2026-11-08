@@ -18,6 +18,7 @@ pygments==2.20.0
 bleach==6.4.0
 openai==2.43.0
 httpx==0.28.1
+harbor==0.25.0
 
 # Repository indexing and PDF homework are enabled by the default configuration,
 # so their dependencies belong to the runtime set rather than test-only extras.

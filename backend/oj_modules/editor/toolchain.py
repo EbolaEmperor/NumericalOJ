@@ -39,6 +39,8 @@ class EditorToolchain:
     required_headers: tuple[Path, ...]
     source_image_reference: str
     source_image_id: str
+    mode: str = "full"
+    has_mkl: bool = True
 
     @property
     def include_paths(self) -> tuple[Path, ...]:
@@ -150,6 +152,13 @@ def load_editor_toolchain(
     manifest = _load_manifest(resolved_root)
     if manifest.get("schema_version") != EDITOR_TOOLCHAIN_SCHEMA_VERSION:
         raise EditorToolchainError("受管编辑器工具链 manifest 版本不受支持")
+    mode = manifest.get("mode", "full")
+    libraries = manifest.get("libraries", {"mkl": True})
+    if (not isinstance(mode, str) or mode not in {"full", "lite"} or not isinstance(libraries, dict)
+            or set(libraries) != {"mkl"} or type(libraries["mkl"]) is not bool
+            or (mode == "full" and not libraries["mkl"])):
+        raise EditorToolchainError("受管编辑器工具链模式或库能力无效")
+    has_mkl = libraries["mkl"]
 
     raw_c_include_paths = manifest.get("c_include_paths")
     raw_cpp_include_paths = manifest.get("cpp_include_paths")
@@ -200,6 +209,15 @@ def load_editor_toolchain(
         )
         for index, raw_path in enumerate(raw_required_headers)
     )
+    mkl_include = resolved_root / "opt/mkl/include"
+    mkl_header = mkl_include / "mkl.h"
+    if has_mkl:
+        official_mkl = _resolve_member(resolved_root, "opt/mkl/include/mkl.h", label="MKL", expect_directory=False)
+        if (official_mkl not in required_headers or official_mkl.parent not in c_include_paths
+                or official_mkl.parent not in cpp_include_paths):
+            raise EditorToolchainError("受管编辑器工具链 MKL 能力与头文件声明不一致")
+    elif mkl_include.exists() or mkl_include.is_symlink() or mkl_header.exists():
+        raise EditorToolchainError("受管编辑器工具链无 MKL 能力但包含 MKL 导出")
 
     source_reference = manifest.get("source_image_reference")
     source_image_id = manifest.get("source_image_id")
@@ -219,6 +237,8 @@ def load_editor_toolchain(
         required_headers=required_headers,
         source_image_reference=source_reference,
         source_image_id=source_image_id,
+        mode=mode,
+        has_mkl=has_mkl,
     )
 
 
@@ -231,9 +251,12 @@ def build_editor_toolchain_manifest(
     *,
     source_image_reference: str,
     source_image_id: str,
+    mode: str = "full",
 ) -> dict[str, Any]:
     """Discover exported include roots and representative required headers."""
 
+    if mode not in {"full", "lite"}:
+        raise EditorToolchainError("编辑器工具链模式仅支持 full 或 lite")
     resolved_root = root.resolve(strict=True)
     usr_include = resolved_root / "usr" / "include"
     mkl_include = resolved_root / "opt" / "mkl" / "include"
@@ -320,8 +343,11 @@ def build_editor_toolchain_manifest(
         path for path in usr_include.rglob("lapacke.h") if path.is_file()
     )
     mkl_header = mkl_include / "mkl.h"
+    has_mkl = mkl_header.is_file()
+    if mode == "lite" and not has_mkl and (mkl_include.exists() or mkl_include.is_symlink()):
+        raise EditorToolchainError("判题镜像 MKL 导出不完整")
 
-    required_groups = (
+    required_groups = [
         ("C++ 标准库", cpp_vectors),
         ("Eigen", [eigen_header] if eigen_header.is_file() else []),
         (
@@ -330,8 +356,9 @@ def build_editor_toolchain_manifest(
         ),
         ("CBLAS", cblas_headers),
         ("LAPACKE", lapacke_headers),
-        ("MKL", [mkl_header] if mkl_header.is_file() else []),
-    )
+    ]
+    if mode == "full" or has_mkl:
+        required_groups.append(("MKL", [mkl_header] if has_mkl else []))
     missing = [label for label, candidates in required_groups if not candidates]
     if missing:
         raise EditorToolchainError(
@@ -367,7 +394,7 @@ def build_editor_toolchain_manifest(
     c_include_paths = combined_include_paths(
         (
             require_directory(shared_include, "/opt/library"),
-            require_directory(mkl_include, "/opt/mkl/include"),
+            *((require_directory(mkl_include, "/opt/mkl/include"),) if has_mkl else ()),
         ),
         compiler_c_paths,
     )
@@ -375,7 +402,7 @@ def build_editor_toolchain_manifest(
         (
             require_directory(shared_include, "/opt/library"),
             require_directory(usr_include / "eigen3", "Eigen"),
-            require_directory(mkl_include, "/opt/mkl/include"),
+            *((require_directory(mkl_include, "/opt/mkl/include"),) if has_mkl else ()),
         ),
         compiler_cpp_paths,
     )
@@ -387,6 +414,8 @@ def build_editor_toolchain_manifest(
         "schema_version": EDITOR_TOOLCHAIN_SCHEMA_VERSION,
         "source_image_reference": source_image_reference,
         "source_image_id": source_image_id,
+        "mode": mode,
+        "libraries": {"mkl": has_mkl},
         "c_include_paths": [
             _relative_to_root(resolved_root, path)
             for path in c_include_paths

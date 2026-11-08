@@ -947,6 +947,41 @@ def test_cleanup_failure_can_escalate_a_canceled_session(monkeypatch):
     assert connection.commits == 1
 
 
+@pytest.mark.parametrize('target', ['Completed', 'Failed', 'Canceled'])
+def test_confirmed_cleanup_repairs_current_failed_session_under_row_lock(monkeypatch, target):
+    connection = _ScriptedConnection(one_values=[{'status': 'CleanupFailed'}])
+    monkeypatch.setattr(sessions, 'get_db_connection', lambda: connection)
+    changed = sessions.sync_agent_session_state({
+        'session_id': 'judge-session', 'task_id': 'current-turn',
+        'status': target, 'message': '清理已确认', '_preserve_conclusion': True,
+    }, cleanup_confirmed=True)
+    assert changed is True
+    calls = connection.cursor_instance.calls
+    assert 'FOR UPDATE' in calls[0][0]
+    assert calls[0][1] == ('judge-session', 'current-turn')
+    update = next((sql, params) for sql, params in calls if 'UPDATE agent_sessions' in sql)
+    assert update[1][0] == target
+    turn = next((sql, params) for sql, params in calls if 'UPDATE agent_session_turns' in sql)
+    assert turn[1] == (target, '', '', 'judge-session', 'current-turn')
+    assert connection.commits == 1
+
+
+@pytest.mark.parametrize('current,target,confirmed', [
+    ('CleanupFailed', 'Failed', False), ('CleanupFailed', 'Running', True),
+    ('Completed', 'Canceled', True), ('Failed', 'Completed', True),
+])
+def test_cleanup_confirmation_does_not_weaken_other_sticky_states(monkeypatch, current, target, confirmed):
+    connection = _ScriptedConnection(one_values=[{'status': current}])
+    monkeypatch.setattr(sessions, 'get_db_connection', lambda: connection)
+    changed = sessions.sync_agent_session_state({
+        'session_id': 'judge-session', 'task_id': 'current-turn', 'status': target,
+        'cleanup_confirmed': True,
+    }, cleanup_confirmed=confirmed)
+    assert changed is False
+    assert len(connection.cursor_instance.calls) == 1
+    assert connection.commits == 0
+
+
 def test_manual_cancel_without_fifo_messages_does_not_pause_queue(monkeypatch):
     connection = _ScriptedConnection(
         one_values=[{"status": "Pending"}, None],

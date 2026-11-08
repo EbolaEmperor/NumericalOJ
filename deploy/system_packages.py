@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from deploy.backup import apt as apt_services  # noqa: E402
+from deploy import prepare_editor_sandbox  # noqa: E402
 
 SystemPackageError = apt_services.ProvisioningError
 Runner = apt_services.Runner
@@ -88,6 +89,19 @@ def _command_exists(path: str) -> bool:
     return Path(path).is_file()
 
 
+def _require_editor_apt_os(os_release: Path) -> None:
+    """编辑器使用发行版自身的 APT；不改变 Percona 的 Debian 专用源策略。"""
+    try:
+        values = dict(
+            line.split("=", 1) for line in os_release.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#") and "=" in line
+        )
+    except OSError as exc:
+        raise SystemPackageError("无法读取宿主发行版信息") from exc
+    if values.get("ID", "").strip('"\'') not in {"debian", "ubuntu"}:
+        raise SystemPackageError("编辑器宿主依赖自动供应仅支持 Debian/Ubuntu APT")
+
+
 def _candidate_version(run: Runner, package: str = "clangd") -> str:
     result = apt_services._checked(
         run,
@@ -149,7 +163,7 @@ def _ensure_packages(
     ]
     if not missing:
         return ()
-    apt_services.read_debian_identity(os_release)
+    _require_editor_apt_os(os_release)
     for required in (APT_GET, APT_CACHE, DPKG_QUERY, SUDO, ENV):
         if not command_exists(required):
             raise SystemPackageError(f"缺少系统包安装命令: {required}")
@@ -214,7 +228,7 @@ def ensure_editor_runtime(
     command_exists: Callable[[str], bool] = _command_exists,
 ) -> tuple[str, ...]:
     """Ensure clangd and its fail-closed process sandbox are installed."""
-    return _ensure_packages(
+    installed = _ensure_packages(
         (
             (
                 CLANGD_APT_PACKAGE,
@@ -230,6 +244,8 @@ def ensure_editor_runtime(
         os_release=os_release,
         command_exists=command_exists,
     )
+    prepare_editor_sandbox.ensure(run=run)
+    return installed
 
 
 def build_parser() -> argparse.ArgumentParser:

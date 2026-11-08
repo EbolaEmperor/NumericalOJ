@@ -10,6 +10,7 @@ simulation whose package actions are checked against a narrow policy.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 import hashlib
 import os
@@ -167,11 +168,26 @@ def _checked(
         # In particular, do not pipe sudo's prompt or stdin: the operator must
         # see the prompt and type the password on the controlling terminal.
         kwargs["interactive"] = True
-    try:
-        result = run(list(command), **kwargs)
-    except OSError as exc:
-        raise ProvisioningError(f"{purpose}无法执行: {command[0]}") from exc
+    arguments = list(command)
+    proxy_context = nullcontext([])
+    if APT_GET in arguments:
+        # sudo 不保留下载代理环境；复用首次部署的私有临时 APT 配置，
+        # 让模拟和实际事务都能联网，代理凭据不进入进程参数或环境。
+        from deploy.bootstrap import _apt_proxy_arguments
+
+        proxy_context = _apt_proxy_arguments()
+    with proxy_context as proxy_arguments:
+        if proxy_arguments:
+            index = arguments.index(APT_GET) + 1
+            arguments[index:index] = proxy_arguments
+        try:
+            result = run(arguments, **kwargs)
+        except OSError as exc:
+            raise ProvisioningError(f"{purpose}无法执行: {command[0]}") from exc
     if result.returncode:
+        if proxy_arguments:
+            # APT 的错误行可能包含带认证信息的代理 URL，不能写入部署日志。
+            raise ProvisioningError(f"{purpose}失败（退出码 {result.returncode}；代理详情已隐藏）")
         detail = (result.stderr or result.stdout or "").strip()
         if len(detail) > 1000:
             detail = detail[-1000:]

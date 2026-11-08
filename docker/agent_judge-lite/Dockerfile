@@ -1,4 +1,4 @@
-# 打榜赛 Agent-as-Judge 轻量评测镜像：预装四种 Harness CLI + 常用工具链。
+# Agent 轻量评测镜像及 Harbor 通用基座：预装四种 Harness CLI，不安装 TeX。
 # 构建（上下文必须是 docker/，这样可复用 agent_judge/run_harness）：
 #   docker build -t numericaloj-lean4:latest docker/lean4
 #   docker build -f docker/agent_judge-lite/Dockerfile -t numericaloj-agent-judge-lite:latest docker
@@ -30,17 +30,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-sklearn python3-pil python3-networkx python3-openpyxl \
         python3-requests python3-bs4 python3-lxml python3-pytest python3-redis \
         python3-filelock python3-tqdm \
-    && rm -rf /var/lib/apt/lists/*
-
-# 仅保留基础英文 LaTeX 能力：不装 texlive-full，不装中文语言包。
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        texlive-latex-base \
-        texlive-latex-recommended \
-        texlive-fonts-recommended \
-        latexmk \
-        dvipng \
-        dvisvgm \
-        ghostscript \
     && rm -rf /var/lib/apt/lists/*
 
 # pip / npm 国内镜像。pip 只补 Agent 评测常见 API 客户端，避免 OCR/ML/浏览器自动化重包。
@@ -80,7 +69,7 @@ ENV PATH=/usr/local/bin:/opt/elan/bin:${PATH}
 RUN chmod 0755 /usr/local/bin/lean \
     && test -f /opt/numoj-lean-project/.lake/build/lib/lean/Mathlib.olean
 
-# 与完整镜像保持相同的 C/C++ 数值计算开发库（含 CHOLMOD）。放在 TeX/Lean
+# 与完整镜像保持相同的 C/C++ 数值计算开发库（含 CHOLMOD）。放在 Lean
 # 之后、高频变动的 Harness 文件之前，保留前面依赖层的缓存。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libfftw3-dev libsuitesparse-dev libgsl-dev \
@@ -99,5 +88,20 @@ COPY agent_judge/faithsieve_tool.py /usr/local/share/numoj/faithsieve_tool.py
 COPY agent_judge/run_harness /usr/local/bin/run_harness
 COPY agent_judge/pi_web_search_mcp.ts /usr/local/share/numoj/pi_web_search_mcp.ts
 RUN chmod +x /usr/local/bin/run_harness
+
+# Harbor 默认模板复用预建镜像，必须预先具备 /app；通用 Agent 仍使用 /workspace。
+# 构建时核验 Harbor 所需的四套 CLI 与 GNU 超时工具，并防止 TeX 被间接带回。
+RUN set -eu; \
+    mkdir -p /app; \
+    claude --version; \
+    codex --version; \
+    opencode --version; \
+    pi --version; \
+    timeout --version; \
+    for executable in tex latex pdflatex xelatex lualatex latexmk; do \
+        if command -v "$executable" >/dev/null 2>&1; then \
+            echo "Harbor 轻量基座不应包含 TeX：$executable" >&2; exit 1; \
+        fi; \
+    done
 
 WORKDIR /workspace

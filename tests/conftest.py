@@ -231,6 +231,7 @@ def _is_infra_free_test(request):
     return (
         "/tests/unit/" in path
         or path.endswith("/tests/e2e/test_cli_help.py")
+        or path.endswith("/tests/e2e/test_harbor_runtime.py")
         or path.endswith("/tests/e2e/test_pi_agent_judge_image.py")
         or path.endswith("/tests/e2e/test_problem_agent_live_trace.py")
     )

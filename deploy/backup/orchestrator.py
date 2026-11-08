@@ -7,6 +7,7 @@ import argparse
 from collections.abc import Callable, Collection, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime, timezone
 import fcntl
 import gzip
@@ -407,7 +408,8 @@ def harden_physical_backup_layout(
 
 
 def _logical_capacity(
-    directory: Path, *, estimated_bytes: int, estimated_inodes: int
+    directory: Path, *, estimated_bytes: int, estimated_inodes: int,
+    development_reserve: bool = False,
 ) -> dict[str, int | None]:
     usage = os.statvfs(directory)
     block_size = usage.f_frsize or usage.f_bsize
@@ -416,7 +418,8 @@ def _logical_capacity(
     free_inodes = usage.f_favail if usage.f_files > 0 else None
     # --hex-blob can expand binary payloads to roughly twice their table size.
     required_bytes = max(estimated_bytes * 2 + 64 * 1024 * 1024, 64 * 1024 * 1024)
-    reserved_bytes = max(total_bytes // 10, 2 * 1024 * 1024 * 1024)
+    from deploy.backup.development import RESERVE_BYTES
+    reserved_bytes = RESERVE_BYTES if development_reserve else max(total_bytes // 10, RESERVE_BYTES)
     required_inodes = max(estimated_inodes * 2 + 32, 64)
     if free_bytes < required_bytes + reserved_bytes:
         raise PreflightError(
@@ -442,9 +445,14 @@ def validate_logical_preflight(
     settings: MySQLSettings,
     discovery: DatabaseDiscovery,
     logical_directory: Path,
+    *,
+    managed_container: str | None = None,
+    development_reserve: bool = False,
 ) -> dict[str, int | None]:
-    if not MYSQLDUMP_BINARY.is_file() or not os.access(MYSQLDUMP_BINARY, os.X_OK):
+    if not managed_container and (not MYSQLDUMP_BINARY.is_file() or not os.access(MYSQLDUMP_BINARY, os.X_OK)):
         raise PreflightError(f"mysqldump 不可执行: {MYSQLDUMP_BINARY}")
+    from deploy.backup.container_client import validate_client
+    validate_client(MYSQLDUMP_BINARY, container=managed_container)
     for value in (settings.host, settings.user, settings.password):
         _option_file_value(value)
     # The gzip artifact is normally smaller, but reserving the raw table size
@@ -453,6 +461,7 @@ def validate_logical_preflight(
         logical_directory,
         estimated_bytes=discovery.estimated_bytes,
         estimated_inodes=4,
+        development_reserve=development_reserve,
     )
 
 
@@ -481,7 +490,11 @@ def create_preflight_plan(
     physical_plan_preparer: Callable[..., xtrabackup.XtraBackupPlan | None] | None = None,
     capacity_runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     physical_layout_hardener: Callable[[Path, Path], None] | None = None,
+    logical_only: bool = False,
+    development_reserve: bool = False,
 ) -> dict[str, object]:
+    if development_reserve and not logical_only:
+        raise PreflightError("开发备份预留必须同时使用受管 MySQL 逻辑备份")
     run_id = _validate_run_id(run_id)
     layout = prepare_backup_layout(backup_root)
     expected_plan = layout["plans"] / f"{run_id}.json"
@@ -491,9 +504,22 @@ def create_preflight_plan(
     settings = settings_from_config(config)
     discovery = discover_database(settings)
     snapshot = discovery.snapshot
-    release = percona_apt.select_release(snapshot.version, snapshot.version_comment)
+    managed_container = None
+    if logical_only:
+        from deploy.backup.container_client import owned_container
+        managed_container = owned_container(ROOT, settings)
+    reserve_policy = None
+    if development_reserve:
+        from deploy.backup.development import reserve_facts
+        try:
+            reserve_policy = reserve_facts(ROOT, settings)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise PreflightError(f"开发备份预留核验失败：{exc}") from exc
+        if reserve_policy["container_name"] != managed_container:
+            raise PreflightError("开发备份预留的受管容器发生变化")
+    release = None if logical_only else percona_apt.select_release(snapshot.version, snapshot.version_comment)
     strategy = "logical"
-    decision_reason = "no_compatible_xtrabackup_mapping"
+    decision_reason = "managed_mysql_container" if logical_only else "no_compatible_xtrabackup_mapping"
     physical_plan: xtrabackup.XtraBackupPlan | None = None
     capacity: dict[str, object]
 
@@ -531,8 +557,12 @@ def create_preflight_plan(
 
     if strategy == "logical":
         capacity = validate_logical_preflight(
-            settings, discovery, layout["logical"]
+            settings, discovery, layout["logical"],
+            **({"managed_container": managed_container} if managed_container else {}),
+            **({"development_reserve": True} if development_reserve else {}),
         )
+        if reserve_policy:
+            capacity["reserve_policy"] = reserve_policy
         capacity["progress_estimated_raw_bytes"] = estimate_raw_bytes(
             layout["manifests"], settings.database
         )
@@ -563,6 +593,8 @@ def create_preflight_plan(
         "capacity": capacity,
         "xtrabackup_plan": physical_plan.to_dict() if physical_plan else None,
     }
+    if managed_container:
+        document["mysql_client"] = {"container_name": managed_container}
     _publish_new_json(expected_plan, document)
     return document
 
@@ -795,6 +827,7 @@ def _write_dump(
     *,
     estimated_raw_bytes: int | None,
     progress_stream: TextIO,
+    managed_container: str | None = None,
 ) -> DumpStatistics:
     started_at = time.monotonic()
     # Config may originate in the process environment.  The child needs no
@@ -809,32 +842,43 @@ def _write_dump(
         }
     )
 
-    with mysql_option_file(settings, output.parent) as option_file:
-        process = subprocess.Popen(
-            _dump_command(settings, option_file),
-            stdout=subprocess.PIPE,
-            env=environment,
-        )
-        assert process.stdout is not None
-        reporter = ProgressReporter(
-            stream=progress_stream,
-            estimated_raw_bytes=estimated_raw_bytes,
-        )
-        try:
-            with output.open("xb") as raw_output:
-                os.fchmod(raw_output.fileno(), 0o600)
-                raw_bytes = _stream_dump(process.stdout, raw_output, reporter)
-                raw_output.flush()
-                os.fsync(raw_output.fileno())
-                compressed_bytes = raw_output.tell()
-            return_code = process.wait()
-        except BaseException:
-            process.kill()
-            process.wait()
-            raise
-        finally:
-            process.stdout.close()
+    with mysql_option_file(replace(settings, host="127.0.0.1", port=3306) if managed_container else settings,
+                           output.parent) as option_file:
+        from contextlib import nullcontext
+        from deploy.backup.container_client import dump_command, docker_environment
+        command_context = (dump_command(managed_container, option_file, settings.database) if managed_container
+                           else nullcontext(_dump_command(settings, option_file)))
+        with command_context as command:
+            return _write_dump_process(output, command, environment=docker_environment() if managed_container else environment,
+                                       estimated_raw_bytes=estimated_raw_bytes, progress_stream=progress_stream,
+                                       started_at=started_at)
 
+
+def _write_dump_process(output, command, *, environment, estimated_raw_bytes, progress_stream, started_at):
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        env=environment,
+    )
+    assert process.stdout is not None
+    reporter = ProgressReporter(
+        stream=progress_stream,
+        estimated_raw_bytes=estimated_raw_bytes,
+    )
+    try:
+        with output.open("xb") as raw_output:
+            os.fchmod(raw_output.fileno(), 0o600)
+            raw_bytes = _stream_dump(process.stdout, raw_output, reporter)
+            raw_output.flush()
+            os.fsync(raw_output.fileno())
+            compressed_bytes = raw_output.tell()
+        return_code = process.wait()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        process.stdout.close()
     if return_code:
         raise subprocess.CalledProcessError(return_code, process.args)
 
@@ -1282,6 +1326,7 @@ def backup_database(
     estimated_raw_bytes: int | None = None,
     scan_history: bool = True,
     generation: int | None = None,
+    managed_container: str | None = None,
 ) -> Path:
     """Publish one gzip dump and its pending deployment manifest atomically."""
 
@@ -1332,6 +1377,7 @@ def backup_database(
                 settings,
                 estimated_raw_bytes=estimated_raw_bytes,
                 progress_stream=stream,
+                **({"managed_container": managed_container} if managed_container else {}),
             )
         else:
             statistics = _write_missing_database_backup(
@@ -1398,7 +1444,8 @@ def read_plan(path: Path) -> dict[str, object]:
         )
     except (OSError, UnsafePathError, ValueError, json.JSONDecodeError) as exc:
         raise PlanError(f"backup plan 无法读取: {path}") from exc
-    if not isinstance(document, dict) or set(document) != _PLAN_FIELDS:
+    if (not isinstance(document, dict) or not _PLAN_FIELDS.issubset(document)
+            or set(document) - _PLAN_FIELDS - {"mysql_client"}):
         raise PlanError("backup plan 字段集合无效")
     if (
         document.get("schema") != PLAN_SCHEMA
@@ -1433,6 +1480,20 @@ def read_plan(path: Path) -> dict[str, object]:
         xtrabackup.XtraBackupPlan.from_dict(physical)
     elif physical is not None:
         raise PlanError("logical plan 不得包含 xtrabackup_plan")
+    client = document.get("mysql_client")
+    if client is not None and (strategy != "logical" or not isinstance(client, dict)
+            or set(client) != {"container_name"} or not re.fullmatch(r"numoj-mysql-[a-f0-9]{16}", str(client["container_name"]))):
+        raise PlanError("托管 MySQL 备份客户端字段无效")
+    capacity = document.get("capacity")
+    if isinstance(capacity, dict) and "reserve_policy" in capacity:
+        from deploy.backup.development import validate_record
+        try:
+            if strategy != "logical" or not client:
+                raise ValueError("开发备份预留需要受管逻辑备份")
+            validate_record(capacity["reserve_policy"], database=document["database"],
+                            container_name=client["container_name"], reserved_bytes=capacity.get("reserved_bytes"))
+        except (RuntimeError, ValueError) as exc:
+            raise PlanError(f"backup plan 开发预留字段无效：{exc}") from exc
     return document
 
 
@@ -1731,12 +1792,27 @@ def execute_backup_plan(
         raise PlanError("当前 MYSQL_DB 与 backup plan 不一致")
 
     strategy = document["strategy"]
+    reserve_policy = document["capacity"].get("reserve_policy") if isinstance(document["capacity"], dict) else None
+    if reserve_policy is not None:
+        from deploy.backup.development import reserve_facts
+        try:
+            current_policy = reserve_facts(ROOT, settings)
+        except (RuntimeError, OSError, ValueError) as exc:
+            raise PlanError(f"停服后开发备份预留核验失败：{exc}") from exc
+        if current_policy != reserve_policy:
+            raise PlanError("停服后开发备份预留现场与 plan 不一致")
     revalidate_planned_capacity(
         document["capacity"],
         artifact.parent,
         strategy=str(strategy),
     )
     if strategy == "logical":
+        managed_container = None
+        if document.get("mysql_client"):
+            from deploy.backup.container_client import owned_container
+            managed_container = owned_container(ROOT, settings)
+            if managed_container != document["mysql_client"]["container_name"]:
+                raise PlanError("托管 MySQL 备份容器与停服前计划不一致")
         current = inspect_database(settings)
         expected = document["server"]
         if not isinstance(expected, dict):
@@ -1756,6 +1832,7 @@ def execute_backup_plan(
                 ),
                 scan_history=False,
                 generation=int(document["generation"]),
+                **({"managed_container": managed_container} if managed_container else {}),
             )
         except BaseException as exc:
             try:
@@ -2082,6 +2159,8 @@ def _build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--plan", type=Path, required=True)
     preflight_parser.add_argument("--backup-root", type=Path, required=True)
     preflight_parser.add_argument("--run-id", required=True)
+    preflight_parser.add_argument("--logical-only", action="store_true")
+    preflight_parser.add_argument("--development-reserve", action="store_true")
 
     backup_parser = subparsers.add_parser(
         "backup", help="execute a previously validated backup plan"
@@ -2129,7 +2208,8 @@ def main(argv=None) -> int:
     try:
         if args.command == "preflight":
             document = create_preflight_plan(
-                args.plan, args.backup_root, args.run_id
+                args.plan, args.backup_root, args.run_id, logical_only=args.logical_only,
+                development_reserve=args.development_reserve,
             )
             print(document["strategy"])
         elif args.command == "backup":

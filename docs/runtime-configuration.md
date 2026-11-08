@@ -63,14 +63,15 @@ keep-alive 等待为 5 秒；gthread 会把空闲 keep-alive 放回事件循环�
 
 ### 静态资源预压缩
 
-生产 `deploy.sh` 会在停服前为 `frontend/public/static/`、`frontend/dist/assets/`，以及存在时的生产根目录
-`static/` 下不小于 100 KiB 的 JS/CSS/HTML/JSON/SVG 同时生成 Brotli 与 Gzip 旁路文件；本地需要验证时可在 `frontend/` 内显式运行
+生产 `deploy.sh` 会在停服前为 `frontend/public/static/`、`frontend/dist/assets/`
+下不小于 100 KiB 的 JS/CSS/HTML/JSON/SVG 同时生成 Brotli 与 Gzip 旁路文件；生产根目录
+`static/` 仅作只读历史附件回退，不参与预压缩或清理。本地需要验证时可在 `frontend/` 内显式运行
 `npm run build:precompress`。
 这些 `.br` / `.gz` 属于部署产物，不进入 Git。Web 只按客户端
 `Accept-Encoding` 发送构建期产物，不在请求线程中现场压缩；旁路文件缺失或比源文件旧时自动回退
 identity，并始终返回 `Vary: Accept-Encoding`。部署清单位于
-`.deploy/static-precompression/manifest.json`，只用于清理脚本此前生成、现已失去对应大文件源的旁路；
-未记录在清单中的生产额外资产不会被删除。
+`.deploy/static-precompression/legacy-manifest.json` 与 `spa-manifest.json`，分别记录两处受管目录，
+只用于清理脚本此前生成、现已失去对应大文件源的旁路；未记录在清单中的额外资产不会被删除。
 
 ### 只读 HTTP 基准
 
@@ -417,8 +418,10 @@ blob 的 SHA-256 与大小。
 候选 release 此时不会出现在 `current` 下；数据库回滚点成功后才与
 stable tag 一起切换 `current`，失败时两者一并恢复，成功后保留 current 和上一代 release。
 
-部署流程遵守生产禁测规则，不运行临时 Dockerfile、构建 probe 或候选容器；部署后的下一次作品
-创建或更新构建仍会重新核验同一 builder 与 OCI metadata，并在任何能力或完整性不匹配时失败关闭。
+VibeHub OCI 发布校验不额外执行临时 Dockerfile、构建 probe 或作品业务冒烟容器；前端编译、
+静态预压缩和编辑器头文件导出继续使用既有受管容器。部署不运行测试套件，功能测试只在开发或
+一次性基础设施执行。部署后的下一次作品创建或更新构建仍会重新核验同一 builder 与 OCI metadata，
+并在任何能力或完整性不匹配时失败关闭。
 
 ### 作品接口参考
 
@@ -446,6 +449,54 @@ stable tag 一起切换 `current`，失败时两者一并恢复，成功后保�
 
 ### 反向评测工作区与超时
 
+反向评测实际通过固定版本的官方 CLI `harbor trial start -c <私有配置文件>` 执行，
+只接受 Harbor 格式的 Linux 单任务；任务指令、作答和验证均交给官方 Trial。
+提交方式仍为 ZIP 或比赛配置的 Git 仓库；任务须提供 `task.toml`、`instruction.md`、
+运行环境、`solution/solve.sh` 和 `tests/test.sh`。运行环境接受 Dockerfile 或预构建镜像，
+暂不支持 Compose。Harbor 官方 Trial 直接读取 `instruction.md` 作为任务指令；题面只描述
+任务及必要的函数、文件和输入输出接口，不列隐藏测试数量、分组或运维指引。环境依赖由
+Dockerfile 准备，资源与超时由 `task.toml` 和比赛运行配置控制；GNU `timeout` 仅在具体
+脚本使用它时才是依赖。隐藏测试与参考解分别在验证和 Oracle 阶段提供，不复制进 AI 的
+初始环境。每场反向评测默认提供 `harbor-template.zip` 附件；
+模板 Dockerfile 使用部署时预构建的 `numericaloj-harbor-base:1`，不修改环境时直接复用。
+该基座在 full 与 lite 部署模式下均使用 Agent lite：包含四套固定版本 CLI、常用编译与数值
+工具及 Lean/Mathlib，不预装 TeX。需要 TeX 的题目可在自己的 Dockerfile 中显式安装。
+普通 full Agent 镜像的既有 TeX 环境保持不变。
+验证器统一在该轮作答环境中执行，`tests/` 仅在验证阶段由 Harbor 提供。
+作答环境使用 CPU 容器，最多 2 CPU、4 GiB 内存；任务声明的更低限制会保留，
+CPU 至少为 0.01、内存值必须大于零，任务配置不能申请宿主 GPU。
+评测详情先展示“构建环境”的实时终端日志，再以 Oracle 运行参考解并验证满分，
+通过可选质量门禁后，再运行所选 AI 作答节点与 Harbor verifier。旧的
+`problem/`、`template/`、`judge.sh` 题目包不再执行。
+
+`tests/test.sh` 将奖励写入 `/logs/verifier/reward.txt`，或用
+`/logs/verifier/reward.json` 输出多个有限数值指标。平台优先使用 `reward`，其次使用 `score`
+作为主奖励，主奖励必须在 `0` 到 `1` 之间；两者都没有时，仅在所有指标均为 `0` 到 `1`
+时取平均值，否则拒绝推测指标量纲。耗时、损失等非归一化辅助指标原样保留在 `rewards`，
+只有 `0` 到 `1` 的指标映射为满分为 1 的 `test_points`。
+官方 `result.json` 中的浮点奖励及各项指标会保留部分分，不会转换成通过/失败二值分数。
+排行榜得分为 `100 × (1 - 主奖励)`。可按需使用 `task.toml` 的顶层 `artifacts` 声明要下载的
+答案产物，例如 `artifacts = ["/app"]`；未声明或为空时不生成答案归档，不影响奖励计分。
+`artifacts` 仅用于答案产物归档；验证器直接检查同一作答环境中的最终状态。
+
+新版本后续新执行的 Harbor 任务，在官方 CLI 结束后，将 ATIF 与 Pi 原生 JSONL 中初始
+instruction 对应的 user 事件之后的记录导入同一个 `judge/reverse_answer` 会话；该 user 事件及
+此前的会话头、初始化等前缀不入库，后续分支、错误和用户补充仍保留。
+仅有前缀或初始指令时，零条工作记录也是合法结果。CoT 入库时与通用 Agent
+保持一致，每条最多 1200 字符（含截断省略号），来源信息中的 CoT 字段也遵循该限制。
+来源信息继续保存；面向用户的中间及最终 assistant 回复、全部工具调用与结果、错误、顺序、
+原生来源 ID 和用量信息完整保留，按需展开查看。原始来源不改写；ATIF、JSONL 与压缩 stdout 归档完整保留原始内容，
+继续执行既有密钥脱敏。过去任务与已有记录不补导、不回填或修改。
+官方 `auto_mounting`
+提供日志共享，平台只读观察当前可用日志并尽力提供增量预览；终态仍须完成全量事务与
+覆盖计数校验后才进入 `Completed`。
+原始导入仍有单事件 8 MiB、整体 64 MiB 的安全失败边界，超限明确报错并保留现场，
+除上述前缀排除与 CoT 入库限制外，不通过截断丢弃内容。
+成功后将私有完整性清单封存为会话 workspace 下的
+`.runtime/harbor/agent/numoj-import-manifest.json`，记录完整状态、预期/导入事件数、
+原生/ATIF 总来源数、跳过前缀数、保留来源数和来源 ID，并核验保留来源的完整覆盖。
+普通通用 Agent 的既有读写和历史 full/plain 记录读取保持原行为。
+
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
 | `REVERSE_JUDGE_PROGRESS_TTL` | int | `21600` |
@@ -457,9 +508,13 @@ stable tag 一起切换 `current`，失败时两者一并恢复，成功后保�
 
 | 配置项 | 类型 | 默认值 |
 | --- | --- | --- |
-| `REVERSE_QUALITY_GATE_TIMEOUT_SECONDS` | int | `300` |
+| `REVERSE_QUALITY_GATE_TIMEOUT_SECONDS` | int | `1800` |
 | `REVERSE_QUALITY_GATE_MAX_PROMPT_CHARS` | int | `20000` |
 | `REVERSE_QUALITY_GATE_RESULT_MAX_BYTES` | int | `2097152` |
+
+每场比赛的审核时限保存在 `reverse_quality_gate_timeout_seconds`，默认 1800 秒（30 分钟），
+可设置为 60–7200 秒。管理员可在编辑比赛页的“审核标准”旁调整时间，与审核标准和端点池一同保存。
+任务执行与实时进度等待均使用该比赛的值；上述站点配置只作为缺少比赛级值时的回退。
 
 ### 反向评测压缩包与答案限制
 
@@ -481,5 +536,5 @@ stable tag 一起切换 `current`，失败时两者一并恢复，成功后保�
 | `REVERSE_TRACE_MAX_ATTEMPTS` | int | `8` |
 | `REVERSE_TRACE_MIN_DELETE_AGE_SECONDS` | int | `21600` |
 
-Reverse Judge 的默认 effort、重试 effort 和强制收尾提示词是实现内部常量，不属于启动
-配置，也不在全站配置页面开放。
+反向评测使用 Harbor 官方 Agent 的运行与超时语义，不追加平台强制收尾提示，
+也不使用旧的 `reverse_judge_finalize_timeout_seconds` 参数。

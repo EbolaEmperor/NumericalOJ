@@ -17,6 +17,10 @@ import sys
 SEARCH_MANIFEST = "compiler-search.json"
 MAX_EXPORT_FILES = 200_000
 MAX_EXPORT_BYTES = 2 * 1024 * 1024 * 1024
+_OFFICIAL_INCLUDE_ROOTS = (
+    (Path("/opt/mkl/include"), "opt/mkl/include", Path("/opt/intel/oneapi/mkl")),
+    (Path("/opt/library"), "opt/library", Path("/opt/library")),
+)
 
 
 class ExportError(RuntimeError):
@@ -135,7 +139,32 @@ def _minimal_copy_roots(
     return tuple(roots)
 
 
-def export_headers(output: Path) -> None:
+def _copy_official_roots(output: Path, *, mode: str, budget: _Budget) -> None:
+    for source, destination_raw, allowed_prefix in _OFFICIAL_INCLUDE_ROOTS:
+        if (mode == "lite" and destination_raw == "opt/mkl/include"
+                and not source.exists() and not source.is_symlink()
+                and not source.parent.exists() and not source.parent.is_symlink()):
+            continue
+        resolved = source.resolve(strict=True)
+        allowed = allowed_prefix.resolve(strict=True)
+        try:
+            resolved.relative_to(allowed)
+        except ValueError as exc:
+            raise ExportError(
+                f"official include root escaped expected image path: {source}"
+            ) from exc
+        _copy_tree(
+            resolved,
+            output / destination_raw,
+            allowed_roots=(resolved,),
+            budget=budget,
+            active_directories=set(),
+        )
+
+
+def export_headers(output: Path, *, mode: str = "full") -> None:
+    if mode not in {"full", "lite"}:
+        raise ExportError("editor header mode must be full or lite")
     output = output.resolve(strict=True)
     c_paths = _compiler_search("gcc", "c", "c11")
     cpp_paths = _compiler_search("g++", "c++", "c++20")
@@ -152,26 +181,7 @@ def export_headers(output: Path) -> None:
             active_directories=set(),
         )
 
-    for source_raw, destination_raw, allowed_prefix in (
-        ("/opt/mkl/include", "opt/mkl/include", "/opt/intel/oneapi/mkl"),
-        ("/opt/library", "opt/library", "/opt/library"),
-    ):
-        source = Path(source_raw)
-        resolved = source.resolve(strict=True)
-        allowed = Path(allowed_prefix).resolve(strict=True)
-        try:
-            resolved.relative_to(allowed)
-        except ValueError as exc:
-            raise ExportError(
-                f"official include root escaped expected image path: {source}"
-            ) from exc
-        _copy_tree(
-            resolved,
-            output / destination_raw,
-            allowed_roots=(resolved,),
-            budget=budget,
-            active_directories=set(),
-        )
+    _copy_official_roots(output, mode=mode, budget=budget)
 
     payload = {
         "schema_version": 1,
@@ -187,9 +197,10 @@ def export_headers(output: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=("full", "lite"), default="full")
     args = parser.parse_args()
     try:
-        export_headers(args.output)
+        export_headers(args.output, mode=args.mode)
     except (ExportError, OSError, subprocess.SubprocessError) as exc:
         print(f"[editor-header-export] {exc}", file=sys.stderr)
         return 1

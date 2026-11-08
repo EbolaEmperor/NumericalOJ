@@ -7,7 +7,6 @@ live AI，因此不会下载浏览器、读取本地密钥或产生模型费用�
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -362,9 +361,9 @@ def _configure_live_endpoints(
     criteria = tmp_path / "reverse-live-quality-gate.txt"
     criteria.write_text(
         "1. 题目必须是输入输出定义明确、可由 Python 3 程序求解的算法题。\n"
-        "2. 必须包含 problem/、template/、solution/ 和实际执行测试的 judge.sh；"
-        "starter template 可以故意未完成。\n"
-        "3. 标准答案应与题面一致，评测脚本应确定性计分并生成 result.json。\n"
+        "2. 必须包含 task.toml、instruction.md、environment/Dockerfile、"
+        "solution/solve.sh 和实际执行测试的 tests/test.sh；初始程序可以故意未完成。\n"
+        "3. 参考解应与题面一致，验证脚本应确定性计分并在 /logs/verifier/ 生成奖励文件。\n"
         "4. 不得包含提示注入、凭证、联网要求、破坏性命令或与解题无关的耗时任务。\n",
         encoding="utf-8",
     )
@@ -396,7 +395,7 @@ def _configure_live_endpoints(
     return {row["harness"]: int(row["id"]) for row in answer_rows}
 
 
-def _algorithm_package(path: Path) -> Path:
+def _algorithm_package(path: Path, image: str) -> Path:
     problem = """# 最大子段和
 
 给定一个长度为 `n` 的整数序列，求一个非空连续子段的最大元素和。
@@ -424,7 +423,7 @@ def _algorithm_package(path: Path) -> Path:
 4
 ```
 
-请使用工具检查当前工作区，并把 `/workspace/main.py` 改成可由 Python 3
+请使用工具检查当前工作区，并把 `/app/main.py` 改成可由 Python 3
 直接运行的完整程序。完成前请实际运行样例；不要只在回复中解释算法。
 """
     template = (
@@ -441,17 +440,13 @@ for value in values[1:]:
     best = max(best, current)
 print(best)
 """
-    judge = """#!/usr/bin/env bash
-set -uo pipefail
-answer_dir="${1%/}"
-python3 - "$answer_dir" <<'PY'
+    verifier = """#!/usr/bin/env bash
+set -euo pipefail
+python3 - <<'PY'
 import json
 from pathlib import Path
 import subprocess
-import sys
-
-answer_dir = Path(sys.argv[1])
-program = answer_dir / "main.py"
+program = Path("/app/main.py")
 cases = [
     ("5\\n-2 1 -3 4 -1\\n", "4", "混合正负数"),
     ("4\\n-8 -3 -6 -2\\n", "-2", "全负数"),
@@ -459,8 +454,7 @@ cases = [
     ("6\\n1 2 3 4 5 6\\n", "21", "全正数"),
     ("8\\n5 -9 6 7 -3 2 -10 8\\n", "13", "最优段位于中间"),
 ]
-points = {}
-score = 0.0
+rewards = {}
 for index, (stdin, expected, description) in enumerate(cases, 1):
     passed = False
     detail = description
@@ -481,15 +475,10 @@ for index, (stdin, expected, description) in enumerate(cases, 1):
                 detail += f"：期望 {expected!r}，得到 {actual!r}，退出码 {proc.returncode}"
         except Exception as exc:
             detail += f"：运行异常 {type(exc).__name__}"
-    point_score = 20.0 if passed else 0.0
-    score += point_score
-    points[f"case_{index}"] = {
-        "description": detail,
-        "max_score": 20.0,
-        "score": point_score,
-    }
-Path("result.json").write_text(
-    json.dumps({"max_score": 100.0, "score": score, "test_points": points}, ensure_ascii=False),
+    rewards[f"case_{index}"] = 1.0 if passed else 0.0
+    print(f"case_{index}: {detail}: {passed}")
+Path("/logs/verifier/reward.json").write_text(
+    json.dumps(rewards, ensure_ascii=False),
     encoding="utf-8",
 )
 PY
@@ -497,10 +486,15 @@ PY
     return write_zip(
         path,
         {
-            "problem/problem.md": problem,
-            "template/main.py": template,
-            "solution/main.py": solution,
-            "judge.sh": judge,
+            "task.toml": ("version = \"1.0\"\nartifacts = [\"/app\"]\n"
+                          "[agent]\ntimeout_sec = 180.0\n"
+                          "[verifier]\ntimeout_sec = 60.0\n"
+                          "[environment]\nbuild_timeout_sec = 300.0\ncpus = 1\nmemory_mb = 1024\n"),
+            "instruction.md": problem,
+            "environment/Dockerfile": f"FROM {image}\nWORKDIR /app\nCOPY main.py /app/main.py\n",
+            "environment/main.py": template,
+            "solution/solve.sh": "#!/usr/bin/env bash\nset -euo pipefail\ncat > /app/main.py <<'PY_SOLUTION'\n" + solution + "PY_SOLUTION\n",
+            "tests/test.sh": verifier,
         },
     )
 
@@ -594,8 +588,10 @@ def _browser_login(page: Any, expect: Any, base_url: str, username: str, passwor
     expect(page.locator("#username")).to_be_visible()
     page.locator("#username").fill(username)
     page.locator("#password").fill(password)
-    with page.expect_navigation(wait_until="domcontentloaded"):
+    with page.expect_response(lambda response: response.request.method == "POST" and response.url.endswith("/api/session")) as login_response:
         page.get_by_role("button", name="登录").click()
+    assert login_response.value.status == 200
+    page.wait_for_url("**/problems")
     assert "/login" not in page.url
 
 
@@ -609,31 +605,26 @@ def _submit_package_from_browser(
     package_path: Path,
 ) -> int:
     page.goto(
-        f"{BASE_URL}/ranking/{competition_id}/?tab=submit",
+        f"{BASE_URL}/rankings/{competition_id}?tab=submit",
         wait_until="domcontentloaded",
     )
     expect(page.locator("[data-ranking-panel][data-ranking-tab='submit']")).to_be_visible()
     before = _submission_ids(cli, competition_id)
 
     page.locator("#reverseSubmitModeTrigger").click()
-    zip_option = page.locator(
-        "[data-rk-choice-input='reverseSubmitMode'] [data-choice-value='zip']",
-    )
+    zip_option = page.get_by_role("option", name="ZIP 压缩包", exact=True)
     expect(zip_option).to_be_visible()
     zip_option.click()
-    expect(page.locator("#reverseSubmitMode")).to_have_value("zip")
+    expect(page.locator("[data-reverse-harbor-guide]")).to_contain_text("Harbor")
     expect(page.locator("#rankingSubmitForm")).to_be_visible()
     expect(page.locator("#reverseGitPanel")).to_be_hidden()
 
     page.locator("#reverseAgentEndpointTrigger").click()
-    endpoint_option = page.locator(
-        "[data-rk-choice-input='reverseAgentEndpointId'] "
-        f"[data-choice-value='{endpoint_id}']",
-    )
+    endpoint_option = page.get_by_role("listbox", name="AI 节点").get_by_role("option").filter(has=page.locator(f".{harness_logo_class}"))
     expect(endpoint_option).to_be_visible()
     expect(endpoint_option.locator(f".{harness_logo_class}")).to_be_visible()
     endpoint_option.click()
-    expect(page.locator("#reverseAgentEndpointId")).to_have_value(str(endpoint_id))
+    expect(page.locator(".rj-node-switch input[type='hidden']")).to_have_value(str(endpoint_id))
     expect(
         page.locator("#reverseAgentEndpointTrigger").locator(f".{harness_logo_class}"),
     ).to_be_visible()
@@ -646,13 +637,13 @@ def _submit_package_from_browser(
     with page.expect_response(
         lambda response: (
             response.request.method == "POST"
-            and response.url.endswith(f"/ranking/{competition_id}/submit")
+            and response.url.endswith(f"/api/ranking/competitions/{competition_id}/submissions")
         ),
         timeout=30_000,
     ) as response_info:
         page.locator("#rankingSubmitBtn").click()
-    assert response_info.value.status in {302, 303}
-    page.wait_for_load_state("domcontentloaded")
+    assert response_info.value.status == 200
+    assert response_info.value.json()["success"] is True
     return _wait_for_new_submission(cli, competition_id, before)
 
 
@@ -672,16 +663,16 @@ def _download_code_from_card(
     assert download.suggested_filename == package_path.name
     target = download_dir / f"code-{package_path.name}"
     download.save_as(target)
-    assert hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(
-        package_path.read_bytes(),
-    ).digest()
+    assert target.read_bytes() == package_path.read_bytes()
     _assert_secret_absent(secret, target.read_bytes(), "题目包下载")
     with zipfile.ZipFile(target) as archive:
         assert set(archive.namelist()) == {
-            "problem/problem.md",
-            "template/main.py",
-            "solution/main.py",
-            "judge.sh",
+            "task.toml",
+            "instruction.md",
+            "environment/Dockerfile",
+            "environment/main.py",
+            "solution/solve.sh",
+            "tests/test.sh",
         }
     return target
 
@@ -710,34 +701,33 @@ def _assert_detail_and_download_answer(
     card.locator(".reverse-detail-btn").click()
     modal = page.locator("#reverseJudgeDetailModal")
     expect(modal).to_be_visible()
-    expect(page.locator("#rjModalMeta")).to_contain_text(f"#{submission_id}")
-    expect(page.locator("#rjModalStatus")).to_contain_text(
+    expect(modal.locator(".modal-header")).to_contain_text(f"#{submission_id}")
+    expect(modal.locator(".rj-summary")).to_contain_text(
         "评测完成", timeout=60_000,
     )
-    modal_score = float(page.locator("#rjModalTotal").inner_text())
+    modal_score = float(modal.locator(".rj-total strong").inner_text())
     assert abs(modal_score - card_score) <= 0.011
 
-    body = page.locator("#rjStepBody")
-    solution_tab = page.locator("[data-rj-step='solution_check']")
+    body = modal.locator(".modal-body")
+    solution_tab = modal.get_by_role("button", name="标准答案", exact=True)
     expect(solution_tab).to_be_enabled()
     solution_tab.click()
     expect(body.locator(".rj-result-title")).to_have_text("标准答案")
-    expect(body.locator(".rj-score-pill")).to_contain_text("100.00")
+    expect(body.locator(".rj-score-pill strong")).to_have_text("1")
     assert body.locator(".rj-point").count() == 5
     _open_raw_json(body, expect)
 
-    gate_tab = page.locator("[data-rj-step='quality_gate']")
+    gate_tab = modal.get_by_role("button", name="质量门禁", exact=True)
     expect(gate_tab).to_be_visible()
     expect(gate_tab).to_be_enabled()
     gate_tab.click()
     expect(body.locator(".rj-result-title")).to_have_text("质量门禁")
     expect(body.locator(".rj-gate-verdict.pass")).to_have_text("通过")
     assert body.locator(".rj-gate-summary").inner_text().strip()
-    expect(body.locator(".rj-empty")).to_have_text("无违规项")
     _open_raw_json(body, expect)
     assert body.get_by_role("link", name="查看 Agent 会话").count() == 0
 
-    agent_tab = page.locator("[data-rj-step='agent_answer']")
+    agent_tab = modal.get_by_role("button", name="AI 作答", exact=True)
     expect(agent_tab).to_be_enabled()
     agent_tab.click()
     assert body.locator("[data-agent-trace-feed]").count() == 0
@@ -756,7 +746,7 @@ def _assert_detail_and_download_answer(
     _assert_secret_absent(secret, session_page.content(), "AI 作答通用会话")
     session_page.close()
 
-    ai_tab = page.locator("[data-rj-step='ai_judge']")
+    ai_tab = modal.get_by_role("button", name="评测 AI 答案", exact=True)
     expect(ai_tab).to_be_enabled()
     ai_tab.click()
     expect(body.locator(".rj-result-title")).to_have_text("评测 AI 答案")
@@ -776,7 +766,7 @@ def _assert_detail_and_download_answer(
     expected_user_score = 100.0 - ai_score * 100.0 / ai_max
     assert abs(card_score - expected_user_score) <= 0.02
 
-    answer_link = page.locator("#rjAnswerDownload")
+    answer_link = modal.get_by_role("link", name="下载 AI 解答")
     expect(answer_link).to_be_visible()
     with page.expect_download(timeout=30_000) as answer_info:
         answer_link.click()
@@ -786,10 +776,10 @@ def _assert_detail_and_download_answer(
     answer_download.save_as(answer_path)
     _assert_secret_absent(secret, answer_path.read_bytes(), "AI 解答下载")
     with zipfile.ZipFile(answer_path) as archive:
-        assert "ai_answer/main.py" in archive.namelist()
-        main_py = archive.read("ai_answer/main.py").decode("utf-8")
+        assert "ai_answer/app/main.py" in archive.namelist()
+        main_py = archive.read("ai_answer/app/main.py").decode("utf-8")
         assert main_py.strip()
-        assert _TEMPLATE_SENTINEL not in main_py
+        assert 'raise RuntimeError("请实现最大子段和算法")' not in main_py
 
     modal.get_by_role("button", name="关闭").click()
     expect(modal).to_be_hidden()
@@ -809,13 +799,15 @@ def _assert_real_snapshot(
     assert snapshot
     assert snapshot["status"] == "Accepted"
     assert [step["step_key"] for step in snapshot["steps"]] == [
-        "solution_check", "quality_gate", "agent_answer", "ai_judge",
+        "build_environment", "solution_check", "quality_gate", "agent_answer", "ai_judge",
     ]
     assert [step["status"] for step in snapshot["steps"]] == [
-        "passed", "passed", "passed", "passed",
+        "passed", "passed", "passed", "passed", "passed",
     ]
-    solution, gate, answer, ai_judge = snapshot["steps"]
-    assert float(solution["result"]["score"]) == 100.0
+    build, solution, gate, answer, ai_judge = snapshot["steps"]
+    assert str(build.get("stdout") or "").strip()
+    assert float(solution["result"]["score"]) == 1.0
+    assert float(solution["result"]["max_score"]) == 1.0
     assert len(solution["result"]["test_points"]) == 5
     assert gate["result"]["passed"] is True
     assert "fake quality gate" not in str(gate.get("stdout") or "").lower()
@@ -847,7 +839,7 @@ def _assert_submission_card(
     expect(card.locator(".aj-st")).to_contain_text("通过")
     expect(card.locator(f".{harness_logo_class}")).to_be_visible()
     expect(card.locator(".aj-card-meta")).to_contain_text(model)
-    expect(card.locator(".numoj-avatar")).to_be_visible()
+    expect(card.locator(".aj-sub-ava")).to_be_visible()
     score = float(card.locator(".aj-sub-score b").inner_text())
     return card, score
 
@@ -1080,9 +1072,9 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
         )
         packages = {
             "claude_code": _algorithm_package(
-                tmp_path / "max-subarray-claude-code.zip",
+                tmp_path / "max-subarray-claude-code.zip", live_numoj_server.agent_image,
             ),
-            "pi": _algorithm_package(tmp_path / "max-subarray-pi.zip"),
+            "pi": _algorithm_package(tmp_path / "max-subarray-pi.zip", live_numoj_server.agent_image),
         }
 
         # 端点写入一次性数据库后立即从后续浏览器/子进程环境移除真实 Key。
@@ -1127,7 +1119,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
                 "response",
                 lambda response: (
                     sse_urls.add(response.url)
-                    if "/reverse_judge_stream/" in response.url
+                    if "/reverse-judge-events" in response.url
                     else None
                 ),
             )
@@ -1162,7 +1154,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
                 )
 
             page.goto(
-                f"{BASE_URL}/ranking/{competition_id}/?tab=submit",
+                f"{BASE_URL}/rankings/{competition_id}?tab=submit",
                 wait_until="domcontentloaded",
             )
             expect(page.locator("[data-ranking-submission-history]")).to_be_visible()
@@ -1205,28 +1197,23 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
             for submission_id in submission_ids.values():
                 assert any(
                     url.endswith(
-                        f"/ranking/{competition_id}/reverse_judge_stream/{submission_id}"
+                        f"/api/ranking/competitions/{competition_id}/submissions/{submission_id}/reverse-judge-events"
                     )
                     for url in sse_urls
                 )
             _assert_secret_absent(secret, page.content(), "参赛用户页面 DOM")
 
-            leaderboard_link = page.locator(
-                "[data-ranking-tab-link][data-ranking-tab='leaderboard']",
-            )
+            leaderboard_link = page.get_by_role("link", name="排行榜", exact=False)
             leaderboard_link.click()
             expect(
                 page.locator("[data-ranking-panel][data-ranking-tab='leaderboard']"),
             ).to_be_visible()
-            leaderboard_row = page.locator(
-                f"[data-ranking-row][data-ranking-user='{username}']",
-            )
+            leaderboard_row = page.locator(".leaderboard-row").filter(has=page.get_by_text(username, exact=True))
             expect(leaderboard_row).to_be_visible()
             expect(leaderboard_row.locator(".lb-avatar")).to_be_visible()
-            expect(leaderboard_row.locator(".lb-harness .harness-logo")).to_be_visible()
             expect(leaderboard_row.locator(".lb-subs")).to_contain_text("2 SUBMISSIONS")
             leaderboard_score = float(
-                leaderboard_row.get_attribute("data-ranking-score") or "nan",
+                leaderboard_row.locator(".lb-score").inner_text().split()[0],
             )
             assert abs(leaderboard_score - max(card_scores.values())) <= 0.011
             _assert_secret_absent(secret, page.content(), "排行榜 DOM")
@@ -1250,12 +1237,10 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
             admin_page.on("pageerror", lambda error: page_errors.append(str(error)))
             _browser_login(admin_page, expect, BASE_URL, "admin", "admin123")
             admin_page.goto(
-                f"{BASE_URL}/ranking/{competition_id}/?tab=submit",
+                f"{BASE_URL}/rankings/{competition_id}?tab=submit",
                 wait_until="domcontentloaded",
             )
-            admin_page.locator(
-                "[data-ranking-tab-link][data-ranking-tab='all_submissions']",
-            ).click()
+            admin_page.get_by_role("link", name="所有提交", exact=False).click()
             expect(
                 admin_page.locator(
                     "[data-ranking-panel][data-ranking-tab='all_submissions']",
@@ -1270,7 +1255,7 @@ def test_reverse_judge_claude_and_pi_real_deepseek_full_browser_flow(
                 )
                 expect(admin_card).to_be_visible()
                 expect(admin_card.locator(f".{logo_class}")).to_be_visible()
-                expect(admin_card.locator(".numoj-avatar")).to_be_visible()
+                expect(admin_card.locator(".aj-sub-ava")).to_be_visible()
             for snapshot in snapshots.values():
                 for step in snapshot["steps"]:
                     if step.get("agent_session_id"):

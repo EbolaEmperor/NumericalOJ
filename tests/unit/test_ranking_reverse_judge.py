@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""反向评测纯逻辑单测：题目包识别、result.json 规范与反向得分公式。"""
+"""反向评测纯逻辑单测：Harbor 题目包识别、持久编排与反向得分公式。"""
 
 import json
+import subprocess
 import zipfile
 
 import pytest
@@ -19,9 +20,13 @@ def _without_trace_identity(messages):
 
 
 def _make_package(root):
-    for name in ("problem", "template", "solution"):
+    for name in ('environment', 'tests', 'solution'):
         (root / name).mkdir(parents=True, exist_ok=True)
-    (root / "judge.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (root / 'task.toml').write_text('artifacts = ["/app"]\n', encoding='utf-8')
+    (root / 'instruction.md').write_text('公开题面', encoding='utf-8')
+    (root / 'environment/Dockerfile').write_text('FROM python:3.12-slim\nWORKDIR /app\n', encoding='utf-8')
+    (root / 'solution/solve.sh').write_text('#!/bin/sh\nprintf 42 > /app/answer.txt\n', encoding='utf-8')
+    (root / 'tests/test.sh').write_text('#!/bin/sh\necho 1 > /logs/verifier/reward.txt\n', encoding='utf-8')
 
 
 def test_find_package_root_accepts_direct_shape(tmp_path):
@@ -80,55 +85,36 @@ def test_safe_extract_zip_rejects_member_count_size_and_compression_bombs(monkey
         rj._safe_extract_zip(str(ratio_bomb), str(tmp_path / "ratio-out"))
 
 
-def test_normalize_test_points_accepts_object_and_clamps_scores():
-    out = rj._normalize_test_points({
-        "case_1": {"description": "基础点", "max_score": 10, "score": 12},
-    })
-
-    assert out == {
-        "case_1": {"description": "基础点", "max_score": 10.0, "score": 10.0},
-    }
+def test_legacy_package_shape_is_rejected(tmp_path):
+    for name in ('problem', 'template', 'solution'):
+        (tmp_path / name).mkdir()
+    (tmp_path / 'judge.sh').write_text('#!/bin/sh\n')
+    assert not rj._has_reverse_package_shape(tmp_path)
 
 
-def test_normalize_test_points_accepts_list():
-    out = rj._normalize_test_points([
-        {"description": "第一点", "max_score": "5", "score": "4.5"},
-    ])
-
-    assert out == {
-        "1": {"description": "第一点", "max_score": 5.0, "score": 4.5},
-    }
-
-
-@pytest.mark.parametrize("bad", [
-    "not-dict",
-    {"case": "bad"},
-    {"case": {"description": "x", "max_score": "nan?", "score": 1}},
-    {"case": {"description": "x", "max_score": 1, "score": -0.1}},
-])
-def test_normalize_test_points_rejects_invalid_shapes(bad):
-    with pytest.raises(ValueError):
-        rj._normalize_test_points(bad)
+@pytest.mark.parametrize('running', [True, None])
+def test_cleanup_retains_harbor_identity_until_runtime_is_confirmed_stopped(monkeypatch, tmp_path, running):
+    monkeypatch.setattr(rj, 'REVERSE_WORKSPACE_ROOT', str(tmp_path))
+    root = tmp_path / '7' / 'attempt'
+    trial = root / 'agent_trial'
+    trial.mkdir(parents=True)
+    (trial / '.run-name').write_text('official-trial')
+    monkeypatch.setattr(rj, 'harbor_trial_running', lambda _: running)
+    assert rj._cleanup_attempt_workspace(7, 'attempt') is False
+    assert (trial / '.run-name').exists()
+    monkeypatch.setattr(rj, 'harbor_trial_running', lambda _: False)
+    assert rj._cleanup_attempt_workspace(7, 'attempt') is True
+    assert not root.exists()
 
 
-def test_load_result_json_validates_and_normalizes(tmp_path):
-    payload = {
-        "max_score": 20,
-        "score": 18,
-        "test_points": {
-            "a": {"description": "A", "max_score": 10, "score": 8},
-            "b": {"description": "B", "max_score": 10, "score": 10},
-        },
-    }
-    (tmp_path / "result.json").write_text(
-        json.dumps(payload, ensure_ascii=False), encoding="utf-8",
-    )
-
-    result = rj._load_result_json(str(tmp_path))
-
-    assert result["max_score"] == 20.0
-    assert result["score"] == 18.0
-    assert result["test_points"]["a"]["score"] == 8.0
+def test_cleanup_preserves_original_logs_when_native_session_copy_failed(monkeypatch, tmp_path):
+    monkeypatch.setattr(rj, 'REVERSE_WORKSPACE_ROOT', str(tmp_path))
+    trial = tmp_path / '7/attempt/agent_trial'
+    trial.mkdir(parents=True)
+    (trial / '.preservation-failed').touch()
+    (trial / 'native-session.jsonl').write_text('待恢复的原生会话')
+    assert rj._cleanup_attempt_workspace(7, 'attempt') is False
+    assert (trial / 'native-session.jsonl').exists()
 
 
 def test_score_full_uses_tight_tolerance():
@@ -265,7 +251,7 @@ def test_shared_claude_sync_copies_and_combines_container_sessions(
         output.write(manifest)
         for path in remote_paths:
             output.write(payloads[path])
-        return rj.subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
 
@@ -333,7 +319,7 @@ def test_shared_claude_sync_rejects_manifest_resource_limit_violations(
         manifest = json.dumps(entries, separators=(",", ":")).encode("utf-8")
         kwargs["stdout"].write(len(manifest).to_bytes(4, "big"))
         kwargs["stdout"].write(manifest)
-        return rj.subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
 
@@ -358,7 +344,7 @@ def test_shared_trace_sync_caps_redacted_output_and_cleans_temporaries(
         kwargs["stdout"].write(len(manifest).to_bytes(4, "big"))
         kwargs["stdout"].write(manifest)
         kwargs["stdout"].write(payload)
-        return rj.subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(trace_sync.subprocess, "run", fake_run)
     monkeypatch.setattr(
@@ -407,10 +393,10 @@ def test_historical_three_step_snapshot_is_projected_to_canonical_four_step_orde
     steps = reverse_db.list_reverse_judge_steps(17)
 
     assert [step["step_key"] for step in steps] == [
-        "solution_check", "quality_gate", "agent_answer", "ai_judge",
+        "build_environment", "solution_check", "quality_gate", "agent_answer", "ai_judge",
     ]
-    assert [step["step_order"] for step in steps] == [1, 2, 3, 4]
-    assert steps[1]["status"] == "skipped"
+    assert [step["step_order"] for step in steps] == [0, 1, 2, 3, 4]
+    assert steps[0]["status"] == steps[2]["status"] == "skipped"
 
 
 def test_collect_trace_messages_extracts_visible_reply_and_subagent(tmp_path):
@@ -915,37 +901,25 @@ def test_parse_quality_gate_result_rejects_malformed_schema(raw):
         rj._parse_quality_gate_result(raw)
 
 
-def test_prepare_workspace_freezes_original_package_and_restore_isolates_mutation(
-        monkeypatch, tmp_path):
-    upload = tmp_path / "submission.zip"
-    with zipfile.ZipFile(upload, "w") as zf:
-        zf.writestr("task/judge.sh", "#!/bin/sh\n")
-        zf.writestr("task/problem/readme.md", "original problem")
-        zf.writestr("task/template/main.py", "pass\n")
-        zf.writestr("task/solution/main.py", "print(42)\n")
-    workspace_root = tmp_path / "workspaces"
-    monkeypatch.setattr(rj, "REVERSE_WORKSPACE_ROOT", str(workspace_root))
-
+def test_prepare_workspace_freezes_original_harbor_task(monkeypatch, tmp_path):
+    source = tmp_path / 'source' / 'task'
+    _make_package(source)
+    upload = tmp_path / 'submission.zip'
+    with zipfile.ZipFile(upload, 'w') as zf:
+        for path in source.rglob('*'):
+            if path.is_file():
+                zf.write(path, 'task/' + path.relative_to(source).as_posix())
+    workspace_root = tmp_path / 'workspaces'
+    monkeypatch.setattr(rj, 'REVERSE_WORKSPACE_ROOT', str(workspace_root))
     ws, package_root, audit_root = rj._prepare_workspace(
-        {"id": 9, "code_path": str(upload)}, "../../attempt-1",
+        {'id': 9, 'code_path': str(upload)}, '../../attempt-1',
     )
-
-    assert ws == str((workspace_root / "9" / "attempt-1").resolve())
-    assert package_root != audit_root
-    assert (tmp_path / "workspaces" / "9" / "attempt-1" / "quality_gate_source"
-            / "problem" / "readme.md").read_text() == "original problem"
-
-    package_problem = __import__("pathlib").Path(package_root) / "problem" / "readme.md"
-    audit_problem = __import__("pathlib").Path(audit_root) / "problem" / "readme.md"
-    package_problem.write_text("mutated by judge.sh", encoding="utf-8")
-    (__import__("pathlib").Path(package_root) / "private_protocol.txt").write_text(
-        "hidden", encoding="utf-8",
-    )
-    rj._restore_runtime_package(package_root, audit_root)
-
-    assert package_problem.read_text(encoding="utf-8") == "original problem"
-    assert audit_problem.read_text(encoding="utf-8") == "original problem"
-    assert not (__import__("pathlib").Path(package_root) / "private_protocol.txt").exists()
+    assert ws == str((workspace_root / '9' / 'attempt-1').resolve())
+    package_instruction = __import__('pathlib').Path(package_root) / 'instruction.md'
+    audit_instruction = __import__('pathlib').Path(audit_root) / 'instruction.md'
+    package_instruction.write_text('解压副本变化')
+    assert audit_instruction.read_text() == '公开题面'
+    assert rj._has_reverse_package_shape(audit_root)
 
 
 def test_prepare_workspace_rejects_missing_upload_and_invalid_shape(monkeypatch, tmp_path):
@@ -956,7 +930,7 @@ def test_prepare_workspace_rejects_missing_upload_and_invalid_shape(monkeypatch,
     invalid = tmp_path / "invalid.zip"
     with zipfile.ZipFile(invalid, "w") as zf:
         zf.writestr("problem/readme.md", "missing other required entries")
-    with pytest.raises(RuntimeError, match="必须包含"):
+    with pytest.raises(RuntimeError, match="必须使用 Harbor 格式"):
         rj._prepare_workspace({"id": 2, "code_path": str(invalid)}, "a")
 
 
@@ -1023,16 +997,6 @@ def test_quality_gate_prompt_and_step_status_normalize_values(monkeypatch):
     assert rj._step_status(3, rj.STEP_QUALITY_GATE) == "pending"
 
 
-def _make_quality_gate_audit(monkeypatch, tmp_path, submission_id=31, attempt_id="a1"):
-    workspace_root = tmp_path / "workspaces"
-    monkeypatch.setattr(rj, "REVERSE_WORKSPACE_ROOT", str(workspace_root))
-    audit = workspace_root / str(submission_id) / attempt_id / "quality_gate_source"
-    for directory in ("problem", "template", "solution"):
-        (audit / directory).mkdir(parents=True)
-    (audit / "judge.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    return audit
-
-
 def test_retry_queued_submission_requeues_current_attempt(monkeypatch):
     retry_calls = []
     statuses = []
@@ -1083,48 +1047,11 @@ def test_retry_queued_submission_marks_only_busy_step_after_retry_exhaustion(mon
         task, 5, "a1", timeout_message="gate busy", timeout_step_key=rj.STEP_QUALITY_GATE,
     )
 
-    assert result == {"success": False, "message": "端点持续繁忙"}
+    assert result == {"success": False, "message": "AI 服务繁忙。"}
     assert updates == [((5, "a1", rj.STEP_QUALITY_GATE), {
         "status": "error", "error_message": "gate busy",
     })]
     assert final_errors == [(5, "a1", "gate busy")]
-
-
-def _patch_reverse_pipeline_base(monkeypatch, tmp_path, events):
-    package = tmp_path / "package"
-    audit = tmp_path / "audit"
-    for root in (package, audit):
-        (root / "problem").mkdir(parents=True)
-        (root / "problem" / "readme.md").write_text("original", encoding="utf-8")
-    submission = {
-        "id": 20,
-        "competition_id": 7,
-        "judge_attempt_id": "a1",
-        "status": "Queued",
-        "agent_endpoint_id": 44,
-    }
-    monkeypatch.setattr(rj, "set_submission_status_for_attempt", lambda *_args: 1)
-    monkeypatch.setattr(rj, "ensure_reverse_judge_steps_for_attempt", lambda *_args: None)
-    monkeypatch.setattr(rj, "_publish_snapshot", lambda _sid: None)
-    monkeypatch.setattr(rj, "get_ranking_submission", lambda _sid: dict(submission))
-    monkeypatch.setattr(
-        rj, "_prepare_workspace",
-        lambda *_args: (str(tmp_path / "ws"), str(package), str(audit)),
-    )
-    monkeypatch.setattr(rj, "_step_status", lambda *_args: "pending")
-    monkeypatch.setattr(
-        rj, "_persist_agent_answer_archive", lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        rj, "update_reverse_judge_step_for_attempt",
-        lambda *args, **kwargs: events.append(
-            ("step", args[2], kwargs.get("status"), kwargs.get("stderr")),
-        ),
-    )
-    monkeypatch.setattr(rj, "_write_error_for_attempt", lambda *_args: None)
-    return package, audit, submission
-
-
 
 
 @pytest.fixture
@@ -1143,9 +1070,8 @@ def unified_reverse(monkeypatch, tmp_path):
     root = tmp_path / 'attempt'
     audit = root / 'quality_gate_source'
     _make_package(audit)
-    (audit / 'problem' / 'README.md').write_text('公开题面')
-    (audit / 'template' / 'solve.py').write_text('pass')
-    (audit / 'solution' / 'solve.py').write_text('标准答案私密内容')
+    (audit / 'instruction.md').write_text('公开题面')
+    (audit / 'solution' / 'solve.sh').write_text('标准答案私密内容')
     (audit / 'hidden.txt').write_text('私有评测附件')
 
     def update(_sid, _attempt, key, **values):
@@ -1172,7 +1098,6 @@ def unified_reverse(monkeypatch, tmp_path):
     monkeypatch.setattr(rj, 'ensure_reverse_judge_steps_for_attempt', lambda *args: 1)
     monkeypatch.setattr(rj, '_publish_snapshot', lambda _sid: None)
     monkeypatch.setattr(rj, 'get_agent_session_turns', lambda sid: turns.get(sid, []))
-    monkeypatch.setattr(rj, 'get_agent_run_snapshot', lambda tid: None)
     monkeypatch.setattr(rj, 'get_agent_session', lambda sid: {
         'current_task_id': turns[sid][-1]['task_id'], 'message': session_messages.get(sid, '')})
     monkeypatch.setattr(rj, 'submit_judge_turn', submit)
@@ -1194,10 +1119,18 @@ def test_unified_workspace_inputs_separate_answer_from_private_material(unified_
     f = unified_reverse
     quality = rj._workspace_input_files(f.audit, rj.STEP_QUALITY_GATE)
     answer = rj._workspace_input_files(f.audit, rj.STEP_AGENT)
-    assert {'evidence/judge.sh', 'evidence/solution/solve.py', 'evidence/hidden.txt'} <= quality.keys()
-    assert set(answer) == {'problem/README.md', 'solve.py', 'problem/.numoj-placeholder'}
-    assert answer['solve.py'].read_text() == 'pass'
-    assert not {'judge.sh', 'solution/solve.py', 'hidden.txt'} & answer.keys()
+    assert {'evidence/tests/test.sh', 'evidence/solution/solve.sh', 'evidence/hidden.txt'} <= quality.keys()
+    assert set(answer) == {'instruction.md'}
+    assert answer['instruction.md'].read_text() == '公开题面'
+
+
+def test_quality_gate_dispatch_uses_competition_time_limit(unified_reverse):
+    f = unified_reverse
+    f.competition['reverse_quality_gate_timeout_seconds'] = 4200
+    rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_QUALITY_GATE)
+    assert len(f.dispatches) == 1
+    assert f.dispatches[0]['judge_kind'] == 'reverse_quality'
+    assert f.dispatches[0]['timeout_seconds'] == 4200
 
 
 def test_quality_gate_preloads_an_unfilled_result_template_separate_from_evidence(unified_reverse):
@@ -1233,67 +1166,51 @@ def test_quality_gate_reads_filled_template_from_workspace(monkeypatch, unified_
     assert result == {'passed': True, 'reason': '各项审核标准均满足'}
 
 
-def test_runtime_prompts_preserve_review_and_deliverable_requirements():
+def test_runtime_prompts_use_frozen_harbor_instruction(unified_reverse):
     quality = rj._quality_gate_agent_prompt('逐项审核题目与答案的一致性')
-    answer = rj._reverse_prompt()
     assert '逐项审核题目与答案的一致性' in quality
     assert 'quality_gate_result.json' in quality
     assert 'passed' in quality and 'reason' in quality
-    assert 'evidence/' in quality
-    assert 'violations' not in quality and 'summary' not in quality
-    assert '题面、说明、样例或其它材料' in answer
-    assert '不要用说明性文档替代可评测文件' in answer
-    assert '最终评测会把整个项目目录作为答案目录' in answer
-    assert '/workspace' not in answer
-    assert not any(term in answer for term in ('只读', '可写', '不得执行', '禁止执行', '不要修改'))
+    assert 'instruction.md' in quality and 'tests/test.sh' in quality
+    assert rj._reverse_prompt(unified_reverse.audit) == '公开题面'
 
 
-@pytest.mark.parametrize('existing_template_session', [False, True])
-def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatch, unified_reverse, existing_template_session):
+def test_unified_reverse_workflow_runs_oracle_and_uses_official_trial_reward(monkeypatch, unified_reverse):
     from pathlib import Path
     from backend.oj_modules.agents import workspace
 
     f = unified_reverse
-    judge_calls = []
+    oracle_calls = []
     monkeypatch.setattr(workspace, 'AGENT_WORKSPACE_ROOT', f.root / 'agent-workspaces')
 
-    def judge(_sid, package_root, answer, timeout):
-        judge_calls.append(answer)
-        if answer == 'solution':
-            # 自检脚本只能污染其评分副本，后续作答的输入仍来自冻结包。
-            (Path(package_root) / 'problem' / 'README.md').write_text('污染题面')
-        else:
-            assert (Path(package_root) / 'template' / 'solve.py').read_text() == 'AI交付物'
-            assert (Path(package_root) / 'template' / 'new-output.txt').read_text() == '根目录新增交付物'
-            assert (Path(package_root) / 'template' / 'problem' / 'README.md').read_text() == 'AI修改的题面'
-            assert (Path(package_root) / 'problem' / 'README.md').read_text() == '公开题面'
-            assert (Path(package_root) / 'solution' / 'solve.py').read_text() == '标准答案私密内容'
-            assert (Path(package_root) / 'judge.sh').read_text() == '#!/usr/bin/env bash\n'
-            assert not (Path(package_root) / 'template' / 'solution').exists()
-            assert not (Path(package_root) / 'template' / 'judge.sh').exists()
-            assert not (Path(package_root) / 'template' / '.runtime').exists()
+    def oracle(task_path, trial_dir, timeout, **kwargs):
+        oracle_calls.append((task_path, trial_dir, timeout))
+        kwargs['build_event_callback']({'event': 'output', 'text': '#1 CACHED\n'})
+        kwargs['build_event_callback']({'event': 'complete', 'text': '构建完成', 'cached': True})
         return {'ok': True, 'stdout': '', 'stderr': '', 'result': {
-            'max_score': 100, 'score': 100 if answer == 'solution' else 25,
-            'test_points': {},
+            'max_score': 1, 'score': 1, 'test_points': {},
         }}
 
-    def export(sid, path, destination):
-        assert sid == f.dispatches[1]['session_id']
-        assert path == ('template' if existing_template_session else '.')
-        return workspace.export_agent_workspace_directory(sid, path, destination)
-
-    monkeypatch.setattr(rj, '_run_judge_script', judge)
-    monkeypatch.setattr(rj, 'export_agent_workspace_directory', export)
+    monkeypatch.setattr(rj, 'run_harbor_oracle', oracle)
+    monkeypatch.setattr(rj, 'load_harbor_result', lambda trial_dir: {
+        'ok': True, 'stdout': '', 'stderr': '', 'result': {
+            'max_score': 1, 'score': .25, 'test_points': {},
+        },
+    })
     monkeypatch.setattr(rj, '_read_quality_gate_result', lambda sid: {'passed': True, 'reason': '通过'})
 
     def advance():
         return rj._run_reverse_judge(f.task, object(), 7, 'attempt', f.competition, 11)
 
     assert advance()['pending'] is True
-    assert judge_calls == ['solution']
+    assert len(oracle_calls) == 1
+    assert oracle_calls[0][0] == str(f.audit)
+    assert f.rows[rj.STEP_BUILD]['status'] == 'passed'
+    assert 'CACHED' in f.rows[rj.STEP_BUILD]['stdout']
+    assert f.rows[rj.STEP_BUILD]['result_json']['cached'] is True
     quality = f.dispatches[0]
     assert quality['judge_kind'] == 'reverse_quality'
-    assert quality['files']['evidence/problem/README.md'].read_text() == '公开题面'
+    assert quality['files']['evidence/instruction.md'].read_text() == '公开题面'
     assert advance()['pending'] is True
     assert len(f.dispatches) == 1 and not f.releases
     assert all(item['queue'] == 'celery' and item['countdown'] > 0 for item in f.schedules)
@@ -1304,27 +1221,21 @@ def test_unified_reverse_workflow_waits_without_holding_celery_worker(monkeypatc
     assert answer['judge_kind'] == 'reverse_answer'
     assert answer['session_id'] != quality['session_id']
     assert answer['requested_by'] == 'alice'
+    assert answer['project_skill'] is False
+    assert answer['harbor_runtime']['task_path'] == str(f.audit.resolve())
+    assert answer['harbor_runtime']['trial_dir'] == str(f.root / 'agent_trial')
+    assert 'finalize_timeout_seconds' not in answer['harbor_runtime']
     assert f.releases == [quality['task_id']]
-    assert judge_calls == ['solution']
+    assert len(oracle_calls) == 1
     workspace.initialize_agent_task_workspace(answer['session_id'], harness='pi', access_role='user')
     workspace.inject_agent_workspace_files(answer['session_id'], answer['files'])
-    if existing_template_session:
-        # 部署前已发送的会话保持原答案路径，新任务才使用项目根目录。
-        f.rows[rj.STEP_AGENT]['result_json']['_agent'].pop('answer_path')
-    for path, content in {
-        'solve.py': 'AI交付物', 'new-output.txt': '根目录新增交付物',
-        'problem/README.md': 'AI修改的题面', '.runtime/internal': '内部运行数据',
-    }.items():
-        if existing_template_session:
-            path = 'template/' + path
-        workspace.write_agent_workspace_file(answer['session_id'], path, content)
-    assert (f.audit / 'problem' / 'README.md').read_text() == '公开题面'
-    assert (f.audit / 'template' / 'solve.py').read_text() == 'pass'
+    workspace.write_agent_workspace_file(answer['session_id'], 'harbor-artifacts/app/answer.txt', 'AI交付物')
     f.turns[answer['session_id']][0]['status'] = 'Completed'
     assert advance() == {'success': True, 'score': 75.0}
-    assert judge_calls == ['solution', 'template']
+    assert (f.root / 'answer_artifacts/app/answer.txt').read_text() == 'AI交付物'
     assert f.scores == [75.0]
     assert f.releases == [quality['task_id'], answer['task_id']]
+    assert len(oracle_calls) == 1
 
 
 def test_quality_gate_rejection_never_dispatches_answer(monkeypatch, unified_reverse):
@@ -1369,28 +1280,15 @@ def test_unhealthy_endpoint_is_paused_before_dispatch(monkeypatch, unified_rever
     assert f.rows[step_key]['status'] == 'error'
 
 
-def test_timeout_finalizes_same_generic_session_after_reacquiring_pool(unified_reverse):
+def test_harbor_timeout_failure_does_not_restart_environment(unified_reverse):
     f = unified_reverse
-    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
-    assert result['pending']
+    assert rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)['pending']
     first = f.dispatches[0]
-    f.turns[first['session_id']][0].update(status='Failed', conclusion='正在验证第三个样例')
-    f.session_messages[first['session_id']] = 'Agent harness 超时'
-    result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
-    assert result['pending']
-    finish = f.dispatches[1]
-    assert finish['session_id'] == first['session_id']
-    assert finish['task_id'] != first['task_id']
-    assert finish['files'] is None
-    assert finish['timeout_seconds'] == 180
-    assert '无论正确性与性能是否达标，都请停下你的工作' in finish['prompt']
-    assert '整理代码，形成一个可运行的交付物' in finish['prompt']
-    assert '/workspace' not in finish['prompt']
-    assert f.releases == [first['task_id']]
-    f.turns[first['session_id']][1].update(status='Failed', conclusion='再次超时')
+    f.turns[first['session_id']][0].update(status='Failed', conclusion='Harbor 环境超时')
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
     assert result['success'] is False
-    assert len(f.dispatches) == 2
+    assert len(f.dispatches) == 1
+    assert f.releases == [first['task_id']]
 
 
 def test_endpoint_pool_full_does_not_send_generic_task(monkeypatch, unified_reverse):
@@ -1410,7 +1308,8 @@ def test_cleanup_failure_does_not_release_endpoint_slot(unified_reverse):
     f.turns[first['session_id']][0].update(status='CleanupFailed', conclusion='清理失败')
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
     assert result['success'] is False and not f.releases and len(f.dispatches) == 1
-    assert '清理失败' in result['message']
+    assert result['message'] == '评测未完成，请联系管理员处理。'
+    assert '通用 Agent' not in result['message'] and '端点名额' not in result['message']
     assert f.rows[rj.STEP_AGENT]['status'] == 'error'
 
 
@@ -1420,7 +1319,6 @@ def test_quota_failure_does_not_finalize_even_when_conclusion_mentions_timeout(m
     first = f.dispatches[0]
     f.turns[first['session_id']][0].update(status='Failed', conclusion='本地样例超时，我准备继续调试')
     f.session_messages[first['session_id']] = '额度耗尽'
-    monkeypatch.setattr(rj, 'get_agent_run_snapshot', lambda tid: {'harness_status': 'quota_exhausted'})
     result = rj._advance_agent_phase(f.task, object(), 7, 'attempt', f.competition, str(f.audit), rj.STEP_AGENT, 11)
     assert result['success'] is False
     assert len(f.dispatches) == 1

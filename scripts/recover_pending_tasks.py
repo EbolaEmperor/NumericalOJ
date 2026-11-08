@@ -4,6 +4,7 @@
 """在完整停止 NumericalOJ Celery worker 后显式恢复未完成任务。"""
 
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -41,6 +42,11 @@ def _parse_args(argv=None):
         action="store_true",
         help="确认所有本机和远端 NumericalOJ Celery worker 均已停止",
     )
+    parser.add_argument(
+        "--finalize-harbor-task",
+        metavar="TASK_ID",
+        help="仅从已完成的官方 Harbor 结果恢复指定任务，不重新调用模型或恢复其他任务",
+    )
     return parser.parse_args(argv)
 
 
@@ -74,6 +80,17 @@ def main(argv=None):
             if isinstance(reply, dict)
         ) or "unknown"
         raise SystemExit(f"拒绝恢复：仍有 Celery worker 响应 ping：{names}")
+
+    if args.finalize_harbor_task is not None:
+        from backend.oj_modules.tasks.agent.harbor_recovery import finalize_completed_harbor_task
+
+        result = finalize_completed_harbor_task(
+            args.finalize_harbor_task, celery_app=celery,
+        )
+        if not isinstance(result, dict):
+            raise TypeError("Harbor 指定任务恢复必须返回 JSON 对象")
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+        return 0 if result.get("success") is True else 1
 
     recover_pending_after_all_workers_stopped()
     print("未完成任务恢复与后台调度链重建已完成。")

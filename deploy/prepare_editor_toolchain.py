@@ -89,7 +89,7 @@ def _remove_export_container(container_name: str) -> None:
     )
 
 
-def _export_headers(image: str, staging_root: Path) -> None:
+def _export_headers(image: str, staging_root: Path, *, mode: str = "full") -> None:
     mount_source = str(staging_root.resolve(strict=True))
     exporter_source = str(
         Path(__file__).with_name("export_editor_headers.py").resolve(strict=True)
@@ -126,6 +126,8 @@ def _export_headers(image: str, staging_root: Path) -> None:
         "/opt/numericaloj-export-editor-headers.py",
         "--output",
         "/export",
+        "--mode",
+        mode,
     ]
     failure: BaseException | None = None
     try:
@@ -245,7 +247,9 @@ def _assert_inactive_slot(output: Path) -> None:
         )
 
 
-def prepare_editor_toolchain(image: str, output: Path) -> None:
+def prepare_editor_toolchain(image: str, output: Path, *, mode: str = "full") -> None:
+    if mode not in {"full", "lite"}:
+        raise EditorToolchainPreparationError("编辑器工具链模式仅支持 full 或 lite")
     if not _SAFE_IMAGE_REFERENCE.fullmatch(image):
         raise EditorToolchainPreparationError("候选判题镜像引用无效")
     if output.name not in {"slot-a", "slot-b"}:
@@ -268,12 +272,13 @@ def prepare_editor_toolchain(image: str, output: Path) -> None:
         )
     )
     try:
-        _export_headers(image, staging_root)
+        _export_headers(image, staging_root, mode=mode)
         _validate_export_tree(staging_root)
         manifest = build_editor_toolchain_manifest(
             staging_root,
             source_image_reference=image,
             source_image_id=image_id,
+            mode=mode,
         )
         manifest_path = staging_root / MANIFEST_FILENAME
         with manifest_path.open("x", encoding="utf-8") as stream:
@@ -302,9 +307,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--image", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=("full", "lite"), default="full")
     args = parser.parse_args(argv)
     try:
-        prepare_editor_toolchain(args.image, args.output)
+        prepare_editor_toolchain(args.image, args.output, mode=args.mode)
     except (
         EditorToolchainPreparationError,
         OSError,

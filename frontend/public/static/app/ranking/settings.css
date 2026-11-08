@@ -133,7 +133,7 @@
   gap:.58rem;
 }
 .aje-settings.reverse-timeout-settings {
-  grid-template-columns:repeat(2, minmax(130px, 152px));
+  grid-template-columns:minmax(130px, 152px);
   justify-content:start;
 }
 .aje-setting { display:flex; flex-direction:column; gap:.3rem; min-width:0; }
@@ -379,8 +379,25 @@
   border-radius:8px;
   background:#fbfcfd;
 }
-.qge-config-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.qge-config-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.qge-config-title-tools { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap; }
 .qge-config-title { color:var(--ink); font-size:.88rem; font-weight:700; }
+.qge-timeout-button {
+  display:inline-flex; align-items:center; gap:.4rem;
+  min-height:28px; padding:.3rem .5rem;
+  border:1px solid var(--line-strong); border-radius:6px;
+  background:#fff; color:var(--ink);
+  font-size:.76rem; font-weight:600; line-height:1;
+  cursor:pointer;
+}
+.qge-timeout-button:hover { border-color:#9aa3ad; background:var(--paper); }
+.qge-timeout-button:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
+.qge-timeout-button i { color:var(--muted); font-size:.7rem; }
+.qge-timeout-unsaved { color:#87661f; font-size:.73rem; font-weight:600; }
+.qge-timeout-modal .modal-dialog { max-width:420px; }
+.qge-timeout-body { display:grid; gap:1rem; }
+.qge-timeout-body .aje-timeout-control { width:fit-content; }
+.qge-timeout-hint { margin:0; color:var(--muted); font-size:.8rem; line-height:1.6; }
 .qge-switch { display:flex; align-items:center; gap:.5rem; margin:0; }
 .qge-switch .form-check-input { float:none; margin:0; cursor:pointer; }
 .qge-switch .form-check-label { color:var(--muted); font-size:.8rem; font-weight:700; cursor:pointer; }

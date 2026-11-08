@@ -3,7 +3,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import tarfile
 
@@ -334,7 +336,8 @@ def test_release_prune_keeps_current_and_explicit_previous(tmp_path):
     assert not (root / targets[1]).exists()
 
 
-def test_export_uses_docker_image_save_and_publishes_by_engine_id(tmp_path):
+@pytest.mark.parametrize("umask", [0o022, 0o002])
+def test_export_uses_docker_image_save_and_publishes_by_engine_id(tmp_path, umask):
     archive_fixture = tmp_path / "fixture.tar"
     image_id = _docker_archive(archive_fixture)
     commands = []
@@ -345,25 +348,41 @@ def test_export_uses_docker_image_save_and_publishes_by_engine_id(tmp_path):
             return subprocess.CompletedProcess(command, 0, json.dumps({"Id": image_id}), "")
         if command[:3] == ["docker", "image", "save"]:
             Path(command[4]).write_bytes(archive_fixture.read_bytes())
+            Path(command[4]).chmod(0o600)
             return subprocess.CompletedProcess(command, 0, "", "")
         raise AssertionError(command)
 
     root = tmp_path / "layout"
     root.mkdir(mode=0o700)
-    info = oci.export_engine_image(
-        image="numericaloj-vibehub-runtime:deploy-test",
-        engine_image_ref="numericaloj-vibehub-runtime:1",
-        output_root=root,
-        expected_image_id=image_id,
-        command_runner=runner,
-    )
+    previous_umask = os.umask(umask)
+    try:
+        info = oci.export_engine_image(
+            image="numericaloj-vibehub-runtime:deploy-test",
+            engine_image_ref="numericaloj-vibehub-runtime:1",
+            output_root=root,
+            expected_image_id=image_id,
+            command_runner=runner,
+        )
+    finally:
+        os.umask(previous_umask)
 
     assert info.path == root / "releases" / image_id[7:]
+    for directory in (info.path, info.path / "blobs", info.path / "blobs" / "sha256"):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
     assert [command[:3] for command in commands].count(
         ["docker", "image", "inspect"]
     ) == 2
     save = next(command for command in commands if command[:3] == ["docker", "image", "save"])
     assert save[-1] == "numericaloj-vibehub-runtime:deploy-test"
+
+
+@pytest.mark.parametrize("relative_path", [".", "blobs", "blobs/sha256"])
+def test_verify_release_still_rejects_group_writable_directories(tmp_path, relative_path):
+    _root, release, _info = _converted_release(tmp_path)
+    (release / relative_path).chmod(0o775)
+
+    with pytest.raises(oci.OCIExportError, match="目录不能被 group/world 写入"):
+        oci.verify_release(release)
 
 
 def test_networked_probe_uses_exact_oci_context_and_prune(tmp_path):

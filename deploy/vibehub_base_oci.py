@@ -328,8 +328,12 @@ def convert_docker_archive(
     _safe_dir(release_path.parent)
     release_path.mkdir(mode=0o700)
     _safe_dir(release_path)
-    blob_root = release_path / "blobs" / "sha256"
-    blob_root.mkdir(mode=0o700, parents=True)
+    # parents=True 的 mode 只应用于叶目录；逐层创建，避免 umask=0002
+    # 将中间 blobs 目录创建为可被组写入的 0775。
+    blobs = release_path / "blobs"
+    blobs.mkdir(mode=0o700)
+    blob_root = blobs / "sha256"
+    blob_root.mkdir(mode=0o700)
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     archive_fd = os.open(archive_path, flags)

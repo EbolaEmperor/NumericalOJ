@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import {QueryClient, QueryClientProvider} from '@tanstack/react-query'
-import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react'
+import {act, cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react'
 import {MemoryRouter, Route, Routes} from 'react-router-dom'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -32,24 +32,44 @@ async function showSubmit(scoringMode = 'reverse_judge', endpoints = [{id: 11, h
   return posts
 }
 
-async function showJudgeSettings(orchestration?: string, scoringMode = 'agent_judge') {
-  const competition = {id: 7, title: '测试编排设置', scoring_mode: scoringMode, is_active: 1, agent_judge_orchestration_mode: orchestration}
+async function showJudgeSettings(orchestration?: string, scoringMode = 'agent_judge', files: Record<string, unknown>[] = [], gate: {timeout?: number; enabled?: boolean; prompt?: string; endpoints?: Record<string, unknown>[]} = {}) {
+  const competition = {id: 7, title: '测试编排设置', scoring_mode: scoringMode, is_active: 1, agent_judge_orchestration_mode: orchestration, reverse_quality_gate_timeout_seconds: gate.timeout, reverse_quality_gate_enabled: gate.enabled, reverse_quality_gate_prompt: gate.prompt}
+  let qualityGateEndpoints = gate.endpoints || []
   const posts = vi.fn((body: {orchestration_mode?: string}) => {
     if (body.orchestration_mode) competition.agent_judge_orchestration_mode = body.orchestration_mode
     return response({endpoints: [], orchestration_mode: competition.agent_judge_orchestration_mode})
+  })
+  const gatePosts = vi.fn((body: {enabled: boolean; prompt: string; timeout_seconds: number; endpoints: Record<string, unknown>[]}) => {
+    competition.reverse_quality_gate_enabled = body.enabled
+    competition.reverse_quality_gate_prompt = body.prompt
+    competition.reverse_quality_gate_timeout_seconds = body.timeout_seconds
+    qualityGateEndpoints = body.endpoints
+    return response({...body})
   })
   vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (url === '/api/v1/session') return response({user: {id: 1, username: 'admin', is_admin: 1}, navigation: {counts: {}}})
     if (url === '/ranking/7/navigation-state') return response({navigation: {scoring_mode: scoringMode, is_active: true}})
-    if (url === '/api/ranking/competitions/7?tab=edit') return response({competition, tab: 'edit', is_admin: true, aj_endpoints: [], judge_rules: []})
+    if (url === '/api/ranking/competitions/7?tab=edit') return response({competition, tab: 'edit', is_admin: true, files, aj_endpoints: [], quality_gate_endpoints: qualityGateEndpoints, judge_rules: []})
     if (url === '/api/ranking/competitions/7/agent-judge/endpoints' && init?.method === 'POST') return posts(JSON.parse(String(init.body)))
+    if (url === '/api/ranking/competitions/7/reverse-judge/quality-gate' && init?.method === 'POST') return gatePosts(JSON.parse(String(init.body)))
     throw new Error(`unexpected fetch: ${url}`)
   }))
   const client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: false}}})
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/rankings/7?tab=edit']}><SessionProvider><Routes><Route path="/rankings/:competitionId" element={<RankingDetailPage />} /></Routes></SessionProvider></MemoryRouter></QueryClientProvider>)
   await screen.findByRole('heading', {name: '测试编排设置'})
-  return {posts, client, competition}
+  return {posts, gatePosts, client, competition}
+}
+
+function applyAuditTime(seconds: string) {
+  fireEvent.click(screen.getByRole('button', {name: '设置审核时间'}))
+  const dialog = screen.getByRole('dialog', {name: '设置审核时间'})
+  fireEvent.change(within(dialog).getByRole('textbox', {name: '审核时间上限'}), {target: {value: seconds}})
+  fireEvent.click(within(dialog).getByRole('button', {name: '应用修改'}))
+}
+
+function saveQualityGate() {
+  fireEvent.click(within(document.querySelector('.qge-shell')! as HTMLElement).getByRole('button', {name: '保存'}))
 }
 
 function fileInput(kind: string) {
@@ -64,6 +84,12 @@ afterEach(() => {cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks()})
 describe('打榜赛提交文件', () => {
   it.each(['拖入', '点选'])('反向 ZIP %s文件后点击提交会发送文件与选中节点', async (method) => {
     const posts = await showSubmit()
+    expect(screen.getByText('Harbor 任务包')).toBeTruthy()
+    const guide = screen.getByRole('link', {name: 'Harbor 格式说明'})
+    expect(guide.getAttribute('href')).toBe('/rankings/harbor-guide')
+    expect(guide.closest('.ranking-competition-title-line')).toBeTruthy()
+    expect(document.querySelector('[data-reverse-harbor-guide]')).toBeNull()
+    expect(screen.queryByText('从你的仓库拉取最新内容并评测')).toBeNull()
     fireEvent.click(screen.getByRole('button', {name: /^AI 节点：/}))
     fireEvent.click(screen.getByRole('option', {name: /selected-model/}))
     const archive = new File(['ZIP CONTENT'], 'problem.zip', {type: 'application/zip'})
@@ -95,6 +121,8 @@ describe('打榜赛提交文件', () => {
 
   it('普通评测仍要求答案、代码和非空基座模型', async () => {
     const posts = await showSubmit('absolute')
+    expect(document.querySelector('[data-reverse-harbor-guide]')).toBeNull()
+    expect(screen.queryByRole('link', {name: 'Harbor 格式说明'})).toBeNull()
     const submit = screen.getByRole('button', {name: '提交评测'}) as HTMLButtonElement
     const archive = new File(['CODE'], 'code.zip')
     const answer = new File(['{}'], 'answer.json')
@@ -140,6 +168,7 @@ describe('Agent Judge 编排设置', () => {
     fireEvent.click(screen.getByRole('button', {name: '保存'}))
     await waitFor(() => expect(posts).toHaveBeenCalledTimes(1))
     expect(posts.mock.calls[0][0].orchestration_mode).toBe(nextMode)
+    expect(posts.mock.calls[0][0]).toHaveProperty('reverse_judge_finalize_timeout_seconds', 180)
     await screen.findByText('已保存')
     expect(choice.textContent).toContain(nextLabel)
     competition.agent_judge_orchestration_mode = initial || 'single'
@@ -147,12 +176,128 @@ describe('Agent Judge 编排设置', () => {
     await waitFor(() => expect(choice.textContent).toContain(currentLabel))
   })
 
-  it('反向评测不展示或提交 Agent Judge 编排配置', async () => {
+  it('反向评测保留作答与审核时间，不展示或提交收尾超时和编排配置', async () => {
     const {posts, competition} = await showJudgeSettings('topological', 'reverse_judge')
     expect(screen.queryByRole('combobox', {name: '评测编排'})).toBeNull()
+    expect(screen.queryByRole('textbox', {name: '收尾超时'})).toBeNull()
+    expect(screen.getByRole('textbox', {name: 'AI 作答超时'})).toBeTruthy()
+    expect(screen.getByRole('button', {name: '设置审核时间'}).textContent).toContain('30 分钟')
     fireEvent.click(screen.getAllByRole('button', {name: '保存'})[0])
     await waitFor(() => expect(posts).toHaveBeenCalledTimes(1))
     expect(posts.mock.calls[0][0]).not.toHaveProperty('orchestration_mode')
+    expect(posts.mock.calls[0][0]).not.toHaveProperty('reverse_judge_finalize_timeout_seconds')
     expect(competition.agent_judge_orchestration_mode).toBe('topological')
+  })
+
+  it('默认 Harbor 模板显示为附件并保留下载入口，不提供删除按钮', async () => {
+    const url = '/api/ranking/competitions/7/attachments/harbor-template/download'
+    await showJudgeSettings(undefined, 'reverse_judge', [{id: 'harbor-template', builtin: true, filename: 'harbor-template.zip', download_url: url, file_size: 2048}])
+    expect(screen.getByRole('link', {name: /harbor-template.zip/}).getAttribute('href')).toBe(url)
+    const row = screen.getByText('默认模板').closest('.list-group-item')!
+    expect(row.querySelector('a')?.getAttribute('href')).toBe(url)
+    expect(row.querySelector('button')).toBeNull()
+  })
+})
+
+describe('反向评测审核时间', () => {
+  it('默认30分钟，取消弹窗不改草稿，统一保存时发送1800秒', async () => {
+    const {gatePosts} = await showJudgeSettings(undefined, 'reverse_judge')
+    const trigger = screen.getByRole('button', {name: '设置审核时间'})
+    expect(trigger.textContent).toContain('30 分钟')
+    expect(trigger.closest('.qge-config-title-tools')?.textContent).toContain('审核标准')
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog', {name: '设置审核时间'})
+    const input = within(dialog).getByRole('textbox', {name: '审核时间上限'}) as HTMLInputElement
+    expect(input.type).toBe('text')
+    expect(input.value).toBe('1800')
+    fireEvent.change(input, {target: {value: '2400'}})
+    fireEvent.click(within(dialog).getByRole('button', {name: '取消'}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(trigger.textContent).toContain('30 分钟')
+    expect(screen.queryByText('未保存')).toBeNull()
+    expect(gatePosts).not.toHaveBeenCalled()
+    saveQualityGate()
+    await waitFor(() => expect(gatePosts).toHaveBeenCalledTimes(1))
+    expect(gatePosts.mock.calls[0][0].timeout_seconds).toBe(1800)
+  })
+
+  it('应用时间仅更新草稿，保存时一起保留审核标准、启用状态和端点', async () => {
+    const endpoints = [{id: 8, harness: 'pi', model: '审核模型', concurrency_limit: 2, status: 'enabled', has_key: true}]
+    const {gatePosts, posts} = await showJudgeSettings(undefined, 'reverse_judge', [], {timeout: 600, enabled: true, prompt: '原有标准', endpoints})
+    fireEvent.change(screen.getByRole('textbox', {name: '质量门禁审核标准'}), {target: {value: '更新后的审核标准'}})
+    fireEvent.click(screen.getByRole('checkbox', {name: '启用'}))
+    applyAuditTime('90')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('button', {name: '设置审核时间'}).textContent).toContain('1 分 30 秒')
+    expect(screen.getByText('未保存')).toBeTruthy()
+    expect(gatePosts).not.toHaveBeenCalled()
+    saveQualityGate()
+    await waitFor(() => expect(gatePosts).toHaveBeenCalledTimes(1))
+    expect(gatePosts.mock.calls[0][0]).toEqual({timeout_seconds: 90, prompt: '更新后的审核标准', enabled: false, endpoints})
+    expect(posts).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByText('未保存')).toBeNull())
+  })
+
+  it.each(['59', '7201', '60.5'])('拒绝非法审核时间%s，且不提前保存', async (seconds) => {
+    const {gatePosts} = await showJudgeSettings(undefined, 'reverse_judge')
+    applyAuditTime(seconds)
+    expect(screen.getByRole('alert').textContent).toContain('60–7200 秒的整数')
+    expect(screen.getByRole('dialog', {name: '设置审核时间'})).toBeTruthy()
+    expect(screen.getByRole('button', {name: '设置审核时间'}).textContent).toContain('30 分钟')
+    expect(gatePosts).not.toHaveBeenCalled()
+  })
+
+  it('自定义步进按钮遵守上下界，允许60秒和7200秒', async () => {
+    await showJudgeSettings(undefined, 'reverse_judge')
+    fireEvent.click(screen.getByRole('button', {name: '设置审核时间'}))
+    const dialog = screen.getByRole('dialog', {name: '设置审核时间'})
+    const input = within(dialog).getByRole('textbox', {name: '审核时间上限'}) as HTMLInputElement
+    fireEvent.change(input, {target: {value: '60'}})
+    fireEvent.click(within(dialog).getByRole('button', {name: '减少审核时间上限'}))
+    expect(input.value).toBe('60')
+    fireEvent.click(within(dialog).getByRole('button', {name: '应用修改'}))
+    expect(screen.getByRole('button', {name: '设置审核时间'}).textContent).toContain('1 分钟')
+    fireEvent.click(screen.getByRole('button', {name: '设置审核时间'}))
+    const nextDialog = screen.getByRole('dialog', {name: '设置审核时间'})
+    const nextInput = within(nextDialog).getByRole('textbox', {name: '审核时间上限'}) as HTMLInputElement
+    fireEvent.change(nextInput, {target: {value: '7200'}})
+    fireEvent.click(within(nextDialog).getByRole('button', {name: '增加审核时间上限'}))
+    expect(nextInput.value).toBe('7200')
+    fireEvent.click(within(nextDialog).getByRole('button', {name: '应用修改'}))
+    expect(screen.getByRole('button', {name: '设置审核时间'}).textContent).toContain('120 分钟')
+  })
+
+  it('干净状态跟随服务端时间更新，未保存的时间不会被刷新覆盖', async () => {
+    const {client, competition, gatePosts} = await showJudgeSettings(undefined, 'reverse_judge', [], {timeout: 600})
+    const trigger = screen.getByRole('button', {name: '设置审核时间'})
+    expect(trigger.textContent).toContain('10 分钟')
+    competition.reverse_quality_gate_timeout_seconds = 1200
+    await act(() => client.invalidateQueries({queryKey: ['ranking', '7']}))
+    await waitFor(() => expect(trigger.textContent).toContain('20 分钟'))
+    applyAuditTime('900')
+    competition.reverse_quality_gate_timeout_seconds = 1800
+    await act(() => client.invalidateQueries({queryKey: ['ranking', '7']}))
+    expect(trigger.textContent).toContain('15 分钟')
+    expect(screen.getByText('未保存')).toBeTruthy()
+    expect(gatePosts).not.toHaveBeenCalled()
+  })
+
+  it('保存期间再次修改时间仍保留未保存提示', async () => {
+    const {gatePosts, competition} = await showJudgeSettings(undefined, 'reverse_judge')
+    let finishSave: (() => void) | undefined
+    gatePosts.mockImplementationOnce((body) => new Promise<Response>((resolve) => {
+      finishSave = () => {
+        competition.reverse_quality_gate_timeout_seconds = body.timeout_seconds
+        void response({endpoints: body.endpoints}).then(resolve)
+      }
+    }))
+    applyAuditTime('2400')
+    saveQualityGate()
+    await waitFor(() => expect(gatePosts).toHaveBeenCalledTimes(1))
+    applyAuditTime('3600')
+    await act(async () => {finishSave?.()})
+    await waitFor(() => expect(screen.getByRole('button', {name: '设置审核时间'}).textContent).toContain('60 分钟'))
+    expect(gatePosts.mock.calls[0][0].timeout_seconds).toBe(2400)
+    expect(screen.getByText('未保存')).toBeTruthy()
   })
 })

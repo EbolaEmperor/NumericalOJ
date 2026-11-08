@@ -436,6 +436,7 @@ def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
     assert result == {
         'enabled': True,
         'prompt': '不得隐藏私有协议',
+        'timeout_seconds': 1800,
         'enabled_endpoint_count': 1,
     }
     assert conn.committed is True
@@ -458,6 +459,63 @@ def test_quality_gate_configuration_and_pool_share_one_transaction(monkeypatch):
     assert 'context_window_tokens' in locked_endpoint_select
     assert 'max_output_tokens' in locked_endpoint_select
     assert 'thinking_compatibility' in locked_endpoint_select
+
+
+def test_quality_gate_timeout_only_update_preserves_locked_configuration_and_pool(monkeypatch):
+    cursor = _FakeCursor(
+        one_values=[{
+            'reverse_quality_gate_enabled': 1,
+            'reverse_quality_gate_prompt': '保留现有审核标准',
+            'reverse_quality_gate_timeout_seconds': 1800,
+        }],
+        rows=[_endpoint_row(7, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)],
+    )
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(endpoint_db, 'get_db_connection', lambda: conn)
+
+    result = endpoint_db.save_reverse_quality_gate_configuration(17, timeout_seconds=4200)
+
+    assert result == {
+        'enabled': True,
+        'prompt': '保留现有审核标准',
+        'timeout_seconds': 4200,
+        'enabled_endpoint_count': 1,
+    }
+    writes = [(sql, params) for sql, params in cursor.calls
+              if sql.lstrip().startswith(('UPDATE', 'INSERT', 'DELETE'))]
+    assert writes == [(
+        'UPDATE ranking_competitions SET reverse_quality_gate_timeout_seconds = %s WHERE id = %s',
+        (4200, 17),
+    )]
+    assert sum('FOR UPDATE' in sql for sql, _ in cursor.calls) == 2
+    assert conn.committed is True
+    assert conn.rolled_back is False
+    assert conn.closed is True
+
+
+@pytest.mark.parametrize('timeout_seconds', [59, 7201, True, 1.5, '300s', None])
+def test_quality_gate_invalid_timeout_rolls_back_without_replacing_pool(monkeypatch, timeout_seconds):
+    cursor = _FakeCursor(
+        one_values=[{
+            'reverse_quality_gate_enabled': 1,
+            'reverse_quality_gate_prompt': '原审核标准',
+            'reverse_quality_gate_timeout_seconds': 1800,
+        }],
+        rows=[_endpoint_row(7, endpoint_db.ENDPOINT_POOL_QUALITY_GATE)],
+    )
+    conn = _FakeConnection(cursor)
+    monkeypatch.setattr(endpoint_db, 'get_db_connection', lambda: conn)
+
+    with pytest.raises(ValueError, match='审核时限'):
+        endpoint_db.save_reverse_quality_gate_configuration(
+            17, timeout_seconds=timeout_seconds, endpoints=[],
+        )
+
+    assert all(not sql.lstrip().startswith(('UPDATE', 'INSERT', 'DELETE'))
+               for sql, _ in cursor.calls)
+    assert conn.committed is False
+    assert conn.rolled_back is True
+    assert conn.closed is True
 
 
 @pytest.mark.parametrize(
