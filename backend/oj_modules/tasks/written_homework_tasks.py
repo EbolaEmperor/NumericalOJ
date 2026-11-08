@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 import uuid
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pymysql
@@ -58,6 +59,7 @@ from backend.oj_modules.submissions.written_voting import (
     get_latest_attempt,
     update_vote,
 )
+from backend.oj_modules.submissions.written_trace import WrittenVoteTrace, WrittenGradingTraceError
 
 
 WRITTEN_TASK_NAME = "oj.transcribe_written_homework_to_latex"
@@ -230,12 +232,19 @@ def _resolve_written_vote_plan(problem, written_mode):
     return config, plan
 
 
-def _run_written_vote(attempt_id, vote, evaluator):
+def _run_written_vote(attempt_id, vote, evaluator, *, submission_id=None, round_number=1):
     last_error = None
     for call_attempt in range(1, _VOTE_CALL_ATTEMPTS + 1):
         update_vote(vote["id"], status="running", call_attempts=call_attempt)
         try:
-            evaluated = evaluator(vote["endpoint"])
+            trace = (
+                WrittenVoteTrace(submission_id, attempt_id, vote, round_number, call_attempt)
+                if submission_id is not None else None
+            )
+            with trace.capture() if trace is not None else nullcontext():
+                evaluated = evaluator(vote["endpoint"])
+                if trace is not None:
+                    trace.completed(evaluated)
             if isinstance(evaluated, WrittenGradingRound):
                 score = int(evaluated.score)
                 comment = str(evaluated.comment or "")
@@ -250,7 +259,7 @@ def _run_written_vote(attempt_id, vote, evaluator):
         except Exception as exc:  # 每一票独立重试，不重跑已经成功的票。
             last_error = exc
             # 格式修复已经用完独立的五次机会，不能再重跑评分、倍增修复调用。
-            if isinstance(exc, WrittenGradingJSONRepairError):
+            if isinstance(exc, (WrittenGradingJSONRepairError, WrittenGradingTraceError)):
                 break
             if call_attempt < _VOTE_CALL_ATTEMPTS:
                 time.sleep(WRITTEN_GRADING_RETRY_DELAYS_SECONDS[call_attempt - 1])
@@ -272,7 +281,7 @@ def _run_written_vote(attempt_id, vote, evaluator):
     return {"error": str(last_error or "模型调用失败")}
 
 
-def _run_written_vote_round(attempt, vote_plan, evaluator_for_vote):
+def _run_written_vote_round(attempt, vote_plan, evaluator_for_vote, *, round_number=1):
     results = [None] * len(vote_plan)
     with ThreadPoolExecutor(max_workers=min(_VOTE_MAX_WORKERS, len(vote_plan))) as executor:
         future_map = {
@@ -281,6 +290,8 @@ def _run_written_vote_round(attempt, vote_plan, evaluator_for_vote):
                 attempt["id"],
                 vote,
                 lambda endpoint, index=index: evaluator_for_vote(index, endpoint),
+                submission_id=attempt.get("submission_id"),
+                round_number=round_number,
             ): index
             for index, vote in enumerate(vote_plan)
         }
@@ -348,6 +359,7 @@ def _evaluate_written_votes(attempt, vote_plan, evaluator, reconsider_evaluator=
             attempt,
             vote_plan,
             evaluate_reconsideration,
+            round_number=round_number,
         )
         if any(result is None or result.get("error") for result in results):
             finish_attempt(attempt["id"], status="needs_manual_review")

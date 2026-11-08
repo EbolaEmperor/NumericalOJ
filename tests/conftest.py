@@ -58,7 +58,7 @@ CORE_TABLES = [
 ADMIN_USERNAME = 'admin'
 ADMIN_PASSWORD = 'admin123'
 SEED_CLASSES = [('Cclass1', '测试班级')]
-TEST_FILESYSTEM_ROOTS = ('ranking_uploads', 'repository_storage')
+TEST_FILESYSTEM_ROOTS = ('ranking_uploads', 'repository_storage', 'written_grading_traces')
 
 
 def sha256_hex(text):

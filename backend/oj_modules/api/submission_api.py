@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Blueprint, request, url_for
+from flask import Blueprint, request, url_for, send_file
 
 from backend.oj_modules.api.helpers import (
     apply_limit,
@@ -41,6 +41,11 @@ from backend.oj_modules.submissions.visibility import (
     project_submission_grading,
     submission_is_judging,
 )
+from backend.oj_modules.submissions.written_trace import (
+    list_submission_traces,
+    open_trace_artifact,
+    WrittenGradingTraceError,
+)
 
 
 submission_api_bp = Blueprint("submission_api", __name__, url_prefix="/api")
@@ -49,6 +54,60 @@ submission_api_bp = Blueprint("submission_api", __name__, url_prefix="/api")
 def _private_json_success(**payload):
     response = json_success(**payload)
     response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _written_trace_access(submission_id):
+    user = current_user()
+    if not user:
+        return json_error("请先登录", 401)
+    if not is_admin(user):
+        return json_error("仅管理员可查看完整评分记录", 403)
+    submission = get_submission_by_id(submission_id)
+    if not submission:
+        return json_error("提交记录不存在", 404)
+    if int(submission.get("problem_type") or 0) != 2:
+        return json_error("该提交不是书面作业", 400)
+    return None
+
+
+@submission_api_bp.get("/admin/submissions/<int:submission_id>/grading-trace")
+def written_grading_trace(submission_id):
+    denied = _written_trace_access(submission_id)
+    if denied is not None:
+        return denied
+    records = list_submission_traces(submission_id)
+    for record in records:
+        for call in record["calls"]:
+            call["request_url"] = url_for(
+                ".written_grading_trace_file", submission_id=submission_id,
+                record_id=record["record_id"], filename=call["request_file"],
+            )
+            call["response_url"] = url_for(
+                ".written_grading_trace_file", submission_id=submission_id,
+                record_id=record["record_id"], filename=call["response_file"],
+            )
+    response = _private_json_success(submission_id=submission_id, records=records)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@submission_api_bp.get("/admin/submissions/<int:submission_id>/grading-trace/<record_id>/<filename>")
+def written_grading_trace_file(submission_id, record_id, filename):
+    denied = _written_trace_access(submission_id)
+    if denied is not None:
+        return denied
+    try:
+        stream = open_trace_artifact(submission_id, record_id, filename)
+    except (ValueError, OSError, WrittenGradingTraceError):
+        return json_error("评分记录文件不存在或路径无效", 404)
+    response = send_file(
+        stream, mimetype="application/octet-stream", as_attachment=True,
+        download_name=filename, conditional=False, etag=False, max_age=0,
+    )
+    response.call_on_close(stream.close)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 

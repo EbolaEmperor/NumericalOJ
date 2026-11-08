@@ -53,6 +53,8 @@ uploads/
 /static/
 # 统一结构化日志、轮转文件、采集器 socket 与状态文件均为运行时数据。
 /logs/
+# 书面评委完整请求、响应与逐轮结果，仅管理员可读的业务工件。
+/written_grading_traces/
 # 判题运行目录（JUDGER_RUN_ROOT 默认 <OJ_ROOT>/judger）：每次评测的 eoj-* 子目录是
 # 临时产物，不入库；judger/ 下手动维护的文件（如 baltaTest.md）照常跟踪。
 judger/*

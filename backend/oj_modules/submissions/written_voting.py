@@ -44,7 +44,7 @@ def create_attempt(submission_id, grading_mode, config, votes):
                 )
                 vote["id"] = int(cursor.lastrowid)
         conn.commit()
-        return {"id": attempt_id, "attempt_token": token, "votes": votes}
+        return {"id": attempt_id, "submission_id": int(submission_id), "attempt_token": token, "votes": votes}
     finally:
         conn.close()
 

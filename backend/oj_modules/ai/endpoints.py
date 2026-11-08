@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
+from celery.exceptions import SoftTimeLimitExceeded
 
 
 class LLMProtocol(str, Enum):
@@ -1093,6 +1094,9 @@ def _request_failure_error(kind):
 
 
 def _post(endpoint, payload, *, timeout, stream, request_post=None):
+    from backend.oj_modules.ai.exchange_capture import CapturedResponse, begin_exchange
+
+    exchange = begin_exchange(payload)
     post = request_post or requests.post
     # 流式调用只限制建立连接的时间，不限制读取响应的时间。这样模型只要
     # 仍在持续输出，应用就不会因为固定的 read timeout 截断请求；SSE 上层
@@ -1109,13 +1113,30 @@ def _post(endpoint, payload, *, timeout, stream, request_post=None):
             # 否则非流式请求会在检查错误状态前无界预下载整个错误响应。
             stream=True,
         )
+    except SoftTimeLimitExceeded:
+        if exchange is not None:
+            exchange.failed("SoftTimeLimitExceeded")
+        raise
     except Exception as error:
         request_failure = _request_failure_kind(error)
     if request_failure is not None:
+        if exchange is not None:
+            exchange.failed(request_failure)
         # 在捕获块外抛出，异常链也不保留供应商异常、请求 URL 或响应对象。
         raise _request_failure_error(request_failure) from None
+    if exchange is not None:
+        exchange.received(response)
+        response = CapturedResponse(response, exchange)
     if int(getattr(response, "status_code", 0) or 0) >= 400:
-        provider_reason = _read_403_provider_reason(response)
+        if exchange is not None:
+            try:
+                response.read_body()
+            finally:
+                response.close()
+            exchange.failed("http_error")
+        provider_reason = _read_403_provider_reason(
+            response._response if exchange is not None else response
+        )
         try:
             response.close()
         except Exception:
@@ -1266,6 +1287,8 @@ def _parse_anthropic_response(data):
 def _response_json(response):
     try:
         return response.json()
+    except SoftTimeLimitExceeded:
+        raise
     except Exception:
         raise LLMEndpointResponseError("模型端点返回的内容不是有效 JSON。") from None
     finally:

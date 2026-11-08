@@ -57,6 +57,7 @@ submission_problem_list = submission.submission_problem_list
 submission_status_cmd = submission.submission_status_cmd
 submission_stream = submission.submission_stream
 submission_detail_cmd = submission.submission_detail_cmd
+submission_grading_trace = submission.submission_grading_trace
 submission_last_code = submission.submission_last_code
 submission_output_image = submission.submission_output_image
 submission_download_file = submission.submission_download_file

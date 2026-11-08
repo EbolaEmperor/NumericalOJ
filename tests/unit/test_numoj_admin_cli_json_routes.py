@@ -95,6 +95,43 @@ class _SequenceClient:
         return self.responses.pop(0)
 
 
+def test_admin_grading_trace_preserves_discussion_fields_and_download_bytes(monkeypatch, capsys, tmp_path):
+    cli = _load_numoj_admin_cli_module()
+    record_id = "a" * 32
+    payload = {"success": True, "records": [{"record_id": record_id, "result": {
+        "raw_response": '{"score":5,"peer_replies":[]}',
+        "peer_replies": [{"vote_index": 1, "reply": "讨论全文"}],
+    }}]}
+    raw = _PayloadResponse({}, headers={"Content-Type": "application/octet-stream"})
+    raw.content = b'data: {"thinking":"full"}\r\n\r\ndata: [DONE]\r\n\r\n'
+    client = _SequenceClient([_PayloadResponse(payload), raw])
+    monkeypatch.setattr(cli.submission, "client_from_args", lambda _args: client)
+    assert cli.main(["submission", "grading-trace", "1"]) == 0
+    assert cli.json.loads(capsys.readouterr().out) == payload
+    target = tmp_path / "response.body"
+    assert cli.main([
+        "submission", "grading-trace", "1", "--record", record_id,
+        "--file", "call-2.response.body", "-o", str(target),
+    ]) == 0
+    assert target.read_bytes() == raw.content
+    assert client.requests[1][1] == f"/api/admin/submissions/1/grading-trace/{record_id}/call-2.response.body"
+
+
+@pytest.mark.parametrize("args", [
+    ["--file", "round.json"],
+    ["--record", "a" * 32],
+    ["--record", "../private", "--file", "round.json"],
+    ["--record", "a" * 32, "--file", "../secret"],
+    ["-o", "index.json"],
+])
+def test_admin_grading_trace_rejects_invalid_download_arguments(monkeypatch, args):
+    cli = _load_numoj_admin_cli_module()
+    client = _FakeClient()
+    monkeypatch.setattr(cli.submission, "client_from_args", lambda _args: client)
+    assert cli.main(["submission", "grading-trace", "1", *args]) != 0
+    assert client.requests == []
+
+
 def test_numoj_admin_page_like_commands_use_json_api_without_output(monkeypatch):
     cli = _load_numoj_admin_cli_module()
     fake_client = _FakeClient()
@@ -1763,6 +1800,8 @@ class _HygieneClient:
             return _PayloadResponse(self._submission_status_payload())
         if path == "/api/submissions/1":
             return _PayloadResponse(self._submission_detail_payload())
+        if path == "/api/admin/submissions/1/grading-trace":
+            return _PayloadResponse({"success": True, "submission_id": 1, "records": []})
         if path == "/api/problems/1/last-submission-code":
             return _PayloadResponse({**self._noise(), "success": True, "code": "disp(1)"})
         if path == "/api/admin/homework":
@@ -2161,6 +2200,7 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["submission", "status", "1"],
         ["submission", "stream", "1"],
         ["submission", "detail", "1"],
+        ["submission", "grading-trace", "1"],
         ["submission", "last-code", "1"],
         ["submission", "output-image", "1", "1", "-o", str(output_file)],
         ["submission", "download-file", "1", "-o", str(output_file)],
@@ -2326,6 +2366,7 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
     assert actual_paths == expected_paths
 
     full_submission_commands = {
+        ("submission", "grading-trace"),
         ("submission", "status"),
         ("submission", "detail"),
         ("submission", "last-code"),

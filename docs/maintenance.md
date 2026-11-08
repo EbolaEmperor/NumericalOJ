@@ -359,6 +359,11 @@ sudo /usr/bin/systemctl start mysql
 
 ## 6. 日志与审计规则
 
+书面评委的完整请求、响应与逐轮讨论作为私有业务工件单独保存于
+`written_grading_traces/`，管理员查看、备份和回滚说明见
+[逐轮评分记录](written-grading-traces.md)。该目录不属于常规日志，数据库备份不会自动包含它；
+发布及应用回滚必须保留，备份时与对应数据库 attempt 成对保存。
+
 - 运行时日志根固定为项目内 `logs/`，整个目录不入 Git；Supervisor 活动日志和组件
   stdout 也不得回退到 `/tmp`。Supervisor 的 PID/socket 和部署锁继续使用 `/tmp`；日志采集器自己的 socket/lock 位于 `logs/run/`，不得混为一谈。
 - 应用事件采用 `numericaloj.log` v1 单行 JSON。业务事实在数据库 commit 成功后的数据层
