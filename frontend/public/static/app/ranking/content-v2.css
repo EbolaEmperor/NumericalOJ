@@ -1,5 +1,6 @@
 /* Ranking UI v2 — content tabs only. The detail shell owns the page header/rail. */
-.ranking-v2-detail {
+.ranking-v2-detail,
+.rk-bulk-modal {
   --rkv2-ink: #18181b;
   --rkv2-ink-2: #3f3f46;
   --rkv2-ink-3: #71717a;
@@ -2772,5 +2773,459 @@
   .ranking-v2-detail .bm-picker-caret {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* 批量重测弹窗通过 Portal 挂到 body，直接复用打榜赛的视觉变量。 */
+.rk-bulk-modal {
+  color: var(--rkv2-ink);
+  font-size: 13px;
+}
+
+.rk-bulk-modal .modal-dialog {
+  width: min(1080px, calc(100% - 32px));
+  max-width: 1080px;
+  min-height: calc(100% - 64px);
+  margin: 32px auto;
+}
+
+.rk-bulk-modal .modal-content {
+  border: 1px solid var(--rkv2-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgb(24 24 27 / 18%);
+}
+
+.rk-bulk-modal .modal-header,
+.rk-bulk-modal .modal-footer {
+  gap: 12px;
+  padding: 18px 22px;
+  border-color: var(--rkv2-line);
+}
+
+.rk-bulk-modal .modal-title {
+  margin: 0;
+  color: var(--rkv2-ink);
+  font-size: 16px;
+  font-weight: 750;
+  letter-spacing: -.02em;
+}
+
+.rk-bulk-modal .modal-body {
+  padding: 20px 22px;
+  overflow: visible;
+}
+
+.rk-bulk-modal .modal-footer {
+  background: #fafafa;
+  border-radius: 0 0 12px 12px;
+}
+
+.rk-bulk-modal .rk-bulk-close {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rkv2-ink-3);
+  font-size: 13px;
+}
+
+.rk-bulk-modal .rk-bulk-close:hover {
+  background: var(--rkv2-line-soft);
+  color: var(--rkv2-ink);
+}
+
+.rk-bulk-modal .rk-bulk-filters {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.6fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.rk-bulk-modal .rk-bulk-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  margin: 0;
+}
+
+.rk-bulk-modal .rk-bulk-field > span {
+  color: var(--rkv2-ink-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rk-bulk-modal .rk-bulk-field > input,
+.rk-bulk-modal .rk-choice-trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 10px 12px;
+  border: 1px solid #d4d4d8;
+  border-radius: 7px;
+  outline: 0;
+  background: #fff;
+  color: var(--rkv2-ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rk-bulk-modal .rk-bulk-field > input::placeholder {
+  color: var(--rkv2-ink-4);
+}
+
+.rk-bulk-modal .rk-bulk-field > input:focus,
+.rk-bulk-modal .rk-choice-trigger:focus-visible {
+  border-color: var(--rkv2-orange);
+  box-shadow: 0 0 0 2px var(--rkv2-orange-soft);
+}
+
+.rk-bulk-modal .rk-bulk-date .datetime-range-panel {
+  right: auto;
+  left: 0;
+  width: 430px;
+  max-width: calc(100vw - 64px);
+}
+
+.rk-bulk-modal .rk-bulk-filter-btn,
+.rk-bulk-modal .rk-bulk-primary,
+.rk-bulk-modal .rk-bulk-secondary {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 15px;
+  border: 1px solid var(--rkv2-ink);
+  border-radius: 7px;
+  background: var(--rkv2-ink);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.rk-bulk-modal .rk-bulk-filter-btn:hover:not(:disabled),
+.rk-bulk-modal .rk-bulk-primary:hover:not(:disabled) {
+  border-color: var(--rkv2-ink-2);
+  background: var(--rkv2-ink-2);
+}
+
+.rk-bulk-modal .rk-bulk-secondary {
+  border-color: #d4d4d8;
+  background: #fff;
+  color: var(--rkv2-ink-2);
+}
+
+.rk-bulk-modal .rk-bulk-secondary:hover {
+  background: var(--rkv2-line-soft);
+}
+
+.rk-bulk-modal .rk-bulk-close:focus-visible,
+.rk-bulk-modal .rk-bulk-filter-btn:focus-visible,
+.rk-bulk-modal .rk-bulk-primary:focus-visible,
+.rk-bulk-modal .rk-bulk-secondary:focus-visible {
+  outline: 2px solid var(--rkv2-orange);
+  outline-offset: 2px;
+}
+
+.rk-bulk-modal button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.rk-bulk-modal .rk-bulk-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.rk-bulk-modal .rk-bulk-statuses > label,
+.rk-bulk-modal .rk-bulk-check {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--rkv2-ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.rk-bulk-modal .rk-bulk-statuses > label {
+  padding: 7px 10px;
+  border: 1px solid var(--rkv2-line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.rk-bulk-modal .rk-bulk-statuses > label:hover,
+.rk-bulk-modal .rk-bulk-statuses > label:has(input:checked) {
+  border-color: #d4d4d8;
+  background: #fafafa;
+}
+
+.rk-bulk-modal input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.rk-bulk-modal .rk-bulk-checkbox {
+  display: inline-grid;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  place-items: center;
+  border: 1px solid #d4d4d8;
+  border-radius: 4px;
+  background: #fff;
+  color: #fff;
+}
+
+.rk-bulk-modal .rk-bulk-checkbox > i {
+  font-size: 8px;
+  opacity: 0;
+}
+
+.rk-bulk-modal input[type="checkbox"]:checked + .rk-bulk-checkbox {
+  border-color: var(--rkv2-ink);
+  background: var(--rkv2-ink);
+}
+
+.rk-bulk-modal input[type="checkbox"]:checked + .rk-bulk-checkbox > i {
+  opacity: 1;
+}
+
+.rk-bulk-modal input[type="checkbox"]:focus-visible + .rk-bulk-checkbox {
+  outline: 2px solid var(--rkv2-orange);
+  outline-offset: 2px;
+}
+
+.rk-bulk-modal .rk-bulk-check:has(input:disabled),
+.rk-bulk-modal .rk-bulk-statuses > label:has(input:disabled) {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.rk-bulk-modal .rk-bulk-result-head {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--rkv2-ink-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.rk-bulk-modal .rk-bulk-select {
+  flex: 0 0 auto;
+}
+
+.rk-bulk-modal .rk-bulk-columns,
+.rk-bulk-modal .rk-bulk-row {
+  display: grid;
+  grid-template-columns: minmax(72px, .9fr) minmax(72px, 1fr) 80px 56px minmax(90px, 1.25fr) 130px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.rk-bulk-modal .rk-bulk-columns {
+  color: var(--rkv2-ink-4);
+  font-size: 12px;
+}
+
+.rk-bulk-modal .rk-bulk-results {
+  max-height: min(40vh, 360px);
+  overflow: auto;
+  border: 1px solid var(--rkv2-line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.rk-bulk-modal .rk-bulk-row {
+  border-bottom: 1px solid var(--rkv2-line-soft);
+}
+
+.rk-bulk-modal .rk-bulk-row:last-child {
+  border-bottom: 0;
+}
+
+.rk-bulk-modal .rk-bulk-row:hover {
+  background: #fafafa;
+}
+
+.rk-bulk-modal .rk-bulk-cell {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--rkv2-ink-2);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rk-bulk-modal .rk-bulk-cell.rk-model {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rk-bulk-modal .rk-bulk-cell.rk-model > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rk-bulk-modal .rk-bulk-cell.rk-time {
+  color: var(--rkv2-ink-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rk-bulk-modal .rk-bulk-cell.rk-score {
+  font-variant-numeric: tabular-nums;
+}
+
+.rk-bulk-modal .rk-bulk-pill {
+  justify-self: start;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: var(--rkv2-line-soft);
+  color: var(--rkv2-ink-3);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.rk-bulk-modal .rk-bulk-pill.ok {
+  background: var(--rkv2-green-soft);
+  color: var(--rkv2-green);
+}
+
+.rk-bulk-modal .rk-bulk-pill.info {
+  background: var(--rkv2-blue-soft);
+  color: var(--rkv2-blue);
+}
+
+.rk-bulk-modal .rk-bulk-pill.err {
+  background: var(--rkv2-red-soft);
+  color: var(--rkv2-red);
+}
+
+.rk-bulk-modal .rk-bulk-empty {
+  display: grid;
+  min-height: 150px;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--rkv2-ink-4);
+  font-size: 12px;
+  text-align: center;
+}
+
+.rk-bulk-modal .rk-bulk-empty > i {
+  color: #d4d4d8;
+  font-size: 24px;
+}
+
+.rk-bulk-modal .rk-bulk-progress {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--rkv2-line);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.rk-bulk-modal .rk-bulk-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--rkv2-line);
+}
+
+.rk-bulk-modal .rk-bulk-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--rkv2-orange);
+  color: transparent;
+}
+
+.rk-bulk-modal .rk-bulk-progress-bar.is-done {
+  background: var(--rkv2-green);
+}
+
+.rk-bulk-modal .rk-bulk-progress-text {
+  color: var(--rkv2-ink-3);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+@media (max-width: 700px) {
+  .rk-bulk-modal .modal-dialog {
+    width: calc(100% - 20px);
+    min-height: calc(100% - 20px);
+    margin: 10px auto;
+  }
+
+  .rk-bulk-modal .modal-header,
+  .rk-bulk-modal .modal-body,
+  .rk-bulk-modal .modal-footer {
+    padding: 16px;
+  }
+
+  .rk-bulk-modal .rk-bulk-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rk-bulk-modal .rk-bulk-date .datetime-range-panel {
+    width: 100%;
+    max-width: none;
+  }
+
+  .rk-bulk-modal .rk-bulk-columns {
+    display: none;
+  }
+
+  .rk-bulk-modal .rk-bulk-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 12px;
+    padding: 14px;
+  }
+
+  .rk-bulk-modal .rk-bulk-row .rk-user,
+  .rk-bulk-modal .rk-bulk-row .rk-score,
+  .rk-bulk-modal .rk-bulk-row .rk-time {
+    text-align: right;
+  }
+
+  .rk-bulk-modal .rk-bulk-row .rk-score::before {
+    color: var(--rkv2-ink-4);
+    content: "得分 ";
+  }
+
+  .rk-bulk-modal .modal-footer > button {
+    flex: 1 1 0;
   }
 }
