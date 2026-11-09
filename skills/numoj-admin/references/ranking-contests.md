@@ -27,7 +27,10 @@ python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking --help
 python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking <subcommand> --help
 ```
 
-`ranking list`、`detail`、`leaderboard`、`submissions`、`matches` 和各类状态查询是
+`ranking harbor-guide` 获取当前站点的完整 Harbor 格式说明；编写、转换或检查反向评测
+参赛题目包前先执行并阅读该命令的输出，格式要求以线上文档为准。
+
+`ranking list`、`detail`、`harbor-guide`、`leaderboard`、`submissions`、`matches` 和各类状态查询是
 读取操作；创建、编辑、上传、重测、批量操作、ELO 控制和申诉处理都会改变线上状态。执行
 后者前应先用读取命令确认比赛 ID、当前评分模式和影响范围。
 

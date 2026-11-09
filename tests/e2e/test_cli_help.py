@@ -69,6 +69,7 @@ USER_COMMAND_PATHS = [
     ["ai", "marks"],
     ["ranking"],
     ["ranking", "list"],
+    ["ranking", "harbor-guide"],
     ["ranking", "detail"],
     ["ranking", "matches"],
     ["ranking", "match-detail"],

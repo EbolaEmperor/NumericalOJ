@@ -52,7 +52,7 @@ Proceed only if the result reports `authenticated: true`.
 
 For a different NumOJ instance, set the address through `init --base-url <url>` or pass the CLI-level `--base-url <url>` option.
 
-JSON inspection commands print JSON to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as output images, ranking submission archives, or repository file contents.
+JSON inspection commands print JSON to stdout. To save them, use shell redirection. The `-o/--output` option is reserved for commands that download or export real files, such as online guides, output images, ranking submission archives, or repository file contents.
 
 ## Command Areas
 
@@ -63,7 +63,7 @@ JSON inspection commands print JSON to stdout. To save them, use shell redirecti
 - `forum`: list forum threads, view threads and replies, fetch new-thread field metadata, create threads, and reply.
 - `repository`: use the personal code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
-- `ranking`: list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge build step and four evaluation steps), submit/check appeals, and download own visible ranking submission files.
+- `ranking`: fetch the current Harbor guide, list/view ranking competitions, submit by upload or Git, view personal ranking submissions, view leaderboards, inspect matches/match details/judge streams (including reverse-judge build step and four evaluation steps), submit/check appeals, and download own visible ranking submission files.
 - `vibehub`: fetch the current developer guide, list public works, inspect owned versions, create or update complete container packages with automatic review submission, edit versioned metadata, permanently delete owned works, and launch/operate/submit edu homework with separate result queries. Featured status is assigned only by administrators and cannot be requested by users.
 
 This skill deliberately excludes administrator actions such as creating/editing problems, assigning homework, exporting class scores, managing users/classes, rejudging, AIGC detection administration, Agent-as-Judge configuration, batch evaluation, and deleting submissions.
@@ -129,24 +129,38 @@ Submit and inspect a ranking competition:
 ```bash
 python3 "$NUMOJ_USER_CLI" ranking submit <competition_id> --base-model "qwen3" --answer-file answer.json --code-zip code.zip
 python3 "$NUMOJ_USER_CLI" ranking submit <elo_competition_id> --base-model "qwen3" --code-zip submission.zip
-python3 "$NUMOJ_USER_CLI" ranking detail <reverse_competition_id> --tab submit
-python3 "$NUMOJ_USER_CLI" ranking submit <reverse_competition_id> --code-zip reverse_problem.zip --agent-endpoint-id <answer_endpoint_id>
-python3 "$NUMOJ_USER_CLI" ranking reverse-stream <reverse_competition_id> <submission_id> --max-lines 20
-python3 "$NUMOJ_USER_CLI" ranking download-submission <submission_id> ai-answer -o ./ai-answer.zip
 python3 "$NUMOJ_USER_CLI" ranking my-submissions <competition_id> --limit 5
 python3 "$NUMOJ_USER_CLI" ranking leaderboard <competition_id> --limit 10
 python3 "$NUMOJ_USER_CLI" ranking appeal-status <competition_id> <submission_id>
 ```
 
-For a reverse-judge submission, first read `answer_endpoints` from `ranking detail` and use one of its `id` values. This list contains only enabled answer-pool endpoints; quality-gate endpoints are selected automatically by the server and are never user-selectable.
+Before preparing or submitting a reverse-judge task, fetch and read the current
+Harbor guide from the configured NumOJ instance:
 
-Reverse-judge entries must contain one Linux Harbor task (`task.toml`,
-`instruction.md`, a Dockerfile or prebuilt Docker environment, `tests/test.sh`,
-and `solution/solve.sh`). Declare output paths in top-level `artifacts`, such as
-`artifacts = ["/app"]`; Compose and multi-step tasks are not supported. Upload the
-task as a ZIP, or use the competition's configured Git repository. The reference
-solution must pass verification before the AI answers. The legacy
-`problem/` + `template/` + `judge.sh` package format is no longer accepted.
+```bash
+python3 "$NUMOJ_USER_CLI" ranking harbor-guide --help
+python3 "$NUMOJ_USER_CLI" ranking harbor-guide
+python3 "$NUMOJ_USER_CLI" ranking detail <reverse_competition_id> --tab submit
+```
+
+The online guide is the source for task-package format and execution rules.
+Use `ranking harbor-guide -o ./harbor-format-guide.md` when a local file is
+needed. Read the competition's current requirements and `answer_endpoints` from
+`ranking detail`; choose the endpoint matching the user's requested harness and
+model, then pass its `id` as `--agent-endpoint-id`. Quality-gate endpoints are
+selected automatically by the server and are never user-selectable.
+
+Upload the task package, or use the competition's configured Git submission
+workflow. For ZIP submissions:
+
+```bash
+python3 "$NUMOJ_USER_CLI" ranking submit <reverse_competition_id> --code-zip harbor-task.zip --agent-endpoint-id <answer_endpoint_id>
+python3 "$NUMOJ_USER_CLI" ranking reverse-stream <reverse_competition_id> <submission_id> --max-lines 20
+python3 "$NUMOJ_USER_CLI" ranking download-submission <submission_id> ai-answer -o ./ai-answer.zip
+```
+
+The uploaded task package and the `ai-answer` download are different artifacts:
+the latter contains the AI's answer, not the task package originally uploaded.
 
 Create a VibeHub work. Saving automatically submits it for review. The ZIP root
 must contain `Dockerfile` and `vibehub.json`:

@@ -344,6 +344,11 @@ def necessary_ranking_appeal_review_payload(payload: Any) -> Any:
     }
 
 
+def ranking_harbor_guide(args: argparse.Namespace) -> None:
+    resp = client_from_args(args).request("GET", "/api/ranking/harbor-guide")
+    common.print_or_save_response(resp, output=args.output, allow_redirect=False)
+
+
 def ranking_list(args: argparse.Namespace) -> None:
     client = client_from_args(args)
     params: Dict[str, Any] = {}
@@ -1055,6 +1060,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
     rk = add_cli_parser(sub, "ranking", "Manage ranking competitions, submissions, judging, appeals, and AI-judge settings.")
     rs = rk.add_subparsers(dest="cmd", required=True)
+    pa = add_cli_parser(rs, "harbor-guide", "Get the current Harbor format guide from the server.")
+    pa.add_argument("-o", "--output", help="Save the Markdown guide to this file instead of printing it.")
+    pa.set_defaults(func=ranking_harbor_guide)
     pa = add_cli_parser(rs, "list", "List ranking competitions.")
     pa.add_argument("--limit", type=int, help="Maximum number of competitions to return.")
     pa.set_defaults(func=ranking_list)

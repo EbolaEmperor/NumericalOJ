@@ -221,6 +221,11 @@ def necessary_reverse_judge_snapshot_payload(event: Any) -> Any:
     return out
 
 
+def ranking_harbor_guide(args: argparse.Namespace) -> None:
+    resp = common.client_from_args(args).request("GET", "/api/ranking/harbor-guide")
+    common.print_or_save_response(resp, output=args.output, allow_redirect=False)
+
+
 def ranking_list(args: argparse.Namespace) -> None:
     client = common.client_from_args(args)
     params: Dict[str, Any] = {}
@@ -427,6 +432,9 @@ def ranking_appeal_status(args: argparse.Namespace) -> None:
 def register(subparsers: argparse._SubParsersAction) -> None:
     ranking = common.add_cli_parser(subparsers, "ranking", "Use ranking competitions, submissions, matches, leaderboards, and appeals.")
     rank_sub = ranking.add_subparsers(dest="cmd", required=True)
+    pa = common.add_cli_parser(rank_sub, "harbor-guide", "Get the current Harbor format guide from the server.")
+    pa.add_argument("-o", "--output", help="Save the Markdown guide to this file instead of printing it.")
+    pa.set_defaults(func=ranking_harbor_guide)
     pa = common.add_cli_parser(rank_sub, "list", "List ranking competitions.")
     pa.add_argument("--limit", type=int, help="Maximum number of competitions to return.")
     pa.set_defaults(func=ranking_list)

@@ -23,7 +23,7 @@ from backend.oj_modules.ranking.reverse_judge.db import (
 from backend.oj_modules.ranking.reverse_judge.template import (
     HARBOR_TEMPLATE_FILENAME, build_harbor_template_archive, harbor_template_attachment,
 )
-from backend.oj_modules.ranking.reverse_judge.guide import render_harbor_guide
+from backend.oj_modules.ranking.reverse_judge.guide import HARBOR_GUIDE_PATH, render_harbor_guide
 from backend.oj_modules.ranking.db import (
     get_appeal,
     get_appeal_stats,
@@ -69,6 +69,21 @@ from backend.oj_modules.ranking.readiness import (
 
 
 ranking_api_bp = Blueprint("ranking_api", __name__, url_prefix="/api/ranking")
+
+
+@ranking_api_bp.get("/harbor-guide")
+def harbor_guide():
+    """向 CLI 提供与网页相同的完整 Harbor 格式说明。"""
+    response = send_file(
+        HARBOR_GUIDE_PATH,
+        mimetype="text/markdown; charset=utf-8",
+        as_attachment=False,
+        download_name="harbor-format-guide.md",
+        conditional=True,
+        max_age=0,
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @ranking_api_bp.get("/harbor-guide/rendered")

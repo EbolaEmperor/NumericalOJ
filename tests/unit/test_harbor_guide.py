@@ -5,6 +5,22 @@ from backend.oj_modules.ranking.reverse_judge import guide
 from backend.oj_modules.routes.spa_routes import is_spa_document_path
 
 
+def test_harbor_guide_api_serves_the_complete_markdown_source():
+    app = Flask(__name__)
+    app.register_blueprint(ranking_api_bp)
+
+    response = app.test_client().get('/api/ranking/harbor-guide')
+
+    assert response.status_code == 200
+    assert response.mimetype == 'text/markdown'
+    assert response.mimetype_params['charset'] == 'utf-8'
+    assert response.get_data() == guide.HARBOR_GUIDE_PATH.read_bytes()
+    assert response.headers['X-Content-Type-Options'] == 'nosniff'
+    assert response.cache_control.no_cache is True
+    assert response.cache_control.max_age == 0
+    assert 'harbor-format-guide.md' in response.headers['Content-Disposition']
+
+
 def test_harbor_guide_renders_the_markdown_source_with_navigation():
     app = Flask(__name__)
     app.register_blueprint(ranking_api_bp)

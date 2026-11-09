@@ -2326,6 +2326,7 @@ def test_numoj_admin_all_default_commands_prune_redundant_output_except_full_sub
         ["ai-detection", "models"],
         ["ai-detection", "task", "stop", "task-1"],
         ["ranking", "list"],
+        ["ranking", "harbor-guide"],
         ["ranking", "detail", "1"],
         ["ranking", "create", "--title", "赛"],
         ["ranking", "copy", "1"],

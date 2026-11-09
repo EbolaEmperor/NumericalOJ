@@ -70,7 +70,7 @@ Do not use commands that launch external model/API work, large judging workloads
 - `repository`: inspect and manage the per-user code repository: list/get/save/delete/upload files, inspect repository context, build/rebuild index jobs, check job status, search indexed code, and list indexed classes.
 - `ai`: call existing AI tutor routes for code marks, ordinary tutor feedback, and AC-oriented feedback. These may call configured model services.
 - `ai-detection`: inspect dashboard/problem/student pages, query task/model APIs, and launch/stop/delete AIGC detection tasks.
-- `ranking`: 打榜赛管理。配置、题型差异与 CLI 工作流见 [ranking-contests.md]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests.md)。
+- `ranking`: 打榜赛管理；通过 `ranking harbor-guide` 获取当前站点的 Harbor 格式说明。配置、题型差异与 CLI 工作流见 [ranking-contests.md]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests.md)。
 - `vibehub`: fetch the current developer guide, create or update versions with automatic review submission, delete works, decide pending publication reviews, directly set or unset featured status, and launch/inspect/submit edu attempts for the current account.
 
 For ordinary student-only workflows, prefer `numoj-user` with a student account unless the user explicitly wants to operate as an administrator.
@@ -81,6 +81,16 @@ For any ranking-competition work, read
 [ranking-contests.md]($NUMOJ_ADMIN_SKILL_ROOT/references/ranking-contests.md) before choosing or
 running a `ranking` command. It describes the four scoring modes, shared CLI
 workflow, required readiness conditions, and links to the per-mode references.
+
+For reverse-judge task authoring, conversion, or inspection, fetch and read the
+current site's complete Harbor guide before preparing the submission:
+
+```bash
+python3 "$NUMOJ_ADMIN_SKILL_ROOT/scripts/numoj_admin.py" ranking harbor-guide
+```
+
+Use the returned document for the task format and execution contract. The skill
+does not maintain a separate copy of that specification.
 
 For publication review work, use `vibehub pending` with `vibehub review`.
 Featured status has no application queue: use `vibehub featured <slug> on|off`
