@@ -8,6 +8,8 @@ Docker 与通用 Agent 的局部约束分别见 `docker/AGENTS.md` 和
 ## 不可违反的边界
 
 - 工作语言为中文；用户可见文案和既有中文注释保持同一风格。
+- Codex 的 Git 提交标题必须使用英文；正文详细说明改动、原因和实现取舍，并保留
+  `Co-authored-by: Codex <codex@openai.com>` 尾注。
 - Python 基线是 **3.12**，以 `.python-version` 和 GitHub Actions 为准。
 - 生产部署位于 `why-server:/home/ebola/oj/`，主机 hostname 为 `computing`。
 - 未经用户明确要求，不得部署生产、写生产数据、运行迁移或重启服务。

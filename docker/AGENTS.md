@@ -3,8 +3,9 @@
 本文件适用于 `docker/` 下的镜像与运行脚本。
 
 - 普通判题镜像位于 `judger*`，Agent-as-Judge 镜像位于 `agent_judge*`；普通生产默认使用完整镜像，
-  `deploy.sh --mode lite`、本地和 CI 可使用轻量镜像。Harbor 通用基座在两种部署模式下均复用
-  不含 TeX 的 Agent lite，完整 Agent 镜像保留原有 TeX 能力。修改 `agent_judge/run_harness`
+  `deploy.sh --mode lite`、本地和 CI 可使用轻量镜像。Harbor 通用基座按部署模式复用同次 Agent
+  候选：`lite` 直接增加标签，不含 TeX；`full` 继承完整 Agent 候选，仅准备 `/app` 并核验
+  所需 CLI，保留完整镜像的 TeX 等依赖，不再额外构建轻量工具链。修改 `agent_judge/run_harness`
   或其运行依赖后必须重建相应镜像。
 - **增加系统包、Python 包或其它环境依赖时，尽可能在 Dockerfile 现有稳定步骤之后追加新层，
   不要为了整理而改动前面的安装列表或重排已有层。只有确需升级、删除或解决依赖冲突时才修改

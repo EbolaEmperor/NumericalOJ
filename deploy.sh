@@ -693,8 +693,12 @@ build_candidate_image() {
   if [[ "$context" == 'docker/agent_judge' || "$context" == 'docker/agent_judge-lite' ]]; then
     docker_build_args=(--build-arg "LEAN4_IMAGE=$LEAN4_CANDIDATE")
   fi
+  if [[ "$context" == 'docker/harbor-base' ]]; then
+    docker_build_args=(--build-arg "AGENT_IMAGE=$AGENT_JUDGE_CANDIDATE")
+  fi
 
-  if [[ "$context" == 'docker/judger-lite' || "$context" == 'docker/agent_judge-lite' ]]; then
+  if [[ "$context" == 'docker/judger-lite' || "$context" == 'docker/agent_judge-lite' \
+        || "$context" == 'docker/harbor-base' ]]; then
     use_source_metadata=0
   fi
   if [[ "$use_source_metadata" == 1 ]]; then
@@ -750,7 +754,7 @@ build_candidate_image() {
     fi
   fi
   else
-    printf '构建轻量候选镜像并复用 Docker 原生层缓存：%s\n' "$candidate"
+    printf '构建候选镜像并复用 Docker 原生层缓存：%s\n' "$candidate"
   fi
 
   DOCKER_BUILDKIT=1 docker build \
@@ -959,20 +963,20 @@ build_candidate_image \
 build_candidate_image \
   "$AGENT_JUDGE_STABLE" "$AGENT_JUDGE_CANDIDATE" "$AGENT_JUDGE_CONTEXT" \
   "${AGENT_CACHE_MARKERS[@]}"
-if [[ "$DEPLOY_MODE" == lite ]]; then
-  docker tag "$AGENT_JUDGE_CANDIDATE" "$HARBOR_BASE_CANDIDATE"
-else
-  build_candidate_image \
-    "$HARBOR_BASE_STABLE" "$HARBOR_BASE_CANDIDATE" docker/agent_judge-lite \
-    'pi-coding-agent' 'run_harness'
-fi
-
 if [[ "$DEFERRED_UNPACK_ENABLED" == 1 ]]; then
   phase='回收开发候选构建缓存'
   "$CANDIDATE_PYTHON" -B deploy/project_build_cache.py \
     --root "$ROOT_DIR" --builder "$DOCKER_BUILDER" \
     --candidate "$JUDGER_CANDIDATE" --candidate "$LEAN4_CANDIDATE" \
     --candidate "$AGENT_JUDGE_CANDIDATE"
+fi
+
+if [[ "$DEPLOY_MODE" == lite ]]; then
+  docker tag "$AGENT_JUDGE_CANDIDATE" "$HARBOR_BASE_CANDIDATE"
+else
+  # 完整 Agent 的依赖直接继承；低磁盘开发环境须先回收缓存再解包父镜像。
+  build_candidate_image \
+    "$HARBOR_BASE_STABLE" "$HARBOR_BASE_CANDIDATE" docker/harbor-base
 fi
 
 phase='清理遗留候选镜像'

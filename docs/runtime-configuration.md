@@ -459,9 +459,10 @@ Dockerfile 准备，资源与超时由 `task.toml` 和比赛运行配置控制�
 脚本使用它时才是依赖。隐藏测试与参考解分别在验证和 Oracle 阶段提供，不复制进 AI 的
 初始环境。每场反向评测默认提供 `harbor-template.zip` 附件；
 模板 Dockerfile 使用部署时预构建的 `numericaloj-harbor-base:1`，不修改环境时直接复用。
-该基座在 full 与 lite 部署模式下均使用 Agent lite：包含四套固定版本 CLI、常用编译与数值
-工具及 Lean/Mathlib，不预装 TeX。需要 TeX 的题目可在自己的 Dockerfile 中显式安装。
-普通 full Agent 镜像的既有 TeX 环境保持不变。
+该基座按部署模式复用同次 Agent 候选：`lite` 直接复用不含 TeX 的 Agent lite；`full` 继承
+完整 Agent 候选，仅准备 `/app` 并核验所需 CLI，保留完整镜像的 TeX 等依赖，不额外安装
+轻量工具链。两种模式均包含四套固定版本 CLI、常用编译与数值工具及 Lean/Mathlib。
+题目需要额外依赖时可在自己的 Dockerfile 中显式添加。
 验证器统一在该轮作答环境中执行，`tests/` 仅在验证阶段由 Harbor 提供。
 作答环境使用 CPU 容器，最多 2 CPU、4 GiB 内存；任务声明的更低限制会保留，
 CPU 至少为 0.01、内存值必须大于零，任务配置不能申请宿主 GPU。

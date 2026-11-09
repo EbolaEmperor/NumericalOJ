@@ -276,7 +276,8 @@ python3 scripts/repository_storage_admin.py quarantine-orphans
 不会根据机器硬件自动把完整环境切为轻量环境；每次部署都会打印实际模式。
 `full` 保留完整普通判题与通用 Agent 工具链，`lite` 使用仓库已有的 `judger-lite` 和
 `agent_judge-lite`。轻量普通判题仍保留已有的基础 TeX/中文绘图支持，但不含 Intel MKL；
-轻量 Agent 和所有模式的 Harbor 通用基座都不安装 TeX。Lean 没有轻量版本，继续使用既有
+轻量 Agent 及 `lite` 模式的 Harbor 通用基座不安装 TeX；`full` 模式的 Harbor 基座继承
+完整 Agent 候选，复用其已有依赖和 TeX 能力。Lean 没有轻量版本，继续使用既有
 Lean/Mathlib 镜像。服务仍使用原 stable 镜像接口，选择模式不修改 `.env`。
 
 首次没有 `.env` 时，脚本在当前交互终端确认是否创建本机托管的新站点，再生成随机站点密钥和
@@ -369,8 +370,10 @@ CPU/GPU 两种运行配置都能在缺少稳定判题镜像时自动构建所选
 `full` 稳定镜像缺失或输入不匹配时，先查找同仓库已有 `deploy-*` 完整镜像，
 仅复用受管 label 和既有构建输入记录均匹配的候选，再按镜像 ID 创建本次候选标签；
 失败的中间 BuildKit 层、未受管镜像和输入不匹配的候选不会被选用。只有所有候选准备完成后才
-清理旧候选标签，清理时跳过本次候选。反向评测模板的 `numericaloj-harbor-base:1` 始终采用
-无 TeX 的轻量 Agent 镜像；`lite` 直接复用同次 Agent 候选，`full` 独立准备并缓存 Harbor 候选。
+清理旧候选标签，清理时跳过本次候选。反向评测模板的 `numericaloj-harbor-base:1` 按模式复用
+同次 Agent 候选：`lite` 直接增加标签，保持无 TeX；`full` 通过 `docker/harbor-base/Dockerfile`
+继承本次完整 Agent 候选，仅准备 `/app` 并核验四套 CLI 和 GNU `timeout`，不重复安装依赖，
+也不额外构建轻量工具链。完整 Agent 的既有构建缓存因此继续生效。
 Harbor stable 标签只在备份成功后的镜像切换阶段更新，失败时恢复其原标签。
 `full`/`lite` 都执行配置校验、备份、停服、schema 同步、示例发布、任务恢复与服务启动，
 不会在部署脚本内运行测试。浏览器、接口和可丢弃基础设施测试应在部署成功后的独立测试阶段执行。

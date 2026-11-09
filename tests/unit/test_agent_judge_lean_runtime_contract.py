@@ -50,7 +50,7 @@ def test_production_deploy_builds_lean_before_the_agent_image(tmp_path, mode):
         return deploy[start:deploy.index("\n}\n", start) + 3]
 
     start = deploy.index("phase='构建判题镜像'")
-    stage = deploy[start:deploy.index('\nif [[ "$DEFERRED_UNPACK_ENABLED" == 1 ]]; then', start)]
+    stage = deploy[start:deploy.index("\nphase='清理遗留候选镜像'", start)]
     calls = tmp_path / "docker-builds"
     source = "set -e\n" + function("configure_deployment_mode") + function("build_candidate_image") + r'''
 unset NUMOJ_DOCKER_LIBRARY_REGISTRY
@@ -99,9 +99,13 @@ docker() {
     assert builds[2][-1] == ("docker/agent_judge" if mode == "full" else "docker")
     if mode == "lite":
         assert builds[2][builds[2].index("--file") + 1] == "docker/agent_judge-lite/Dockerfile"
-    for arguments in builds[2:]:
-        lean_argument = arguments.index("LEAN4_IMAGE=lean-candidate")
-        assert arguments[lean_argument - 1] == "--build-arg"
+    lean_argument = builds[2].index("LEAN4_IMAGE=lean-candidate")
+    assert builds[2][lean_argument - 1] == "--build-arg"
+    if mode == "full":
+        assert builds[3][-1] == "docker/harbor-base"
+        agent_argument = builds[3].index("AGENT_IMAGE=agent-candidate")
+        assert builds[3][agent_argument - 1] == "--build-arg"
+        assert not any(value.startswith("LEAN4_IMAGE=") for value in builds[3])
     assert "agent_judge/lean" in deploy
     assert "lean4/Dockerfile" in deploy
 

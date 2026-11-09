@@ -58,7 +58,7 @@ fi
 - `task.toml`：任务配置、超时和交付物归档路径；按需声明 `artifacts`，也可省略或留空。
 - `environment/Dockerfile`：准备 AI 的初始环境。平台部署会提供
   `numericaloj-harbor-base:1` 基础镜像，可在其上添加题目依赖与初始文件。
-  通用基座不预装 TeX；有相关需求时，请在 Dockerfile 中安装所需依赖。
+  题目需要的额外依赖，请在 Dockerfile 中显式安装。
 - `solution/solve.sh`：出题者参考解。平台先执行参考解并验证满分。
 - `tests/test.sh`：在同一作答环境中验证完成状态，将分数写入 `/logs/verifier/reward.txt`。
   本例使用 `1` 表示满分、`0` 表示未完成。
