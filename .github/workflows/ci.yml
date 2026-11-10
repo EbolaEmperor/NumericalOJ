@@ -176,8 +176,12 @@ jobs:
       - name: Run database integration tests
         run: bash tests/ci/run-ci.sh tests/db
       - name: Set up Docker Buildx
+        id: buildx
         uses: docker/setup-buildx-action@v4
         with:
+          # 保留默认 Docker builder，供 Harbor E2E 读取已 load 的本地基础镜像。
+          # 独立 builder 仅由下方三个镜像构建步骤显式使用。
+          use: false
           # docker-container 无法直接读取 Docker Engine 的本地镜像；host 网络
           # 允许两个 Buildx 构建通过本 job 的临时 registry 传递 Lean 基础镜像。
           driver-opts: network=host
@@ -185,6 +189,7 @@ jobs:
         timeout-minutes: 20
         uses: docker/build-push-action@v7
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: docker/judger-lite
           load: true
           tags: numericaloj-judger-lite:latest
@@ -194,6 +199,7 @@ jobs:
         timeout-minutes: 30
         uses: docker/build-push-action@v7
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: docker/lean4
           tags: localhost:5000/numericaloj-lean4:ci
           push: true
@@ -204,6 +210,7 @@ jobs:
         timeout-minutes: 60
         uses: docker/build-push-action@v7
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: docker
           file: docker/agent_judge-lite/Dockerfile
           build-contexts: |
